@@ -364,6 +364,28 @@ Json decode_bgfb(const Bytes &b) {
                 result["_spline"] = {{"status", "invalid"}, {"error", e.what()}};
             }
         }
+        if (typ == "BsplineSurface") {
+            try {
+                const auto surface = BsplineSurface::from_bgfb(result);
+                auto direction = [](const BsplineDirection &axis) {
+                    return Json{{"knots_source",
+                                 axis.source_knots().empty() ? "generated_uniform" : "stored"},
+                                {"knot_domain", axis.knot_domain()},
+                                {"periodic_pole_shift", axis.periodic_pole_shift()}};
+                };
+                result["_spline"] = {
+                    {"status", "valid"},
+                    {"pole_coordinates", surface.rational() ? "weighted_xyz" : "cartesian_xyz"},
+                    {"rational", surface.rational()},
+                    {"pole_order", "u_fastest"},
+                    {"u", direction(surface.u())},
+                    {"v", direction(surface.v())},
+                    {"outer_boundary_active", surface.outer_boundary_active()},
+                    {"trim_region_evaluation", "not_evaluated"}};
+            } catch (const std::exception &e) {
+                result["_spline"] = {{"status", "invalid"}, {"error", e.what()}};
+            }
+        }
         active.erase({typ, pos});
         return result;
     };

@@ -27,25 +27,17 @@ using Point3 = std::array<double, 3>;
 using Point2 = std::array<double, 2>;
 using Triangle = std::array<std::uint32_t, 3>;
 using Matrix4 = std::array<std::array<double, 4>, 4>;
-// Owns a validated copy of a decoded BGFB BsplineCurve table.
-// Rational source poles are weighted XYZ, not Cartesian control points.
-class BsplineCurve {
+// Validated knot direction shared by curves and tensor-product surfaces.
+class BsplineDirection {
   public:
-    static BsplineCurve from_bgfb(const Json &table);
     unsigned order() const {
         return order_;
     }
     bool closed() const {
         return closed_;
     }
-    bool rational() const {
-        return !weights_.empty();
-    }
-    const std::vector<Point3> &poles() const {
-        return poles_;
-    }
-    const std::vector<double> &weights() const {
-        return weights_;
+    std::size_t pole_count() const {
+        return pole_count_;
     }
     const std::vector<double> &source_knots() const {
         return source_knots_;
@@ -57,6 +49,53 @@ class BsplineCurve {
     int periodic_pole_shift() const {
         return pole_shift_;
     }
+
+  private:
+    friend class BsplineCurve;
+    friend class BsplineSurface;
+    BsplineDirection() = default;
+    static BsplineDirection from_data(unsigned, bool, std::size_t, std::vector<double>);
+    unsigned order_ = 0;
+    bool closed_ = false;
+    std::size_t pole_count_ = 0;
+    int pole_shift_ = 0;
+    std::vector<double> source_knots_, knots_;
+};
+// Owns a validated copy of a decoded BGFB BsplineCurve table.
+// Rational source poles are weighted XYZ, not Cartesian control points.
+class BsplineCurve {
+  public:
+    static BsplineCurve from_bgfb(const Json &table);
+    const BsplineDirection &direction() const {
+        return direction_;
+    }
+    unsigned order() const {
+        return direction_.order();
+    }
+    bool closed() const {
+        return direction_.closed();
+    }
+    bool rational() const {
+        return !weights_.empty();
+    }
+    const std::vector<Point3> &poles() const {
+        return poles_;
+    }
+    const std::vector<double> &weights() const {
+        return weights_;
+    }
+    const std::vector<double> &source_knots() const {
+        return direction_.source_knots();
+    }
+    const std::vector<double> &knots() const {
+        return direction_.knots();
+    }
+    std::array<double, 2> knot_domain() const {
+        return direction_.knot_domain();
+    }
+    int periodic_pole_shift() const {
+        return direction_.periodic_pole_shift();
+    }
     // Fraction is in [0, 1]. Internal knots use the right-hand value;
     // fraction 1 uses the left-hand endpoint value. No implicit wrapping.
     std::array<double, 4> homogeneous_at(double fraction) const;
@@ -65,11 +104,57 @@ class BsplineCurve {
 
   private:
     BsplineCurve() = default;
-    unsigned order_ = 0;
-    bool closed_ = false;
-    int pole_shift_ = 0;
+    BsplineDirection direction_;
     std::vector<Point3> poles_;
-    std::vector<double> weights_, source_knots_, knots_;
+    std::vector<double> weights_;
+};
+// Evaluates the underlying surface; trim containment/meshing is a separate step.
+// Source pole/weight index is v * u().pole_count() + u.
+class BsplineSurface {
+  public:
+    static BsplineSurface from_bgfb(const Json &table);
+    const BsplineDirection &u() const {
+        return u_;
+    }
+    const BsplineDirection &v() const {
+        return v_;
+    }
+    bool rational() const {
+        return !weights_.empty();
+    }
+    const std::vector<Point3> &poles() const {
+        return poles_;
+    }
+    const std::vector<double> &weights() const {
+        return weights_;
+    }
+    const Json &boundaries() const {
+        return boundaries_;
+    }
+    int hole_origin() const {
+        return hole_origin_;
+    }
+    bool outer_boundary_active() const {
+        return hole_origin_ == 0;
+    }
+    int num_rules_u() const {
+        return num_rules_u_;
+    }
+    int num_rules_v() const {
+        return num_rules_v_;
+    }
+    // Fractions in [0,1] map independently to each full active knot domain.
+    // Does not test whether the point belongs to the trimmed region.
+    std::array<double, 4> homogeneous_at(double fraction_u, double fraction_v) const;
+    Point3 point_at(double fraction_u, double fraction_v) const;
+
+  private:
+    BsplineSurface() = default;
+    BsplineDirection u_, v_;
+    std::vector<Point3> poles_;
+    std::vector<double> weights_;
+    Json boundaries_;
+    int hole_origin_ = 0, num_rules_u_ = 0, num_rules_v_ = 0;
 };
 struct Tessellation {
     unsigned full_circle_segments = 64;
