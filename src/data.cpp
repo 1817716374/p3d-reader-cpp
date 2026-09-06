@@ -5,6 +5,8 @@ const Json &bgfb_schema() {
   "source": "https://github.com/iTwin/imodel-native/blob/main/iModelCore/GeomLibs/serialization/src/FlatBuffer/allcg.fbs",
   "source_sha256": "91ceb846343febd7ce022685d642910e9dbee78e459f85f43d10e689f0735086",
   "license": "Apache-2.0",
+  "dialect": "BIMBase / PKPM P3D",
+  "native_union_overrides": {"20": "P3DSweptBody", "21": "P3DSectionLoft"},
   "types": {
     "DPoint3d": {
       "kind": "struct",
@@ -1034,6 +1036,23 @@ const Json &bgfb_schema() {
         }
       ]
     },
+    "P3DSweptBody": {
+      "kind": "table",
+      "fields": [
+        {"name": "profile", "type": "CurveVector"},
+        {"name": "path", "type": "CurveVector"},
+        {"name": "capped", "type": "bool"}
+      ]
+    },
+    "P3DSectionLoft": {
+      "kind": "table",
+      "fields": [
+        {"name": "section0", "type": "CurveVector"},
+        {"name": "section1", "type": "CurveVector"},
+        {"name": "guide_groups", "type": "[[CurveVector]]"},
+        {"name": "capped", "type": "bool"}
+      ]
+    },
     "VariantGeometryUnion": {
       "kind": "union",
       "fields": {
@@ -1056,8 +1075,8 @@ const Json &bgfb_schema() {
         "17": "TransitionSpiral",
         "18": "PointString",
         "19": "AkimaCurve",
-        "20": "CatenaryCurve",
-        "21": "PartialCurve"
+        "20": "P3DSweptBody",
+        "21": "P3DSectionLoft"
       }
     },
     "VariantGeometry": {

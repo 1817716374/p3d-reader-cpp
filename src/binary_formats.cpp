@@ -282,14 +282,16 @@ Json decode_bgfb(const Bytes &b) {
             auto start = indirect(pos);
             auto count = u32(start);
             start += 4;
-            bool scalar = scalars.count(it), st = !scalar && types.at(it).at("kind") == "struct";
+            bool scalar = scalars.count(it), vector = !it.empty() && it[0] == '[',
+                 st = !scalar && !vector && types.at(it).at("kind") == "struct";
             std::size_t size = scalar ? scalars.at(it).second : st ? layout(it).size : 4;
             require(count <= b.size() / size, "BGFB array count");
             checked(start, size * count);
             Json a = Json::array();
             for (unsigned i = 0; i < count; ++i)
-                a.push_back(read(it, scalar || st ? start + i * size : indirect(start + i * size),
-                                 depth + 1));
+                a.push_back(
+                    read(it, scalar || st || vector ? start + i * size : indirect(start + i * size),
+                         depth + 1));
             return a;
         }
         auto &def = types.at(typ);
@@ -325,43 +327,18 @@ Json decode_bgfb(const Bytes &b) {
                 continue;
             }
             require(off >= 4 && off < os, "BGFB field extent");
+            const std::size_t width = scalars.count(t) ? scalars.at(t).second
+                                      : types.contains(t) && types[t]["kind"] == "struct"
+                                          ? layout(t).size
+                                          : 4;
+            require(width <= std::size_t(os - off), "BGFB field crosses table extent");
             result["_present_fields"].push_back(name);
             if (types.contains(t) && types[t]["kind"] == "union") {
                 auto tag = result[name + "Type"].get<unsigned>();
                 auto key = std::to_string(tag);
                 require(types[t]["fields"].contains(key), "BGFB union type");
-                auto target = indirect(pos + off);
-                auto tv = vtable(target);
-                if (tag == 21 && u16(tv) == 12) {
-                    auto field = [&](unsigned slot) {
-                        auto delta = u16(tv + 4 + 2 * slot);
-                        require(delta >= 4 && delta < u16(tv + 2), "section loft field");
-                        return target + delta;
-                    };
-                    auto gp = indirect(field(2));
-                    auto count = u32(gp);
-                    checked(gp + 4, std::uint64_t(count) * 4);
-                    Json groups = Json::array();
-                    for (unsigned j = 0; j < count; ++j) {
-                        auto p = indirect(gp + 4 + 4 * j);
-                        auto n = u32(p);
-                        checked(p + 4, std::uint64_t(n) * 4);
-                        Json g = Json::array();
-                        for (unsigned k = 0; k < n; ++k)
-                            g.push_back(read("CurveVector", indirect(p + 4 + 4 * k), depth + 1));
-                        groups.push_back(g);
-                    }
-                    result[name] = {
-                        {"_type", "P3DSectionLoft"},
-                        {"section0", read("CurveVector", indirect(field(0)), depth + 1)},
-                        {"section1", read("CurveVector", indirect(field(1)), depth + 1)},
-                        {"guide_groups", groups},
-                        {"capped", bool(Reader(b, field(3)).u8())},
-                        {"_semantic_status", "Section/guide roles inferred from P3D samples; not "
-                                             "the public tag-21 PartialCurve."}};
-                } else
-                    result[name] =
-                        read(types[t]["fields"][key].get<std::string>(), target, depth + 1);
+                result[name] = read(types[t]["fields"][key].get<std::string>(), indirect(pos + off),
+                                    depth + 1);
             } else if (types.contains(t) && types[t]["kind"] == "table")
                 result[name] = read(t, indirect(pos + off), depth + 1);
             else

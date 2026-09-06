@@ -1,4 +1,5 @@
 #include "geometry.hpp"
+#include "blob_internal.hpp"
 #include "guided.hpp"
 #include "electrical_wire.hpp"
 #include <iostream>
@@ -34,6 +35,151 @@ static Bytes wire_bytes(const char *text) {
 static void append_wire(Bytes &b, const char *text) {
     auto raw = wire_bytes(text);
     b.insert(b.end(), raw.begin(), raw.end());
+}
+static void bgfb_native_tests() {
+    struct Fixture {
+        Bytes bytes;
+        std::size_t body, vtable, groups = 0, first_group = 0;
+    };
+    auto make = [](unsigned tag, bool capped, bool omit_cap, bool extra = false) {
+        Fixture f;
+        auto &b = f.bytes;
+        b.resize(12);
+        std::memcpy(b.data(), "bg0001fb", 8);
+        auto write = [&](std::size_t offset, auto value) {
+            std::memcpy(b.data() + offset, &value, sizeof(value));
+        };
+        auto aligned = [&]() {
+            while (b.size() % 4)
+                b.push_back(0);
+            return b.size();
+        };
+        auto table = [&](std::vector<std::uint16_t> offsets, unsigned size) {
+            auto vt = aligned();
+            put<std::uint16_t>(b, std::uint16_t(4 + offsets.size() * 2));
+            put<std::uint16_t>(b, std::uint16_t(size));
+            for (auto offset : offsets)
+                put(b, offset);
+            auto object = aligned();
+            b.resize(object + size);
+            write(object, std::int32_t(object - vt));
+            return object;
+        };
+        auto reference = [&](std::size_t field, std::size_t target) {
+            write(field, std::uint32_t(target - field));
+        };
+        auto vector = [&](unsigned n) {
+            auto p = aligned();
+            put<std::uint32_t>(b, n);
+            b.resize(b.size() + n * 4);
+            return p;
+        };
+        auto curve_array = [&](int type) {
+            auto p = table({4}, 8);
+            write(p + 4, std::int32_t(type));
+            return p;
+        };
+        auto root = table({4, 8}, 12);
+        reference(8, root);
+        b[root + 4] = std::uint8_t(tag);
+        std::vector<std::uint16_t> slots = tag == 20 ? std::vector<std::uint16_t>{4, 8, 12}
+                                                     : std::vector<std::uint16_t>{4, 8, 12, 16};
+        if (omit_cap)
+            slots.pop_back();
+        if (extra)
+            slots.push_back(20);
+        const unsigned size = extra ? 24 : tag == 20 ? 16 : 20;
+        f.body = table(slots, size);
+        f.vtable = f.body - Reader(b, f.body).i32();
+        reference(root + 8, f.body);
+        reference(f.body + 4, curve_array(2));
+        reference(f.body + 8, curve_array(tag == 20 ? 1 : 3));
+        if (!omit_cap)
+            b[f.body + (tag == 20 ? 12 : 16)] = capped;
+        if (extra)
+            write(f.body + 20, std::uint32_t(123));
+        if (tag == 21) {
+            f.groups = vector(2);
+            reference(f.body + 12, f.groups);
+            for (unsigned i = 0; i < 2; ++i) {
+                auto group = vector(i + 1);
+                if (!i)
+                    f.first_group = group;
+                reference(f.groups + 4 + 4 * i, group);
+                for (unsigned j = 0; j <= i; ++j)
+                    reference(group + 4 + 4 * j, curve_array(int(i * 2 + j + 1)));
+            }
+        }
+        return f;
+    };
+    auto sweep = make(20, true, false);
+    auto value = decode_bgfb(sweep.bytes)["geometry"];
+    check(value["_type"] == "P3DSweptBody" && value["profile"]["type"] == 2 &&
+              value["path"]["type"] == 1 && value["capped"] == true,
+          "P3D BGFB tag 20 reads swept profile/path/cap instead of public catenary data");
+    value = decode_bgfb(make(20, false, true).bytes)["geometry"];
+    check(value["capped"] == false && value["_present_fields"] == Json({"profile", "path"}),
+          "swept body reads default false when the cap slot is absent from the vtable");
+    auto loft = make(21, true, false);
+    value = decode_bgfb(loft.bytes)["geometry"];
+    check(value["_type"] == "P3DSectionLoft" && value["section0"]["type"] == 2 &&
+              value["section1"]["type"] == 3 && value["capped"] == true,
+          "P3D BGFB tag 21 retains the native bottom/top section order");
+    check(value["guide_groups"].size() == 2 && value["guide_groups"][0].size() == 1 &&
+              value["guide_groups"][1].size() == 2 && value["guide_groups"][1][1]["type"] == 4,
+          "native guide groups remain nested and keep their source order");
+    check(value["_unknown_field_slots"].empty() && !value.contains("_semantic_status"),
+          "confirmed native layout replaces the sample-inferred special case");
+    auto uncapped = make(21, false, true);
+    value = decode_bgfb(uncapped.bytes)["geometry"];
+    check(value["capped"] == false && value["guide_groups"].size() == 2 &&
+              value["_present_fields"] == Json({"section0", "section1", "guide_groups"}),
+          "uncapped loft with a shorter vtable remains a loft instead of public PartialCurve");
+    check(decode_bgfb(make(21, false, false).bytes)["geometry"]["capped"] == false,
+          "explicit false and omitted cap both retain native boolean semantics");
+    auto future = make(21, true, false, true);
+    value = decode_bgfb(future.bytes)["geometry"];
+    check(value["_type"] == "P3DSectionLoft" && value["capped"] == true &&
+              value["_unknown_field_slots"] == Json::array({{{"slot", 4}, {"offset", 20}}}),
+          "extra native loft fields are recorded without changing union interpretation");
+    auto bad = loft.bytes;
+    bad.resize(loft.first_group + 4);
+    rejects([&] { decode_bgfb(bad); }, "truncated nested guide vector is rejected");
+    bad = loft.bytes;
+    const std::uint32_t excessive = UINT32_MAX;
+    std::memcpy(bad.data() + loft.groups, &excessive, 4);
+    rejects([&] { decode_bgfb(bad); }, "nested guide-group count cannot exceed its source buffer");
+    bad = loft.bytes;
+    const std::uint16_t crossing = 19;
+    std::memcpy(bad.data() + loft.vtable + 4, &crossing, 2);
+    rejects([&] { decode_bgfb(bad); }, "relative field must fit wholly inside its table");
+
+    Bytes packet(32);
+    put<std::uint64_t>(packet, uncapped.bytes.size());
+    packet.insert(packet.end(), uncapped.bytes.begin(), uncapped.bytes.end());
+    Bytes body(142);
+    body[0] = 1;
+    body[134] = 1;
+    put<std::uint32_t>(body, unsigned(packet.size()));
+    body.insert(body.end(), packet.begin(), packet.end());
+    put<std::int32_t>(body, 7);
+    body.push_back(3);
+    put<std::uint32_t>(body, 0);
+    put<std::uint64_t>(body, 0);
+    Bytes source(11);
+    put<std::uint32_t>(source, 1);
+    source.resize(source.size() + 11);
+    put<std::uint32_t>(source, unsigned(body.size()));
+    source.insert(source.end(), body.begin(), body.end());
+    source.resize(source.size() + 25);
+    auto parsed = complex_blob("ParaCmptInstance", source);
+    const auto &parsed_packet = parsed["instances"][0]["geometry_packets"][0];
+    check(!parsed_packet.contains("decode_error") &&
+              parsed_packet["geometry"]["geometry"]["_type"] == "P3DSectionLoft" &&
+              parsed_packet["geometry"]["geometry"]["capped"] == false &&
+              parsed_packet["raw_base64"] == base64(packet),
+          "native loft decoding is reached through the P3D component packet and preserves source "
+          "bytes");
 }
 static void view_link_sequence_tests() {
     auto record = [](std::uint32_t count, const std::vector<std::uint64_t> &ids,
@@ -2256,6 +2402,7 @@ int main() {
         embedded_texture_tests();
         box_center_tests();
         guided_surface_tests();
+        bgfb_native_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();
