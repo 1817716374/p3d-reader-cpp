@@ -25,6 +25,16 @@ Point3 mul(Point3 a, double s) {
 double norm(Point3 a) {
     return std::hypot(a[0], a[1], a[2]);
 }
+bool cap_endpoints_coincide(Point3 a, Point3 b) {
+    // Native curve-array closure uses a strict, coordinate-scaled squared distance.
+    // Keep this separate from fitting tolerances and the source boundary type.
+    auto d = sub(a, b);
+    double distance2 = d[1] * d[1] + d[0] * d[0] + d[2] * d[2];
+    double scale2 =
+        a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + b[0] * b[0] + b[1] * b[1] + b[2] * b[2] + 1.;
+    return std::isfinite(distance2) && std::isfinite(scale2) &&
+           distance2 < scale2 * 1.0000000000000001e-20;
+}
 HPoint mix(HPoint a, HPoint b, double t) {
     for (unsigned k = 0; k < 4; ++k)
         a[k] = a[k] * (1 - t) + b[k] * t;
@@ -394,6 +404,9 @@ GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,
     require(vs.size() <= policy.max_segments && columns <= policy.max_segments / vs.size(),
             "guided surface vertex budget");
     GuidedMesh out;
+    for (unsigned end = 0; end < 2; ++end)
+        out.cap_boundaries_closed[end] =
+            cap_endpoints_coincide(patches.front().at(0, end), patches.back().at(1, end));
     for (auto v : vs) {
         std::vector<Point3> ring;
         for (std::size_t i = 0; i < count; ++i)

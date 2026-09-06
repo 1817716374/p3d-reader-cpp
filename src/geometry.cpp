@@ -658,7 +658,6 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         std::vector<std::size_t> cap_lengths;
                         std::size_t boundary_start = 0, guide_start = 0;
                         const bool capped = !payload.empty() && payload[0];
-                        require(closed || !capped, "capped open guided loft is not supported");
                         for (std::size_t ring = 0; ring < guide_counts.size(); ++ring) {
                             auto n = section_native_lengths[0][ring], ng = guide_counts[ring];
                             std::vector<GuidedBoundary> a(
@@ -671,6 +670,9 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                                               guide_native.begin() + guide_start +
                                                                   ng);
                             auto mesh = guided_surface(a, b, rails, policy, closed);
+                            require(!capped || (mesh.cap_boundaries_closed[0] &&
+                                                mesh.cap_boundaries_closed[1]),
+                                    "guided loft cap boundary endpoints do not coincide");
                             require(mesh.rings.size() <= policy.max_segments &&
                                         mesh.rings.front().size() <=
                                             (policy.max_segments - result.vertices.size()) /

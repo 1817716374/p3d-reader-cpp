@@ -11,6 +11,7 @@ struct GuidedBoundary {
 };
 struct GuidedMesh {
     std::vector<std::vector<Point3>> rings;
+    std::array<bool, 2> cap_boundaries_closed{};
     Json note;
 };
 GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,

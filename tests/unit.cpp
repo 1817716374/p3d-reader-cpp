@@ -1480,7 +1480,7 @@ static void guided_open_tests() {
     capped[0] = command(56, Bytes{1});
     failed = reconstruct(capped, policy);
     check(!failed.unknown.empty() && failed.vertices.empty(),
-          "unconfirmed capped open-profile behavior remains explicit");
+          "capped open profile with separated endpoints fails without a partial solid");
     GuidedBoundary arc;
     arc.ellipse = true;
     arc.axis_x = {1, 0, 0};
@@ -1501,6 +1501,126 @@ static void guided_open_tests() {
     }
     check(cylinder && curved.note["surface_to_mesh_error_bound"].get<double>() <= .01,
           "open rational profile follows the analytic half-cylinder with its tolerance bound");
+}
+static void guided_cap_tests() {
+    const std::vector<Point3> lower = {{0, 0, 0}, {2, 0, 0}, {2, 3, 0}, {0, 3, 0}, {0, 0, 0}};
+    auto upper = lower;
+    for (auto &p : upper)
+        p[2] = 4;
+    Tessellation policy;
+    policy.full_circle_segments = 8;
+    auto boundaries = [](const std::vector<Point3> &points) {
+        std::vector<GuidedBoundary> out;
+        for (std::size_t i = 1; i < points.size(); ++i) {
+            GuidedBoundary b;
+            b.points = {points[i - 1], points[i]};
+            out.push_back(b);
+        }
+        return out;
+    };
+    auto surface = [&](const std::vector<Point3> &a, const std::vector<Point3> &b) {
+        std::vector<GuidedBoundary> rails(a.size());
+        for (std::size_t i = 0; i < a.size(); ++i)
+            rails[i].points = {a[i], b[i]};
+        return guided_surface(boundaries(a), boundaries(b), rails, policy, false);
+    };
+    auto encoded = [&](const std::vector<Point3> &a, const std::vector<Point3> &b) {
+        Json commands = Json::array({command(56, Bytes{1})});
+        auto line = [&](Point3 p, Point3 q) {
+            Bytes raw;
+            put<std::uint32_t>(raw, 2);
+            for (auto v : {p, q})
+                for (auto x : v)
+                    put(raw, x);
+            commands.push_back(command(1, raw));
+        };
+        for (unsigned s = 0; s < 2; ++s) {
+            commands.push_back(command(s ? 54 : 53, {}));
+            commands.push_back(command(20, {}));
+            const auto &points = s ? b : a;
+            for (std::size_t i = 1; i < points.size(); ++i)
+                line(points[i - 1], points[i]);
+            commands.push_back(command(22, {}));
+        }
+        Bytes groups;
+        put<std::uint32_t>(groups, 1);
+        put<std::uint32_t>(groups, unsigned(a.size()));
+        commands.push_back(command(55, groups));
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            commands.push_back(command(20, {}));
+            line(a[i], b[i]);
+            commands.push_back(command(22, {}));
+        }
+        commands.push_back(command(19, {}));
+        return reconstruct(commands, policy);
+    };
+    auto geometry = encoded(lower, upper);
+    check(geometry.unknown.empty() && !geometry.faces.empty() &&
+              geometry.notes.at(0)["profile_closed"] == false &&
+              geometry.notes.at(0)["patches"].size() == 4,
+          "physically closed Open paths cap without changing source type or N+1 guide mapping");
+    double area = 0, volume = 0, lower_area = 0, upper_area = 0;
+    for (auto f : geometry.faces) {
+        auto a = geometry.vertices[f[0]], b = geometry.vertices[f[1]], c = geometry.vertices[f[2]];
+        Point3 u{}, v{};
+        for (unsigned k = 0; k < 3; ++k) {
+            u[k] = b[k] - a[k];
+            v[k] = c[k] - a[k];
+        }
+        Point3 n = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0]};
+        double triangle_area = .5 * std::hypot(n[0], n[1], n[2]);
+        area += triangle_area;
+        volume += (a[0] * n[0] + a[1] * n[1] + a[2] * n[2]) / 6;
+        if (a[2] == 0 && b[2] == 0 && c[2] == 0)
+            lower_area += n[2] / 2;
+        if (a[2] == 4 && b[2] == 4 && c[2] == 4)
+            upper_area += n[2] / 2;
+    }
+    check(std::abs(area - 52) < 1e-12 && std::abs(volume - 24) < 1e-12,
+          "capped Open rectangle has analytic prism area and outward signed volume");
+    check(std::abs(lower_area + 6) < 1e-12 && std::abs(upper_area - 6) < 1e-12,
+          "lower and upper caps have opposite outward orientation and complete area");
+
+    auto near = lower;
+    near.back()[0] = 5e-11;
+    check(surface(near, upper).cap_boundaries_closed == std::array<bool, 2>{true, true} &&
+              encoded(near, upper).unknown.empty(),
+          "closure accepts a small endpoint discrepancy without requiring bitwise equality");
+    near.back()[0] = 1e-10;
+    check(!surface(near, upper).cap_boundaries_closed[0],
+          "native closure comparison is strict at the origin tolerance boundary");
+    near.back()[0] = 5e-7;
+    check(surface(near, upper).cap_boundaries_closed == std::array<bool, 2>{false, true},
+          "bottom cap closure is checked independently from the top");
+    auto failed = encoded(near, upper);
+    check(!failed.unknown.empty() && failed.vertices.empty(),
+          "failed bottom cap leaves no partial guided solid");
+    auto distant = upper;
+    distant.back()[0] = 5e-7;
+    check(surface(lower, distant).cap_boundaries_closed == std::array<bool, 2>{true, false},
+          "top cap closure is checked independently from the bottom");
+    failed = encoded(lower, distant);
+    check(!failed.unknown.empty() && failed.vertices.empty(),
+          "failed top cap leaves no partial guided solid");
+    for (auto &p : near)
+        p[0] += 10000;
+    for (auto &p : distant)
+        p[0] += 10000;
+    check(surface(near, distant).cap_boundaries_closed == std::array<bool, 2>{true, true} &&
+              encoded(near, distant).unknown.empty(),
+          "native coordinate scale permits the same discrepancy far from the origin");
+
+    std::vector<GuidedBoundary> rails(lower.size());
+    for (std::size_t i = 0; i < lower.size(); ++i)
+        rails[i].points = {lower[i], upper[i]};
+    rails.back().points = {lower.back(), {-.5, 0, 2}, upper.back()};
+    auto separate = guided_surface(boundaries(lower), boundaries(upper), rails, policy, false);
+    bool separate_interior = false;
+    for (const auto &row : separate.rings)
+        separate_interior |= std::abs(row.front()[0] - row.back()[0]) > .1;
+    check(separate.cap_boundaries_closed == std::array<bool, 2>{true, true} && separate_interior,
+          "cap closure does not merge independent first and last source guides");
 }
 static void guided_ring_tests() {
     auto groups = command_fields(55, Bytes{2, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0});
@@ -2055,6 +2175,7 @@ int main() {
         box_center_tests();
         guided_surface_tests();
         guided_open_tests();
+        guided_cap_tests();
         rational_guided_tests();
         guided_ring_tests();
         command_metadata_tests();
