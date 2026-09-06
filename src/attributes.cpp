@@ -108,9 +108,9 @@ Json decode_layer_group_attribute(unsigned group, const Bytes &b) {
     auto count = r.u32();
     require(count <= r.left() / 8, "layer override entry count");
     Json entries = Json::array();
-    const std::map<unsigned, const char *> properties = {{11, "color"},       {12, "line_style"},
-                                                         {14, "line_weight"}, {25, "display"},
-                                                         {26, "print"},       {32, "frozen"}};
+    const std::map<unsigned, const char *> properties = {
+        {11, "color"}, {12, "line_style"}, {14, "line_weight"}, {25, "display"},
+        {26, "print"}, {32, "frozen"},     {35, "transparency"}};
     for (std::uint32_t i = 0; i < count; ++i) {
         auto offset = r.p;
         auto id = r.u32(), bits = r.u32();

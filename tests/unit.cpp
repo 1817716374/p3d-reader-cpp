@@ -468,6 +468,133 @@ static void layer_table_tests() {
               parse_native(legacy_fixed)[0]["links"][0]["app"] == 0x1234,
           "valid fixed linkage at legacy base length keeps its original boundary");
 }
+static void layer_group_state_tests() {
+    Json index = {{"P3D-SSYS", "SYS"}, {"P3D-SSYSA", "SYSA"}};
+    auto table = [](const char *scope, unsigned count, std::uint64_t id, const char *kind) {
+        return Json{{"stream", {"ROOT", scope, "items"}},
+                    {"id", id},
+                    {"offset", 0},
+                    {"length", 68},
+                    {"layer_table", {{"declared_child_count", count}, {"kind", kind}}}};
+    };
+    auto layer = [](const char *scope, unsigned id, unsigned ordinal, unsigned value) {
+        return Json{
+            {"stream", {"ROOT", scope, "items"}},
+            {"id", 100 + ordinal},
+            {"offset", 68 + ordinal * 108},
+            {"length", 108},
+            {"element_flags", 0x80},
+            {"layer_definition",
+             {{"status", "decoded"},
+              {"layer_id", id},
+              {"by_layer_symbology",
+               {{"color_index", value}, {"line_style", value + 1}, {"line_weight", value + 2}}},
+              {"display", value == 10},
+              {"print", value == 10},
+              {"frozen", value == 10},
+              {"transparency", value / 100.0}}}};
+    };
+    Json records =
+        Json::array({table("SYS", 3, 5, "local"), layer("SYS", 1, 0, 10), layer("SYS", 2, 1, 10),
+                     layer("SYS", 3, 2, 10), table("SYS", 2, 900, "layer_group"),
+                     layer("SYS", 2, 0, 20), layer("SYS", 99, 1, 20)});
+    for (std::size_t i = 4; i < records.size(); ++i)
+        records[i]["offset"] = records[i]["offset"].get<unsigned>() + 392;
+    const auto original = records;
+    const std::vector<unsigned> bits = {11, 12, 14, 25, 26, 32, 35};
+    const std::vector<std::string> names = {"color_index", "line_style", "line_weight", "display",
+                                            "print",       "frozen",     "transparency"};
+    auto graphics = [&](unsigned mode, unsigned mask) {
+        Bytes payload;
+        put<std::uint32_t>(payload, 1);
+        put<std::uint32_t>(payload, 2);
+        put<std::uint32_t>(payload, 36);
+        payload.resize(12 + 36 * 2);
+        for (unsigned i = 0; i < bits.size(); ++i)
+            if (mask & (1u << i))
+                payload[12 + bits[i] / 8] |= 1u << (bits[i] % 8);
+        Bytes sync;
+        put(sync, mode);
+        return Json::array(
+            {{{"id", 900},
+              {"stream", {"ROOT", "SYSA", "attributes"}},
+              {"attributes",
+               Json::array({{{"group", 0},
+                             {"key", 4},
+                             {"index", 0},
+                             {"decoded", decode_layer_group_attribute(0, payload)}},
+                            {{"group", 1},
+                             {"key", 4},
+                             {"index", 0},
+                             {"decoded", decode_layer_group_attribute(1, sync)}}})}}});
+    };
+    for (unsigned mode = 0; mode < 3; ++mode)
+        for (unsigned mask = 0; mask < 128; ++mask) {
+            const auto source_attrs = graphics(mode, mask);
+            const auto &bitmap = source_attrs[0]["attributes"][0]["decoded"]["entries"][0];
+            check(bitmap["overrides"]["transparency"] == bool(mask & 64) &&
+                      bitmap["unassigned_property_bits"].empty(),
+                  "transparency bit is named in the source override bitmap");
+            const auto state = build_layer_tables(index, records, source_attrs)["group_states"][0];
+            check(state["status"] == "evaluated_supported_properties" &&
+                      state["layers"].size() == 3 &&
+                      state["excluded_group_record_indices"] == Json({6}),
+                  "all sync modes reconcile group membership against the file layer table");
+            for (unsigned i = 0; i < bits.size(); ++i) {
+                bool file = mode == 2 || (mode == 0 && !(mask & (1u << i)));
+                const auto &p = state["layers"][1]["properties"][names[i]];
+                auto source = file ? 2 : 5;
+                const auto &v = records[source]["layer_definition"];
+                check(p["native_record_index"] == source &&
+                          p["value"] == (i < 3 ? v["by_layer_symbology"][names[i]] : v[names[i]]) &&
+                          state["layers"][0]["properties"][names[i]]["selection"] ==
+                              "new_file_layer",
+                      "seven property choices follow sync mode and independent override bits");
+            }
+        }
+    check(records == original, "derived layer synchronization never mutates native records");
+    auto attrs = graphics(0, 0);
+    attrs[0]["attributes"] = Json::array();
+    auto state = build_layer_tables(index, records, attrs)["group_states"][0];
+    check(state["sync_state_source"] == "native_default" &&
+              state["layers"][1]["properties"]["display"]["native_record_index"] == 2,
+          "absent synchronization attributes use native mode zero without overrides");
+    attrs = graphics(0, 1);
+    auto &entries = attrs[0]["attributes"][0]["decoded"]["entries"];
+    entries.push_back(entries[0]);
+    state = build_layer_tables(index, records, attrs)["group_states"][0];
+    check(state["status"] == "partially_evaluated" && state["layers"][1]["properties"].empty() &&
+              state["layers"][0]["status"] == "evaluated_supported_properties",
+          "duplicate override entries affect only the matching layer");
+    attrs[0]["attributes"][1]["decoded"]["sync_state"] = 2;
+    check(build_layer_tables(index, records, attrs)["group_states"][0]["status"] ==
+              "evaluated_supported_properties",
+          "always-sync does not consult otherwise ambiguous override entries");
+    check(build_layer_tables(index, records, graphics(77, 0))["group_states"][0]["status"] ==
+              "not_evaluated",
+          "unknown sync mode remains explicit instead of guessing policy");
+    auto duplicate = records;
+    duplicate[3]["layer_definition"]["layer_id"] = 2;
+    state = build_layer_tables(index, duplicate, graphics(2, 0))["group_states"][0];
+    check(state["status"] == "partially_evaluated" &&
+              state["layers"][1]["file_record_indices"] == Json({2, 3}),
+          "duplicate file layer IDs retain candidates without guessed resolution");
+    duplicate = records;
+    auto foreign = records[0];
+    foreign["stream"] = {"OTHER", "SYS", "items"};
+    duplicate.push_back(foreign);
+    check(build_layer_tables(index, duplicate,
+                             graphics(2, 0))["group_states"][0]["file_table_indices"] == Json({0}),
+          "file table candidates remain within the group container scope");
+    duplicate.push_back(records[0]);
+    check(build_layer_tables(index, duplicate, graphics(2, 0))["group_states"][0]["status"] ==
+              "not_evaluated",
+          "multiple local file tables do not silently select the first");
+    attrs = graphics(0, 0);
+    attrs[0]["attributes"][0]["decoded"] = {{"decode_error", "bad data"}};
+    check(build_layer_tables(index, records, attrs)["group_states"][0]["status"] == "not_evaluated",
+          "malformed overrides never become an empty all-sync mask");
+}
 static void material_index_tests() {
     auto decode = [](const std::string &s, unsigned index) {
         return decode_attribute(4, 10001, Bytes(s.begin(), s.end()), index);
@@ -1816,6 +1943,7 @@ int main() {
         attribute_semantics_tests();
         layer_group_tests();
         layer_table_tests();
+        layer_group_state_tests();
         view_link_sequence_tests();
         native_layer_tests();
         material_index_tests();

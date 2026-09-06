@@ -191,6 +191,177 @@ Json decode_native_layer_table(const Bytes &b, const Json &links) {
     return out;
 }
 
+static Json layer_group_states(const Json &index, const Json &native, const Json &graphics,
+                               const Json &tables) {
+    Json result = Json::array();
+    const auto system = index.value("P3D-SSYS", std::string());
+    auto table_scope = [&](const Json &table, const std::string &container) -> Json {
+        auto path = table["stream"].get<StreamPath>();
+        if (container.empty() || path.size() < 2 || path[path.size() - 2] != container)
+            return nullptr;
+        path.resize(path.size() - 2);
+        return path;
+    };
+    // IDs identify layers within a file. Names do not establish this pairing.
+    std::map<std::string, std::vector<std::size_t>> file_tables;
+    for (std::size_t i = 0; i < tables.size(); ++i) {
+        const auto &n = native[tables[i]["native_record_index"].get<std::size_t>()];
+        auto scope = table_scope(tables[i], system);
+        if (!scope.is_null() && n["layer_table"].value("kind", "") == "local")
+            file_tables[scope.dump()].push_back(i);
+    }
+    const std::map<unsigned, const char *> properties = {
+        {11, "color_index"}, {12, "line_style"}, {14, "line_weight"}, {25, "display"},
+        {26, "print"},       {32, "frozen"},     {35, "transparency"}};
+    for (std::size_t gi = 0; gi < tables.size(); ++gi) {
+        const auto &table = tables[gi];
+        const auto &header = native[table["native_record_index"].get<std::size_t>()]["layer_table"];
+        if (header.value("kind", "") != "layer_group")
+            continue;
+        Json out = {{"group_table_index", gi},
+                    {"layers", Json::array()},
+                    {"excluded_group_record_indices", Json::array()},
+                    {"view_visibility", "not_evaluated"},
+                    {"name_synchronization", "not_evaluated"},
+                    {"other_properties", "not_evaluated"}};
+        try {
+            auto scope = table_scope(table, system);
+            require(!scope.is_null(), "unrecognized layer group scope");
+            auto found = file_tables.find(scope.dump());
+            auto candidates =
+                found == file_tables.end() ? std::vector<std::size_t>() : found->second;
+            out["file_table_indices"] = candidates;
+            require(candidates.size() == 1, "missing or ambiguous file layer table");
+            const auto &base = tables[candidates[0]];
+            require(table["membership_status"] == "resolved" &&
+                        base["membership_status"] == "resolved",
+                    "invalid group or file table membership");
+            require(table["attribute_status"] == "resolved" ||
+                        table["attribute_status"] == "missing",
+                    "ambiguous group attribute records");
+            unsigned mode = 0;
+            std::size_t sync_count = 0, override_count = 0;
+            std::map<std::uint32_t, std::vector<Json>> overrides;
+            for (const auto &record_index : table["attribute_record_indices"]) {
+                const auto &attrs = graphics[record_index.get<std::size_t>()]["attributes"];
+                for (std::size_t ai = 0; ai < attrs.size(); ++ai) {
+                    const auto &a = attrs[ai];
+                    if (a["key"] != 4 || a["index"] != 0 || (a["group"] != 0 && a["group"] != 1))
+                        continue;
+                    const auto &d = a["decoded"];
+                    require(!d.contains("decode_error"), "invalid group synchronization attribute");
+                    if (a["group"] == 1) {
+                        require(++sync_count == 1 &&
+                                    d.value("encoding", "") == "layer_group_sync_state",
+                                "ambiguous or unsupported group sync mode");
+                        mode = d.at("sync_state").get<unsigned>();
+                    } else {
+                        require(++override_count == 1 &&
+                                    d.value("encoding", "") == "layer_group_overrides",
+                                "ambiguous or unsupported group overrides");
+                        for (std::size_t ei = 0; ei < d.at("entries").size(); ++ei) {
+                            const auto &entry = d["entries"][ei];
+                            overrides[entry.at("layer_id").get<std::uint32_t>()].push_back(
+                                {{"graphics_record_index", record_index},
+                                 {"attribute_index", ai},
+                                 {"entry_index", ei}});
+                        }
+                    }
+                }
+            }
+            out["sync_state"] = mode;
+            out["sync_state_source"] = sync_count ? "attribute" : "native_default";
+            require(mode <= 2, "unsupported group sync mode");
+            std::map<std::uint32_t, std::vector<std::size_t>> group_ids, base_ids;
+            auto ids = [&](const Json &members, auto &map) {
+                for (const auto &member : members) {
+                    auto i = member.get<std::size_t>();
+                    const auto &layer = native[i]["layer_definition"];
+                    require(layer.contains("layer_id"), "missing layer identity");
+                    map[layer["layer_id"].get<std::uint32_t>()].push_back(i);
+                }
+            };
+            ids(table["member_record_indices"], group_ids);
+            ids(base["member_record_indices"], base_ids);
+            // Native synchronization first adds missing file layers and removes
+            // group-only layers, even in AlwaysUnsync mode. Keep source records.
+            for (const auto &entry : group_ids)
+                if (!base_ids.count(entry.first))
+                    for (auto i : entry.second)
+                        out["excluded_group_record_indices"].push_back(i);
+            bool partial = false;
+            for (const auto &entry : base_ids) {
+                auto id = entry.first;
+                const auto group = group_ids.find(id);
+                auto group_members =
+                    group == group_ids.end() ? std::vector<std::size_t>() : group->second;
+                Json layer = {{"layer_id", id},
+                              {"file_record_indices", entry.second},
+                              {"group_record_indices", group_members},
+                              {"properties", Json::object()}};
+                try {
+                    require(entry.second.size() == 1 && group_members.size() <= 1,
+                            "ambiguous layer identity");
+                    auto source = entry.second[0];
+                    auto target = group_members.empty() ? source : group_members[0];
+                    const auto &file_layer = native[source]["layer_definition"];
+                    const auto &group_layer = native[target]["layer_definition"];
+                    require(file_layer.value("status", "") == "decoded" &&
+                                group_layer.value("status", "") == "decoded",
+                            "unsupported source layer definition");
+                    auto matches = overrides.find(id);
+                    const Json *mask = nullptr;
+                    if (mode == 0 && !group_members.empty() && matches != overrides.end()) {
+                        require(matches->second.size() == 1, "ambiguous layer override entries");
+                        const auto &ref = matches->second[0];
+                        layer["override_source"] = ref;
+                        mask =
+                            &graphics[ref["graphics_record_index"].get<std::size_t>()]["attributes"]
+                                     [ref["attribute_index"].get<std::size_t>()]["decoded"]
+                                     ["entries"][ref["entry_index"].get<std::size_t>()]
+                                     ["set_property_bits"];
+                        require(mask->is_array(), "invalid layer override bitmap");
+                    }
+                    for (const auto &property : properties) {
+                        const bool override = mask && std::find(mask->begin(), mask->end(),
+                                                                property.first) != mask->end();
+                        const bool from_file =
+                            group_members.empty() || mode == 2 || (mode == 0 && !override);
+                        const auto &value = from_file ? file_layer : group_layer;
+                        const auto &values =
+                            property.first <= 14 ? value.at("by_layer_symbology") : value;
+                        layer["properties"][property.second] = {
+                            {"property_bit", property.first},
+                            {"value", values.at(property.second)},
+                            {"native_record_index", from_file ? source : target},
+                            {"selection", group_members.empty() ? "new_file_layer"
+                                          : from_file           ? "file_sync"
+                                                                : "group_value"}};
+                        if (property.first == 35 && value.contains("transparency_error")) {
+                            layer["properties"][property.second]["error"] =
+                                value["transparency_error"];
+                            partial = true;
+                        }
+                    }
+                    layer["status"] = "evaluated_supported_properties";
+                } catch (const std::exception &e) {
+                    layer["status"] = "not_evaluated";
+                    layer["error"] = e.what();
+                    layer["properties"] = Json::object();
+                    partial = true;
+                }
+                out["layers"].push_back(std::move(layer));
+            }
+            out["status"] = partial ? "partially_evaluated" : "evaluated_supported_properties";
+        } catch (const std::exception &e) {
+            out["status"] = "not_evaluated";
+            out["error"] = e.what();
+        }
+        result.push_back(std::move(out));
+    }
+    return result;
+}
+
 Json build_layer_tables(const Json &index, const Json &native, const Json &graphics,
                         const Json &models) {
     Json tables = Json::array(), orphans = Json::array();
@@ -354,7 +525,9 @@ Json build_layer_tables(const Json &index, const Json &native, const Json &graph
             model_references.push_back(std::move(row));
         }
     }
+    auto group_states = layer_group_states(index, native, graphics, tables);
     return {{"tables", std::move(tables)},
+            {"group_states", std::move(group_states)},
             {"unassigned_layer_record_indices", std::move(orphans)},
             {"model_references", std::move(model_references)}};
 }
