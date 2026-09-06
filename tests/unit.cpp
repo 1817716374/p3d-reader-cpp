@@ -98,8 +98,197 @@ static Bytes drawing_fixture(bool substation, unsigned version) {
     }
     return b;
 }
+static Bytes electrical_fixture(unsigned data_version) {
+    Bytes b;
+    put<std::uint32_t>(b, 1); // ElecParaData
+    put<std::uint32_t>(b, 0); // PBWJData cereal type version
+    put<std::uint32_t>(b, data_version);
+    for (int i = 0; i < 2; ++i)
+        put<std::uint64_t>(b, 0); // strings
+    put<std::uint32_t>(b, 0);     // PSXSectManager cereal type version
+    put<std::uint32_t>(b, 0);
+    put<std::uint64_t>(b, 0); // section collection
+    put<std::uint64_t>(b, 2); // material map
+    for (int i = 0; i < 2; ++i) {
+        put<std::int32_t>(b, i - 1);
+        if (!i)
+            put<std::uint32_t>(b, 0); // PSsimpleMat type version, once
+        put<std::uint32_t>(b, 0);
+        put<std::uint32_t>(b, 101 + i);
+        put<float>(b, 2.5f + i);
+    }
+    for (int i = 0; i < 2; ++i) { // two separate integer maps
+        put<std::uint64_t>(b, 2);
+        for (int j = 0; j < 2; ++j) {
+            put<std::int32_t>(b, -7); // retain duplicate source keys
+            put<std::int32_t>(b, 100 * i + j);
+        }
+    }
+    bool point_seen = false, force_seen = false;
+    auto force = [&](unsigned version) {
+        if (!force_seen) {
+            put<std::uint32_t>(b, 0);
+            force_seen = true;
+        }
+        put(b, version);
+        for (float f : {11.f, 12.f, 13.f, 14.f, 15.f, 16.f})
+            put(b, f);
+        if (version == 1) {
+            put<std::int32_t>(b, -31);
+            put<std::uint8_t>(b, 7);
+        }
+    };
+    auto point = [&](unsigned version, bool forces) {
+        if (!point_seen) {
+            put<std::uint32_t>(b, 0);
+            point_seen = true;
+        }
+        put(b, version);
+        for (float v : {1.25f, -2.5f, 3.75f})
+            put(b, v);
+        if (version == 1) {
+            put<std::uint64_t>(b, forces ? 2 : 0);
+            if (forces)
+                for (unsigned v = 0; v < 2; ++v)
+                    force(v);
+        }
+    };
+    put<std::uint64_t>(b, 2); // joints
+    for (unsigned v = 0; v < 2; ++v) {
+        put<std::int32_t>(b, 50 + v);
+        point(v, true);
+    }
+    put<std::uint64_t>(b, 2); // WJ_Bar
+    for (unsigned version = 0; version < 2; ++version) {
+        put<std::int32_t>(b, 201 + version);
+        if (!version)
+            put<std::uint32_t>(b, 0);
+        put(b, version);
+        for (unsigned i = 0; i < 4; ++i)
+            put(b, 300 + i);
+        point(0, false);
+        point(1, false);
+        put<std::uint32_t>(b, 304);
+        if (version == 1) {
+            put<std::uint64_t>(b, 2);
+            for (unsigned v = 0; v < 2; ++v) {
+                if (!v)
+                    put<std::uint32_t>(b, 0); // WJ_BarForce type version
+                put(b, v);
+                force(0);
+                force(1);
+                put<std::uint8_t>(b, 9);
+                if (v == 1)
+                    put<std::uint32_t>(b, 305);
+            }
+        }
+    }
+    put<std::uint8_t>(b, 1);
+    put<std::uint64_t>(b, 0); // support columns
+    put<std::uint64_t>(b, 3); // TrussBeamPar
+    for (unsigned v : {0u, 1u, 3u}) {
+        put<std::int32_t>(b, 400 + v);
+        if (!v)
+            put<std::uint32_t>(b, 0);
+        put(b, v);
+        for (unsigned offset = 0; offset < (v == 1 ? 36u : 32u); offset += 4)
+            if (v != 0 || offset != 4)
+                put<std::uint32_t>(b, 500 + offset);
+    }
+    for (int i = 0; i < 2; ++i)
+        put<std::uint64_t>(b, 0); // other design collections
+    if (data_version >= 1) {
+        put<std::uint64_t>(b, 2); // LineSubsBeamCols
+        for (int i = 0; i < 2; ++i) {
+            if (!i)
+                put<std::uint32_t>(b, 0);
+            put<std::uint32_t>(b, 0);
+            put<std::uint64_t>(b, 1);
+            put<std::uint64_t>(b, 0x20000000000001ull + i);
+            put<std::uint64_t>(b, 0);
+        }
+    }
+    if (data_version >= 2) {
+        put<std::uint64_t>(b, 2); // GridAxisData
+        for (int i = 0; i < 2; ++i) {
+            if (!i)
+                put<std::uint32_t>(b, 0);
+            put<std::uint32_t>(b, 0);
+            put<std::int32_t>(b, -12);
+            put<float>(b, 0.5f);
+            point(1, true);
+            put<double>(b, 19.75);
+            put<std::uint64_t>(b, 1);
+            put<double>(b, -17.25);
+            put<std::uint64_t>(b, 0);
+        }
+    }
+    put<std::uint64_t>(b, 1); // changed_joints shares Pt3D_ST registration
+    put<std::int32_t>(b, 81);
+    point(1, true);
+    return b;
+}
 int main() {
     try {
+        for (unsigned version = 0; version <= 2; ++version) {
+            auto b = electrical_fixture(version);
+            auto decoded = decode_binary_field("CerealDatas", b, "ElecParaData").at("decoded");
+            auto &collections = decoded["collections"];
+            check(collections.size() == 9 + version &&
+                      collections[0]["entries"][1]["value"]["members"][1]["float32_view"] == 3.5,
+                  "electrical collection boundaries and material type registration");
+            check(collections[1]["entries"][0]["key"] == -7 &&
+                      collections[1]["entries"][1]["key"] == -7 &&
+                      collections[2]["entries"][1]["value"] == 101,
+                  "electrical maps preserve signed keys, duplicates and native ordering");
+            auto &points = collections[3]["entries"];
+            check(points[0]["value"]["position"] == Json({1.25, -2.5, 3.75}) &&
+                      points[0]["value"].contains("cereal_version") &&
+                      !points[1]["value"].contains("cereal_version"),
+                  "mixed point versions share one cereal registration");
+            auto &bars = collections[4]["entries"];
+            check(!bars[0]["value"].contains("bar_forces") &&
+                      bars[1]["value"]["bar_forces"][1]["flag_member_0x48"] == 9 &&
+                      bars[1]["value"]["bar_forces"][1]["member_0x4c"]["storage_uint32"] == 305 &&
+                      !bars[1]["value"]["bar_forces"][0]["force_member_0x0"].contains(
+                          "cereal_version"),
+                  "bar loads preserve nested shared point-force types and version-specific tails");
+            auto &beams = collections[6]["entries"];
+            check(beams[0]["value"]["members"][1]["native_member_offset"] == 8 &&
+                      beams[1]["value"]["members"].size() == 9 &&
+                      beams[2]["value"]["members"].size() == 8,
+                  "truss beam parameter versions have distinct member layouts");
+            auto &changed = decoded["changed_joints"]["entries"][0]["value"];
+            check(
+                !changed.contains("cereal_version") &&
+                    !changed["point_forces"][0].contains("cereal_version") &&
+                    changed["point_forces"][1]["flag_member_0x1c"] == 7 &&
+                    changed["point_forces"][1]["members"][6]["int32_view"] == -31,
+                "nested point forces share registration across different maps and keep raw flags");
+            if (version >= 1)
+                check(collections[9]["entries"][1]["member_0x0"][0]["storage_uint64"] ==
+                          0x20000000000002ull,
+                      "line group values retain integers above the JSON double precision limit");
+            if (version >= 2)
+                check(collections[10]["entries"][1]["member_0x40"][0]["float64_view"] == -17.25 &&
+                          collections[10]["entries"][1]["member_0x38"]["float64_view"] == 19.75,
+                      "grid records decode nested points and both vector boundaries");
+            b.pop_back();
+            check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                  "truncated nonempty electrical collection is rejected");
+            b = electrical_fixture(version);
+            auto unsupported_offset = beams[0]["value"]["offset"].get<std::size_t>() + 4;
+            std::uint32_t unsupported = 2;
+            std::memcpy(b.data() + unsupported_offset, &unsupported, 4);
+            check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                  "unsupported truss beam parameter version is not guessed from neighboring "
+                  "versions");
+            b = electrical_fixture(version);
+            auto oversized = std::numeric_limits<std::uint64_t>::max();
+            std::memcpy(b.data() + 44, &oversized, 8);
+            check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                  "malicious electrical collection length is rejected before allocation");
+        }
         for (unsigned version : {0u, 1u}) {
             auto payload = drawing_fixture(false, version);
             auto decoded = decode_binary_field("CerealDatas", payload, "PSDrawingManager");
