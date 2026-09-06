@@ -27,6 +27,50 @@ using Point3 = std::array<double, 3>;
 using Point2 = std::array<double, 2>;
 using Triangle = std::array<std::uint32_t, 3>;
 using Matrix4 = std::array<std::array<double, 4>, 4>;
+// Owns a validated copy of a decoded BGFB BsplineCurve table.
+// Rational source poles are weighted XYZ, not Cartesian control points.
+class BsplineCurve {
+  public:
+    static BsplineCurve from_bgfb(const Json &table);
+    unsigned order() const {
+        return order_;
+    }
+    bool closed() const {
+        return closed_;
+    }
+    bool rational() const {
+        return !weights_.empty();
+    }
+    const std::vector<Point3> &poles() const {
+        return poles_;
+    }
+    const std::vector<double> &weights() const {
+        return weights_;
+    }
+    const std::vector<double> &source_knots() const {
+        return source_knots_;
+    }
+    const std::vector<double> &knots() const {
+        return knots_;
+    }
+    std::array<double, 2> knot_domain() const;
+    int periodic_pole_shift() const {
+        return pole_shift_;
+    }
+    // Fraction is in [0, 1]. Internal knots use the right-hand value;
+    // fraction 1 uses the left-hand endpoint value. No implicit wrapping.
+    std::array<double, 4> homogeneous_at(double fraction) const;
+    // Throws at zero evaluated weight or a non-finite Cartesian result.
+    Point3 point_at(double fraction) const;
+
+  private:
+    BsplineCurve() = default;
+    unsigned order_ = 0;
+    bool closed_ = false;
+    int pole_shift_ = 0;
+    std::vector<Point3> poles_;
+    std::vector<double> weights_, source_knots_, knots_;
+};
 struct Tessellation {
     unsigned full_circle_segments = 64;
     std::optional<double> chord_tolerance;

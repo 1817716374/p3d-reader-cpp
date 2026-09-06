@@ -36,6 +36,223 @@ static void append_wire(Bytes &b, const char *text) {
     auto raw = wire_bytes(text);
     b.insert(b.end(), raw.begin(), raw.end());
 }
+static void bspline_tests() {
+    auto table = [](unsigned order, bool closed, Json poles, Json weights = nullptr,
+                    Json knots = nullptr) {
+        return Json{{"_type", "BsplineCurve"}, {"order", order},     {"closed", closed},
+                    {"poles", poles},          {"weights", weights}, {"knots", knots}};
+    };
+    auto near = [](Point3 a, Point3 b, double tolerance = 1e-12) {
+        return std::abs(a[0] - b[0]) <= tolerance && std::abs(a[1] - b[1]) <= tolerance &&
+               std::abs(a[2] - b[2]) <= tolerance;
+    };
+    const double w = std::sqrt(0.5);
+    auto quarter_source =
+        table(3, false, {1, 0, 0, w, w, 0, 0, 1, 0}, {1, w, 1}, {0, 0, 0, 1, 1, 1});
+    auto quarter = BsplineCurve::from_bgfb(quarter_source);
+    check(quarter.rational() && quarter.poles()[1] == Point3{w, w, 0} &&
+              near(quarter.point_at(0.5), {w, w, 0}),
+          "BGFB rational poles are already weighted and must not be multiplied again");
+    for (unsigned i = 0; i <= 20; ++i) {
+        auto p = quarter.point_at(i / 20.0);
+        check(std::abs(p[0] * p[0] + p[1] * p[1] - 1) < 1e-12,
+              "rational quadratic remains exactly on the unit circle");
+    }
+    check(near(quarter.point_at(0), {1, 0, 0}) && near(quarter.point_at(1), {0, 1, 0}),
+          "clamped rational endpoints");
+    auto uniform_source = table(3, false, {0, 0, 0, 1, 2, 0, 2, 0, 0, 3, 2, 0});
+    auto uniform = BsplineCurve::from_bgfb(uniform_source);
+    check(uniform.source_knots().empty() &&
+              uniform.knots() == std::vector<double>({0, 0, 0, 0.5, 1, 1, 1}) &&
+              !uniform.rational(),
+          "omitted open knots generate a clamped uniform vector without changing source knots");
+    auto shifted = quarter_source;
+    shifted["knots"] = {2, 2, 2, 6, 6, 6};
+    auto shifted_curve = BsplineCurve::from_bgfb(shifted);
+    check(shifted_curve.knot_domain() == std::array<double, 2>{2, 6} &&
+              near(shifted_curve.point_at(0.5), quarter.point_at(0.5)),
+          "source knots remain unnormalized while fractions use their active domain");
+    auto periodic_source = table(3, true, {0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2, 0});
+    auto periodic = BsplineCurve::from_bgfb(periodic_source);
+    check(periodic.knots() ==
+                  std::vector<double>({-0.5, -0.25, 0, 0.25, 0.5, 0.75, 1, 1.25, 1.5}) &&
+              periodic.periodic_pole_shift() == 0 && near(periodic.point_at(0), {1, 0, 0}) &&
+              near(periodic.point_at(1), periodic.point_at(0)) &&
+              near(periodic.point_at(0.25), {2, 1, 0}),
+          "uniform periodic knots reuse cyclic native poles without duplicating source data");
+    periodic_source["knots"] = {-0.7, -0.4, 0, 0.1, 0.3, 0.6, 1, 1.1, 1.3};
+    periodic = BsplineCurve::from_bgfb(periodic_source);
+    check(near(periodic.point_at(0), {1.6, 0, 0}) &&
+              near(periodic.point_at(1), periodic.point_at(0)),
+          "nonuniform periodic endpoint basis uses adjacent knot intervals");
+    const double s = std::sqrt(3.0) / 2;
+    auto circle_source =
+        table(3, true, {1, 0, 0, 0.5, s, 0, -0.5, s, 0, -1, 0, 0, -0.5, -s, 0, 0.5, -s, 0, 1, 0, 0},
+              {1, 0.5, 1, 0.5, 1, 0.5, 1},
+              {-1.0 / 3, 0, 0, 0, 1.0 / 3, 1.0 / 3, 2.0 / 3, 2.0 / 3, 1, 1, 1, 4.0 / 3});
+    auto circle = BsplineCurve::from_bgfb(circle_source);
+    check(circle.periodic_pole_shift() == -1 && circle.poles().size() == 7 &&
+              near(circle.point_at(0), {1, 0, 0}) && near(circle.point_at(1), {1, 0, 0}) &&
+              near(circle.point_at(1.0 / 3), {-0.5, s, 0}),
+          "native closed clamped-like seam shifts pole indexing while preserving source arrays");
+    for (unsigned i = 0; i <= 60; ++i) {
+        auto p = circle.point_at(i / 60.0);
+        check(std::abs(p[0] * p[0] + p[1] * p[1] - 1) < 1e-12,
+              "all three rational periodic conic pieces stay on the unit circle");
+    }
+    auto discontinuous = BsplineCurve::from_bgfb(
+        table(2, false, {0, 0, 0, 1, 0, 0, 10, 0, 0, 11, 0, 0}, nullptr, {0, 0, 0.5, 0.5, 1, 1}));
+    check(near(discontinuous.point_at(0.25), {0.5, 0, 0}) &&
+              near(discontinuous.point_at(0.5), {10, 0, 0}) &&
+              near(discontinuous.point_at(0.75), {10.5, 0, 0}),
+          "full internal knot multiplicity retains a discontinuity instead of bridging poles");
+    auto singular = BsplineCurve::from_bgfb(table(2, false, {1, 0, 0, 1, 0, 0}, {1, -1}));
+    check(singular.weights()[1] == -1 && singular.homogeneous_at(0.5)[3] == 0,
+          "negative weights and points at infinity remain available in homogeneous coordinates");
+    rejects([&] { singular.point_at(0.5); }, "zero evaluated weight cannot produce a finite point");
+    auto zero_control = BsplineCurve::from_bgfb(table(2, false, {1, 0, 0, 2, 0, 0}, {0, 1}));
+    check(near(zero_control.point_at(0.5), {3, 0, 0}),
+          "zero control weight is valid away from a singular evaluated parameter");
+    rejects([&] { quarter.point_at(-0.1); }, "negative fraction is not implicitly wrapped");
+    rejects([&] { periodic.point_at(1.1); },
+            "periodic curve does not silently wrap caller fraction");
+    rejects([&] { quarter.point_at(std::numeric_limits<double>::quiet_NaN()); },
+            "NaN fraction is rejected");
+    for (auto bad :
+         {table(1, false, {0, 0, 0}), table(3, false, {0, 0, 0, 1, 0, 0}),
+          table(2, false, {0, 0, 0, 1, 0, 0, 2}), table(2, false, {0, 0, 0, 1, 0, 0}, {1}),
+          table(2, true, {0, 0, 0, 1, 0, 0}, nullptr, {0, 0, 1, 1}),
+          table(2, false, {0, 0, 0, 1, 0, 0}, nullptr, {0, 1, 0, 1}),
+          table(2, false, {0, 0, 0, 1, 0, 0}, nullptr, {0, 0, 0, 0}),
+          table(2, false, {0, 0, 0, 1, 0, 0}, {1, std::numeric_limits<double>::infinity()})})
+        rejects([&] { BsplineCurve::from_bgfb(bad); }, "invalid B-spline source is rejected");
+
+    // Forward FlatBuffer fixture: root VariantGeometry(tag=3), then BsplineCurve.
+    auto encode = [&](Json source) {
+        Bytes b(12);
+        std::memcpy(b.data(), "bg0001fb", 8);
+        auto write = [&](std::size_t p, auto x) { std::memcpy(b.data() + p, &x, sizeof(x)); };
+        auto reference = [&](std::size_t p, std::size_t target) {
+            write(p, std::uint32_t(target - p));
+        };
+        auto table_at = [&](std::vector<std::uint16_t> slots, std::uint16_t size) {
+            while (b.size() % 4)
+                b.push_back(0);
+            auto vt = b.size();
+            put<std::uint16_t>(b, std::uint16_t(4 + 2 * slots.size()));
+            put(b, size);
+            for (auto offset : slots)
+                put(b, offset);
+            while (b.size() % 4)
+                b.push_back(0);
+            auto obj = b.size();
+            b.resize(obj + size);
+            write(obj, std::int32_t(obj - vt));
+            return obj;
+        };
+        auto root = table_at({4, 8}, 12);
+        reference(8, root);
+        b[root + 4] = 3;
+        auto curve = table_at({4, 8, 12, std::uint16_t(source["weights"].is_null() ? 0 : 16),
+                               std::uint16_t(source["knots"].is_null() ? 0 : 20)},
+                              24);
+        reference(root + 8, curve);
+        write(curve + 4, source["order"].get<std::int32_t>());
+        b[curve + 8] = source["closed"].get<bool>();
+        for (auto entry :
+             {std::pair<const char *, unsigned>{"poles", 12}, {"weights", 16}, {"knots", 20}}) {
+            if (source[entry.first].is_null())
+                continue;
+            while ((b.size() + 4) % 8)
+                b.push_back(0);
+            auto p = b.size();
+            put<std::uint32_t>(b, unsigned(source[entry.first].size()));
+            for (const auto &v : source[entry.first])
+                put<double>(b, v.get<double>());
+            reference(curve + entry.second, p);
+        }
+        return b;
+    };
+    const auto decoded = decode_bgfb(encode(circle_source))["geometry"];
+    check(decoded["_spline"]["status"] == "valid" &&
+              decoded["_spline"]["pole_coordinates"] == "weighted_xyz" &&
+              decoded["_spline"]["periodic_pole_shift"] == -1 &&
+              decoded["poles"] == circle_source["poles"] &&
+              near(BsplineCurve::from_bgfb(decoded).point_at(0.5), {-1, 0, 0}),
+          "BGFB decoder exposes confirmed curve semantics and feeds the public evaluator");
+    auto generated = decode_bgfb(encode(uniform_source))["geometry"];
+    check(generated["knots"].is_null() &&
+              generated["_spline"]["knots_source"] == "generated_uniform",
+          "missing source knots remain null in decoded data with generation explicitly identified");
+    auto invalid = quarter_source;
+    invalid["weights"] = {1};
+    auto invalid_decoded = decode_bgfb(encode(invalid))["geometry"];
+    check(invalid_decoded["weights"] == Json({1}) &&
+              invalid_decoded["_spline"]["status"] == "invalid",
+          "malformed semantic arrays remain decoded with an explicit diagnostic");
+    Bytes packet(32);
+    auto bgfb = encode(circle_source);
+    put<std::uint64_t>(packet, bgfb.size());
+    packet.insert(packet.end(), bgfb.begin(), bgfb.end());
+    Bytes body(142);
+    body[0] = 1;
+    body[134] = 1;
+    put<std::uint32_t>(body, unsigned(packet.size()));
+    body.insert(body.end(), packet.begin(), packet.end());
+    put<std::int32_t>(body, -7);
+    body.push_back(3);
+    put<std::uint32_t>(body, 0);
+    put<std::uint64_t>(body, 0);
+    Bytes component(11);
+    put<std::uint32_t>(component, 1);
+    component.resize(component.size() + 11);
+    put<std::uint32_t>(component, unsigned(body.size()));
+    component.insert(component.end(), body.begin(), body.end());
+    component.resize(component.size() + 25);
+    const auto parsed = complex_blob("ParaCmptInstance", component);
+    const auto &entry = parsed["instances"][0]["geometry_packets"][0];
+    check(
+        !entry.contains("decode_error") && entry["raw_base64"] == base64(packet) &&
+            near(BsplineCurve::from_bgfb(entry["geometry"]["geometry"]).point_at(0.5), {-1, 0, 0}),
+        "component packet reaches public B-spline evaluator while preserving packet bytes");
+    // A single clamped span is independently evaluable as a Bernstein polynomial.
+    for (unsigned degree = 1; degree <= 8; ++degree) {
+        Json poles = Json::array(), weights = Json::array();
+        std::vector<Point3> cartesian;
+        for (unsigned i = 0; i <= degree; ++i) {
+            double weight = 0.5 + i;
+            Point3 p{double(i * i), std::sin(double(i)), double(i % 3)};
+            cartesian.push_back(p);
+            weights.push_back(weight);
+            for (double x : p)
+                poles.push_back(x * weight);
+        }
+        const auto c = BsplineCurve::from_bgfb(table(degree + 1, false, poles, weights));
+        for (unsigned sample = 0; sample <= 10; ++sample) {
+            double t = sample / 10.0, sum = 0, binomial = 1;
+            Point3 expected{};
+            for (unsigned i = 0; i <= degree; ++i) {
+                double term = binomial * std::pow(t, i) * std::pow(1 - t, degree - i) *
+                              weights[i].get<double>();
+                sum += term;
+                for (unsigned axis = 0; axis < 3; ++axis)
+                    expected[axis] += term * cartesian[i][axis];
+                binomial *= double(degree - i) / double(i + 1);
+            }
+            for (auto &x : expected)
+                x /= sum;
+            check(near(c.point_at(t), expected, 1e-10),
+                  "general-order rational B-spline agrees with independent Bernstein evaluation");
+        }
+    }
+    auto shifted_seam = circle_source;
+    shifted_seam["knots"][3] = 1e-7;
+    check(BsplineCurve::from_bgfb(shifted_seam).periodic_pole_shift() == -1,
+          "native seam near-zero threshold includes its boundary");
+    shifted_seam["knots"][3] = std::nextafter(1e-7, 1.0);
+    check(BsplineCurve::from_bgfb(shifted_seam).periodic_pole_shift() == 0,
+          "native seam shift does not extend beyond its threshold");
+}
 static void bgfb_native_tests() {
     struct Fixture {
         Bytes bytes;
@@ -2403,6 +2620,7 @@ int main() {
         box_center_tests();
         guided_surface_tests();
         bgfb_native_tests();
+        bspline_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();

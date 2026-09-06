@@ -350,6 +350,20 @@ Json decode_bgfb(const Bytes &b) {
             if (off)
                 result["_unknown_field_slots"].push_back({{"slot", i}, {"offset", off}});
         }
+        if (typ == "BsplineCurve") {
+            try {
+                const auto curve = BsplineCurve::from_bgfb(result);
+                result["_spline"] = {
+                    {"status", "valid"},
+                    {"pole_coordinates", curve.rational() ? "weighted_xyz" : "cartesian_xyz"},
+                    {"rational", curve.rational()},
+                    {"knots_source", curve.source_knots().empty() ? "generated_uniform" : "stored"},
+                    {"knot_domain", curve.knot_domain()},
+                    {"periodic_pole_shift", curve.periodic_pole_shift()}};
+            } catch (const std::exception &e) {
+                result["_spline"] = {{"status", "invalid"}, {"error", e.what()}};
+            }
+        }
         active.erase({typ, pos});
         return result;
     };
