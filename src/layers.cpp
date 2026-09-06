@@ -105,4 +105,257 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
     }
     return out;
 }
+Json decode_native_layer_table(const Bytes &b, const Json &links) {
+    Json out = {{"encoding", "layer_table"}, {"inheritance_status", "not_evaluated"}};
+    try {
+        Reader r(b, 36);
+        r.need(32);
+        auto count = r.u32();
+        auto field = r.u16(), flags = r.u16();
+        auto selector = r.u64();
+        const char *kind = selector == 0                ? "local"
+                           : selector == UINT64_MAX - 3 ? "layer_group"
+                           : selector == UINT64_MAX - 1 ? "nested_model_link"
+                           : selector == UINT64_MAX || selector == UINT64_MAX - 2 ? "unassigned"
+                                                                                  : "model_link";
+        out.update({{"declared_child_count", count},
+                    {"field_at_28", field},
+                    {"table_flags", flags},
+                    {"selector", selector},
+                    {"kind", kind},
+                    {"unassigned_tail", rawbytes(r.take(r.left()))}});
+    } catch (const std::exception &e) {
+        out["decode_error"] = e.what();
+    }
+    Json names = Json::array(), paths = Json::array();
+    bool first_name = true, first_path = true;
+    for (const auto &link : links) {
+        if (!(link["header"].get<unsigned>() & 0x1000))
+            continue;
+        if (link["app"] == 0x56d2) {
+            Json item = {{"source_offset", link["offset"]}};
+            bool group_name = false;
+            try {
+                auto b = bytesof(link["payload"]);
+                Reader r(b);
+                auto key = r.u16(), flags = r.u16();
+                group_name = key == 10;
+                auto size = r.u32();
+                item.update({{"key", key}, {"flags", flags}, {"byte_count", size}});
+                item["text"] = layer_string(r.take(size));
+                item["trailing_storage"] = rawbytes(r.take(r.left()));
+                if (group_name && first_name && out.value("kind", "") == "layer_group")
+                    out["name"] = item["text"];
+            } catch (const std::exception &e) {
+                item["decode_error"] = e.what();
+            }
+            if (group_name)
+                first_name = false; // the native table getter selects occurrence zero
+            names.push_back(std::move(item));
+        } else if (link["app"] == 0x56f1) {
+            Json item = {{"source_offset", link["offset"]}};
+            bool reference_path = false;
+            try {
+                auto b = bytesof(link["payload"]);
+                Reader r(b);
+                auto field = r.u32();
+                auto key = r.u16(), flags = r.u16();
+                reference_path = key == 1;
+                auto count = r.u32();
+                item.update({{"key", key},
+                             {"flags", flags},
+                             {"field_at_0", field},
+                             {"entry_count", count}});
+                require(count <= r.left() / 8, "layer table link path count");
+                Json ids = Json::array();
+                for (std::uint32_t i = 0; i < count; ++i)
+                    ids.push_back(r.u64());
+                item["entry_ids"] = std::move(ids);
+                item["trailing_storage"] = rawbytes(r.take(r.left()));
+            } catch (const std::exception &e) {
+                item["decode_error"] = e.what();
+            }
+            if (reference_path && first_path && out.value("kind", "") == "nested_model_link") {
+                out["path_linkage_index"] = paths.size();
+                out["path_status"] = item.contains("decode_error") ? "decode_error" : "decoded";
+            }
+            if (reference_path)
+                first_path = false;
+            paths.push_back(std::move(item));
+        }
+    }
+    if (out.value("kind", "") == "nested_model_link" && !out.contains("path_status"))
+        out["path_status"] = "missing";
+    out["strings"] = std::move(names);
+    out["linkage_paths"] = std::move(paths);
+    return out;
+}
+
+Json build_layer_tables(const Json &index, const Json &native, const Json &graphics,
+                        const Json &models) {
+    Json tables = Json::array(), orphans = Json::array();
+    std::set<std::size_t> owned;
+    std::map<std::string, std::vector<std::size_t>> attributes;
+    auto scope = [&](const Json &record, bool is_native) -> Json {
+        auto path = record.at("stream").get<StreamPath>();
+        if (path.empty())
+            return nullptr;
+        path.pop_back();
+        for (auto pair : {std::pair<const char *, const char *>{"P3D-SSYS", "P3D-SSYSA"},
+                          {"P3D-SMG", "P3D-SMGA"},
+                          {"P3D-SMC", "P3D-SMCA"}}) {
+            auto from = index.value(is_native ? pair.first : pair.second, std::string());
+            auto to = index.value(pair.second, std::string());
+            if (from.empty() || to.empty())
+                continue;
+            auto at = std::find(path.begin(), path.end(), from);
+            if (at == path.end())
+                continue;
+            *at = to;
+            return path;
+        }
+        return nullptr;
+    };
+    auto key = [](const Json &scope, const Json &id) { return scope.dump() + ":" + id.dump(); };
+    for (std::size_t i = 0; i < graphics.size(); ++i) {
+        auto s = scope(graphics[i], false);
+        if (!s.is_null())
+            attributes[key(s, graphics[i]["id"])].push_back(i);
+    }
+    for (std::size_t i = 0; i < native.size(); ++i) {
+        const auto &record = native[i];
+        if (!record.contains("layer_table"))
+            continue;
+        const auto &header = record["layer_table"];
+        Json table = {{"native_record_index", i},
+                      {"id", record["id"]},
+                      {"stream", record["stream"]},
+                      {"offset", record["offset"]},
+                      {"member_record_indices", Json::array()},
+                      {"inheritance_status", "not_evaluated"}};
+        std::map<std::uint32_t, std::vector<std::size_t>> member_ids;
+        Json members = Json::array();
+        try {
+            require(!header.contains("decode_error"), "invalid layer table header");
+            auto count = header.at("declared_child_count").get<std::uint32_t>();
+            require(count <= native.size() - i - 1, "layer table child count");
+            auto next_offset =
+                record["offset"].get<std::uint64_t>() + record["length"].get<std::uint64_t>();
+            for (std::size_t j = i + 1; j <= i + count; ++j) {
+                const auto &child = native[j];
+                require(child["stream"] == record["stream"] && child["offset"] == next_offset,
+                        "layer table children cross stream or record boundary");
+                require(child.contains("layer_definition") &&
+                            (child["element_flags"].get<unsigned>() & 0x80),
+                        "unexpected layer table child");
+                members.push_back(j);
+                next_offset += child["length"].get<std::uint64_t>();
+            }
+            for (const auto &j : members) {
+                auto k = j.get<std::size_t>();
+                owned.insert(k);
+                const auto &layer = native[k]["layer_definition"];
+                if (layer.contains("layer_id"))
+                    member_ids[layer["layer_id"].get<std::uint32_t>()].push_back(k);
+            }
+            table["member_record_indices"] = std::move(members);
+            table["membership_status"] = "resolved";
+        } catch (const std::exception &e) {
+            table["membership_status"] = "invalid";
+            table["membership_error"] = e.what();
+        }
+        auto s = scope(record, true);
+        const auto found = attributes.find(key(s, record["id"]));
+        std::vector<std::size_t> candidates;
+        if (!s.is_null() && found != attributes.end())
+            candidates = found->second;
+        table["attribute_record_indices"] = candidates;
+        table["attribute_status"] = s.is_null()              ? "unrecognized_scope"
+                                    : candidates.empty()     ? "missing"
+                                    : candidates.size() == 1 ? "resolved"
+                                                             : "ambiguous";
+        Json bindings = Json::array(), sync = Json::array();
+        for (auto gi : candidates) {
+            const auto &attrs = graphics[gi]["attributes"];
+            for (std::size_t ai = 0; ai < attrs.size(); ++ai) {
+                const auto &a = attrs[ai];
+                if (a["key"] != 4 || a["index"] != 0)
+                    continue;
+                if (a["group"] == 1) {
+                    sync.push_back({{"graphics_record_index", gi}, {"attribute_index", ai}});
+                    continue;
+                }
+                if (a["group"] != 0)
+                    continue;
+                const auto &decoded = a["decoded"];
+                if (decoded.value("encoding", "") != "layer_group_overrides" ||
+                    !decoded.contains("entries"))
+                    continue;
+                for (std::size_t ei = 0; ei < decoded["entries"].size(); ++ei) {
+                    auto id = decoded["entries"][ei]["layer_id"].get<std::uint32_t>();
+                    const auto it = member_ids.find(id);
+                    auto rows = it == member_ids.end() ? std::vector<std::size_t>() : it->second;
+                    bindings.push_back(
+                        {{"graphics_record_index", gi},
+                         {"attribute_index", ai},
+                         {"entry_index", ei},
+                         {"layer_id", id},
+                         {"member_record_indices", rows},
+                         {"status", table["membership_status"] != "resolved" ? "invalid_table"
+                                    : candidates.size() != 1 ? "ambiguous_attributes"
+                                    : rows.empty()           ? "missing_layer"
+                                    : rows.size() == 1       ? "resolved"
+                                                             : "ambiguous_layer"}});
+                }
+            }
+        }
+        table["override_bindings"] = std::move(bindings);
+        table["sync_attributes"] = std::move(sync);
+        tables.push_back(std::move(table));
+    }
+    for (std::size_t i = 0; i < native.size(); ++i)
+        if (native[i].contains("layer_definition") && !owned.count(i))
+            orphans.push_back(i);
+    Json model_references = Json::array();
+    auto system = index.value("P3D-SSYS", std::string());
+    std::map<std::uint64_t, std::vector<std::size_t>> group_ids;
+    for (std::size_t ti = 0; ti < tables.size(); ++ti) {
+        const auto &record = native[tables[ti]["native_record_index"].get<std::size_t>()];
+        auto path = record["stream"].get<StreamPath>();
+        if (!system.empty() && std::find(path.begin(), path.end(), system) != path.end() &&
+            record["layer_table"].value("kind", "") == "layer_group")
+            group_ids[record["id"].get<std::uint64_t>()].push_back(ti);
+    }
+    for (auto model = models.begin(); model != models.end(); ++model) {
+        if (!model.value().contains("layer_group_references"))
+            continue;
+        const auto &references = model.value()["layer_group_references"];
+        for (std::size_t ri = 0; ri < references.size(); ++ri) {
+            const auto &ref = references[ri];
+            Json row = {{"model_id", model.key()},
+                        {"reference_index", ri},
+                        {"table_indices", Json::array()}};
+            if (!ref.contains("table_id")) {
+                row["status"] = "unsupported_header";
+            } else {
+                auto id = ref["table_id"].get<std::uint64_t>();
+                const auto found = group_ids.find(id);
+                auto candidates =
+                    id && found != group_ids.end() ? found->second : std::vector<std::size_t>();
+                row["table_id"] = id;
+                row["table_indices"] = candidates;
+                row["status"] = !id                     ? "none"
+                                : candidates.empty()    ? "missing"
+                                : candidates.size() > 1 ? "ambiguous"
+                                : tables[candidates[0]]["membership_status"] == "resolved"
+                                    ? "resolved"
+                                    : "invalid_table";
+            }
+            model_references.push_back(std::move(row));
+        }
+    }
+    return {{"tables", std::move(tables)},
+            {"unassigned_layer_record_indices", std::move(orphans)},
+            {"model_references", std::move(model_references)}};
+}
 } // namespace p3d

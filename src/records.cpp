@@ -180,6 +180,15 @@ Json parse_dex(const Bytes &b, std::size_t &offset, bool enrich) {
 Json parse_native(const Bytes &b) {
     Json out = Json::array();
     Reader r(b);
+    auto linkage_bytes = [](unsigned h) -> std::size_t {
+        if (!(h & 0x1000))
+            return 8;
+        if (!(h & 0x4000))
+            return ((h & 255) + 1) * 2;
+        auto words = (h & 255) << ((h >> 8) & 15);
+        require(words >= 2 && words <= 65535, "native extended linkage length");
+        return words * 2;
+    };
     std::size_t pos = 0;
     while (pos < b.size()) {
         r.p = pos;
@@ -199,14 +208,38 @@ Json parse_native(const Bytes &b) {
                 if (p + 4 > end)
                     return false;
                 auto h = r.at<std::uint16_t>(p);
-                auto n = ((h & 255) + 1) * 2;
+                std::size_t n;
+                try {
+                    n = linkage_bytes(h);
+                } catch (const std::exception &) {
+                    return false;
+                }
                 if (n < 4 || p + n > end)
                     return false;
                 p += n;
             }
             return p == end;
         };
-        if (type == 49 && base == 392 && !valid(attr) && attr + 8 <= end && valid(attr + 8)) {
+        // Some legacy type-49 records understate the base by four words. A
+        // string linkage in that base can straddle the stated boundary; its
+        // text tail also happens to look like an eight-byte non-user linkage.
+        // Prefer its explicit length over that otherwise valid interpretation.
+        bool crossing_string = false;
+        if (type == 49 && base == 392 && attr + 8 <= end) {
+            for (auto p = pos + 36; p + 12 <= attr; p += 2) {
+                auto h = r.at<std::uint16_t>(p);
+                if (!(h & 0x1000) || (h & 0x4000) || r.at<std::uint16_t>(p + 2) != 0x56d2)
+                    continue;
+                auto n = linkage_bytes(h);
+                if (p + n != attr + 8)
+                    continue;
+                auto size = r.at<std::uint32_t>(p + 8);
+                if (size <= n - 12 && p + 12 + size > attr)
+                    crossing_string = true;
+            }
+        }
+        if (type == 49 && base == 392 && (!valid(attr) || crossing_string) && attr + 8 <= end &&
+            valid(attr + 8)) {
             attr += 8;
             adjustment = 8;
         }
@@ -221,7 +254,7 @@ Json parse_native(const Bytes &b) {
             }
             auto off = r.p;
             auto h = r.u16(), app = r.u16();
-            auto n = ((h & 255) + 1) * 2;
+            auto n = linkage_bytes(h);
             require(n >= 4 && off + n <= end, "native linkage length");
             auto p = r.take(n - 4);
             links.push_back(
@@ -249,6 +282,20 @@ Json parse_native(const Bytes &b) {
         if (type == 49 && r.at<std::uint32_t>(pos + 16) == 1)
             out.back()["layer_definition"] =
                 decode_native_layer(slice(b, pos, attr - pos), out.back()["links"]);
+        if (type == 10 && r.at<std::uint32_t>(pos + 16) == 1)
+            out.back()["layer_table"] =
+                decode_native_layer_table(slice(b, pos, attr - pos), out.back()["links"]);
+        if (type == 47 && r.at<std::uint32_t>(pos + 16) == 32) {
+            Json reference = {{"encoding", "model_layer_group_reference"},
+                              {"source_offset", 492},
+                              {"status", "unsupported_header"}};
+            if (attr - pos >= 500) {
+                auto table_id = r.at<std::uint64_t>(pos + 492);
+                reference.update(
+                    {{"table_id", table_id}, {"status", table_id ? "reference" : "none"}});
+            }
+            out.back()["model_layer_group_reference"] = std::move(reference);
+        }
         // The in-memory native header starts after the four-byte stream prefix.
         // Type 47 / subtype 33 persists the root model's explicit link ordering.
         if (type == 47 && attr - pos >= 20 && r.at<std::uint32_t>(pos + 16) == 33) {
@@ -924,6 +971,14 @@ Json read_models(const Document &doc) {
         }
         try {
             auto records = parse_native(slice(b, 4096, b.size() - 4096));
+            info["layer_group_references"] = Json::array();
+            for (const auto &n : records)
+                if (n.contains("model_layer_group_reference")) {
+                    auto reference = n["model_layer_group_reference"];
+                    reference["stream"] = s.path;
+                    reference["record_offset"] = 4096 + n["offset"].get<std::uint64_t>();
+                    info["layer_group_references"].push_back(std::move(reference));
+                }
             for (auto &n : records)
                 for (auto &l : n["links"])
                     if (l["app"] == 0x56d2) {

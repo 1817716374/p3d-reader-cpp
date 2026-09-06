@@ -95,6 +95,8 @@ class Document {
     const Json &materials() const;
     const Json &schemas() const;
     const Json &color_tables() const;
+    // Source table membership and scoped attribute references; no inferred merging.
+    const Json &layer_tables() const;
     Json binary_fields() const;
     Json inline_materials() const;
     // Embedded files with source attribute identity; does not read or write external files.

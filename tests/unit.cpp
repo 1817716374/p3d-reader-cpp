@@ -288,6 +288,186 @@ static void layer_group_tests() {
     rejects([&] { decode_attribute(1, 4, Bytes(3), 0); }, "truncated layer sync state");
     rejects([&] { decode_attribute(1, 4, Bytes(5), 0); }, "layer sync state suffix");
 }
+static void layer_table_tests() {
+    auto set = [](Bytes &b, std::size_t at, auto value) {
+        std::memcpy(b.data() + at, &value, sizeof(value));
+    };
+    auto header = [&](unsigned type, unsigned size, std::uint64_t id) {
+        Bytes b(size, 0);
+        set(b, 4, std::uint16_t(type));
+        set(b, 6, std::uint16_t(type == 49 ? 0x90 : 0x50));
+        set(b, 8, std::uint32_t((size - 4) / 2));
+        set(b, 12, std::uint32_t((size - 4) / 2));
+        set(b, 16, std::uint32_t(1));
+        set(b, 20, id);
+        return b;
+    };
+    auto table = header(10, 68, 100);
+    set(table, 36, std::uint32_t(2));
+    set(table, 44, std::uint64_t(UINT64_MAX - 3));
+    auto child = header(49, 108, 101);
+    set(child, 36, std::uint32_t(7));
+    set(child, 44, std::uint16_t(7));
+    auto joined = table;
+    joined.insert(joined.end(), child.begin(), child.end());
+    set(child, 20, std::uint64_t(102));
+    set(child, 36, std::uint32_t(8));
+    joined.insert(joined.end(), child.begin(), child.end());
+    auto records = parse_native(joined);
+    for (auto &n : records)
+        n["stream"] = {"ROOT", "SYS", "items"};
+    Json index = {{"P3D-SSYS", "SYS"}, {"P3D-SSYSA", "SYSA"}};
+    Json overrides = {
+        {"group", 0},
+        {"key", 4},
+        {"index", 0},
+        {"decoded",
+         {{"encoding", "layer_group_overrides"},
+          {"entries", Json::array({{{"layer_id", 8}}, {{"layer_id", 7}}, {{"layer_id", 9}}})}}}};
+    Json graphics = Json::array({{{"id", 100},
+                                  {"stream", {"ROOT", "SYSA", "attributes"}},
+                                  {"attributes", Json::array({overrides})}}});
+    auto built = build_layer_tables(index, records, graphics);
+    const auto &t = built["tables"][0];
+    check(records[0]["layer_table"]["kind"] == "layer_group" &&
+              records[0]["layer_table"]["selector"] == UINT64_MAX - 3 &&
+              t["member_record_indices"] == Json({1, 2}) &&
+              t["attribute_record_indices"] == Json({0}) &&
+              built["unassigned_layer_record_indices"].empty(),
+          "layer table keeps native membership and scoped attribute identity");
+    check(t["override_bindings"][0]["member_record_indices"] == Json({2}) &&
+              t["override_bindings"][1]["member_record_indices"] == Json({1}) &&
+              t["override_bindings"][2]["status"] == "missing_layer" &&
+              t["inheritance_status"] == "not_evaluated",
+          "override entries bind by table-local ID instead of array position");
+    auto model_header = header(47, 500, 0);
+    set(model_header, 16, std::uint32_t(32));
+    set(model_header, 492, std::uint64_t(0xfedcba9876543210ull));
+    auto reference = parse_native(model_header)[0]["model_layer_group_reference"];
+    check(reference["table_id"] == 0xfedcba9876543210ull && reference["status"] == "reference" &&
+              reference["source_offset"] == 492,
+          "model header references the full-width native layer group table ID");
+    set(model_header, 492, std::uint64_t(0));
+    check(parse_native(model_header)[0]["model_layer_group_reference"]["status"] == "none",
+          "zero model group reference does not select a default or same-name group");
+    auto old = header(47, 108, 0);
+    set(old, 16, std::uint32_t(32));
+    check(parse_native(old)[0]["model_layer_group_reference"]["status"] == "unsupported_header",
+          "short model header does not read a table ID from subsequent data");
+    Json models = {
+        {"18446744073709551615",
+         {{"layer_group_references", Json::array({{{"table_id", 100}},
+                                                  {{"table_id", 0}},
+                                                  {{"table_id", 77}},
+                                                  {{"status", "unsupported_header"}}})}}}};
+    auto mapped = build_layer_tables(index, records, graphics, models)["model_references"];
+    check(
+        mapped[0]["model_id"] == "18446744073709551615" &&
+            mapped[0]["table_indices"] == Json({0}) && mapped[0]["status"] == "resolved" &&
+            mapped[1]["status"] == "none" && mapped[2]["status"] == "missing" &&
+            mapped[3]["status"] == "unsupported_header",
+        "model references resolve by native table ID with explicit missing and unsupported cases");
+    auto foreign = graphics[0];
+    foreign["stream"] = {"OTHER", "SYSA", "attributes"};
+    graphics.push_back(foreign);
+    check(build_layer_tables(index, records, graphics)["tables"][0]["attribute_record_indices"] ==
+              Json({0}),
+          "same attribute ID in another container is not a table match");
+    graphics.push_back(graphics[0]);
+    check(build_layer_tables(index, records,
+                             graphics)["tables"][0]["override_bindings"][0]["status"] ==
+              "ambiguous_attributes",
+          "duplicate attribute records remain ambiguous");
+    graphics.erase(2);
+    records[2]["layer_definition"]["layer_id"] = 7;
+    check(build_layer_tables(index, records,
+                             graphics)["tables"][0]["override_bindings"][1]["status"] ==
+              "ambiguous_layer",
+          "duplicate layer IDs retain all candidates");
+    records[2]["stream"] = {"OTHER", "SYS", "items"};
+    auto invalid = build_layer_tables(index, records, graphics);
+    check(invalid["tables"][0]["membership_status"] == "invalid" &&
+              invalid["tables"][0]["member_record_indices"].empty() &&
+              invalid["unassigned_layer_record_indices"] == Json({1, 2}),
+          "table count never consumes records across stream boundaries");
+    records[2]["stream"] = records[0]["stream"];
+    records[0]["layer_table"]["declared_child_count"] = 0xffffffffu;
+    check(build_layer_tables(index, records, graphics)["tables"][0]["membership_status"] ==
+              "invalid",
+          "untrusted table count does not allocate an oversized member list");
+    for (auto selector : {std::uint64_t(0), std::uint64_t(17), std::uint64_t(UINT64_MAX - 1),
+                          std::uint64_t(UINT64_MAX), std::uint64_t(UINT64_MAX - 2)}) {
+        auto b = table;
+        set(b, 44, selector);
+        auto d = parse_native(b)[0]["layer_table"];
+        check(d["selector"] == selector &&
+                  d["kind"] == (selector == 0                ? "local"
+                                : selector == 17             ? "model_link"
+                                : selector == UINT64_MAX - 1 ? "nested_model_link"
+                                                             : "unassigned"),
+              "table selector preserves native sentinels without guessed names");
+    }
+    // A path containing 70 IDs requires the extended native linkage header.
+    auto path_table = table;
+    set(path_table, 44, std::uint64_t(UINT64_MAX - 1));
+    Bytes link;
+    put<std::uint16_t>(link, 0x5190); // 144 * 2 words = 576 bytes
+    put<std::uint16_t>(link, 0x56f1);
+    put<std::uint32_t>(link, 0);
+    put<std::uint16_t>(link, 1);
+    put<std::uint16_t>(link, 0);
+    put<std::uint32_t>(link, 70);
+    for (unsigned i = 0; i < 70; ++i)
+        put<std::uint64_t>(link, i % 3 ? 42 : UINT64_MAX);
+    path_table.insert(path_table.end(), link.begin(), link.end());
+    set(path_table, 8, std::uint32_t((path_table.size() - 4) / 2));
+    auto path = parse_native(path_table)[0];
+    check(path["links"].size() == 1 && path["layer_table"]["path_status"] == "decoded" &&
+              path["layer_table"]["linkage_paths"][0]["entry_ids"].size() == 70 &&
+              path["layer_table"]["linkage_paths"][0]["entry_ids"][0] == UINT64_MAX &&
+              path["layer_table"]["linkage_paths"][0]["entry_ids"][69] == UINT64_MAX,
+          "extended link header decodes long nested paths with unsigned IDs and repeats");
+    auto malformed = path_table;
+    set(malformed, 68 + 12, std::uint32_t(71));
+    auto d = parse_native(malformed)[0]["layer_table"];
+    check(d["path_status"] == "decode_error" && d["linkage_paths"][0].contains("decode_error"),
+          "path internal length error stays attached to its source linkage");
+    for (unsigned h : {0x5000, 0x5fff}) {
+        auto b = path_table;
+        set(b, 68, std::uint16_t(h));
+        rejects([&] { parse_native(b); }, "zero and overflowing extended link lengths rejected");
+    }
+    auto fixed = table;
+    put<std::uint16_t>(fixed, 0x0020); // non-user native link is always four words
+    put<std::uint16_t>(fixed, 0x1234);
+    put<std::uint32_t>(fixed, 0xfedcba98);
+    set(fixed, 8, std::uint32_t((fixed.size() - 4) / 2));
+    check(parse_native(fixed)[0]["links"][0]["payload"]["bytes"] == 4,
+          "fixed native linkage length does not use low-byte user-link encoding");
+    auto legacy = header(49, 788, 200);
+    set(legacy, 16, std::uint32_t(5));
+    legacy.resize(804);
+    set(legacy, 8, std::uint32_t(400));
+    set(legacy, 764, std::uint16_t(0x100f));
+    set(legacy, 766, std::uint16_t(0x56d2));
+    set(legacy, 768, std::uint16_t(1));
+    set(legacy, 772, std::uint32_t(14));
+    const Bytes name = {0xff, 0xfe, 1, 0, 'A', 'n', 'n', 'o', 't', 'a', 't', 'i', 'v', 'e'};
+    std::copy(name.begin(), name.end(), legacy.begin() + 776);
+    set(legacy, 796, std::uint16_t(0x1003));
+    set(legacy, 798, std::uint16_t(0x56de));
+    auto recovered = parse_native(legacy)[0];
+    check(recovered["base_boundary_adjustment"] == 8 && recovered["links"].size() == 1 &&
+              recovered["links"][0]["app"] == 0x56de,
+          "legacy crossing string tail is not interpreted as a fixed linkage");
+    auto legacy_fixed = header(49, 788, 201);
+    set(legacy_fixed, 16, std::uint32_t(5));
+    legacy_fixed.insert(legacy_fixed.end(), fixed.end() - 8, fixed.end());
+    set(legacy_fixed, 8, std::uint32_t(396));
+    check(parse_native(legacy_fixed)[0]["base_boundary_adjustment"] == 0 &&
+              parse_native(legacy_fixed)[0]["links"][0]["app"] == 0x1234,
+          "valid fixed linkage at legacy base length keeps its original boundary");
+}
 static void material_index_tests() {
     auto decode = [](const std::string &s, unsigned index) {
         return decode_attribute(4, 10001, Bytes(s.begin(), s.end()), index);
@@ -1635,6 +1815,7 @@ int main() {
     try {
         attribute_semantics_tests();
         layer_group_tests();
+        layer_table_tests();
         view_link_sequence_tests();
         native_layer_tests();
         material_index_tests();

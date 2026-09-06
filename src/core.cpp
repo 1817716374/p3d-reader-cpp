@@ -383,7 +383,7 @@ struct Document::Impl {
     Json index = Json::object(), model_ids = Json::object(), schema_ids = Json::object(),
          objects = Json::array(), native = Json::array(), graphics = Json::array(),
          bindings = Json::array(), relations = Json::array(), materials, schemas, models,
-         colors = Json::array();
+         colors = Json::array(), layers;
     Options options;
 };
 Document::Document(const std::filesystem::path &path, Options opt)
@@ -558,6 +558,7 @@ Document::Document(const std::filesystem::path &path, Options opt)
     d.schemas = read_schemas(*this);
     d.models = read_models(*this);
     d.materials = read_materials(*this);
+    d.layers = build_layer_tables(d.index, d.native, d.graphics, d.models);
     for (auto &g : d.graphics)
         for (auto &a : g["attributes"])
             if (a["group"] == 0 && a["key"] == 22902) {
@@ -577,10 +578,12 @@ const std::vector<Stream> &Document::streams() const {
     }
 ACCESSOR(index, index)
 ACCESSOR(models, models)
-ACCESSOR(objects, objects) ACCESSOR(native_records, native) ACCESSOR(graphics_records, graphics)
-    ACCESSOR(bindings, bindings) ACCESSOR(relationships, relations) ACCESSOR(materials, materials)
-        ACCESSOR(schemas, schemas)
-            ACCESSOR(color_tables, colors) Json Document::object_graph() const {
+ACCESSOR(layer_tables, layers)
+ACCESSOR(objects, objects)
+ACCESSOR(native_records, native)
+ACCESSOR(graphics_records, graphics) ACCESSOR(bindings, bindings) ACCESSOR(relationships, relations)
+    ACCESSOR(materials, materials) ACCESSOR(schemas, schemas)
+        ACCESSOR(color_tables, colors) Json Document::object_graph() const {
     return build_object_graph(*this);
 }
 Json Document::scene(unsigned n) const {
