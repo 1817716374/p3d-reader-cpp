@@ -1,6 +1,9 @@
 #include "geometry.hpp"
+#include "guided.hpp"
+#include "electrical_wire.hpp"
 #include <iostream>
 #include <cstring>
+#include <lz4/lz4.h>
 using namespace p3d;
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
@@ -21,11 +24,987 @@ template <class T> static void put(Bytes &b, T x) {
     b.resize(off + sizeof(x));
     std::memcpy(b.data() + off, &x, sizeof(x));
 }
+static Bytes wire_bytes(const char *text) {
+    std::string s(text);
+    Bytes b;
+    for (std::size_t i = 0; i < s.size(); i += 2)
+        b.push_back(static_cast<std::uint8_t>(std::stoul(s.substr(i, 2), nullptr, 16)));
+    return b;
+}
+static void append_wire(Bytes &b, const char *text) {
+    auto raw = wire_bytes(text);
+    b.insert(b.end(), raw.begin(), raw.end());
+}
+static void view_link_sequence_tests() {
+    auto record = [](std::uint32_t count, const std::vector<std::uint64_t> &ids,
+                     std::uint16_t flag = 1, unsigned subtype = 33) {
+        Bytes b(38, 0);
+        put(b, flag);
+        put(b, count);
+        for (auto id : ids)
+            put(b, id);
+        std::uint16_t type = 47;
+        std::uint32_t words = std::uint32_t((b.size() - 4) / 2);
+        std::memcpy(b.data() + 4, &type, 2);
+        std::memcpy(b.data() + 8, &words, 4);
+        std::memcpy(b.data() + 12, &words, 4);
+        std::memcpy(b.data() + 16, &subtype, 4);
+        return b;
+    };
+    auto raw = record(4, {0xfedcba9876543210ull, 7, 7, 0}, 0x8001);
+    auto n = parse_native(raw)[0];
+    check(n["view_link_sequence"]["entry_ids"] == Json({0xfedcba9876543210ull, 7, 7, 0}) &&
+              n["view_link_sequence"]["sequence_flag"] == 0x8001 && bytesof(n["data"]) == raw,
+          "native link sequence preserves 64 bit IDs, duplicates, zero entries and raw flag");
+    check(parse_native(record(0, {}))[0]["view_link_sequence"]["entry_ids"].empty() &&
+              !parse_native(record(0, {}, 1, 34))[0].contains("view_link_sequence"),
+          "empty view sequence distinguished from another type 47 subtype");
+    check(
+        parse_native(record(2, {7}))[0]["view_link_sequence"].contains("decode_error") &&
+            parse_native(record(0, {7}))[0]["view_link_sequence"].contains("decode_error") &&
+            parse_native(record(0xffffffff, {}))[0]["view_link_sequence"].contains("decode_error"),
+        "bad view sequence lengths do not create partial orderings");
+    auto bad = record(3, {7});
+    auto good = record(1, {9});
+    bad.insert(bad.end(), good.begin(), good.end());
+    auto records = parse_native(bad);
+    check(records.size() == 2 && records[0]["view_link_sequence"].contains("decode_error") &&
+              records[1]["view_link_sequence"]["entry_ids"] == Json({9}),
+          "semantic sequence error preserves following records");
+}
+static void layer_group_tests() {
+    // Three source entries: packed bits span several words, while the wire stores
+    // one WORD per bit. A nonzero unused word must not become an extra override.
+    Bytes b;
+    put<std::uint32_t>(b, 3);
+    put<std::uint32_t>(b, 95);
+    put<std::uint32_t>(b, 33);
+    std::vector<std::uint16_t> storage(33, 0);
+    storage[0] = 0x5800; // color, style, weight
+    storage[1] = 0x0600; // display, print
+    storage[2] = 0xffff; // only bit 32 is in range
+    storage[32] = 0xabcd;
+    for (auto w : storage)
+        put(b, w);
+    put<std::uint32_t>(b, 95); // Keep a duplicate source ID, without merging entries.
+    put<std::uint32_t>(b, 1);
+    put<std::uint16_t>(b, 1);
+    put<std::uint32_t>(b, 0xffffffff);
+    put<std::uint32_t>(b, 0);
+    auto d = decode_attribute(0, 4, b, 0);
+    auto &e = d["entries"];
+    check(e.size() == 3 && e[0]["layer_id"] == 95 && e[1]["layer_id"] == 95 &&
+              e[2]["layer_id"] == 0xffffffffu && e[1]["source_offset"] == 78 &&
+              e[2]["source_offset"] == 88,
+          "layer overrides retain unsigned IDs, duplicate entries and exact offsets");
+    check(e[0]["set_property_bits"] == Json({11, 12, 14, 25, 26, 32}) &&
+              e[0]["unassigned_property_bits"].empty() &&
+              e[1]["unassigned_property_bits"] == Json({0}),
+          "layer bitmap ignores out of range packed bits and retains unknown property bits");
+    for (auto name : {"color", "line_style", "line_weight", "display", "print", "frozen"})
+        check(e[0]["overrides"][name] == true && e[2]["overrides"][name] == false,
+              "known override bits and zero length default are decoded independently");
+    auto raw = bytesof(e[0]["source_storage"]);
+    check(raw.size() == 66 && Reader(raw, 64).u16() == 0xabcd && e[0]["packed_words"].size() == 3 &&
+              d["view_visibility"] == "not_evaluated",
+          "native expanded word storage retained without interpreting it as visibility");
+    for (std::size_t n : {std::size_t(0), std::size_t(4), std::size_t(12), b.size() - 1})
+        rejects([&] { decode_attribute(0, 4, slice(b, 0, n), 0); }, "truncated layer bitmap");
+    b.push_back(0);
+    rejects([&] { decode_attribute(0, 4, b, 0); }, "layer bitmap suffix rejected");
+    b = wire_bytes("0100000007000000ffffffff");
+    rejects([&] { decode_attribute(0, 4, b, 0); }, "overflowing layer bitmap size rejected");
+    check(decode_attribute(0, 4, Bytes(4), 0)["entries"].empty() &&
+              decode_attribute(0, 4, Bytes(4), 1)["encoding"] == "opaque",
+          "empty layer table and unassigned attribute index remain distinct");
+    for (std::uint32_t mode : {0u, 1u, 2u, 0xffffffffu}) {
+        Bytes wire;
+        put(wire, mode);
+        auto sync = decode_attribute(1, 4, wire, 0);
+        const char *names[] = {"sync_use_override", "always_unsync", "always_sync"};
+        check(sync["sync_state"] == mode &&
+                  sync["sync_state_name"] == (mode < 3 ? Json(names[mode]) : Json()),
+              "native layer synchronization enum keeps unknown values unnamed");
+    }
+    rejects([&] { decode_attribute(1, 4, Bytes(3), 0); }, "truncated layer sync state");
+    rejects([&] { decode_attribute(1, 4, Bytes(5), 0); }, "layer sync state suffix");
+}
+static void material_index_tests() {
+    auto decode = [](const std::string &s, unsigned index) {
+        return decode_attribute(4, 10001, Bytes(s.begin(), s.end()), index);
+    };
+    auto j = decode(
+        u8R"({"-2147483648":"材质","2147483647":"钢","01":"wood","-0":"a","2147483648":"b","2":17})",
+        1);
+    check(j["index_shape_status"] == "unexpected_entries" && j["entries"].size() == 6,
+          "material index decodes good members even with malformed neighboring entries");
+    unsigned valid = 0;
+    for (auto &e : j["entries"])
+        if (e["status"] == "recognized") {
+            ++valid;
+            check(e["part_index"] == -2147483648ll || e["part_index"] == 2147483647,
+                  "part key uses exact signed int32 decimal formatting");
+        }
+    check(valid == 2 && j["geometry_mapping_status"] == "not_established",
+          "part indices neither accept aliases nor imply geometric mapping");
+    j = decode(u8R"({"木":{"19":"19","2":"3","-1":"-1"},"钢":[19]})", 2);
+    check(j["entries"].size() == 3 && j["unrecognized_material_groups"].size() == 1 &&
+              j["entries"][0]["material_name"] == u8"木" &&
+              j["entries"][2]["source_value"] == "3" &&
+              j["entries"][2]["repeated_index_matches_key"] == false,
+          "native reverse index is material name to object of repeated decimal index strings");
+    check(decode("[]", 1)["index_shape_status"] == "unexpected_shape" &&
+              decode("{}", 2)["index_shape_status"] == "recognized" &&
+              !decode("{}", 9).contains("entries"),
+          "unsupported material shapes and roles are not assigned invented entries");
+    j = decode(R"({"2":"first","2":"last"})", 1);
+    check(j["entries"].size() == 1 && j["entries"][0]["material_name"] == "last" &&
+              j["text"] == R"({"2":"first","2":"last"})",
+          "typed material view follows parsed JSON while preserving duplicate source keys");
+}
+static void attribute_semantics_tests() {
+    Bytes b;
+    put<std::uint32_t>(b, 0xfedcba98);
+    check(decode_attribute(0, 22634, b)["display_style_entry_id"] == 0xfedcba98u,
+          "display style reference preserves unsigned id");
+    for (unsigned flags = 0; flags < 16; ++flags) {
+        b.clear();
+        put<std::uint32_t>(b, 19);
+        for (unsigned i = 0; i < 4; ++i) {
+            put<std::uint32_t>(b, flags);
+            put<std::uint32_t>(b, 100 + i);
+        }
+        auto d = decode_attribute(0, 22626, b);
+        check(d["header_word"] == 19, "clip header is retained without guessed semantics");
+        unsigned i = 0;
+        for (auto name : {"forward", "back", "cut", "outside"}) {
+            const auto &v = d["regions"][name];
+            check(v["display"] == bool(flags & 1) && v["snap"] == !(flags & 2) &&
+                      v["locate"] == !(flags & 4) && v["unassigned_flag_bits"] == (flags & ~7u) &&
+                      v["display_style_entry_id"] == 100 + i++,
+                  "clip display flag is direct, snap and locate flags are inverted");
+        }
+    }
+    for (std::size_t n = 0; n < b.size(); ++n)
+        rejects([&] { decode_attribute(0, 22626, slice(b, 0, n)); }, "truncated clip settings");
+    b.push_back(0);
+    rejects([&] { decode_attribute(0, 22626, b); }, "unexpected clip suffix");
+    b.clear();
+    put<std::uint32_t>(b, 0);
+    put<std::uint32_t>(b, 77);
+    put<std::int32_t>(b, -1);
+    for (double x : {12., -34., 56., 2.5, 0., -1., 0., 1., 0., 0., 0., 0., 1.})
+        put(b, x);
+    put<std::uint64_t>(b, 0xfedcba9876543210ull);
+    check(b.size() == 124, "ACS ordinary layout width");
+    auto d = decode_attribute(1, 22295, b);
+    check(d["origin"] == Json({12., -34., 56.}) && d["scale"] == 2.5 &&
+              d["rotation"] == Json({{0., -1., 0.}, {1., 0., 0.}, {0., 0., 1.}}) &&
+              d["element_id"] == 0xfedcba9876543210ull && d["coordinate_system_type"] == 77 &&
+              d["view_independent"] == false && d["view_independent_value"] == -1 &&
+              d["extra_data_status"] == "absent",
+          "ACS preserves nonidentity frame, unknown enum, signed flag and 64 bit identity");
+    for (std::size_t n = 0; n < b.size(); ++n)
+        rejects([&] { decode_attribute(1, 22295, slice(b, 0, n)); }, "truncated ACS");
+    Bytes tail(45, 0xa7);
+    b.insert(b.end(), tail.begin(), tail.end());
+    d = decode_attribute(1, 22295, b);
+    check(d["extra_data_status"] == "opaque" && d["extra_data_offset"] == 124 &&
+              bytesof(d["extra_data"]) == tail,
+          "ACS retains entire unknown suffix");
+    b[0] = 1;
+    rejects([&] { decode_attribute(1, 22295, b); }, "unsupported ACS header");
+
+    b.clear();
+    for (auto c : std::u16string(u"\u6750\u8d28\U0001f332"))
+        put<std::uint16_t>(b, c);
+    d = decode_attribute(4, 10001, b, 0);
+    check(d["material_name"] == u8"材质🌲", "unterminated Unicode material name");
+    check(decode_attribute(2, 10001, b, 31)["material_name"] == u8"材质🌲" &&
+              decode_attribute(2, 10001, b, 31)["encoding"] == "legacy_part_material_name",
+          "legacy per-part names use the same unterminated UTF16 representation");
+    rejects([&] { decode_attribute(4, 10001, Bytes{0x00}, 0); }, "odd material name size");
+    rejects([&] { decode_attribute(4, 10001, Bytes{0x00, 0xdc}, 0); }, "bad material surrogate");
+    for (unsigned index : {1u, 2u, 9u}) {
+        std::string text = index == 1   ? u8"{\"-1\":\"材质\",\"19\":\"wood\",\"19\":\"steel\"}"
+                           : index == 2 ? "{\"wood\":{\"19\":\"19\"}}"
+                                        : "[1,true,\"unknown\"]";
+        Bytes raw(text.begin(), text.end());
+        auto j = decode_attribute(4, 10001, raw, index);
+        check(j["json_status"] == "parsed" && j["text"] == text &&
+                  bytesof(j["source_bytes"]) == raw && j["value"] == Json::parse(text),
+              "indexed material JSON retains duplicate keys and exact source text");
+        if (index == 9)
+            check(j["role"] == "unassigned", "unknown material index gets no invented role");
+    }
+    check(decode_attribute(4, 10001, Bytes{'{'}, 1)["json_status"] == "invalid_json",
+          "damaged material JSON remains available as text");
+    rejects([&] { decode_attribute(4, 10001, Bytes{0xff}, 1); }, "bad material UTF8");
+    Bytes wire, attrs;
+    std::vector<Bytes> payloads = {b, Bytes{'{', '"', '4', '"', ':', '"', 'a', '"', '}'},
+                                   Bytes{0xff}, Bytes{'{', '}'}};
+    for (unsigned i = 0; i < payloads.size(); ++i) {
+        put<std::uint16_t>(attrs, 4);
+        put<std::uint16_t>(attrs, 10001);
+        put<std::uint32_t>(attrs, i);
+        put<std::uint32_t>(attrs, payloads[i].size());
+        put<std::uint32_t>(attrs, 0);
+        attrs.insert(attrs.end(), payloads[i].begin(), payloads[i].end());
+    }
+    put<std::uint32_t>(wire, 0xa11b);
+    put<std::uint32_t>(wire, attrs.size() + 4);
+    put<std::uint64_t>(wire, 0);
+    put<std::uint64_t>(wire, 17);
+    put<std::uint32_t>(wire, payloads.size());
+    wire.insert(wire.end(), attrs.begin(), attrs.end());
+    put<std::uint32_t>(wire, 0);
+    const auto parsed = parse_graphics(wire)[0]["attributes"];
+    check(parsed[0]["decoded"]["material_name"] == u8"材质🌲" &&
+              parsed[1]["decoded"]["value"]["4"] == "a" &&
+              parsed[2]["decoded"].contains("decode_error") &&
+              bytesof(parsed[2]["payload"]) == payloads[2] &&
+              parsed[3]["decoded"]["json_status"] == "parsed" &&
+              parsed[3]["decoded"]["role"] == "unassigned",
+          "record reader routes by attribute index and recovers after damaged material JSON");
+    Json a = {{"group", 4},  {"key", 10001},           {"index", 0},
+              {"offset", 8}, {"payload", rawbytes(b)}, {"decoded", d}};
+    Json g = {{"stream", {"root", "model1"}},
+              {"id", 7},
+              {"offset", 40},
+              {"attributes", Json::array({a})}};
+    Json h = g;
+    h["stream"] = {"root", "model2"};
+    h["attributes"][0]["decoded"] = {{"encoding", "opaque"}, {"decode_error", "bad"}};
+    auto refs = material_assignment_records(Json::array({g, g, h}));
+    check(refs.size() == 3 && refs[0]["stream"] != refs[2]["stream"] &&
+              refs[2]["decoded"]["encoding"] == "opaque" && refs[0]["attribute_ordinal"] == 0 &&
+              refs[0]["attribute_index"] == 0 && bytesof(refs[0]["payload"]) == b,
+          "material assignments preserve duplicates, scope and damaged source records");
+    h["attributes"][0]["group"] = 2;
+    h["attributes"][0]["index"] = 31;
+    refs = material_assignment_records(Json::array({g, h}));
+    check(refs.size() == 2 && refs[1]["group"] == 2 && refs[1]["attribute_index"] == 31,
+          "legacy and advanced assignment sources remain distinct");
+    Bytes header(108, 0);
+    header[36] = 0;
+    header[37] = 0x14;
+    auto state = native_display_state(97, header);
+    check(state["permanently_invisible"] == true && state["unassigned_bits"] == 0x1000 &&
+              state["source_offset"] == 36 && state["view_visibility"] == "not_evaluated",
+          "permanent invisibility is a display header bit, not a computed view result");
+    header[37] = 0x10;
+    check(native_display_state(37, header)["permanently_invisible"] == false &&
+              native_display_state(33, header)["status"] == "unsupported_header" &&
+              native_display_state(97, Bytes(36))["status"] == "unsupported_header",
+          "non-graphic and short headers are not interpreted using a coincidental byte value");
+}
+static void section_clip_tests() {
+    Bytes b;
+    put<std::uint32_t>(b, 0x80000055u); // Left/front/top crop and perspective-up.
+    put<std::uint32_t>(b, 0xfedcba98u);
+    for (double x : {1.5, 2.5, 3.5, 4.5, 1., 2., 3., 4., 5., 6., 7., 8., 9.})
+        put(b, x);
+    auto d = decode_attribute(0, 109, b);
+    check(b.size() == 112 && d["crop"]["left"] == true && d["crop"]["right"] == false &&
+              d["crop"]["front"] == true && d["crop"]["back"] == false &&
+              d["crop"]["top"] == true && d["crop"]["bottom"] == false &&
+              d["perspective_up"] == true && d["unassigned_flag_bits"] == 0x80000000u &&
+              d["unassigned_word"] == 0xfedcba98u,
+          "section clipping distinguishes six directions and preserves unknown flag bits");
+    check(d["top_height"] == 1.5 && d["bottom_height"] == 2.5 && d["front_depth"] == 3.5 &&
+              d["back_depth"] == 4.5,
+          "section heights and depths keep their independent wire order");
+    for (unsigned i = 0; i < 3; ++i) {
+        check(d["serialized_rotation"][i] == Json({1. + 3 * i, 2. + 3 * i, 3. + 3 * i}) &&
+                  std::abs(d["rotation"][i][0].get<double>() - (1. + 3 * i)) < 1e-12 &&
+                  std::abs(d["rotation"][i][1].get<double>() - (3. + 3 * i)) < 1e-12 &&
+                  std::abs(d["rotation"][i][2].get<double>() + (2. + 3 * i)) < 1e-12,
+              "section rotation is right-multiplied by positive X rotation, not transposed");
+    }
+    for (auto size : {0u, 4u, 7u, 8u, 39u, 40u, 103u, 111u})
+        rejects([&] { decode_attribute(0, 109, slice(b, 0, size)); },
+                "truncated section clip data");
+    b.push_back(0);
+    rejects([&] { decode_attribute(0, 109, b); },
+            "unknown section clip suffix retains opaque payload");
+    b.clear();
+    for (double x : {12., -34., 56., 0., 0., -2.})
+        put(b, x);
+    d = decode_attribute(1, 109, b);
+    check(d["origin"] == Json({12., -34., 56.}) && d["direction"] == Json({0., 0., -2.}),
+          "section frame direction is preserved without normalization");
+    b.pop_back();
+    rejects([&] { decode_attribute(1, 109, b); }, "truncated section frame");
+}
+static void inline_material_tests() {
+    Bytes b;
+    auto text = [&](const std::u16string &s) {
+        put<std::uint64_t>(b, s.size() * 2);
+        for (auto c : s)
+            put<std::uint16_t>(b, c);
+    };
+    put<std::uint8_t>(b, 0); // isValid, not a format version.
+    text(u"material");
+    put<std::uint8_t>(b, 0);
+    for (double v : {0.1, 0.2, 0.3})
+        put(b, v);
+    put<std::uint8_t>(b, 1);
+    put<double>(b, 0.4);
+    put<std::uint8_t>(b, 0);
+    auto enum_offset = b.size();
+    put<std::int32_t>(b, 3);
+    put<std::int32_t>(b, 6);
+    text(u"relative/color.jpg");
+    for (double v : {2., 3., 4., 5., 90.})
+        put(b, v);
+    text(u"relative/\u51f9\u51f8.jpg");
+    put<double>(b, 0.75);
+    for (int i = 0; i < 9; ++i) {
+        put<std::uint8_t>(b, i % 2);
+        for (int j = 0; j < (i == 0 || i == 2 ? 3 : 1); ++j)
+            put<double>(b, 10 * i + j + 0.5);
+    }
+    const auto base = b;
+    auto m = decode_inline_material(b);
+    check(m["is_valid"] == false && !m.contains("version"),
+          "inline material first byte is validity, not version");
+    check(m["parameters"][0]["enabled"] == false &&
+              m["parameters"][0]["value"] == Json({0.1, 0.2, 0.3}) &&
+              m["parameters"][1]["kind"] == "transparency",
+          "disabled material values are still consumed and retained");
+    check(m["map_unit_name"] == "absolute" && m["map_mode_name"] == "cylindrical" &&
+              m["has_map"] == false && m["uv_scale"] == Json({2., 3.}) &&
+              m["uv_offset"] == Json({4., 5.}) && m["rotation_degrees"] == 90.,
+          "material mapping enums and two dimensional UV fields");
+    check(m["texture_references"][1]["filename"] == u8"relative/凹凸.jpg" &&
+              m["bump_factor"] == 0.75 && m["parameters"][10]["value"] == 80.5,
+          "nonempty bump filename does not shift following shader values");
+    check(m["display_name"] == "material" && m["display_name_source"] == "name_fallback",
+          "legacy material without display extension inherits name");
+    put<std::uint32_t>(b, 0xabcd);
+    text(u"\u663e\u793a\u540d\u79f0");
+    m = decode_inline_material(b);
+    check(m["display_name"] == u8"显示名称" && m["display_name_source"] == "serialized",
+          "display extension reads its length prefixed Unicode name");
+    for (std::size_t n = 0; n < b.size(); ++n) {
+        if (n == base.size())
+            continue;
+        rejects([&]() { decode_inline_material(slice(b, 0, n)); },
+                "truncated material must not silently succeed");
+    }
+    auto bad = b;
+    bad[0] = 2;
+    rejects([&]() { decode_inline_material(bad); }, "nonboolean validity rejected");
+    auto unknown = b;
+    std::int32_t code = -123;
+    std::memcpy(unknown.data() + enum_offset, &code, 4);
+    std::memcpy(unknown.data() + enum_offset + 4, &code, 4);
+    m = decode_inline_material(unknown);
+    check(m["map_unit"] == -123 && m["map_mode"] == -123 &&
+              m["map_unit_status"] == "unknown_value" && !m.contains("map_mode_name"),
+          "unknown mapping enum values retained without coercion");
+    for (std::int32_t unit : {0, 3}) {
+        for (std::int32_t mode : {0, 1, 2, 4, 5, 6}) {
+            auto mapped = b;
+            std::memcpy(mapped.data() + enum_offset, &unit, 4);
+            std::memcpy(mapped.data() + enum_offset + 4, &mode, 4);
+            m = decode_inline_material(mapped);
+            check(m["map_unit"] == unit && m["map_mode"] == mode &&
+                      m["map_unit_status"] == "identified" && m["map_mode_status"] == "identified",
+                  "all declared native material mapping codes are accepted");
+        }
+    }
+    const auto display = b;
+    auto extension = [&](std::u16string value) {
+        b = display;
+        put<std::uint32_t>(b, 0xabce);
+        value.push_back(0);
+        text(value);
+        return decode_inline_material(b).at("extended_data");
+    };
+    auto ext = extension(u"{\"custom\":{\"标签\":\"保留\",\"values\":[null,true,42]}}");
+    check(ext["json_status"] == "parsed" && ext["value"]["custom"][u8"标签"] == u8"保留" &&
+              ext["value"]["custom"]["values"] == Json({nullptr, true, 42}),
+          "material JSON extension retains arbitrary nested properties");
+    auto valid_extension = b;
+    auto raw_extension = bytesof(ext["source_bytes"]);
+    check(raw_extension.size() >= 2 && raw_extension.back() == 0 &&
+              utf16(slice(raw_extension, 0, raw_extension.size() - 2)) == ext["text"],
+          "material JSON preserves original terminated UTF16 separately from its parsed view");
+    for (std::size_t n = display.size() + 4; n < b.size(); ++n)
+        rejects([&]() { decode_inline_material(slice(valid_extension, 0, n)); },
+                "recognized JSON block must not accept a truncated size or payload");
+    for (std::uint64_t n : {0ull, 1ull, 3ull, ~0ull}) {
+        auto damaged = valid_extension;
+        std::memcpy(damaged.data() + display.size() + 4, &n, sizeof(n));
+        rejects([&]() { decode_inline_material(damaged); }, "invalid JSON UTF16 byte count");
+    }
+    auto unterminated = valid_extension;
+    unterminated.back() = 1;
+    rejects([&]() { decode_inline_material(unterminated); }, "JSON extension terminator required");
+    check(extension(u"")["json_status"] == "empty", "empty material JSON extension");
+    ext = extension(u"{unrecognized future syntax}");
+    check(ext["json_status"] == "invalid_json" && !ext.contains("value") &&
+              ext["text"] == "{unrecognized future syntax}",
+          "invalid JSON text remains available without inventing semantic fields");
+    ext = extension(u"{\"x\":1,\"x\":2}");
+    check(ext["text"] == "{\"x\":1,\"x\":2}",
+          "duplicate JSON keys remain in authoritative source text");
+    b = valid_extension;
+    b.push_back(0x5a);
+    check(decode_inline_material(b)["unassigned_suffix_hex"] == "5a",
+          "unknown suffix after JSON remains unassigned");
+    b = display;
+    b.push_back(0x5a);
+    check(decode_inline_material(b)["unassigned_suffix_hex"] == "5a",
+          "future material extension remains explicitly unassigned");
+}
+static void embedded_texture_tests() {
+    // Public PNG file bytes are never decoded or re-encoded by the parser.
+    const auto file = unbase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+                               "x8AAwMCAO+aX1sAAAAASUVORK5CYII=");
+    Bytes payload(256, 0x7b);
+    std::u16string name = u"../原图.png";
+    name.push_back(0);
+    for (std::size_t i = 0; i < name.size(); ++i) {
+        payload[2 * i] = name[i] & 255;
+        payload[2 * i + 1] = name[i] >> 8;
+    }
+    put<std::uint32_t>(payload, file.size());
+    put<std::uint32_t>(payload, 0x12340021);
+    payload.insert(payload.end(), file.begin(), file.end());
+    auto envelope = [](const Bytes &raw, unsigned version) {
+        Bytes b;
+        put<std::uint32_t>(b, version);
+        put<std::uint32_t>(b, raw.size());
+        if (version != 3)
+            b.insert(b.end(), raw.begin(), raw.end());
+        else {
+            Bytes compressed(LZ4_compressBound(int(raw.size())));
+            auto n = LZ4_compress_default(reinterpret_cast<const char *>(raw.data()),
+                                          reinterpret_cast<char *>(compressed.data()),
+                                          int(raw.size()), int(compressed.size()));
+            require(n > 0, "fixture compression");
+            b.insert(b.end(), compressed.begin(), compressed.begin() + n);
+        }
+        return b;
+    };
+    for (unsigned version : {1u, 2u, 3u}) {
+        auto b = envelope(payload, version);
+        auto t = decode_attribute(33, 22913, b);
+        check(t["encoding"] == "embedded_texture_file" && t["version"] == version &&
+                  t["filename"] == u8"../原图.png" && t["file_offset"] == 264 &&
+                  t["native_map_type"] == 0x12340021 &&
+                  t["attribute_group_matches_map_type"] == true,
+              "embedded image header has source name and full native map type");
+        check(
+            bytesof(t["file_data"]) == file && t["file_bytes"] == file.size() &&
+                bytesof(t["filename_field"]) == slice(payload, 0, 256) && !t.contains("data"),
+            "image bytes and unused filename capacity preserved without duplicating decoded file");
+        check(decode_attribute(1, 22913, b)["attribute_group_matches_map_type"] == false,
+              "map type mismatch is reported without coercing stored values");
+        auto rebuilt = bytesof(t["filename_field"]);
+        put<std::uint32_t>(rebuilt, t["file_bytes"]);
+        put<std::uint32_t>(rebuilt, t["native_map_type"]);
+        auto decoded_file = bytesof(t["file_data"]);
+        rebuilt.insert(rebuilt.end(), decoded_file.begin(), decoded_file.end());
+        check(rebuilt == payload, "all embedded payload bytes accounted for");
+        b.pop_back();
+        rejects([&]() { decode_attribute(33, 22913, b); }, "truncated embedded file envelope");
+    }
+    for (std::size_t n = 0; n < payload.size(); ++n) {
+        auto b = envelope(slice(payload, 0, n), 1);
+        rejects([&]() { decode_attribute(33, 22913, b); }, "truncated image header or file");
+    }
+    auto bad = payload;
+    std::fill(bad.begin(), bad.begin() + 256, 1);
+    rejects([&]() { decode_attribute(33, 22913, envelope(bad, 1)); },
+            "unterminated filename is not allowed to consume file size bytes");
+    for (std::uint32_t n : {0u, 0xffffffffu}) {
+        bad = payload;
+        std::memcpy(bad.data() + 256, &n, 4);
+        rejects([&]() { decode_attribute(33, 22913, envelope(bad, 1)); },
+                "invalid embedded file byte count");
+    }
+    bad = payload;
+    bad.push_back(0);
+    rejects([&]() { decode_attribute(33, 22913, envelope(bad, 1)); },
+            "unexpected trailing image bytes are not discarded");
+    for (unsigned version : {1u, 2u}) {
+        auto a = decode_attribute(80, 99, envelope(Bytes({'a', 'b', 'c'}), version));
+        check(a["encoding"] == "uncompressed_binary" && a["codec"] == "stored" &&
+                  bytesof(a["data"]) == Bytes({'a', 'b', 'c'}),
+              "stored attribute envelopes are decoded without decompression");
+        Bytes xml;
+        for (char16_t c : std::u16string(u"<Material Filename=\"relative.jpg\"/>"))
+            put<std::uint16_t>(xml, c);
+        a = decode_attribute(0, 20014, envelope(xml, version));
+        check(a["encoding"] == "uncompressed_utf16_xml" && a["tree"]["tag"] == "Material",
+              "stored UTF16 XML attributes use the same semantic decoder");
+    }
+    for (unsigned version : {1u, 2u, 3u}) {
+        Bytes text;
+        for (char16_t c : std::u16string(u"任意属性"))
+            put<std::uint16_t>(text, c);
+        put<std::uint16_t>(text, 0);
+        auto a = decode_attribute(123, 2006, envelope(text, version));
+        check(a["text"] == u8"任意属性" && bytesof(a["data"]) == text,
+              "native string attributes retain generic Unicode values and original termination");
+        check(decode_attribute(123, 2006, envelope(Bytes{0, 0}, version))["text"] == "",
+              "empty native string attribute");
+        text.pop_back();
+        rejects([&]() { decode_attribute(123, 2006, envelope(text, version)); },
+                "odd UTF16 string attribute width");
+        text.push_back(1);
+        rejects([&]() { decode_attribute(123, 2006, envelope(text, version)); },
+                "unterminated UTF16 string attribute");
+    }
+    // Exercise the public record reader's recovery, followed by source-scoped material binding.
+    auto record = [&](const Bytes &b, std::uint64_t id) {
+        Bytes r;
+        put<std::uint32_t>(r, 0xa11b);
+        put<std::uint32_t>(r, 20 + b.size());
+        put<std::uint64_t>(r, 0);
+        put<std::uint64_t>(r, id);
+        put<std::uint32_t>(r, 1);
+        put<std::uint16_t>(r, 33);
+        put<std::uint16_t>(r, 22913);
+        put<std::uint32_t>(r, 7);
+        put<std::uint32_t>(r, b.size());
+        put<std::uint32_t>(r, 0);
+        r.insert(r.end(), b.begin(), b.end());
+        put<std::uint32_t>(r, 0);
+        return parse_graphics(r)[0];
+    };
+    auto g = record(envelope(payload, 3), 42);
+    g["stream"] = {"root", "A", "attributes"};
+    auto damaged = record(envelope(bad, 1), 42);
+    damaged["stream"] = {"root", "B", "attributes"};
+    check(damaged["attributes"][0]["decoded"].contains("decode_error") &&
+              bytesof(damaged["attributes"][0]["payload"]) == envelope(bad, 1),
+          "failed image parsing preserves the entire original attribute");
+    Json materials = {{"definitions", Json::array({{{"stream", g["stream"]}, {"id", 42}}})}};
+    auto files = embedded_texture_records(Json::array({g, damaged}), materials);
+    check(files.size() == 2 && files[0]["material_candidates"] == Json({0}) &&
+              files[0]["material_status"] == "resolved" &&
+              files[1]["material_status"] == "missing" && files[0]["attribute_index"] == 7 &&
+              files[0]["attribute_ordinal"] == 0,
+          "embedded files bind by stream and record identity, never by filename or bare ID");
+    materials["definitions"].push_back(materials["definitions"][0]);
+    files = embedded_texture_records(Json::array({g, g}), materials);
+    check(files.size() == 2 && files[0]["material_candidates"] == Json({0, 1}) &&
+              files[0]["material_status"] == "ambiguous",
+          "duplicate records and ambiguous material definitions remain separate");
+}
 static Json command(unsigned op, const Bytes &body, std::size_t offset = 2) {
     return {{"op", op},
             {"offset", offset},
             {"body", rawbytes(body)},
             {"decoded", command_fields(op, body)}};
+}
+static void box_center_tests() {
+    Bytes body;
+    for (double v : {0., 2., 0., -3., 0., 0., 10., 20., 30., 14., 25., 40., 4., 6., 2., 8.})
+        put<double>(body, v);
+    put<std::uint8_t>(body, 1);
+    auto cmd = command(30, body);
+    check(cmd["decoded"]["origin_convention"] == "face_centers",
+          "box stream origins are face centers");
+    auto g = reconstruct(Json::array({cmd}), Tessellation{});
+    check(g.unknown.empty() && g.vertices.size() == 10 && g.faces.size() == 12,
+          "capped box has four sides and two complete caps");
+    // Independently calculated corners for unequal, offset faces and nonunit rotated axes.
+    const std::vector<Point3> expected = {
+        {19., 16., 30.}, {19., 24., 30.}, {1., 24., 30.}, {1., 16., 30.}, {19., 16., 30.},
+        {26., 23., 40.}, {26., 27., 40.}, {2., 27., 40.}, {2., 23., 40.}, {26., 23., 40.}};
+    check(g.vertices == expected, "box centers do not drift by half a face width");
+    body.back() = 0;
+    g = reconstruct(Json::array({command(30, body)}), Tessellation{});
+    check(g.faces.size() == 8 && g.vertices == expected,
+          "uncapped box preserves its two open ends");
+}
+static void guided_surface_tests() {
+    const std::vector<Point3> corners = {{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}};
+    auto fixture = [&](bool capped, bool twisted, bool damaged, double bend_height = 1.) {
+        Json commands = Json::array({command(56, Bytes{std::uint8_t(capped)})});
+        auto polyline = [&](const std::vector<Point3> &p) {
+            Bytes raw;
+            put<std::uint32_t>(raw, p.size());
+            for (const auto &v : p)
+                for (auto x : v)
+                    put(raw, x);
+            commands.push_back(command(1, raw));
+        };
+        for (unsigned s = 0; s < 2; ++s) {
+            commands.push_back(command(s ? 54 : 53, {}));
+            commands.push_back(command(21, Bytes{0}));
+            for (unsigned i = 0; i < 4; ++i) {
+                auto a = corners[i], b = corners[(i + 1) % 4];
+                a[2] = b[2] = s * 2.;
+                if (i == 0)
+                    polyline({a, Point3{.5, 0, s * 2.}, b});
+                else
+                    polyline({a, b});
+            }
+            commands.push_back(command(22, {}));
+        }
+        commands.push_back(command(55, Bytes{1, 0, 0, 0, 4, 0, 0, 0}));
+        for (unsigned i = 0; i < 4; ++i) {
+            auto a = corners[i], middle = a, b = a;
+            middle[0] += 1;
+            middle[2] = bend_height;
+            b[2] = 2;
+            if (twisted && i == 1)
+                middle[1] += 1;
+            if (damaged && i == 3)
+                b[0] += .25;
+            commands.push_back(command(20, {}));
+            polyline({a, middle, b});
+            commands.push_back(command(22, {}));
+        }
+        commands.push_back(command(19, {}));
+        return commands;
+    };
+    Tessellation policy;
+    policy.full_circle_segments = 8;
+    auto g = reconstruct(fixture(true, false, false), policy);
+    check(g.unknown.empty() && !g.faces.empty(), "bent polyline guided loft produces a surface");
+    auto contains = [](const Geometry &mesh, Point3 p) {
+        for (auto v : mesh.vertices)
+            if (std::abs(v[0] - p[0]) + std::abs(v[1] - p[1]) + std::abs(v[2] - p[2]) < 1e-10)
+                return true;
+        return false;
+    };
+    check(contains(g, {1, 0, 1}) && contains(g, {3, 2, 1}) && contains(g, {2, 0, 1}) &&
+              contains(g, {.5, 0, 0}),
+          "all rail bends and unequal boundary segment positions survive surface construction");
+    double volume = 0;
+    for (const auto &t : g.faces) {
+        auto a = g.vertices[t[0]], b = g.vertices[t[1]], c = g.vertices[t[2]];
+        volume += (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) +
+                   a[2] * (b[0] * c[1] - b[1] * c[0])) /
+                  6.;
+    }
+    check(std::abs(std::abs(volume) - 8.) < 1e-9,
+          "closed translated square sweep retains its independently known volume");
+    auto open = reconstruct(fixture(false, false, false), policy);
+    check(open.unknown.empty() && open.faces.size() < g.faces.size(),
+          "guided loft caps are optional");
+    auto unequal = reconstruct(fixture(false, false, false, .5), policy);
+    auto t = std::sqrt(1.25) / (std::sqrt(1.25) + std::sqrt(3.25));
+    auto f = (.5 - t) / (1 - t);
+    check(unequal.unknown.empty() && contains(unequal, {2 - f, 0, .5 + 1.5 * f}),
+          "unequal guide spans use chord length parameters at the middle surface row");
+    policy.full_circle_segments = 4;
+    auto coarse = reconstruct(fixture(false, true, false), policy);
+    policy.chord_tolerance = .01;
+    auto fine = reconstruct(fixture(false, true, false), policy);
+    check(coarse.unknown.empty() && fine.unknown.empty() &&
+              fine.faces.size() > coarse.faces.size() && contains(fine, {3, 1, 1}),
+          "nonplanar guided patches refine while retaining guide corners");
+    policy.max_segments = 4;
+    auto limited = reconstruct(fixture(true, false, false), policy);
+    check(!limited.unknown.empty() && limited.faces.empty(),
+          "guided surface budget fails without partial mesh");
+    auto bad = reconstruct(fixture(true, false, true), Tessellation{});
+    check(!bad.unknown.empty() && bad.faces.empty(),
+          "misaligned guide endpoints do not silently distort geometry");
+}
+static void rational_guided_tests() {
+    const double pi = std::acos(-1.);
+    std::vector<GuidedBoundary> bottom, top, rails;
+    for (unsigned i = 0; i < 4; ++i) {
+        GuidedBoundary a;
+        a.ellipse = true;
+        a.axis_x = {1, 0, 0};
+        a.axis_y = {0, 1, 0};
+        a.start = i * pi / 2;
+        a.sweep = pi / 2;
+        bottom.push_back(a);
+        a.center = {0, 0, 2};
+        top.push_back(a);
+        // Every rail is the same semicircle translated to its profile vertex.
+        GuidedBoundary r;
+        r.ellipse = true;
+        r.center = {std::cos(i * pi / 2), std::sin(i * pi / 2), 1};
+        r.axis_x = {0, 0, -1};
+        r.axis_y = {1, 0, 0};
+        r.sweep = pi;
+        rails.push_back(r);
+    }
+    Tessellation policy;
+    policy.full_circle_segments = 8;
+    auto mesh = guided_surface(bottom, top, rails, policy);
+    auto close = [](Point3 a, Point3 b) {
+        return std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 1e-9;
+    };
+    bool midpoint = false;
+    for (const auto &ring : mesh.rings)
+        for (auto p : ring)
+            midpoint = midpoint || close(p, {1 + std::sqrt(.5), std::sqrt(.5), 1});
+    check(midpoint,
+          "rational translated profiles follow the analytic circle-plus-semicircle surface");
+    check(mesh.note["patches"][0]["u_degree"] == 3 && mesh.note["patches"][0]["u_poles"] == 4 &&
+              mesh.note["patches"][0]["v_degree"] == 2 && mesh.note["patches"][0]["v_poles"] == 5,
+          "native single-span arc elevation and two-span 180-degree guide basis are preserved");
+    for (const auto &ring : mesh.rings) {
+        check(close(ring.front(), ring.back()),
+              "closed guided surface shares the exact seam sample");
+        double z = ring.front()[2], cx = std::sqrt(std::max(0., 1 - (z - 1) * (z - 1)));
+        for (auto p : ring)
+            check(
+                std::abs(p[2] - z) < 1e-9 && std::abs(std::hypot(p[0] - cx, p[1]) - 1) < 1e-9,
+                "each rational surface row lies on the independently known translated unit circle");
+    }
+    policy.chord_tolerance = .05;
+    policy.max_segments = 200000;
+    auto fine = guided_surface(bottom, top, rails, policy);
+    check(fine.note["surface_to_mesh_error_bound"].get<double>() <= .05 &&
+              fine.rings.size() > mesh.rings.size(),
+          "positive-weight rational derivative bound drives refinement");
+    double maximum = 0;
+    // Triangle centroids must stay within the bound of the analytically known surface.
+    for (std::size_t j = 1; j < fine.rings.size(); ++j)
+        for (std::size_t i = 1; i < fine.rings[j].size(); ++i) {
+            for (auto vertices : {std::array<Point3, 3>{fine.rings[j - 1][i - 1],
+                                                        fine.rings[j - 1][i], fine.rings[j][i]},
+                                  std::array<Point3, 3>{fine.rings[j - 1][i - 1], fine.rings[j][i],
+                                                        fine.rings[j][i - 1]}}) {
+                Point3 p{};
+                for (auto v : vertices)
+                    for (unsigned k = 0; k < 3; ++k)
+                        p[k] += v[k] / 3;
+                double cx = std::sqrt(std::max(0., 1 - (p[2] - 1) * (p[2] - 1)));
+                maximum = std::max(maximum, std::abs(std::hypot(p[0] - cx, p[1]) - 1));
+            }
+        }
+    check(
+        maximum <= .05,
+        "rational mesh agrees with independent analytic cross sections within requested tolerance");
+    auto limited = policy;
+    limited.max_segments = 16;
+    rejects([&] { guided_surface(bottom, top, rails, limited); },
+            "rational surface budget rejects a whole mesh, never a partial one");
+    auto bad = rails;
+    bad[0].center[0] += .1;
+    rejects([&] { guided_surface(bottom, top, bad, policy); },
+            "misaligned rational guides are diagnosed");
+    auto closed = bottom;
+    closed[0].sweep = 4 * pi;
+    rejects([&] { guided_surface(closed, top, rails, policy); },
+            "multi-turn conics are not mistaken for one periodic circle");
+    auto full_bottom = bottom[0], full_top = top[0];
+    full_bottom.sweep = full_top.sweep = 2 * pi;
+    auto periodic = guided_surface({full_bottom}, {full_top}, {rails[0]}, policy);
+    bool circles = true;
+    for (const auto &ring : periodic.rings) {
+        double z = ring.front()[2], cx = std::sqrt(std::max(0., 1 - (z - 1) * (z - 1)));
+        for (auto p : ring)
+            circles = circles && std::abs(std::hypot(p[0] - cx, p[1]) - 1) < 1e-9;
+    }
+    check(circles && periodic.note["patches"][0]["u_poles"] == 7,
+          "periodic circle opens at its source seam and keeps the native seven-pole net");
+    std::vector<GuidedBoundary> composite;
+    for (const auto &rail : rails) {
+        GuidedBoundary group;
+        auto a = rail, b = rail;
+        a.sweep = b.sweep = pi / 2;
+        b.start = pi / 2;
+        group.parts = {a, b};
+        composite.push_back(group);
+    }
+    auto joined = guided_surface(bottom, top, composite, policy);
+    bool equal = joined.rings.size() == fine.rings.size();
+    for (std::size_t i = 0; equal && i < joined.rings.size(); ++i) {
+        equal = joined.rings[i].size() == fine.rings[i].size();
+        for (std::size_t j = 0; equal && j < joined.rings[i].size(); ++j)
+            equal = close(joined.rings[i][j], fine.rings[i][j]);
+    }
+    check(equal, "two quarter-arc guide commands agree with the independent semicircle sweep");
+    auto uneven = composite;
+    uneven[0] = rails[0];
+    auto weighted = guided_surface(bottom, top, uneven, policy);
+    bool weighted_circles = true;
+    for (const auto &ring : weighted.rings) {
+        double z = ring.front()[2], cx = std::sqrt(std::max(0., 1 - (z - 1) * (z - 1)));
+        for (auto p : ring)
+            weighted_circles = weighted_circles && std::abs(std::hypot(p[0] - cx, p[1]) - 1) < 1e-8;
+    }
+    check(weighted.note["composite_guide_parameterization"] ==
+                  "sequential_control_polygon_length" &&
+              weighted_circles,
+          "different native guide part counts select polygon-length joining");
+    std::vector<GuidedBoundary> triple;
+    for (const auto &rail : rails) {
+        GuidedBoundary group;
+        for (unsigned i = 0; i < 3; ++i) {
+            auto part = rail;
+            part.start = i * pi / 3;
+            part.sweep = pi / 3;
+            group.parts.push_back(part);
+        }
+        triple.push_back(group);
+    }
+    auto sequential = guided_surface(bottom, top, triple, policy);
+    bool second_joint = false;
+    for (const auto &ring : sequential.rings)
+        second_joint = second_joint || close(ring.front(), {1 + std::sqrt(3.) / 2, 0, 1.5});
+    check(second_joint, "three native guide parts retain the sequential join break at one half");
+
+    Json commands = Json::array({command(56, Bytes{1})});
+    auto arc = [&](Point3 origin, std::array<double, 4> rotation, double start, double sweep) {
+        Bytes raw;
+        for (auto x : origin)
+            put(raw, x);
+        for (auto x : rotation)
+            put(raw, x);
+        put(raw, 1.);
+        put(raw, 1.);
+        put(raw, start);
+        put(raw, sweep);
+        commands.push_back(command(5, raw));
+    };
+    for (unsigned s = 0; s < 2; ++s) {
+        commands.push_back(command(s ? 54 : 53, {}));
+        commands.push_back(command(21, Bytes{0}));
+        for (unsigned i = 0; i < 4; ++i)
+            arc({0, 0, s * 2.}, {1, 0, 0, 0}, i * pi / 2, pi / 2);
+        commands.push_back(command(22, {}));
+    }
+    commands.push_back(command(55, Bytes{1, 0, 0, 0, 4, 0, 0, 0}));
+    // Inverse source quaternion: columns of inverse rotation are -Z, +X, -Y.
+    for (unsigned i = 0; i < 4; ++i) {
+        commands.push_back(command(20, {}));
+        arc(rails[i].center, {.5, -.5, -.5, .5}, 0, pi);
+        commands.push_back(command(22, {}));
+    }
+    commands.push_back(command(19, {}));
+    auto geometry = reconstruct(commands, policy);
+    check(geometry.unknown.empty() && !geometry.faces.empty(),
+          "rational native command boundaries reach the surface evaluator");
+    bool command_midpoint = false;
+    for (auto p : geometry.vertices)
+        command_midpoint = command_midpoint || close(p, {1 + std::sqrt(.5), std::sqrt(.5), 1});
+    check(command_midpoint, "source inverse quaternion places curved guides on the intended side");
+    double volume = 0;
+    for (auto f : geometry.faces) {
+        auto a = geometry.vertices[f[0]], b = geometry.vertices[f[1]], c = geometry.vertices[f[2]];
+        volume += (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) +
+                   a[2] * (b[0] * c[1] - b[1] * c[0])) /
+                  6;
+    }
+    check(std::abs(std::abs(volume) - 2 * pi) < .05,
+          "closed rational sweep volume approaches its independent 2*pi value");
+    Tessellation coarse_policy;
+    coarse_policy.full_circle_segments = 8;
+    auto base = reconstruct(commands, coarse_policy);
+    Bytes affine;
+    for (double x : {2., 0., 0., 1000., 0., 3., 0., -2000., 0., 0., .5, 3000.})
+        put(affine, x);
+    auto transformed = commands;
+    transformed.insert(transformed.begin(), command(13, affine));
+    transformed.push_back(command(14, {}));
+    auto placed = reconstruct(transformed, coarse_policy);
+    bool same = placed.unknown.empty() && placed.vertices.size() == base.vertices.size();
+    for (std::size_t i = 0; same && i < base.vertices.size(); ++i) {
+        auto p = base.vertices[i];
+        same = close(placed.vertices[i], {2 * p[0] + 1000, 3 * p[1] - 2000, .5 * p[2] + 3000});
+    }
+    check(same, "native rational boundary construction commutes with nonuniform affine placement");
+
+    // Unequal profile bulges distinguish native pole blending from pointwise Coons.
+    std::vector<GuidedBoundary> lower(4), upper(4), bent(4);
+    const std::array<Point3, 4> corners = {{{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}}};
+    for (unsigned i = 0; i < 4; ++i) {
+        auto a = corners[i], b = corners[(i + 1) % 4];
+        lower[i].points = {a, b};
+        a[2] = b[2] = 2;
+        upper[i].points = {a, b};
+        auto c = corners[i];
+        bent[i].points = {c, {c[0] + .5, c[1], 1}, a};
+    }
+    lower[0].points = {{0, 0, 0}, {1, -1, 0}, {2, 0, 0}};
+    upper[0].points = {{0, 0, 2}, {1, -2, 2}, {2, 0, 2}};
+    auto asymmetric = guided_surface(lower, upper, bent, coarse_policy);
+    bool native_blend = false;
+    for (const auto &ring : asymmetric.rings)
+        for (auto p : ring)
+            native_blend = native_blend || close(p, {.75, -.5625, .5});
+    // At u=v=1/4, elevated pole coefficients interpolate the top bulge with 1/8.
+    // Ordinary parameter blending would instead yield y=-.625.
+    check(native_blend, "unequal profiles retain native piecewise pole blending");
+}
+static void guided_ring_tests() {
+    auto groups = command_fields(55, Bytes{2, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0});
+    check(groups["guide_group_count"] == 2 && groups["guide_counts"] == Json({4, 4}),
+          "native guide group counts are decoded without flattening ring identity");
+    check(command_fields(55, Bytes{2, 0, 0, 0, 4, 0, 0, 0}).contains("field_decode_error"),
+          "truncated guide-group table is diagnosed");
+    const std::vector<std::vector<Point3>> loops = {
+        {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0}, {-2, 2, 0}},
+        {{-1, -1, 0}, {-1, 1, 0}, {1, 1, 0}, {1, -1, 0}}};
+    Json commands = Json::array({command(56, Bytes{1})});
+    auto line = [&](Point3 a, Point3 b) {
+        Bytes raw;
+        put<std::uint32_t>(raw, 2);
+        for (auto p : {a, b})
+            for (auto x : p)
+                put(raw, x);
+        commands.push_back(command(1, raw));
+    };
+    for (unsigned s = 0; s < 2; ++s) {
+        commands.push_back(command(s ? 54 : 53, {}));
+        commands.push_back(command(21, Bytes{1}));
+        for (unsigned ring = 0; ring < 2; ++ring) {
+            if (ring)
+                commands.push_back(command(23, {}));
+            for (unsigned i = 0; i < 4; ++i) {
+                auto a = loops[ring][i], b = loops[ring][(i + 1) % 4];
+                a[2] = b[2] = 3 * s;
+                line(a, b);
+            }
+        }
+        commands.push_back(command(22, {}));
+    }
+    const auto group_at = commands.size();
+    commands.push_back(command(55, Bytes{2, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0}));
+    for (const auto &ring : loops)
+        for (auto a : ring) {
+            auto b = a;
+            b[2] = 3;
+            commands.push_back(command(20, {}));
+            line(a, b);
+            commands.push_back(command(22, {}));
+        }
+    commands.push_back(command(19, {}));
+    Tessellation policy;
+    policy.full_circle_segments = 8;
+    auto g = reconstruct(commands, policy);
+    check(g.unknown.empty() && !g.faces.empty() && g.notes.size() == 2,
+          "native paired rings and corresponding guide groups produce a hollow loft");
+    double volume = 0;
+    bool empty_hole = true;
+    for (auto f : g.faces) {
+        auto a = g.vertices[f[0]], b = g.vertices[f[1]], c = g.vertices[f[2]];
+        volume += (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) +
+                   a[2] * (b[0] * c[1] - b[1] * c[0])) /
+                  6;
+        if (a[2] == b[2] && b[2] == c[2]) {
+            double x = (a[0] + b[0] + c[0]) / 3, y = (a[1] + b[1] + c[1]) / 3;
+            empty_hole = empty_hole && (std::abs(x) >= 1 || std::abs(y) >= 1);
+        }
+    }
+    check(std::abs(volume - 36) < 1e-9 && empty_hole,
+          "hole walls and caps preserve exact hollow-prism volume and leave the hole empty");
+    auto bad = commands;
+    bad[group_at] = command(55, Bytes{2, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0});
+    auto broken = reconstruct(bad, policy);
+    check(!broken.unknown.empty() && broken.faces.empty(),
+          "invalid native group correspondence cannot return a partial multiring solid");
+    policy.max_segments = 20;
+    broken = reconstruct(commands, policy);
+    check(!broken.unknown.empty() && broken.faces.empty(),
+          "multiring surface obeys a total mesh budget");
 }
 static Geometry triangle() {
     Geometry g;
@@ -36,6 +1015,261 @@ static Geometry triangle() {
     g.primitive_ranges.push_back(
         {{"channel", "faces"}, {"start", 0}, {"count", 1}, {"style", Json::object()}});
     return g;
+}
+static void command_metadata_tests() {
+    Bytes b;
+    put<std::uint32_t>(b, 4);
+    put<std::uint32_t>(b, 0xffffffffu);
+    auto d = command_fields(40, b);
+    check(d["layer_id"] == 0xffffffffu && d["kind"] == 4 && d["value"] == 0xffffffffu,
+          "extension layer ID preserves its native sentinel and compatibility views");
+    Json style = {{"material_id", 987}};
+    apply_symbology_extension(style, d);
+    apply_symbology_extension(style, command_fields(40, Bytes(4, 0)));
+    check(style["layer_id"] == 0xffffffffu && style["material_id"] == 987,
+          "absent extension sections preserve prior layer and material state");
+    Bytes fill;
+    for (double x : {1.25, 2.5, 3.75})
+        put(fill, x);
+    put<std::uint16_t>(fill, 1);
+    put<std::uint16_t>(fill, 2);
+    put<std::uint16_t>(fill, 3);
+    put<std::uint16_t>(fill, 0xabcd);
+    put(fill, .125);
+    for (unsigned char x : {11, 22, 33, 44, 55, 66, 77, 88})
+        fill.push_back(x);
+    b.clear();
+    put<std::uint32_t>(b, 7);
+    put<std::uint16_t>(b, fill.size());
+    b.insert(b.end(), fill.begin(), fill.end());
+    put<std::uint32_t>(b, 0x80000009u);
+    put<std::uint32_t>(b, 114);
+    d = command_fields(40, b);
+    check(!d.contains("field_decode_error") && d["layer_id"] == 114 &&
+              d["inheritance_flags"] == 0x80000009u &&
+              d["fill_style_block"]["entries"][0]["color_bytes"] == Json({11, 22, 33}) &&
+              d["fill_style_block"]["entries"][0]["rgb"] == Json({11, 33, 22}) &&
+              d["fill_style_block"]["angle"] == 1.25 &&
+              d["fill_style_block"]["white_intensity"] == 2.5 &&
+              d["fill_style_block"]["shift"] == 3.75 &&
+              d["fill_style_block"]["mode_name"] == "curved" && d["by_layer"]["color"] == true &&
+              d["by_layer"]["line_weight"] == true && d["by_layer"]["fill_color"] == false &&
+              d["by_layer"]["unassigned_bits"] == 0x80000000u &&
+              d["fill_style_block"]["entries"][0]["position"] == .125 &&
+              d["fill_style_block"]["zero_padded_bytes"] == 112 &&
+              bytesof(d["fill_style_block"]["source_bytes"]) == fill,
+          "combined extension consumes variable fill block before inheritance and layer fields");
+    apply_symbology_extension(style, d);
+    apply_symbology_extension(style, command_fields(40, wire_bytes("010000000000")));
+    check(style["native_symbology_extension"]["fill_style_block"]["status"] == "clear" &&
+              style["native_symbology_extension"]["inheritance_flags"] == 0x80000009u &&
+              style["layer_id"] == 114,
+          "clearing a fill block does not clear unrelated extension fields");
+    for (auto n : {0u, 3u, 5u, 20u, 53u, 57u, 61u})
+        check(command_fields(40, slice(b, 0, n)).contains("field_decode_error"),
+              "truncated variable extension is diagnosed");
+    check(command_fields(40, wire_bytes("08000000")).contains("field_decode_error"),
+          "unknown extension flag does not pretend to have a known payload layout");
+    Bytes full_fill(160, 0);
+    full_fill[24] = 9;
+    Bytes full_extension = wire_bytes("01000000a000");
+    full_extension.insert(full_extension.end(), full_fill.begin(), full_fill.end());
+    d = command_fields(40, full_extension);
+    check(
+        d["fill_style_block"]["declared_entry_count"] == 9 &&
+            d["fill_style_block"]["entries"].size() == 8,
+        "fill entry count is clamped to native eight-entry storage without losing declared count");
+    full_extension[4] = 161;
+    full_extension.push_back(0);
+    check(command_fields(40, full_extension).contains("field_decode_error"),
+          "oversized native fill block is rejected instead of overflowing fixed storage");
+    Bytes id;
+    put<std::uint32_t>(id, 0x45644964);
+    put<std::uint32_t>(id, 8);
+    append_wire(id, "1500000102");
+    d = command_fields(29, id);
+    check(!d.contains("field_decode_error") && !d.contains("identifier") &&
+              d["curve_identifier"]["type_name"] == "curve_array" &&
+              d["curve_identifier"]["topology"]["type_name"] == "curve_array" &&
+              d["curve_identifier"]["topology"]["ids"] == Json({0, 1, 2}),
+          "curve identifiers have a container and variable-width topology, not a fixed uint64 ID");
+    for (unsigned code = 0; code < 3; ++code) {
+        id.resize(8);
+        id.push_back(24);
+        id.push_back(code);
+        for (auto v : {1u, 0xffffffffu}) {
+            if (!code)
+                put<std::uint8_t>(id, v);
+            else if (code == 1)
+                put<std::uint16_t>(id, v);
+            else
+                put(id, v);
+        }
+        d = command_fields(29, id);
+        check(d["curve_identifier"]["topology"]["ids"][1] == (code == 0   ? 255u
+                                                              : code == 1 ? 65535u
+                                                                          : 0xffffffffu),
+              "one-, two- and four-byte topology IDs preserve unsigned values");
+    }
+    id.resize(4);
+    put<std::uint32_t>(id, 8u | (5u << 16));
+    append_wire(id, "1500000102040003000400");
+    d = command_fields(29, id);
+    check(d["curve_identifier"]["topology"]["ids"] == Json({0, 1, 2}) &&
+              d["curve_identifier"]["compound_draw_state_status"] == "decoded_layout" &&
+              d["curve_identifier"]["compound_draw_state_decoded"]["function_code"] == 3 &&
+              d["curve_identifier"]["compound_draw_state_decoded"]["unassigned_words"] ==
+                  Json({4}) &&
+              bytesof(d["curve_identifier"]["compound_draw_state"]) == wire_bytes("03000400"),
+          "compound drawing state is split at the declared ID boundary and decodes native words");
+    auto odd_state = id;
+    odd_state[13] = 5;
+    odd_state.push_back(0xab);
+    auto odd = command_fields(29, odd_state)["curve_identifier"];
+    check(odd["compound_draw_state_status"] == "decoded_with_trailing_byte" &&
+              bytesof(odd["compound_draw_state_decoded"]["trailing_bytes"]) == Bytes({0xab}),
+          "odd compound-state byte is retained although native loader ignores it");
+    id[13] = 3;
+    d = command_fields(29, id);
+    check(d["curve_identifier"]["compound_draw_state_status"] == "invalid_fallback_to_id_data" &&
+              bytesof(d["curve_identifier"]["id_data"]) == slice(id, 8, id.size() - 8),
+          "invalid optional extension preserves the native fallback ID bytes");
+    d = command_fields(29, wire_bytes("644964450000000015000100"));
+    check(d["identifier"] == 281565171023872ull &&
+              d["curve_identifier"]["topology_status"] == "opaque_for_native_type" &&
+              !d["curve_identifier"].contains("topology"),
+          "native cut identifiers are not guessed as topology arrays from coincidental bytes");
+    check(command_fields(29, wire_bytes("64496445")).contains("field_decode_error"),
+          "recognized curve marker requires its container header");
+    auto long_id = wire_bytes("64496445080000001500");
+    long_id.resize(long_id.size() + 256, 1);
+    auto topology = command_fields(29, long_id)["curve_identifier"]["topology"];
+    check(topology["ids"].size() == 256 && topology["native_count"] == 0 &&
+              topology["status"] == "exceeds_native_count_range",
+          "identifier overflow does not reproduce native uint8 count truncation as data loss");
+    for (auto suffix : {"150301", "15020102"}) {
+        auto broken_id = wire_bytes("6449644508000000");
+        append_wire(broken_id, suffix);
+        auto container = command_fields(29, broken_id)["curve_identifier"];
+        check(container.contains("topology_decode_error") &&
+                  bytesof(container["id_data"]) == wire_bytes(suffix),
+              "bad nested topology preserves identifier data with a local diagnostic");
+    }
+    b.clear();
+    put<std::uint16_t>(b, 0x7fff);
+    for (unsigned v : {101, 102, 103, 104, 105, 106, 107, 108, 109, 110})
+        put(b, v);
+    put(b, .375);
+    put<std::uint32_t>(b, 111);
+    put<std::uint64_t>(b, 0xfedcba9876543210ull);
+    put<std::int32_t>(b, -23);
+    put<std::uint32_t>(b, 0x12345678);
+    d = decode_symbology(b);
+    check(d["field_0020"] == 105 && d["field_0010"] == 106 && d["fill_color_index"] == 109 &&
+              d["line_weight"] == 110 && d["transparency"] == .375 && d["field_1000"] == 111 &&
+              d["material_id"] == 0xfedcba9876543210ull && d["line_style"] == -23 &&
+              d["fill_mode"] == 107 && d["subitem_index"] == 111 &&
+              d["true_color_packed"] == 0x12345678u,
+          "complete symbology bit layout follows native order and preserves 64-bit material IDs");
+    check(d["true_color_rgb"] == Json({0x78, 0x56, 0x34}) &&
+              d["true_color_unassigned_high_byte"] == 0x12,
+          "packed direct color decodes low three RGB bytes and does not guess alpha");
+    apply_symbology(style, d);
+    apply_symbology(style, {{"flags", 128}, {"color_index", 42}});
+    check(!style.contains("true_color_packed") && !style.contains("true_color_rgb") &&
+              !style.contains("true_color_unassigned_high_byte") && style["color_index"] == 42,
+          "new indexed color supersedes a previous packed color");
+    Bytes modifiers;
+    put<std::uint32_t>(modifiers, 0x1fffu);
+    for (double x : {1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 1., 0., 0., 0.})
+        put(modifiers, x);
+    put<std::uint32_t>(modifiers, 0xffffffffu);
+    put<std::uint32_t>(modifiers, 0x87654321u);
+    auto with_modifiers = [](const Bytes &mod) {
+        Bytes body;
+        put<std::uint16_t>(body, 0x8000);
+        put<std::uint16_t>(body, mod.size());
+        body.insert(body.end(), mod.begin(), mod.end());
+        return body;
+    };
+    auto mod = decode_symbology(with_modifiers(modifiers))["line_style_modifiers"];
+    check(mod["fields"].size() == 9 && mod["fields"][6]["float64_view"] == 7. &&
+              mod["orientation_vector"] == Json({8., 9., 10.}) &&
+              mod["orientation_quaternion"] == Json({1., 0., 0., 0.}) &&
+              mod["fields"][7]["storage_uint32"] == 0xffffffffu &&
+              mod["fields"][8]["storage_uint32"] == 0x87654321u &&
+              mod["consumed_bytes"] == modifiers.size() && mod["unassigned_flag_bits"] == 0x400u &&
+              mod["named_values"]["scale"] == 1. && mod["named_values"]["dash_scale"] == 2. &&
+              mod["named_values"]["start_width"] == 4. &&
+              mod["named_values"]["fraction_phase"] == 7. &&
+              mod["named_values"]["multiline_index"] == 0xffffffffu &&
+              mod["centered_shift"] == true,
+          "line modifier optional scalar, vector, quaternion and integer fields follow native "
+          "layout");
+    for (auto n : {4u, 60u, 84u, 116u, 120u, 123u})
+        check(command_fields(28, with_modifiers(slice(modifiers, 0, n)))
+                  .contains("field_decode_error"),
+              "modifier flags cannot read beyond their declared block");
+    modifiers.push_back(0x55);
+    mod = decode_symbology(with_modifiers(modifiers))["line_style_modifiers"];
+    check(bytesof(mod["trailing_bytes"]) == Bytes({0x55}) && mod["raw_hex"] == hex(modifiers),
+          "unconsumed modifier extension bytes remain available");
+    mod = decode_symbology(with_modifiers(wire_bytes("80000000")))["line_style_modifiers"];
+    check(mod["fields"].empty() && mod["consumed_bytes"] == 4,
+          "native flag-only modifier bits consume no scalar payload");
+    Json line_style = {{"line_style", 1}, {"line_style_modifiers", mod}};
+    apply_symbology(line_style, {{"flags", 0x400}, {"line_style", 2}});
+    check(!line_style.contains("line_style_modifiers"),
+          "changing native line style clears modifiers from the previous line style");
+    apply_symbology(line_style,
+                    {{"flags", 0x8400}, {"line_style", 3}, {"line_style_modifiers", mod}});
+    check(line_style["line_style_modifiers"] == mod,
+          "modifier supplied with new line style is applied after clearing old state");
+
+    NativeScene views;
+    auto definition = std::make_shared<GeometryDefinition>();
+    definition->geometry = triangle();
+    views.definitions.push_back(definition);
+    views.metadata = {{"color_tables", Json::array()},
+                      {"materials", {{"definitions", Json::array()}}}};
+    SceneElement element;
+    element.metadata = {{"model_id", 13}, {"unknown", Json::array()}};
+    GeometryInstance instance;
+    instance.definition = 0;
+    instance.matrix = identity();
+    instance.style = {{"layer_id", 114}, {"true_color_packed", 0x12345678u}};
+    element.instances.push_back(instance);
+    views.elements.push_back(element);
+    views.for_each_primitive([&](const PrimitiveView &v) {
+        check(v.style["layer_id"] == 114 &&
+                  v.appearance["color"]["rgb"] == Json({0x78, 0x56, 0x34}) &&
+                  v.appearance["color"]["source"] == "native_packed_color",
+              "primitive color summary never treats packed color as an indexed palette value");
+    });
+    views.elements[0].instances[0].style["native_symbology_extension"] = {{"inheritance_flags", 1}};
+    views.for_each_primitive([&](const PrimitiveView &v) {
+        check(v.appearance["color"]["source"] == "native_inheritance_rules_not_evaluated",
+              "unresolved native inheritance is not reported as a resolved RGB color");
+    });
+    views.elements[0].instances[0].style["native_symbology_extension"] = {
+        {"fill_style_block", {{"status", "decoded_gradient_fill_with_unassigned_flags"}}}};
+    views.for_each_primitive([&](const PrimitiveView &v) {
+        check(v.appearance["color"]["source"] == "native_gradient_fill" &&
+                  v.appearance["color"]["rgb"].is_null(),
+              "gradient fill is not reduced to an unrelated solid palette color");
+    });
+    Json commands = Json::array({command(40, wire_bytes("0400000072000000"))});
+    Bytes line;
+    put<std::uint32_t>(line, 2);
+    for (double x : {0., 0., 0., 1., 0., 0.})
+        put(line, x);
+    commands.push_back(command(1, line));
+    auto geo = reconstruct(commands, Tessellation{});
+    check(geo.unknown.empty() && geo.primitive_ranges[0]["style"]["layer_id"] == 114,
+          "native layer change reaches generated primitive ranges");
+    commands[0] = command(40, wire_bytes("04000000"));
+    geo = reconstruct(commands, Tessellation{});
+    check(!geo.unknown.empty(), "damaged metadata commands are no longer silently ignored");
 }
 static Bytes drawing_fixture(bool substation, unsigned version) {
     Bytes b;
@@ -107,7 +1341,17 @@ static Bytes electrical_fixture(unsigned data_version) {
         put<std::uint64_t>(b, 0); // strings
     put<std::uint32_t>(b, 0);     // PSXSectManager cereal type version
     put<std::uint32_t>(b, 0);
-    put<std::uint64_t>(b, 0); // section collection
+    put<std::uint64_t>(b, std::size(electrical_wire::sections));
+    unsigned section_index = 0;
+    for (auto text : electrical_wire::sections) {
+        if (!section_index)
+            put<std::uint32_t>(b, 0); // PSXsectAndMatType registration
+        put<std::uint32_t>(b, 0);
+        auto group = wire_bytes(text);
+        group.resize(800, 0xa5); // deliberately nonzero unused capacity
+        b.insert(b.end(), group.begin(), group.end());
+        put<std::uint32_t>(b, 700 + section_index++);
+    }
     put<std::uint64_t>(b, 2); // material map
     for (int i = 0; i < 2; ++i) {
         put<std::int32_t>(b, i - 1);
@@ -184,7 +1428,7 @@ static Bytes electrical_fixture(unsigned data_version) {
         }
     }
     put<std::uint8_t>(b, 1);
-    put<std::uint64_t>(b, 0); // support columns
+    append_wire(b, electrical_wire::columns);
     put<std::uint64_t>(b, 3); // TrussBeamPar
     for (unsigned v : {0u, 1u, 3u}) {
         put<std::int32_t>(b, 400 + v);
@@ -195,8 +1439,8 @@ static Bytes electrical_fixture(unsigned data_version) {
             if (v != 0 || offset != 4)
                 put<std::uint32_t>(b, 500 + offset);
     }
-    for (int i = 0; i < 2; ++i)
-        put<std::uint64_t>(b, 0); // other design collections
+    append_wire(b, electrical_wire::beams);
+    append_wire(b, electrical_wire::human_columns);
     if (data_version >= 1) {
         put<std::uint64_t>(b, 2); // LineSubsBeamCols
         for (int i = 0; i < 2; ++i) {
@@ -230,10 +1474,256 @@ static Bytes electrical_fixture(unsigned data_version) {
 }
 int main() {
     try {
+        attribute_semantics_tests();
+        layer_group_tests();
+        view_link_sequence_tests();
+        material_index_tests();
+        section_clip_tests();
+        inline_material_tests();
+        embedded_texture_tests();
+        box_center_tests();
+        guided_surface_tests();
+        rational_guided_tests();
+        guided_ring_tests();
+        command_metadata_tests();
         for (unsigned version = 0; version <= 2; ++version) {
             auto b = electrical_fixture(version);
             auto decoded = decode_binary_field("CerealDatas", b, "ElecParaData").at("decoded");
             auto &collections = decoded["collections"];
+            auto &sections = decoded["section_parameters"]["collection"]["entries"];
+            check(sections.size() == std::size(electrical_wire::sections),
+                  "all explicit section layouts and generic layout accept nonempty records");
+            check(sections[0]["section_group"]["section_type_label"] == "矩" &&
+                      sections[2]["section_group"]["section_type_label"] == "工" &&
+                      sections.back()["section_group"]["section_type_label"] == "C",
+                  "section type labels use native codes including extended type codes");
+            for (std::size_t i = 0; i < sections.size(); ++i) {
+                auto &section = sections[i]["section_group"];
+                auto &members = section["members"];
+                check(section["version"] == i % 2 &&
+                          sections[i]["member_0xcc"]["storage_uint32"] == 700 + i,
+                      "old and current section headers preserve enclosing record boundaries");
+                auto tail = bytesof(section["unused_capacity"]["source_bytes"]);
+                check(!tail.empty() &&
+                          std::all_of(tail.begin(), tail.end(), [](auto v) { return v == 0xa5; }),
+                      "section capacity bytes are retained without interpretation as parameters");
+                check(members[0]["count"] == 3 && members[0]["entries"][2]["storage_uint32"] == 83,
+                      "section extension array is distinct from the fixed section members");
+                auto string_index = i % 2 ? 3u : 2u;
+                check(members[string_index]["text"] == "Section-A" &&
+                          members[string_index + 1]["text"] == "" &&
+                          members[string_index + 2]["text"] == "Grade-42",
+                      "section strings include empty values and bounded variable lengths");
+                for (auto &m : members)
+                    if (m.contains("storage_uint16") || m.contains("storage_uint32")) {
+                        auto value = m.contains("storage_uint16") ? m["storage_uint16"]
+                                                                  : m["storage_uint32"];
+                        check(value == 1000 + m["native_member_offset"].get<unsigned>(),
+                              "section field widths and native member offsets match wire values");
+                    }
+            }
+            const unsigned member_counts[] = {7, 10, 11, 18, 21, 22, 24};
+            if (version == 0) {
+                const std::map<std::int16_t, std::vector<std::string>> expected_subtypes = {
+                    {31, {"工", "工"}},
+                    {32, {"槽", "槽"}},
+                    {33, {"L", "不等边L"}},
+                    {34,
+                     {"等边角钢┓┏", "不等边角钢长边┒┎", "不等边角钢短边┒┎", "等边角钢┓┗",
+                      "等边角钢┎  ┒", "不等边等边角钢┎  ┒"}},
+                    {35, {"槽][", "槽[]", "槽][", "槽[]", "槽[]", "槽[]"}}};
+                for (const auto &expected : expected_subtypes) {
+                    std::size_t first = 0;
+                    while (first < sections.size() &&
+                           sections[first]["section_group"]["section_type"] !=
+                               (expected.first == 32 ? 31 : expected.first))
+                        ++first;
+                    check(first + 1 < sections.size(), "subtype wire fixture exists");
+                    for (unsigned header = 0; header < 2; ++header) {
+                        const auto &group = sections[first + header]["section_group"];
+                        const auto group_offset = group["offset"].get<std::size_t>();
+                        std::size_t subtype_offset = 0;
+                        for (const auto &member : group["members"])
+                            if (member["native_member_offset"] == 8)
+                                subtype_offset = group_offset + member["offset"].get<std::size_t>();
+                        check(subtype_offset > group_offset,
+                              "subtype offset is relative to its group");
+                        for (std::int16_t code = -1;
+                             code <= static_cast<std::int16_t>(expected.second.size()) + 1;
+                             ++code) {
+                            auto changed = b;
+                            std::memcpy(changed.data() + group_offset, &expected.first, 2);
+                            std::memcpy(changed.data() + subtype_offset, &code, 2);
+                            auto result =
+                                decode_binary_field("CerealDatas", changed, "ElecParaData")
+                                    .at("decoded")["section_parameters"]["collection"]["entries"]
+                                                  [first + header]["section_group"];
+                            const bool known =
+                                code > 0 && std::size_t(code) <= expected.second.size();
+                            check(result["section_type"] == expected.first &&
+                                      result["section_subtype"] == code &&
+                                      result.contains("section_type_label") == known,
+                                  "section subtype labels require a supported signed subtype code");
+                            if (known)
+                                check(
+                                    result["section_type_label"] == expected.second[code - 1],
+                                    "native section labels retain orientation symbols and spaces");
+                            for (const auto &member : result["members"])
+                                if (member["native_member_offset"] == 8)
+                                    check(member["name"] == "section_subtype" &&
+                                              member["value"] == code &&
+                                              member["storage_uint16"] == std::uint16_t(code) &&
+                                              member["enum_status"] ==
+                                                  (known ? "identified" : "unknown_value"),
+                                          "subtype interpretation retains the exact source word");
+                        }
+                    }
+                }
+                for (const auto &section : sections) {
+                    const auto &group = section["section_group"];
+                    const auto type = group["section_type"].get<int>();
+                    if (type == 201 || type == 202)
+                        check(
+                            group["section_type_label"] ==
+                                    (type == 201 ? "矩型钢混凝土" : "圆管型钢混凝土") &&
+                                !group.contains("section_subtype"),
+                            "composite section labels do not turn size fields into subtype codes");
+                }
+            }
+            auto &columns = collections[5]["entries"];
+            for (unsigned v = 0; v <= 6; ++v)
+                check(columns[v]["value"]["version"] == v &&
+                          columns[v]["value"]["members"].size() == member_counts[v] &&
+                          columns[v]["value"].contains("cereal_version") == (v == 0),
+                      "all support-column versions preserve cereal registration and member "
+                      "boundaries");
+            auto &column_tail = columns[6]["value"]["members"];
+            {
+                auto &segments = column_tail[21];
+                check(segments["name"] == "bar_segments_by_elevation" &&
+                          segments["entries"][0]["key"]["name"] == "upper_elevation" &&
+                          segments["entries"][0]["key"]["value"] == -17.25 &&
+                          segments["entries"][0]["value"]["value"] == -123 &&
+                          segments["entries"][0]["value"]["index_base"] == 1 &&
+                          !segments["entries"][0]["key"].contains("unit"),
+                      "elevation map keeps native signed segment ordinals and unknown units");
+                auto expanded = b;
+                auto offset = segments["offset"].get<std::size_t>();
+                const std::uint64_t count = 3;
+                std::memcpy(expanded.data() + offset, &count, sizeof(count));
+                Bytes more;
+                put(more, -17.25);
+                put(more, std::int32_t(2));
+                put(more, 4.75);
+                put(more, std::int32_t(0));
+                expanded.insert(expanded.begin() + offset + 8 + 12, more.begin(), more.end());
+                auto mapped = decode_binary_field("CerealDatas", expanded, "ElecParaData")
+                                  .at("decoded")["collections"][5]["entries"][6]["value"]["members"]
+                                                [21]["entries"];
+                check(mapped.size() == 3 && mapped[0]["key"]["value"] == -17.25 &&
+                          mapped[1]["key"]["value"] == -17.25 &&
+                          mapped[0]["value"]["value"] == -123 && mapped[1]["value"]["value"] == 2 &&
+                          mapped[2]["key"]["value"] == 4.75 && mapped[2]["value"]["value"] == 0,
+                      "segment maps preserve duplicate bounds, zero indices and source ordering");
+            }
+            for (unsigned v = 0; v <= 6; ++v) {
+                auto &members = columns[v]["value"]["members"];
+                check(members[6]["name"] == "column_section_count" && members[6]["value"] == 1006 &&
+                          members[6]["storage_type"] == "int32" && !members[0].contains("name"),
+                      "column count is identified without naming unrelated members");
+                if (v >= 1)
+                    check(members[7]["name"] == "column_type" && members[7]["value"] == 1007 &&
+                              members[7]["enum_status"] == "unknown_value" &&
+                              !members[7].contains("enum_label"),
+                          "unrecognized native column types retain the original code");
+                if (v >= 3)
+                    check(members[13]["name"] == "fire_wall_height" &&
+                              members[13]["native_property_name"] == "fireWallH" &&
+                              members[13]["value"] == members[13]["float64_view"] &&
+                              !members[13].contains("unit"),
+                          "domain height mapping does not assume a length unit");
+            }
+            for (unsigned i = 22; i <= 23; ++i) {
+                auto &map = column_tail[i];
+                check(map["native_property_name"] == (i == 22 ? "colParam" : "beamParam") &&
+                          map["entries"][0]["key"]["value"] == -31 &&
+                          map["entries"][0]["value"].size() == 2 &&
+                          map["entries"][0]["value"][1]["storage_type"] == "float64" &&
+                          map["entries"][0]["value"][1]["value"] ==
+                              map["entries"][0]["value"][1]["float64_view"],
+                      "domain parameter maps preserve vector sizes and signed keys");
+            }
+            for (std::int32_t code : {0, 1, 2, -9}) {
+                auto typed_bytes = b;
+                auto offset = column_tail[7]["offset"].get<std::size_t>();
+                std::memcpy(typed_bytes.data() + offset, &code, sizeof(code));
+                auto changed_type =
+                    decode_binary_field("CerealDatas", typed_bytes, "ElecParaData")
+                        .at("decoded")["collections"][5]["entries"][6]["value"]["members"][7];
+                check(changed_type["value"] == code &&
+                          changed_type["storage_uint32"] == static_cast<std::uint32_t>(code) &&
+                          changed_type["enum_status"] ==
+                              (code == 0 || code == 1 ? "identified" : "unknown_value") &&
+                          changed_type.contains("enum_label") == (code == 0 || code == 1),
+                      "column enum labels are limited to confirmed values");
+                if (code == 0 || code == 1)
+                    check(changed_type["enum_label"] == (code == 0 ? "人字柱" : "格构柱"),
+                          "column enum labels match their native type guards");
+            }
+            check(column_tail[21]["entries"][0]["key"]["float64_view"] == -17.25 &&
+                      column_tail[22]["entries"][0]["value"][1]["storage_uint64"] ==
+                          0x20000000000002ull &&
+                      column_tail[23]["entries"][0]["key"]["int32_view"] == -31,
+                  "column nested maps retain double keys and full-width vector storage");
+            const unsigned beam_counts[] = {16, 19, 24, 29, 31, 33};
+            for (unsigned v = 0; v <= 5; ++v) {
+                auto &beam = collections[7]["entries"][v];
+                auto &m = beam["members"];
+                check(beam["version"] == v && m.size() == beam_counts[v] &&
+                          !m[0].contains("cereal_version") && !m[2].contains("cereal_version"),
+                      "truss versions reuse point and parameter registrations from earlier maps");
+                check(m[10]["native_member_offset"] == 0x138 &&
+                          m[11]["native_member_offset"] == 0x138 &&
+                          m[10]["entries"][0]["storage_uint32"] == 1010 &&
+                          m[11]["entries"][0]["storage_uint32"] == 1011,
+                      "repeated truss source member occurrences are not merged or overwritten");
+                if (v >= 1)
+                    check(m[16]["entries"].size() == 2 &&
+                              m[17]["entries"][1]["point_forces"][0]["flag_member_0x1c"] == 7,
+                          "truss point vectors include nested loads and share global type "
+                          "registration");
+            }
+            const unsigned human_counts[] = {12, 14, 29, 30, 44};
+            for (unsigned v = 0; v <= 4; ++v) {
+                auto &human = collections[8]["entries"][v];
+                auto &m = human["members"];
+                check(human["version"] == v && m.size() == human_counts[v] &&
+                          m[3]["version"] == 6 && !m[3].contains("cereal_version"),
+                      "human column versions reuse the support-column parameter registry");
+                check(m[0]["name"] == "start_point" && m[1]["name"] == "end_point" &&
+                          m[2]["name"] == "rotation" && m[2]["unit"] == "rad" &&
+                          m[2]["value"] == m[2]["float64_view"] && m[2]["storage_uint64"] == 1002 &&
+                          m[3]["members"][6]["name"] == "column_section_count",
+                      "human column geometry parameters and nested semantic fields are preserved");
+                check(m[8]["native_member_offset"] == 0x1a0 &&
+                          m[9]["native_member_offset"] == 0x1a0 &&
+                          m[8]["entries"][0]["storage_uint32"] == 1008 &&
+                          m[9]["entries"][0]["storage_uint32"] == 1009,
+                      "repeated human-column source member occurrences remain distinct");
+            }
+            {
+                auto typed_bytes = b;
+                auto &human = collections[8]["entries"][0]["members"];
+                double angle = -0.75;
+                auto offset = human[2]["offset"].get<std::size_t>();
+                std::memcpy(typed_bytes.data() + offset, &angle, sizeof(angle));
+                auto changed_human = decode_binary_field("CerealDatas", typed_bytes, "ElecParaData")
+                                         .at("decoded")["collections"][8]["entries"][0]["members"];
+                check(changed_human[2]["value"] == angle && changed_human[2]["unit"] == "rad" &&
+                          changed_human[0].dump() == human[0].dump() &&
+                          changed_human[1].dump() == human[1].dump(),
+                      "native rotations remain radians and do not alter the original endpoints");
+            }
             check(collections.size() == 9 + version &&
                       collections[0]["entries"][1]["value"]["members"][1]["float32_view"] == 3.5,
                   "electrical collection boundaries and material type registration");
@@ -278,16 +1768,85 @@ int main() {
                   "truncated nonempty electrical collection is rejected");
             b = electrical_fixture(version);
             auto unsupported_offset = beams[0]["value"]["offset"].get<std::size_t>() + 4;
-            std::uint32_t unsupported = 2;
+            std::uint32_t unsupported = 4;
             std::memcpy(b.data() + unsupported_offset, &unsupported, 4);
             check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
                   "unsupported truss beam parameter version is not guessed from neighboring "
                   "versions");
             b = electrical_fixture(version);
+            std::uint32_t empty_version = 2;
+            std::memcpy(b.data() + unsupported_offset, &empty_version, 4);
+            auto payload_begin = unsupported_offset + 4;
+            b.erase(b.begin() + payload_begin, b.begin() + payload_begin + 7 * 4);
+            auto empty_parameter = decode_binary_field("CerealDatas", b, "ElecParaData");
+            check(empty_parameter.contains("encoding"), "native version 2 has no member payload");
+            const auto &empty_entries = empty_parameter["decoded"]["collections"][6]["entries"];
+            check(empty_entries[0]["value"]["members"].empty() &&
+                      empty_entries[0]["value"]["member_payload_status"] == "not_serialized" &&
+                      empty_entries[1]["value"]["members"].size() == 9 &&
+                      empty_entries[2]["value"]["members"].size() == 8,
+                  "empty version 2 record does not consume subsequent entries or invent defaults");
+            b = electrical_fixture(version);
             auto oversized = std::numeric_limits<std::uint64_t>::max();
-            std::memcpy(b.data() + 44, &oversized, 8);
+            auto material_offset = collections[0]["offset"].get<std::size_t>();
+            std::memcpy(b.data() + material_offset, &oversized, 8);
             check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
                   "malicious electrical collection length is rejected before allocation");
+            for (unsigned collection : {5u, 7u, 8u}) {
+                b = electrical_fixture(version);
+                auto &entry = collections[collection]["entries"][0];
+                auto &value = collection == 5 ? entry["value"] : entry;
+                auto pos = value["offset"].get<std::size_t>() + 4;
+                std::uint32_t future = 99;
+                std::memcpy(b.data() + pos, &future, 4);
+                check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                      "unsupported design record versions reject the complete field");
+            }
+            b = electrical_fixture(version);
+            auto group_offset = sections[0]["section_group"]["offset"].get<std::size_t>();
+            std::uint16_t excessive_length = 801;
+            std::memcpy(b.data() + group_offset + 2, &excessive_length, 2);
+            check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                  "section embedded length cannot exceed enclosing block capacity");
+            b = electrical_fixture(version);
+            std::int16_t bad_count = 32767;
+            std::memcpy(b.data() + group_offset + 4, &bad_count, 2);
+            check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                  "section extension length cannot consume neighboring records");
+            b = electrical_fixture(version);
+            auto text_offset =
+                group_offset +
+                sections[0]["section_group"]["members"][2]["offset"].get<std::size_t>();
+            b[text_offset + 2] = 0xff;
+            auto altered = decode_binary_field("CerealDatas", b, "ElecParaData").at("decoded");
+            auto &source_string = altered["section_parameters"]["collection"]["entries"][0]
+                                         ["section_group"]["members"][2];
+            check(!source_string.contains("text") &&
+                      bytesof(source_string["source_bytes"])[0] == 0xff,
+                  "unknown section code pages preserve original bytes without text substitution");
+            b = electrical_fixture(version);
+            auto negative_length = std::int16_t(-1);
+            std::memcpy(b.data() + text_offset, &negative_length, 2);
+            check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                  "negative section string lengths reject the complete field");
+            for (auto offset :
+                 {column_tail[22]["offset"].get<std::size_t>(),
+                  collections[7]["entries"][1]["members"][16]["offset"].get<std::size_t>()}) {
+                b = electrical_fixture(version);
+                std::memcpy(b.data() + offset, &oversized, 8);
+                check(!decode_binary_field("CerealDatas", b, "ElecParaData").contains("encoding"),
+                      "nested parameter-map and point-vector counts are bounded before allocation");
+            }
+            b = electrical_fixture(version);
+            b.resize(decoded["changed_joints"]["offset"].get<std::size_t>());
+            std::uint32_t outer_version = 0;
+            std::memcpy(b.data(), &outer_version, 4);
+            auto outer_zero = decode_binary_field("CerealDatas", b, "ElecParaData").at("decoded");
+            // Unconfirmed floating views can be NaN for integer bit patterns;
+            // compare the serialized view, which also retains every storage word.
+            check(!outer_zero.contains("changed_joints") &&
+                      outer_zero["collections"].dump() == collections.dump(),
+                  "outer version zero retains all nested records without a changed-joints tail");
         }
         for (unsigned version : {0u, 1u}) {
             auto payload = drawing_fixture(false, version);
@@ -705,7 +2264,7 @@ int main() {
         cap_bytes.pop_back();
         check(decode_cap(cap_bytes).value("encoding", "") != "pilecap_section_cereal",
               "truncated cap is not accepted");
-        for (std::int32_t shape : {-1, 0, 2, 3}) {
+        for (std::int32_t shape : {-1, 0, 2, 3, 5, 6, 7, 99}) {
             auto b = cap_fixture(3, 0, 2, 1, 2, {400, 600});
             std::memcpy(b.data() + 24, &shape, sizeof(shape));
             const auto base = decode_cap(b)["decoded"]["pile_section"]["base"];
@@ -717,6 +2276,34 @@ int main() {
                                   : !values.contains("section_diameter") &&
                                         base["members"][0]["enum_label"].is_null()),
                   "pile dimensions are scoped to the source shape, with unknown codes retained");
+            if (shape == 5 || shape == 6)
+                check(values["section_outer_diameter"] == 701 &&
+                          values["section_wall_thickness"] == 71 &&
+                          base["members"][7]["native_member"] == "0x1f0" &&
+                          base["members"][7]["unit"] == "mm" &&
+                          base["identified_member_count"] == 9 &&
+                          base["members"][0]["enum_status"] == "unknown_value",
+                      "hollow circular dimensions do not guess engineering subtype names");
+            else if (shape == 7)
+                check(
+                    values["first_circle_radius"] == 702 && values["second_circle_radius"] == 701 &&
+                        values["circle_center_spacing"] == 71 &&
+                        !values.contains("section_wall_thickness") &&
+                        base["members"][7]["native_member"] == "0x1f0" &&
+                        base["members"][7]["unit"] == "mm" &&
+                        base["identified_member_count"] == 10 &&
+                        base["members"][0]["enum_status"] == "unknown_value",
+                    "two-circle pile parameters use radii and center spacing, not tube thickness");
+            else
+                check(!values.contains("section_outer_diameter") &&
+                          !values.contains("section_wall_thickness") &&
+                          base["members"][7]["name"].is_null(),
+                      "wall thickness interpretation is limited to confirmed pile shapes");
+            if (shape != 7)
+                check(!values.contains("circle_center_spacing") &&
+                          !values.contains("first_circle_radius") &&
+                          !values.contains("second_circle_radius"),
+                      "two-circle dimensions do not leak into other pile types");
         }
         auto cap_geometry = [&](int shape, int count, int edges, const Json &positions,
                                 const Json &profiles) {

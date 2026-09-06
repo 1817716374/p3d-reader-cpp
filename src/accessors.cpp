@@ -49,6 +49,12 @@ Json Document::inline_materials() const {
     }
     return out;
 }
+Json Document::embedded_textures() const {
+    return embedded_texture_records(graphics_records(), materials());
+}
+Json Document::material_assignments() const {
+    return material_assignment_records(graphics_records());
+}
 Json element_context(const Json &graph, std::uint64_t model, std::uint64_t element) {
     auto ek = std::to_string(model) + ":" + std::to_string(element);
     auto indexed = graph.at("element_index")

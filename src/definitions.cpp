@@ -102,7 +102,9 @@ Json read_materials(const Document &doc) {
                              {"native_strings", names.count(nk) ? names[nk] : Json::array()}};
                 try {
                     auto &dec = a["decoded"];
-                    require(dec.value("encoding", std::string()) == "compressed_utf16_xml",
+                    const auto encoding = dec.value("encoding", std::string());
+                    require(encoding == "compressed_utf16_xml" ||
+                                encoding == "uncompressed_utf16_xml",
                             "material XML envelope");
                     auto &tree = dec["tree"];
                     require(tree["tag"] == "Material", "material XML root");
@@ -140,7 +142,55 @@ Json read_materials(const Document &doc) {
     return {
         {"definitions", definitions},
         {"errors", errors},
+        {"assignment_rules",
+         {{"applies_to", "native_graphics_rebuild"},
+          {"part_lookup_order",
+           {"advanced_part_name", "legacy_part_name", "element_material",
+            "graphics_entry_material"}},
+          {"element_lookup_order", {"native_element_material", "advanced_element_name"}},
+          {"part_index_basis", "zero_based_graphics_entry_order"},
+          {"unresolved_name_policy", "continue_to_next_layer"},
+          {"name_comparison", "native_case_insensitive_locale_dependent"},
+          {"stored_command_styles", "already_materialized_do_not_reapply_by_triangle_index"}}},
         {"texture_policy", "opaque source references; resolution and loading belong to caller"}};
+}
+Json embedded_texture_records(const Json &graphics, const Json &materials) {
+    auto identity = [](const Json &stream, const Json &id) {
+        return stream.dump() + ":" + id.dump();
+    };
+    std::map<std::string, Json> candidates;
+    const auto &definitions = materials.at("definitions");
+    for (std::size_t i = 0; i < definitions.size(); ++i) {
+        const auto &m = definitions[i];
+        auto key = identity(m.at("stream"), m.at("id"));
+        if (!candidates.count(key))
+            candidates[key] = Json::array();
+        candidates[key].push_back(i);
+    }
+    Json out = Json::array();
+    for (const auto &g : graphics)
+        for (std::size_t i = 0; i < g.at("attributes").size(); ++i) {
+            const auto &a = g["attributes"][i];
+            if (a["key"] != 22913)
+                continue;
+            auto key = identity(g.at("stream"), g.at("id"));
+            auto matches = candidates.count(key) ? candidates.at(key) : Json::array();
+            out.push_back({{"stream", g["stream"]},
+                           {"record_id", g["id"]},
+                           {"record_offset", g["offset"]},
+                           {"attribute_ordinal", i},
+                           {"attribute_index", a["index"]},
+                           {"attribute_offset", a["offset"]},
+                           {"group", a["group"]},
+                           {"key", a["key"]},
+                           {"material_candidates", matches},
+                           {"material_status", matches.empty()       ? "missing"
+                                               : matches.size() == 1 ? "resolved"
+                                                                     : "ambiguous"},
+                           {"payload", a["payload"]},
+                           {"decoded", a["decoded"]}});
+        }
+    return out;
 }
 Json decode_terrain(const Json &attributes) {
     constexpr unsigned END = 2139999999, UNSET = 2138888888;

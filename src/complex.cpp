@@ -186,35 +186,97 @@ Json decode_inline_material(const Bytes &b) {
         require(n % 2 == 0, "inline material string width");
         return utf16(r.take(n));
     };
-    auto marked = [&](const std::string &label, unsigned n) {
+    auto boolean = [&]() {
         auto flag = r.u8();
-        require(flag == 1, "inline material property flag");
-        return Json{
-            {"kind", label}, {"flag", flag}, {"value", n == 1 ? Json(r.f64()) : r.doubles(n)}};
+        require(flag <= 1, "inline material boolean");
+        return flag;
     };
-    auto ver = r.expect("B", 1);
+    auto marked = [&](const std::string &label, unsigned n) {
+        auto flag = boolean();
+        return Json{{"kind", label},
+                    {"flag", flag},
+                    {"enabled", flag != 0},
+                    {"value", n == 1 ? Json(r.f64()) : r.doubles(n)}};
+    };
+    auto valid = boolean();
     auto name = string();
-    Json parameters = Json::array({marked("color0", 3), marked("scalar0", 1)});
-    auto flag = r.u8();
-    auto word = r.u64();
+    Json parameters = Json::array({marked("color", 3), marked("transparency", 1)});
+    auto flag = boolean();
+    auto unit = r.i32(), mode = r.i32();
     auto filename = string();
-    auto transform = r.doubles(7);
-    for (auto k : {"color1", "scalar1", "color2", "scalar2", "scalar3", "scalar4", "scalar5",
-                   "scalar6", "scalar7"})
-        parameters.push_back(marked(k, k[0] == 'c' ? 3 : 1));
-    require(r.left() == 12, "inline material footer");
-    return {{"encoding", "inline_material_v1"},
-            {"version", ver},
-            {"name", name},
-            {"parameters", parameters},
-            {"texture_references", Json::array({{{"filename", filename},
-                                                 {"flag", flag},
-                                                 {"unassigned_uint64", word},
-                                                 {"unassigned_transform_values", transform}}})},
-            {"footer_hex", hex(r.take(r.left()))},
-            {"note", "Complete typed layout for this sample variant; numbered color/scalar "
-                     "parameters and projection values still lack verified renderer names. Caller "
-                     "resolves texture references."}};
+    auto scale = r.doubles(2), offset = r.doubles(2);
+    auto rotation = r.f64();
+    auto bump_filename = string();
+    auto bump_factor = r.f64();
+    for (auto k :
+         {"specular_color", "specular_factor", "glow_color", "glow_factor", "ambient_factor",
+          "diffuse_factor", "roughness_factor", "reflect_factor", "refract_factor"})
+        parameters.push_back(marked(k, std::string(k).find("color") != std::string::npos ? 3 : 1));
+    auto footer_start = r.p;
+    Json out = {
+        {"encoding", "inline_material_v1"},
+        {"wire_format", "BPMaterial_unversioned"},
+        {"is_valid", valid != 0},
+        {"name", name},
+        {"parameters", parameters},
+        {"has_map", flag != 0},
+        {"map_unit", unit},
+        {"map_mode", mode},
+        {"uv_scale", scale},
+        {"uv_offset", offset},
+        {"rotation_degrees", rotation},
+        {"bump_factor", bump_factor},
+        {"texture_references",
+         Json::array(
+             {{{"role", "pattern"}, {"filename", filename}, {"flag", flag}, {"enabled", flag != 0}},
+              {{"role", "bump"}, {"filename", bump_filename}}})},
+        {"display_name", name},
+        {"display_name_source", "name_fallback"}};
+    static const std::map<int, std::string> units = {{0, "relative"}, {3, "absolute"}};
+    static const std::map<int, std::string> modes = {{0, "parametric"}, {1, "elevation_drape"},
+                                                     {2, "planar"},     {4, "cubic"},
+                                                     {5, "spherical"},  {6, "cylindrical"}};
+    out["map_unit_status"] = units.count(unit) ? "identified" : "unknown_value";
+    out["map_mode_status"] = modes.count(mode) ? "identified" : "unknown_value";
+    if (units.count(unit))
+        out["map_unit_name"] = units.at(unit);
+    if (modes.count(mode))
+        out["map_mode_name"] = modes.at(mode);
+    if (r.left()) {
+        r.expect("I", 0xabcd);
+        out["display_name"] = string();
+        out["display_name_source"] = "serialized";
+    }
+    if (r.left() >= 4 && Reader(b, r.p).u32() == 0xabce) {
+        auto start = r.p;
+        r.u32();
+        auto n = r.u64();
+        require(n >= 2 && n % 2 == 0, "inline material extension string width");
+        auto raw = r.take(n);
+        require(raw[raw.size() - 2] == 0 && raw.back() == 0,
+                "inline material extension string terminator");
+        auto text = utf16(slice(raw, 0, raw.size() - 2));
+        Json extension = {{"offset", start}, {"text", text}, {"source_bytes", rawbytes(raw)}};
+        if (text.empty())
+            extension["json_status"] = "empty";
+        else {
+            auto value = Json::parse(text, nullptr, false);
+            if (value.is_discarded())
+                extension["json_status"] = "invalid_json";
+            else {
+                extension["json_status"] = "parsed";
+                extension["value"] = std::move(value);
+            }
+        }
+        out["extended_data"] = std::move(extension);
+    }
+    // Preserve future extensions beyond the known display-name and JSON blocks.
+    if (r.left())
+        out["unassigned_suffix_hex"] = hex(r.take(r.left()));
+    out["footer_hex"] = hex(slice(b, footer_start, b.size() - footer_start));
+    out["note"] = "Source material flags and parameters; texture paths are references. "
+                  "The encoding label is a library identifier, not a serialized version byte.";
+    return out;
 }
 static Json instance_body(const Bytes &b) {
     Reader r(b);

@@ -246,6 +246,31 @@ Json parse_native(const Bytes &b) {
                        {"data", rawbytes(slice(b, pos, attr - pos))},
                        {"zero_padding", pad},
                        {"base_boundary_adjustment", adjustment}});
+        // The in-memory native header starts after the four-byte stream prefix.
+        // Type 47 / subtype 33 persists the root model's explicit link ordering.
+        if (type == 47 && attr - pos >= 20 && r.at<std::uint32_t>(pos + 16) == 33) {
+            Json sequence = {{"encoding", "view_link_sequence"}};
+            try {
+                auto data = slice(b, pos, attr - pos);
+                Reader order(data, 38);
+                auto flag = order.u16();
+                auto count = order.u32();
+                require(count <= order.left() / 8, "view link sequence count");
+                Json ids = Json::array();
+                for (std::uint32_t i = 0; i < count; ++i)
+                    ids.push_back(order.u64());
+                order.finish();
+                sequence.update({{"sequence_flag", flag},
+                                 {"entry_count", count},
+                                 {"entry_ids", ids},
+                                 {"entry_ids_source_offset", 44},
+                                 {"ordering", "source_order"},
+                                 {"runtime_reconciliation", "not_evaluated"}});
+            } catch (const std::exception &e) {
+                sequence["decode_error"] = e.what();
+            }
+            out.back()["view_link_sequence"] = std::move(sequence);
+        }
         pos = end;
     }
     return out;
@@ -253,15 +278,23 @@ Json parse_native(const Bytes &b) {
 Json decode_symbology(const Bytes &b) {
     Reader r(b);
     auto flags = r.u16();
-    require((flags & ~(0x40 | 0x80 | 0x200 | 0x400 | 0x800 | 0x2000 | 0x8000)) == 0,
-            "symbology mask");
     Json v = {{"flags", flags}};
-    for (auto pair : std::vector<std::pair<unsigned, std::string>>{{0x40, "field_0040"},
+    // Payload order is native branch order, not increasing bit order.
+    for (auto pair : std::vector<std::pair<unsigned, std::string>>{{1, "field_0001"},
+                                                                   {2, "field_0002"},
+                                                                   {4, "field_0004"},
+                                                                   {8, "field_0008"},
+                                                                   {0x20, "field_0020"},
+                                                                   {0x10, "field_0010"},
+                                                                   {0x40, "field_0040"},
                                                                    {0x80, "color_index"},
+                                                                   {0x100, "fill_color_index"},
                                                                    {0x200, "line_weight"},
                                                                    {0x800, "transparency"},
+                                                                   {0x1000, "field_1000"},
                                                                    {0x2000, "material_id"},
-                                                                   {0x400, "line_style"}})
+                                                                   {0x400, "line_style"},
+                                                                   {0x4000, "true_color_packed"}})
         if (flags & pair.first) {
             if (pair.first == 0x800)
                 v[pair.second] = r.f64();
@@ -272,6 +305,15 @@ Json decode_symbology(const Bytes &b) {
             else
                 v[pair.second] = r.u32();
         }
+    if (v.contains("field_0040"))
+        v["fill_mode"] = v["field_0040"];
+    if (v.contains("field_1000"))
+        v["subitem_index"] = v["field_1000"];
+    if (v.contains("true_color_packed")) {
+        auto packed = v["true_color_packed"].get<std::uint32_t>();
+        v["true_color_rgb"] = {packed & 255u, (packed >> 8) & 255u, (packed >> 16) & 255u};
+        v["true_color_unassigned_high_byte"] = packed >> 24;
+    }
     if (flags & 0x8000) {
         auto n = r.u16();
         require(n >= 4, "line modifier size");
@@ -279,7 +321,52 @@ Json decode_symbology(const Bytes &b) {
         Reader m(raw);
         Json mod = {{"bytes", n}, {"flags", m.u32()}, {"raw_hex", hex(raw)}};
         if ((n - 4) % 8 == 0)
-            mod["unassigned_doubles"] = m.doubles((n - 4) / 8);
+            mod["unassigned_doubles"] = Reader(raw, 4).doubles((n - 4) / 8);
+        auto bits = mod["flags"].get<std::uint32_t>();
+        Json fields = Json::array();
+        Json named = Json::object();
+        const char *scalar_names[] = {"scale",     "dash_scale", "gap_scale",     "start_width",
+                                      "end_width", "shift",      "fraction_phase"};
+        for (unsigned bit = 0; bit < 7; ++bit)
+            if (bits & (1u << bit)) {
+                auto offset = m.p;
+                auto storage = Reader(raw, offset).u64();
+                auto value = m.f64();
+                named[scalar_names[bit]] = value;
+                fields.push_back({{"flag_mask", 1u << bit},
+                                  {"source_offset", offset},
+                                  {"native_member_offset", 8u * (bit + 1)},
+                                  {"name", scalar_names[bit]},
+                                  {"storage_uint64", storage},
+                                  {"float64_view", value}});
+            }
+        if (bits & 0x100)
+            mod["orientation_vector"] = m.doubles(3);
+        if (bits & 0x200)
+            mod["orientation_quaternion"] = m.doubles(4);
+        for (auto pair : {std::make_pair(0x800u, 0x40u), std::make_pair(0x1000u, 0x44u)})
+            if (bits & pair.first) {
+                auto offset = m.p;
+                auto value = m.u32();
+                auto name = pair.first == 0x800 ? "multiline_index" : "multiline_data_type";
+                named[name] = value;
+                fields.push_back({{"flag_mask", pair.first},
+                                  {"source_offset", offset},
+                                  {"native_member_offset", pair.second},
+                                  {"name", name},
+                                  {"storage_uint32", value}});
+            }
+        mod["fields"] = std::move(fields);
+        mod["named_values"] = std::move(named);
+        mod["centered_shift"] = bool(bits & 0x80);
+        mod["true_scale"] = bool(bits & 0x2000);
+        mod["break_at_corners"] = bool(bits & 0x40000000u);
+        mod["run_through_corners"] = bool(bits & 0x80000000u);
+        mod["consumed_bytes"] = m.p;
+        mod["unassigned_flag_bits"] = bits & ~0xc0003bffu;
+        mod["trailing_bytes"] = rawbytes(m.take(m.left()));
+        mod["layout_status"] = "decoded";
+        mod["semantics_status"] = "named_fields_with_unassigned_extensions_preserved";
         v["line_style_modifiers"] = mod;
     }
     r.finish();
@@ -413,14 +500,21 @@ Json command_fields(unsigned op, const Bytes &b) {
             } else {
                 for (auto k : {"x0", "y0", "x1", "y1"})
                     v[k] = r.f64();
-                v["origin_convention"] =
-                    "centered interpretation; only dimensions independently checked";
+                v["origin_convention"] = "face_centers";
             }
             v["capped"] = bool(r.u8());
             r.finish();
         } else if (op == 17) {
             v["vector"] = r.doubles(3);
             v["capped"] = bool(r.u8());
+        } else if (op == 55) {
+            auto groups = r.u32();
+            require(groups <= (b.size() - 4) / 4, "guided loft group count exceeds payload");
+            v["guide_group_count"] = groups;
+            v["guide_counts"] = Json::array();
+            for (std::uint32_t i = 0; i < groups; ++i)
+                v["guide_counts"].push_back(r.u32());
+            r.finish();
         } else if (op == 16 || op == 21 || op == 52 || op == 56)
             v["flags"] = r.u8();
         else if (op == 13) {
@@ -457,15 +551,10 @@ Json command_fields(unsigned op, const Bytes &b) {
             v.update(decode_symbology(b));
         else if (op == 25)
             v.update(decode_polyface(b));
-        else if (op == 29) {
-            v["marker_hex"] = hex(r.take(4));
-            v["identifier"] = r.u64();
-            r.finish();
-        } else if (op == 40) {
-            v["kind"] = r.u32();
-            v["value"] = r.u32();
-            r.finish();
-        }
+        else if (op == 29)
+            v.update(decode_curve_identifier(b));
+        else if (op == 40)
+            v.update(decode_symbology_extension(b));
     } catch (const std::exception &e) {
         v["field_decode_error"] = e.what();
     }
@@ -489,10 +578,15 @@ Json parse_commands(const Bytes &b) {
     }
     return {{"version", ver}, {"flags", flags}, {"commands", std::move(cmds)}};
 }
-static Json decompress_attribute(const Bytes &b) {
+static Bytes decompress_attribute(const Bytes &b, Json &metadata) {
     Reader r(b);
     auto ver = r.u32(), n = r.u32();
-    require(ver == 3 && n > 0 && n <= 64u * 1024 * 1024, "attribute envelope");
+    require(ver >= 1 && ver <= 3 && n > 0 && n <= 64u * 1024 * 1024, "attribute envelope");
+    if (ver != 3) {
+        require(n == r.left(), "stored attribute size");
+        metadata = {{"version", ver}, {"codec", "stored"}, {"decoded_bytes", n}};
+        return r.take(n);
+    }
     Bytes out(n);
     auto payload = r.take(r.left());
     int got = LZ4_decompress_safe((const char *)payload.data(), (char *)out.data(),
@@ -509,9 +603,44 @@ static Json decompress_attribute(const Bytes &b) {
                 "attribute compressed size or framing mismatch");
         codec = "zlib";
     }
-    return {{"version", ver}, {"codec", codec}, {"decoded_bytes", n}, {"data", rawbytes(out)}};
+    metadata = {{"version", ver}, {"codec", codec}, {"decoded_bytes", n}};
+    return out;
 }
-Json decode_attribute(unsigned group, unsigned key, const Bytes &b) {
+Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index) {
+    if (group == 2 && key == 10001) {
+        auto name = utf16(b);
+        Json(name).dump();
+        return {{"encoding", "legacy_part_material_name"}, {"material_name", name}};
+    }
+    if (group == 4 && key == 10001)
+        return decode_material_assignment(index, b);
+    if (key == 4 && group <= 1 && index == 0)
+        return decode_layer_group_attribute(group, b);
+    auto display = decode_display_attribute(group, key, b);
+    if (!display.is_null())
+        return display;
+    if (key == 22913) {
+        Json result;
+        auto payload = decompress_attribute(b, result);
+        Reader r(payload);
+        auto filename = r.take(256);
+        std::size_t end = 0;
+        while (end < filename.size() && (filename[end] || filename[end + 1]))
+            end += 2;
+        require(end < filename.size(), "embedded texture filename terminator");
+        auto size = r.u32(), map_type = r.u32();
+        require(size > 0 && size == r.left(), "embedded texture file size");
+        result.update({{"encoding", "embedded_texture_file"},
+                       {"filename", utf16(slice(filename, 0, end))},
+                       {"filename_field", rawbytes(filename)},
+                       {"native_map_type", map_type},
+                       {"attribute_group_matches_map_type", group == (map_type & 0xffffu)},
+                       {"file_offset", r.p},
+                       {"file_bytes", size},
+                       {"file_data", rawbytes(r.take(size))}});
+        // Keep the full filename field, including unused capacity, without duplicating file_data.
+        return result;
+    }
     if (key == 23223 && (group == 300 || group == 313)) {
         Reader r(b);
         require(r.u16() == 1, "terrain attribute version");
@@ -545,18 +674,30 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b) {
         return {{"encoding", "utf8_class_name"}, {"text", s}};
     }
     Json result;
+    Bytes decoded;
     try {
-        result = decompress_attribute(b);
+        decoded = decompress_attribute(b, result);
     } catch (const std::exception &) {
         return {{"encoding", "opaque"}, {"bytes", b.size()}};
     }
-    result["encoding"] = "compressed_binary";
+    const bool stored = result["codec"] == "stored";
+    result["encoding"] = stored ? "uncompressed_binary" : "compressed_binary";
+    result["data"] = rawbytes(decoded);
+    if (key == 2006) {
+        const auto &raw = decoded;
+        require(raw.size() >= 2 && raw.size() % 2 == 0, "UTF16 string attribute width");
+        require(raw[raw.size() - 2] == 0 && raw.back() == 0, "UTF16 string attribute terminator");
+        result["encoding"] = stored ? "uncompressed_utf16_string" : "compressed_utf16_string";
+        result["text"] = utf16(slice(raw, 0, raw.size() - 2));
+    }
     try {
-        auto s = utf16(bytesof(result["data"]));
+        auto s = utf16(decoded);
         while (!s.empty() && s.back() == 0)
             s.pop_back();
         auto tree = xml_tree(s);
-        result.update({{"encoding", "compressed_utf16_xml"}, {"xml", s}, {"tree", tree}});
+        result.update({{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
+                       {"xml", s},
+                       {"tree", tree}});
         if (tree["tag"] == "ExtendedColors") {
             Json colors = Json::array();
             for (auto &c : tree["children"]) {
@@ -611,7 +752,7 @@ Json parse_graphics(const Bytes &b) {
             auto raw = r.take(size);
             Json decoded;
             try {
-                decoded = decode_attribute(group, key, raw);
+                decoded = decode_attribute(group, key, raw, ix);
             } catch (const std::exception &e) {
                 decoded = {{"encoding", "opaque"}, {"decode_error", e.what()}};
             }

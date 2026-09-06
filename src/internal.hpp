@@ -144,6 +144,7 @@ struct Reader {
         require(p == b.size(), "trailing binary bytes at " + std::to_string(p));
     }
 };
+Json electrical_parameters(Reader &, unsigned);
 Bytes slice(const Bytes &, std::size_t, std::size_t);
 std::string hex(const Bytes &);
 std::string utf16(const Bytes &);
@@ -159,9 +160,18 @@ inline Bytes bytesof(const Json &v) {
 }
 Json xml_tree(const std::string &);
 Json command_fields(unsigned, const Bytes &);
-Json decode_attribute(unsigned, unsigned, const Bytes &);
+Json decode_attribute(unsigned, unsigned, const Bytes &, unsigned index = 0);
+Json decode_material_assignment(unsigned index, const Bytes &);
+Json material_assignment_records(const Json &graphics);
+Json decode_display_attribute(unsigned, unsigned, const Bytes &);
+Json decode_layer_group_attribute(unsigned, const Bytes &);
+Json native_display_state(unsigned type, const Bytes &);
 Json decode_terrain(const Json &);
 Json decode_symbology(const Bytes &);
+Json decode_curve_identifier(const Bytes &);
+Json decode_symbology_extension(const Bytes &);
+void apply_symbology_extension(Json &, const Json &);
+void apply_symbology(Json &, const Json &);
 Json decode_polyface(const Bytes &);
 Json decode_bgfb(const Bytes &);
 Json decode_inline_material(const Bytes &);
@@ -171,6 +181,7 @@ Json build_graph_records(const Json &, const Json &, const Json &, const std::se
                          const std::set<std::string> &);
 Json build_scene(const Document &, unsigned);
 Json read_materials(const Document &);
+Json embedded_texture_records(const Json &graphics, const Json &materials);
 Json read_schemas(const Document &);
 Json read_models(const Document &);
 void enrich_tree(Json &, const std::string & = "", const Json & = Json::object());

@@ -97,6 +97,10 @@ class Document {
     const Json &color_tables() const;
     Json binary_fields() const;
     Json inline_materials() const;
+    // Embedded files with source attribute identity; does not read or write external files.
+    Json embedded_textures() const;
+    // Native advanced/legacy name and part assignments, with source identity.
+    Json material_assignments() const;
     Json object_graph() const;
     Json scene(unsigned segments = 64) const;
     NativeScene native_scene(Tessellation = {}) const;

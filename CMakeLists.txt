@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 option(P3D_BUILD_TOOLS "Build command-line inspection tool" ON)
 option(P3D_BUILD_TESTS "Build regression tests" ON)
-add_library(p3d_reader STATIC src/core.cpp src/records.cpp src/blobs.cpp src/scene.cpp src/geometry.cpp src/object_graph.cpp src/accessors.cpp src/data.cpp src/application.cpp src/complex.cpp src/binary_formats.cpp src/definitions.cpp third_party/lz4/lz4.c third_party/pugixml/pugixml.cpp third_party/miniz/miniz_tinfl.c)
+add_library(p3d_reader STATIC src/core.cpp src/records.cpp src/command_metadata.cpp src/attributes.cpp src/blobs.cpp src/scene.cpp src/geometry.cpp src/guided.cpp src/object_graph.cpp src/accessors.cpp src/data.cpp src/application.cpp src/electrical.cpp src/complex.cpp src/binary_formats.cpp src/definitions.cpp third_party/lz4/lz4.c third_party/pugixml/pugixml.cpp third_party/miniz/miniz_tinfl.c)
 # Only tinfl is linked; unused zlib wrappers otherwise require miniz.c in Debug builds.
 set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES COMPILE_DEFINITIONS MINIZ_NO_ZLIB_APIS)
 add_library(p3d::reader ALIAS p3d_reader)

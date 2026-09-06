@@ -55,6 +55,26 @@ static Json color(std::uint64_t index, const Json &entries) {
             {"palette_index", index & 255},
             {"unresolved_extended_ordinal", ordinal >= 0 ? Json(ordinal) : Json()}};
 }
+static Json style_color(const Json &style, const Json &entries) {
+    if (style.contains("native_symbology_extension") &&
+        style["native_symbology_extension"].contains("inheritance_flags"))
+        return {{"rgb", nullptr}, {"source", "native_inheritance_rules_not_evaluated"}};
+    if (style.contains("native_symbology_extension") &&
+        style["native_symbology_extension"].contains("fill_style_block") &&
+        style["native_symbology_extension"]["fill_style_block"].value("status", "") != "clear")
+        return {{"rgb", nullptr}, {"source", "native_gradient_fill"}};
+    if (style.contains("true_color_packed")) {
+        auto packed = style["true_color_packed"].get<std::uint32_t>();
+        return {{"packed", packed},
+                {"rgb", {packed & 255u, (packed >> 8) & 255u, (packed >> 16) & 255u}},
+                {"unassigned_high_byte", packed >> 24},
+                {"source", "native_packed_color"}};
+    }
+    for (auto key : {"field_0001", "field_0002", "field_0004", "field_0008"})
+        if (style.contains(key))
+            return {{"rgb", nullptr}, {"source", "native_display_color_requires_context"}};
+    return color(style.value("color_index", std::uint64_t(0)), entries);
+}
 NativeScene build_native_scene(const Document &doc, const Tessellation &policy, unsigned threads) {
     policy.segments(1);
     NativeScene scene;
@@ -359,19 +379,22 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         auto ek = scoped(model, id);
         SceneElement element;
         auto &meta = element.metadata;
-        meta = {{"model_id", model},
-                {"element_id", id},
-                {"composite_id", (model << 32) | id},
-                {"native_type", n["element_type"]},
-                {"native_flags", n["element_flags"]},
-                {"class", nullptr},
-                {"document_element_key", ek},
-                {"native_source_key", source_key(n)},
-                {"native_header_hex", hex(bytesof(n["data"]))},
-                {"unknown", Json::array()},
-                {"notes", Json::array()},
-                {"block_references", Json::array()},
-                {"instance_commands", Json::array()}};
+        const auto native_data = bytesof(n["data"]);
+        meta = {
+            {"model_id", model},
+            {"element_id", id},
+            {"composite_id", (model << 32) | id},
+            {"native_type", n["element_type"]},
+            {"native_flags", n["element_flags"]},
+            {"display_state", native_display_state(n["element_type"].get<unsigned>(), native_data)},
+            {"class", nullptr},
+            {"document_element_key", ek},
+            {"native_source_key", source_key(n)},
+            {"native_header_hex", hex(native_data)},
+            {"unknown", Json::array()},
+            {"notes", Json::array()},
+            {"block_references", Json::array()},
+            {"instance_commands", Json::array()}};
         auto matrix = identity();
         Json instance_style = Json::object(), terrain_children = Json::array(),
              terrain_attrs = Json::array();
@@ -386,6 +409,19 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                 for (std::size_t ai = 0; ai < gr->at("attributes").size(); ++ai) {
                     auto &a = gr->at("attributes")[ai];
                     auto &d = a["decoded"];
+                    if ((a["group"] == 4 || a["group"] == 2) && a["key"] == 10001) {
+                        if (!meta.contains("advanced_material_assignments"))
+                            meta["advanced_material_assignments"] = Json::array();
+                        meta["advanced_material_assignments"].push_back(
+                            {{"source_key", source_key(*gr)},
+                             {"group", a["group"]},
+                             {"key", a["key"]},
+                             {"attribute_ordinal", ai},
+                             {"attribute_index", a["index"]},
+                             {"attribute_offset", a["offset"]},
+                             {"payload", a["payload"]},
+                             {"decoded", d}});
+                    }
                     if (a["key"] == 23223) {
                         terrain_attrs.push_back({{"group", a["group"]},
                                                  {"index", a["index"]},
@@ -412,9 +448,10 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                                 matrix = multiply(matrix, instance_transform(body));
                             if (op == 28) {
                                 auto style = decode_symbology(body);
-                                style.erase("flags");
-                                instance_style.update(style);
+                                apply_symbology(instance_style, style);
                             }
+                            if (op == 40)
+                                apply_symbology_extension(instance_style, cmd["decoded"]);
                             if (op != 28 && op != 29 && op != 34 && op != 40)
                                 direct = true;
                         }
@@ -634,7 +671,7 @@ Json NativeScene::expanded() const {
                 auto style = instance.style;
                 style.update(range["style"]);
                 Json appearance = {
-                    {"color", color(style.value("color_index", std::uint64_t(0)), extended)},
+                    {"color", style_color(style, extended)},
                     {"style_status",
                      range.value("style_status", std::string("decoded_command_style"))}};
                 auto mid = style.value("material_id", Json());
@@ -792,7 +829,7 @@ void NativeScene::for_each_primitive(
                 v.style = inst.style;
                 v.style.update(range["style"]);
                 v.appearance = {
-                    {"color", color(v.style.value("color_index", std::uint64_t(0)), extended)},
+                    {"color", style_color(v.style, extended)},
                     {"style_status",
                      range.value("style_status", std::string("decoded_command_style"))}};
                 auto mid = v.style.value("material_id", Json());

@@ -4,6 +4,7 @@
 /build-local.ps1
 /tests/*
 !/tests/unit.cpp
+!/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d
 *.P3D

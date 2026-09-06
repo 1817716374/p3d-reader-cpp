@@ -1,4 +1,5 @@
 #include "geometry.hpp"
+#include "guided.hpp"
 #include <mapbox/earcut.hpp>
 namespace p3d {
 static constexpr double pi = 3.1415926535897932384626433832795;
@@ -310,6 +311,10 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
     unsigned solid = 0, stage = 0, path_kind = 0;
     Bytes payload;
     bool in_path = false;
+    std::vector<GuidedBoundary> path_native, guide_native;
+    std::vector<std::vector<GuidedBoundary>> section_native;
+    std::vector<std::vector<std::size_t>> section_native_lengths;
+    std::vector<std::size_t> native_ring_ends, guide_counts;
     Matrix4 matrix = identity();
     std::vector<Matrix4> stack;
     std::vector<std::vector<Point3>> sections, guides, path_parts, section_tangents;
@@ -332,14 +337,17 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
             auto execute = [&]() {
                 if (op == 28) {
                     auto st = decode_symbology(body);
-                    st.erase("flags");
-                    style.update(st);
+                    apply_symbology(style, st);
                     return;
                 }
-                if (op == 29 || op == 40)
+                if (op == 40) {
+                    apply_symbology_extension(style, d);
                     return;
+                }
                 if (d.contains("field_decode_error"))
                     throw std::runtime_error(d["field_decode_error"].get<std::string>());
+                if (op == 29)
+                    return;
                 if (op == 37) {
                     require(d.at("version") == 1, "text version");
                     auto origin = d.at("origin").get<Point3>();
@@ -369,6 +377,23 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         for (auto &t : tan)
                             t = vector_transform(matrix, t);
                         if (in_path) {
+                            if (solid == 56) {
+                                GuidedBoundary boundary;
+                                if (op == 5 || op == 7) {
+                                    boundary.ellipse = true;
+                                    boundary.center = transform(matrix, d["origin"].get<Point3>());
+                                    auto q = quaternion(d["quaternion"]);
+                                    double rx = d["radii"][0], ry = d["radii"][1];
+                                    boundary.axis_x = vector_transform(
+                                        matrix, {q[0][0] * rx, q[0][1] * rx, q[0][2] * rx});
+                                    boundary.axis_y = vector_transform(
+                                        matrix, {q[1][0] * ry, q[1][1] * ry, q[1][2] * ry});
+                                    boundary.start = d.value("start_angle", 0.);
+                                    boundary.sweep = d.value("sweep_angle", 2 * pi);
+                                } else
+                                    boundary.points = points;
+                                path_native.push_back(std::move(boundary));
+                            }
                             path_parts.push_back(points);
                             std::size_t start =
                                 !path.empty() && !points.empty() &&
@@ -459,9 +484,6 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                                    scale(v, signs[1] * y / 2)));
                             rings.push_back(world(ring));
                         }
-                        g.notes.push_back(
-                            "opcode 30 centered box interpretation: dimensions verified against "
-                            "DEX; no paired IFC for positional validation");
                     }
                     loft(g, rings, d["capped"].get<bool>());
                     return;
@@ -476,9 +498,15 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     section_tangents.clear();
                     stage = 0;
                     guides.clear();
+                    section_native.clear();
+                    section_native_lengths.clear();
+                    guide_native.clear();
+                    guide_counts.clear();
                     return;
                 }
                 if (op == 50 || op == 51 || op == 53 || op == 54 || op == 55) {
+                    if (op == 55)
+                        guide_counts = d.at("guide_counts").get<std::vector<std::size_t>>();
                     stage = op;
                     return;
                 }
@@ -486,8 +514,10 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     require(!in_path, "nested curve block");
                     in_path = true;
                     path.clear();
+                    path_native.clear();
                     path_parts.clear();
                     ring_ends.clear();
+                    native_ring_ends.clear();
                     path_tangents.clear();
                     path_kind = op;
                     return;
@@ -495,6 +525,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 if (op == 23) {
                     require(in_path, "inner ring outside region");
                     ring_ends.push_back(path.size());
+                    native_ring_ends.push_back(path_native.size());
                     return;
                 }
                 if (op == 22) {
@@ -513,8 +544,26 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             section_parts.push_back(path_parts);
                             section_rings.push_back(lengths);
                             section_tangents.push_back(path_tangents);
-                        } else
+                            section_native.push_back(path_native);
+                            auto ends = native_ring_ends;
+                            ends.push_back(path_native.size());
+                            std::vector<std::size_t> native_lengths;
+                            std::size_t start = 0;
+                            for (auto end : ends) {
+                                native_lengths.push_back(end - start);
+                                start = end;
+                            }
+                            section_native_lengths.push_back(std::move(native_lengths));
+                        } else {
                             guides.push_back(path);
+                            if (path_native.size() == 1)
+                                guide_native.push_back(path_native.front());
+                            else {
+                                GuidedBoundary boundary;
+                                boundary.parts = path_native;
+                                guide_native.push_back(std::move(boundary));
+                            }
+                        }
                     } else if (path_kind == 20)
                         g.lines.push_back(path);
                     else if (path.size() > 2)
@@ -582,36 +631,70 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         }
                         loft(g, rings, !payload.empty() && payload[0]);
                     } else if (solid == 56) {
-                        require(sections.size() == 2 && section_parts.size() == 2,
-                                "guided loft sections");
-                        auto &a = section_parts[0];
-                        auto &b = section_parts[1];
-                        require(a.size() == b.size() && guides.size() == a.size(),
-                                "guided loft segment/guide count");
-                        std::vector<std::vector<Point3>> rings(2);
-                        for (std::size_t i = 0; i < a.size(); ++i) {
-                            require(guides[i].size() == 2 && !a[i].empty() && !b[i].empty(),
-                                    "curved guided loft rails require a surface evaluator");
-                            require(std::max(norm(sub(guides[i][0], a[i][0])),
-                                             norm(sub(guides[i][1], b[i][0]))) <= 1e-7,
-                                    "guided loft rail endpoints");
-                            auto count = std::max(a[i].size(), b[i].size());
-                            for (unsigned j = 0; j < 2; ++j) {
-                                auto &p = j ? b[i] : a[i];
-                                require(p.size() >= 2 && count >= 2, "guided loft sample count");
-                                for (std::size_t k = 0; k + 1 < count; ++k) {
-                                    double t = double(k) / (count - 1) * (p.size() - 1);
-                                    auto ix = std::min(std::size_t(t), p.size() - 2);
-                                    double f = t - ix;
-                                    rings[j].push_back(add(p[ix], scale(sub(p[ix + 1], p[ix]), f)));
-                                }
+                        require(section_native.size() == 2 && section_native_lengths.size() == 2,
+                                "guided loft requires two sections");
+                        require(section_native_lengths[0] == section_native_lengths[1] &&
+                                    guide_counts.size() == section_native_lengths[0].size(),
+                                "guided loft native ring/group correspondence mismatch");
+                        std::size_t total_guides = 0;
+                        for (auto n : guide_counts) {
+                            require(n <= guide_native.size() - total_guides,
+                                    "guided loft group count exceeds source guides");
+                            total_guides += n;
+                        }
+                        require(total_guides == guide_native.size(),
+                                "unassigned guided loft curves");
+                        Geometry result;
+                        std::vector<Point3> bottom_cap, top_cap;
+                        std::vector<std::size_t> cap_lengths;
+                        std::size_t boundary_start = 0, guide_start = 0;
+                        const bool capped = !payload.empty() && payload[0];
+                        for (std::size_t ring = 0; ring < guide_counts.size(); ++ring) {
+                            auto n = section_native_lengths[0][ring], ng = guide_counts[ring];
+                            std::vector<GuidedBoundary> a(
+                                section_native[0].begin() + boundary_start,
+                                section_native[0].begin() + boundary_start + n);
+                            std::vector<GuidedBoundary> b(
+                                section_native[1].begin() + boundary_start,
+                                section_native[1].begin() + boundary_start + n);
+                            std::vector<GuidedBoundary> rails(guide_native.begin() + guide_start,
+                                                              guide_native.begin() + guide_start +
+                                                                  ng);
+                            auto mesh = guided_surface(a, b, rails, policy);
+                            require(mesh.rings.size() <= policy.max_segments &&
+                                        mesh.rings.front().size() <=
+                                            (policy.max_segments - result.vertices.size()) /
+                                                mesh.rings.size(),
+                                    "guided loft total vertex budget");
+                            if (guide_counts.size() == 1) {
+                                loft(result, mesh.rings, capped);
+                            } else {
+                                loft(result, mesh.rings, false);
+                                cap_lengths.push_back(mesh.rings.front().size());
+                                bottom_cap.insert(bottom_cap.end(), mesh.rings.front().begin(),
+                                                  mesh.rings.front().end());
+                                top_cap.insert(top_cap.end(), mesh.rings.back().begin(),
+                                               mesh.rings.back().end());
+                                mesh.note["source_ring_index"] = ring;
+                                mesh.note["source_guide_group_index"] = ring;
                             }
+                            result.notes.push_back(std::move(mesh.note));
+                            boundary_start += n;
+                            guide_start += ng;
                         }
-                        for (auto &ring : rings) {
-                            require(!ring.empty(), "empty guided loft");
-                            ring.push_back(ring[0]);
+                        if (guide_counts.size() > 1 && capped) {
+                            require(bottom_cap.size() <=
+                                        (policy.max_segments - result.vertices.size()) / 2,
+                                    "guided loft cap vertex budget");
+                            auto faces = polygon_faces(bottom_cap, cap_lengths);
+                            for (auto &f : faces)
+                                std::reverse(f.begin(), f.end());
+                            append(result, bottom_cap, faces);
+                            append(result, top_cap, polygon_faces(top_cap, cap_lengths));
                         }
-                        loft(g, rings, !payload.empty() && payload[0]);
+                        append(g, result.vertices, result.faces);
+                        for (auto &note : result.notes)
+                            g.notes.push_back(std::move(note));
                     } else {
                         auto rings =
                             section_rings.empty() ? std::vector<std::size_t>{} : section_rings[0];

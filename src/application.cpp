@@ -452,6 +452,21 @@ static Json pilecap(Reader &r) {
         pile_meanings.push_back({"0x1d0", "section_height", "桩截面高度H", "mm", {}});
     } else if (pile_shape == 2)
         pile_meanings.push_back({"0x1d0", "section_diameter", "桩截面直径D", "mm", {}});
+    else if (pile_shape == 5 || pile_shape == 6) {
+        // Native hollow circular geometry uses inner radius = 0x1d0 / 2 - 0x1f0.
+        // This establishes dimensions, not the engineering names of types 5/6.
+        pile_meanings.push_back({"0x1d0", "section_outer_diameter", "桩截面外径", "mm", {}});
+        pile_meanings.push_back({"0x1f0", "section_wall_thickness", "桩截面壁厚", "mm", {}});
+    } else if (pile_shape == 7) {
+        // Native components use these values as radii, then translate their
+        // local centers by -0x1f0/2 and +0x1f0/2 respectively.
+        pile_meanings.push_back(
+            {"0x1d4", "first_circle_radius", "第一个圆的半径", "mm", {}});
+        pile_meanings.push_back(
+            {"0x1d0", "second_circle_radius", "第二个圆的半径", "mm", {}});
+        pile_meanings.push_back(
+            {"0x1f0", "circle_center_spacing", "两圆中心间距", "mm", {}});
+    }
     identify(pile_base, pile_meanings);
     identify(result, cap_meanings);
     for (auto &reinforcement : result["reinforcement"])
@@ -816,191 +831,11 @@ static Json drawing(Reader &r, const std::string &cl) {
 }
 // Cereal registers each element type once for the entire enclosing archive,
 // including elements reached through another collection or a nested point.
-struct ElecCollections {
-    Reader &r;
-    std::set<std::string> seen;
-    Json record(const char *type, unsigned max_version) {
-        Json out = {{"offset", r.p}, {"native_type", type}};
-        if (seen.insert(type).second)
-            out["cereal_version"] = r.expect("I", 0);
-        auto version = r.u32();
-        require(version <= max_version,
-                std::string("unsupported electrical element version: ") + type);
-        out["version"] = version;
-        return out;
-    }
-    Json word(unsigned width) {
-        auto offset = r.p;
-        if (width == 4)
-            return {{"offset", offset},
-                    {"storage_uint32", r.u32()},
-                    {"int32_view", r.at<std::int32_t>(offset)},
-                    {"float32_view", r.at<float>(offset)}};
-        return {{"offset", offset},
-                {"storage_uint64", r.u64()},
-                {"int64_view", r.at<std::int64_t>(offset)},
-                {"float64_view", r.at<double>(offset)}};
-    }
-    Json words64() {
-        return collect(r, [&]() { return word(8); }, 'Q', 8);
-    }
-    Json force() {
-        auto out = record("PointForce", 1);
-        out["members"] = Json::array();
-        for (unsigned member = 0; member < 24; member += 4) {
-            auto value = word(4);
-            value["native_member_offset"] = member;
-            out["members"].push_back(value);
-        }
-        if (out["version"] == 1) {
-            auto value = word(4);
-            value["native_member_offset"] = 24;
-            out["members"].push_back(value);
-            out["flag_member_0x1c"] = r.u8();
-        }
-        return out;
-    }
-    Json point() {
-        auto out = record("Pt3D_ST", 1);
-        out["position"] = r.number("3f");
-        if (out["version"] == 1)
-            out["point_forces"] = collect(r, [&]() { return force(); }, 'Q', 28);
-        return out;
-    }
-    template <class F>
-    Json collection(const char *member, const char *kind, F decode, std::size_t minimum) {
-        auto offset = r.p;
-        auto entries = collect(r, decode, 'Q', minimum);
-        return {{"offset", offset},
-                {"native_member", member},
-                {"kind", kind},
-                {"count", entries.size()},
-                {"entries", entries}};
-    }
-    Json integer_map(const char *member) {
-        return collection(
-            member, "map",
-            [&]() {
-                auto offset = r.p;
-                auto key = r.i32(), value = r.i32();
-                return Json{{"offset", offset}, {"key", key}, {"value", value}};
-            },
-            8);
-    }
-    Json material_map() {
-        return collection(
-            "PBWJData+0x60", "map",
-            [&]() {
-                auto offset = r.p;
-                auto key = r.i32();
-                auto value = record("PSsimpleMat", 0);
-                value["members"] = Json::array({word(4), word(4)});
-                return Json{{"offset", offset}, {"key", key}, {"value", value}};
-            },
-            16);
-    }
-    Json point_map(const char *member) {
-        return collection(
-            member, "map",
-            [&]() {
-                auto offset = r.p;
-                auto key = r.i32();
-                return Json{{"offset", offset}, {"key", key}, {"value", point()}};
-            },
-            20);
-    }
-    Json bars() {
-        return collection(
-            "PBWJData+0xa0:wj_bars", "map",
-            [&]() {
-                auto offset = r.p;
-                auto key = r.i32();
-                auto out = record("WJ_Bar", 1);
-                out["members_0x0_to_0xc"] = Json::array({word(4), word(4), word(4), word(4)});
-                out["point_member_0x10"] = point();
-                out["point_member_0x40"] = point();
-                out["member_0x70"] = word(4);
-                if (out["version"] == 1)
-                    out["bar_forces"] = collect(
-                        r,
-                        [&]() {
-                            auto value = record("WJ_BarForce", 1);
-                            value["force_member_0x0"] = force();
-                            value["force_member_0x24"] = force();
-                            value["flag_member_0x48"] = r.u8();
-                            if (value["version"] == 1)
-                                value["member_0x4c"] = word(4);
-                            return value;
-                        },
-                        'Q', 61);
-                return Json{{"offset", offset}, {"key", key}, {"value", out}};
-            },
-            60);
-    }
-    Json truss_beam_parameters() {
-        return collection(
-            "PBWJData+0x138", "map",
-            [&]() {
-                auto offset = r.p;
-                auto key = r.i32();
-                auto out = record("TrussBeamPar", 3);
-                auto version = out["version"].get<unsigned>();
-                require(version != 2, "unsupported TrussBeamPar version 2");
-                out["members"] = Json::array();
-                // Version 0 omits native member 0x4. Versions 1 and 3
-                // include it; only version 1 serializes member 0x20.
-                for (unsigned member = 0; member <= (version == 1 ? 32u : 28u); member += 4) {
-                    if (version == 0 && member == 4)
-                        continue;
-                    auto value = word(4);
-                    value["native_member_offset"] = member;
-                    out["members"].push_back(value);
-                }
-                return Json{{"offset", offset}, {"key", key}, {"value", out}};
-            },
-            36);
-    }
-    Json line_groups() {
-        return collection(
-            "PBWJData+0x1e0", "vector",
-            [&]() {
-                auto out = record("LineSubsBeamCols", 0);
-                out["member_0x0"] = words64();
-                out["member_0x18"] = words64();
-                return out;
-            },
-            20);
-    }
-    Json grid_axes() {
-        return collection(
-            "PBWJData+0x1f8", "vector",
-            [&]() {
-                auto out = record("GridAxisData", 0);
-                out["member_0x0"] = word(4);
-                out["member_0x4"] = word(4);
-                out["point_member_0x8"] = point();
-                out["member_0x38"] = word(8);
-                out["member_0x40"] = words64();
-                out["member_0x58"] = words64();
-                return out;
-            },
-            52);
-    }
-};
 static Json assembly(Reader &r, const std::string &cl) {
     Json out = {{"class", cl},
                 {"unresolved_spans", Json::array()},
                 {"layout_status", "complete_for_supported_versions"},
                 {"semantic_status", "some_parameter_names_unassigned"}};
-    auto empty = [&](std::string member, std::string kind) {
-        auto off = r.p;
-        r.expect("Q", 0);
-        return Json{{"offset", off},
-                    {"native_member", member},
-                    {"kind", kind},
-                    {"count", 0},
-                    {"entries", Json::array()}};
-    };
     auto ver = r.u32();
     require(ver <= 1, "assembly version");
     out["version"] = ver;
@@ -1095,35 +930,7 @@ static Json assembly(Reader &r, const std::string &cl) {
         if (ver == 1)
             out["load_g_para_id"] = r.i64();
     } else if (cl == "ElecParaData") {
-        ElecCollections elements{r, {}};
-        out["cereal_version"] = r.expect("I", 0);
-        auto wj_version = r.u32();
-        require(wj_version <= 2, "unsupported PBWJData version");
-        out["wj_version"] = wj_version;
-        out["strings"] = Json::array({r.string(), r.string()});
-        out["section_parameters"] = {{"native_type", "PSXSectManager"},
-                                     {"cereal_version", r.expect("I", 0)},
-                                     {"version", r.expect("I", 0)},
-                                     {"collection", empty("PBWJData+0x48", "vector")}};
-        out["collections"] = Json::array();
-        out["collections"].push_back(elements.material_map());
-        out["collections"].push_back(elements.integer_map("PBWJData+0x70"));
-        out["collections"].push_back(elements.integer_map("PBWJData+0x80"));
-        out["collections"].push_back(elements.point_map("PBWJData+0x90:wj_joints"));
-        out["collections"].push_back(elements.bars());
-        out["boolean_member_0x110"] = {
-            {"offset", r.p}, {"storage_uint8", r.u8()}, {"name", nullptr}};
-        out["collections"].push_back(empty("PBWJData+0x118", "map"));
-        out["collections"].push_back(elements.truss_beam_parameters());
-        for (auto pair : std::vector<std::pair<std::string, std::string>>{
-                 {"PBWJData+0x168", "vector"}, {"PBWJData+0x180", "vector"}})
-            out["collections"].push_back(empty(pair.first, pair.second));
-        if (wj_version >= 1)
-            out["collections"].push_back(elements.line_groups());
-        if (wj_version >= 2)
-            out["collections"].push_back(elements.grid_axes());
-        if (ver == 1)
-            out["changed_joints"] = elements.point_map("ElecParaData+0x20");
+        out.update(electrical_parameters(r, ver));
     } else
         throw std::runtime_error("assembly class");
     return out;
