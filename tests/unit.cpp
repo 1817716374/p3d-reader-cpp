@@ -313,15 +313,20 @@ int main() {
         const auto &cap = cap_result.at("decoded");
         const auto &pile = cap["pile_section"]["base"];
         check(pile["named_values"] == Json({{"concrete_grade", 3},
+                                            {"section_shape", 1},
+                                            {"section_width", 702},
+                                            {"section_height", 701},
+                                            {"pile_length", 10.5},
                                             {"x_offset", 111},
                                             {"y_offset", -222},
                                             {"rotation", 12.5},
                                             {"top_elevation", 9.75}}) &&
                   pile["members"][1]["enum_label"] == "C30" &&
                   pile["members"][14]["unit"] == "mm" && pile["members"][17]["unit"] == "m" &&
-                  !pile["members"][16].contains("unit"),
-              "pile getters identify offsets and units without guessing angle units");
+                  pile["members"][16]["unit"] == "deg",
+              "pile getters and native angle conversion identify units");
         check(cap["named_values"] == Json({{"cap_type", 2},
+                                           {"layout_preset_index", 4321},
                                            {"plan_shape", 1},
                                            {"step_count", 2},
                                            {"top_offset_x", 31},
@@ -339,9 +344,9 @@ int main() {
                   cap["reinforcement"][1]["members"][0]["enum_label"] == "HRB400" &&
                   cap["reinforcement"][1]["named_values"]["diameter"] == 16,
               "reinforcement diameter and spacing follow native storage, with scoped enum");
-        check(pile["identified_member_count"] == 5 && pile["unassigned_member_count"] == 13 &&
-                  cap["identified_member_count"] == 5 && cap["unassigned_member_count"] == 3 &&
-                  cap["members"][1]["name"].is_null() && cap["members"][1]["value"] == 4321 &&
+        check(pile["identified_member_count"] == 9 && pile["unassigned_member_count"] == 9 &&
+                  cap["identified_member_count"] == 6 && cap["unassigned_member_count"] == 2 &&
+                  cap["members"][7]["name"].is_null() && cap["members"][7]["value"] == 126 &&
                   unbase64(cap_result["binary_base64"]) == cap_bytes,
               "cap annotations retain unknown fields and every original byte");
         const char *cap_rebar[] = {"HPB235", "HPB300", "HRB335",  "HRB400", "HRB500",
@@ -386,6 +391,167 @@ int main() {
         cap_bytes.pop_back();
         check(decode_cap(cap_bytes).value("encoding", "") != "pilecap_section_cereal",
               "truncated cap is not accepted");
+        for (std::int32_t shape : {-1, 0, 2, 3}) {
+            auto b = cap_fixture(3, 0, 2, 1, 2, {400, 600});
+            std::memcpy(b.data() + 24, &shape, sizeof(shape));
+            const auto base = decode_cap(b)["decoded"]["pile_section"]["base"];
+            const auto &values = base["named_values"];
+            check(!values.contains("section_width") && !values.contains("section_height") &&
+                      (shape == 2 ? values["section_diameter"] == 701 &&
+                                        base["members"][0]["enum_label"] == "圆形" &&
+                                        base["members"][3]["name"].is_null()
+                                  : !values.contains("section_diameter") &&
+                                        base["members"][0]["enum_label"].is_null()),
+                  "pile dimensions are scoped to the source shape, with unknown codes retained");
+        }
+        auto cap_geometry = [&](int shape, int count, int edges, const Json &positions,
+                                const Json &profiles) {
+            auto raw = cap_fixture(3, 0, 2, shape, 2, {400, 600});
+            Bytes b = slice(raw, 0, 160);
+            auto points = [&](const Json &array) {
+                put(b, std::uint64_t(array.size()));
+                for (const auto &p : array) {
+                    put(b, std::uint64_t(3));
+                    for (const auto &v : p)
+                        put(b, v.get<double>());
+                }
+            };
+            put(b, std::int32_t(count));
+            points(positions);
+            put(b, std::int32_t(edges));
+            put(b, std::uint64_t(profiles.size()));
+            for (const auto &profile : profiles)
+                points(profile);
+            auto tail = slice(raw, 184, raw.size() - 184);
+            b.insert(b.end(), tail.begin(), tail.end());
+            return decode_cap(b);
+        };
+        const Json positions = {{-500., 100., 0.}, {500., -100., 2.}};
+        const Json contours = {{{-900., -800., 0.}, {900., -800., 0.}, {0., 800., 0.}},
+                               {{-600., -500., 0.}, {600., -500., 0.}, {0., 500., 0.}}};
+        auto parameterized = cap_geometry(3, 2, 3, positions, contours)["decoded"];
+        check(parameterized["pile_layout"]["positions"] == positions &&
+                  parameterized["pile_layout"]["count_status"] == "consistent" &&
+                  parameterized["cap_profiles"]["step_count_status"] == "consistent" &&
+                  parameterized["cap_profiles"]["profiles"][0]["vertices"] == contours[0] &&
+                  parameterized["cap_profiles"]["profiles"][1]["vertices"] == contours[1],
+              "pile locations and lower-to-upper cap polygons remain distinct");
+        const Json circles = {{{1200., 0., 0.}}, {{800., 0., 0.}}};
+        auto circular = cap_geometry(0, 2, 0, positions, circles)["decoded"];
+        check(circular["cap_profiles"]["profiles"][0]["kind"] == "circle" &&
+                  circular["cap_profiles"]["profiles"][0]["radius"] == 1200. &&
+                  circular["cap_profiles"]["profiles"][1]["radius"] == 800. &&
+                  !circular["cap_profiles"]["profiles"][0].contains("vertices") &&
+                  circular["secondary_point_arrays"] == circles,
+              "native circular radius tuples are not interpreted as polygon vertices");
+        auto future_circle = circles;
+        future_circle[0][0][1] = 3.;
+        auto unknown_profile = cap_geometry(0, 2, 0, positions, future_circle)["decoded"];
+        check(unknown_profile["cap_profiles"]["profiles"][0]["kind"] == "unassigned" &&
+                  unknown_profile["cap_profiles"]["profiles"][0]["source_values"] ==
+                      future_circle[0],
+              "unrecognized circular tuple keeps every value without guessing its layout");
+        auto mismatch = cap_geometry(3, -1, 4, positions, Json({contours[0]}))["decoded"];
+        check(mismatch["pile_layout"]["count_status"] == "mismatch" &&
+                  mismatch["cap_profiles"]["step_count_status"] == "mismatch" &&
+                  mismatch["cap_profiles"]["profiles"][0]["edge_count_status"] == "mismatch" &&
+                  mismatch["pile_layout"]["positions"] == positions,
+              "inconsistent source counts are reported without truncation or synthesis");
+        auto future_shape = cap_geometry(99, 2, 3, positions, contours)["decoded"];
+        check(future_shape["cap_profiles"]["profiles"][0]["kind"] == "unassigned" &&
+                  future_shape["cap_profiles"]["profiles"][0]["source_values"] == contours[0],
+              "unknown cap shapes retain their raw profile arrays");
+        auto link_fixture = [](int version, const std::vector<std::vector<int>> &floors,
+                               const std::vector<std::vector<int>> &links,
+                               const std::vector<int> &codes) {
+            Bytes b;
+            for (int v : {version, 0, 0, codes.at(0), codes.at(1)})
+                put(b, std::int32_t(v));
+            bool first_group = true;
+            for (auto *groups : {&floors, &links}) {
+                put(b, std::uint64_t(groups->size()));
+                for (const auto &values : *groups) {
+                    if (first_group) {
+                        put(b, std::uint32_t(0));
+                        first_group = false;
+                    }
+                    put(b, std::uint32_t(0));
+                    put(b, std::uint64_t(values.size()));
+                    for (int value : values)
+                        put(b, std::int32_t(value));
+                }
+            }
+            for (int v : {0, 0, codes.at(2), codes.at(3), codes.at(4), codes.at(5)})
+                put(b, std::int32_t(v));
+            put(b, std::uint64_t(3));
+            for (auto v : {0, 1, 0})
+                put(b, std::uint8_t(v));
+            if (version == 1)
+                put(b, std::int64_t(1234567890123));
+            return b;
+        };
+        const std::vector<int> link_codes{1, 3, 2, 4, 5, 3};
+        auto link_bytes = link_fixture(1, {{7, 3, 7}, {}}, {{-1, 2147483647}}, link_codes);
+        auto link = decode_binary_field("CerealDatas", link_bytes, "AssemblyLinkModel");
+        check(link.value("encoding", "") == "assembly_settings_cereal",
+              "nonempty native link merge groups are decoded");
+        const auto &ld = link["decoded"];
+        const auto &lg = ld["link_merge_set"]["collections"];
+        check(lg[0]["name"] == "floor_groups" && lg[1]["name"] == "link_groups" &&
+                  lg[0]["entries"][0]["values"] == Json({7, 3, 7}) &&
+                  lg[0]["entries"][1]["values"] == Json::array() &&
+                  lg[1]["entries"][0]["values"] == Json({-1, 2147483647}),
+              "merge groups preserve signed values, duplicates and source ordering");
+        check(lg[0]["entries"][0]["cereal_version"] == 0 &&
+                  !lg[0]["entries"][1].contains("cereal_version") &&
+                  !lg[1]["entries"][0].contains("cereal_version") &&
+                  ld["boolean_vector"] == Json({0, 1, 0}) &&
+                  ld["storey_design_flags"]["source_values"] == Json({0, 1, 0}) &&
+                  ld["load_g_para_id"] == 1234567890123LL &&
+                  unbase64(link["binary_base64"]) == link_bytes,
+              "group type version is shared across collections and trailing data is preserved");
+        check(ld["link_merge_set"]["fields"][0]["enum_label"] == "1/1,2/1,1/2,3/2..." &&
+                  ld["link_merge_set"]["fields"][1]["enum_label"] == "任选楼层节点连接归并" &&
+                  ld["display_control"]["fields"][0]["enum_label"] == "半透明显示" &&
+                  ld["display_control"]["fields"][1]["enum_label"] == "精细显示-带焊接标记" &&
+                  ld["display_control"]["fields"][2]["enum_label"] == "简化显示" &&
+                  ld["display_control"]["fields"][3]["enum_label"] == "精细显示",
+              "native merge and display enums use their field-specific mappings");
+        auto second_first =
+            decode_binary_field("CerealDatas", link_fixture(0, {}, {{42}, {9}}, link_codes),
+                                "AssemblyLinkModel")["decoded"];
+        check(second_first["link_merge_set"]["collections"][1]["entries"][0]["cereal_version"] ==
+                      0 &&
+                  second_first["link_merge_set"]["collections"][1]["entries"][1]["values"] ==
+                      Json({9}) &&
+                  !second_first.contains("load_g_para_id"),
+              "first nonempty merge collection carries the shared cereal type version");
+        auto unknown_link =
+            decode_binary_field("CerealDatas", link_fixture(0, {}, {}, {-1, 99, 3, 2, 4, 0}),
+                                "AssemblyLinkModel")["decoded"];
+        bool unknown_modes = true;
+        for (const auto *block : {"link_merge_set", "display_control"})
+            for (const auto &f : unknown_link[block]["fields"])
+                unknown_modes &= f["enum_status"] == "unknown_value" && f["enum_label"].is_null();
+        check(unknown_modes && unknown_link["display_control"]["enum_codes"] == Json({3, 2, 4, 0}),
+              "unrecognized display and merge enum values are not coerced");
+        for (auto offset : {28, 32}) {
+            auto unsupported = link_bytes;
+            unsupported[offset] = 1;
+            check(decode_binary_field("CerealDatas", unsupported, "AssemblyLinkModel")
+                          .value("encoding", "") != "assembly_settings_cereal",
+                  "unsupported merge group cereal or payload version is rejected");
+        }
+        auto truncated_group = slice(link_bytes, 0, 46);
+        check(decode_binary_field("CerealDatas", truncated_group, "AssemblyLinkModel")
+                      .value("encoding", "") != "assembly_settings_cereal",
+              "truncated group members do not produce a partial success");
+        auto oversized_group = link_bytes;
+        for (auto offset = 36; offset < 44; ++offset)
+            oversized_group[offset] = 0xff;
+        check(decode_binary_field("CerealDatas", oversized_group, "AssemblyLinkModel")
+                      .value("encoding", "") != "assembly_settings_cereal",
+              "group member count is bounded by remaining input");
         NativeScene views;
         auto shared = std::make_shared<GeometryDefinition>();
         shared->source_key = "stream@1";

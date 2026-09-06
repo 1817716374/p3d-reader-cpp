@@ -401,7 +401,8 @@ static Json pilecap(Reader &r) {
                     auto value = field["value"].get<std::int64_t>();
                     field["enum_label"] = nullptr;
                     field["enum_status"] = "unknown_value";
-                    if (value >= 0 && std::uint64_t(value) < m.choices.size()) {
+                    if (value >= 0 && std::uint64_t(value) < m.choices.size() &&
+                        !m.choices[std::size_t(value)].empty()) {
                         field["enum_label"] = m.choices[std::size_t(value)];
                         field["enum_status"] = "identified";
                     }
@@ -413,6 +414,7 @@ static Json pilecap(Reader &r) {
         block["unassigned_member_count"] = block["members"].size() - values.size();
     };
     static const std::vector<Meaning> base_meanings = {
+        {"0x0", "section_shape", "桩截面形状", "", {"", "矩形", "圆形"}},
         {"0x4",
          "concrete_grade",
          "混凝土强度等级",
@@ -421,11 +423,13 @@ static Json pilecap(Reader &r) {
           "C80"}},
         {"0x218", "x_offset", "x轴偏移", "mm", {}},
         {"0x21c", "y_offset", "y轴偏移", "mm", {}},
-        {"0x220", "rotation", "旋转角度", "", {}},
+        {"0x208", "pile_length", "桩长", "m", {}},
+        {"0x220", "rotation", "旋转角度", "deg", {}},
         {"0x228", "top_elevation", "顶部标高", "m", {}}};
     static const std::vector<Meaning> cap_meanings = {
         {"0x2a0", "cap_type", "承台类型", "", {"阶形预制", "锥形预制", "阶形现浇", "锥形现浇"}},
         {"0x2a4", "plan_shape", "平面形状", "", {"圆形", "矩形", "正多边形", "多边形"}},
+        {"0x2a8", "layout_preset_index", "桩数与承台形式选型索引", "", {}},
         {"0x248", "step_count", "承台阶数", "", {}},
         {"0x2b0", "top_offset_x", "承台顶面相对底面X偏心", "", {}},
         {"0x2b4", "top_offset_y", "承台顶面相对底面Y偏心", "", {}}};
@@ -438,7 +442,17 @@ static Json pilecap(Reader &r) {
         {"0x4", "spacing", "间距", "mm", {}},
         {"0x8", "diameter", "直径", "mm", {}},
         {"0xc", "distribution_width", "布置宽度", "mm", {}}};
-    identify(result["pile_section"]["base"], base_meanings);
+    auto &pile_base = result["pile_section"]["base"];
+    auto pile_meanings = base_meanings;
+    const auto pile_shape = pile_base["members"][0]["value"].get<int>();
+    // Native rectangular profiles store B before H, but PileBasePara copies
+    // those parameters to 0x1d4 and 0x1d0 respectively. Circular 0x1d0 is D.
+    if (pile_shape == 1) {
+        pile_meanings.push_back({"0x1d4", "section_width", "桩截面宽度B", "mm", {}});
+        pile_meanings.push_back({"0x1d0", "section_height", "桩截面高度H", "mm", {}});
+    } else if (pile_shape == 2)
+        pile_meanings.push_back({"0x1d0", "section_diameter", "桩截面直径D", "mm", {}});
+    identify(pile_base, pile_meanings);
     identify(result, cap_meanings);
     for (auto &reinforcement : result["reinforcement"])
         identify(reinforcement, reinforcement_meanings);
@@ -449,6 +463,43 @@ static Json pilecap(Reader &r) {
         result["step_heights_status"] = "identified";
     } else
         result["step_heights_status"] = "unsupported_step_layout";
+    const auto pile_count = result["primary_code"].get<int>();
+    result["pile_layout"] = {{"native_count_member", "0x268"},
+                             {"native_positions_member", "0x270"},
+                             {"count", pile_count},
+                             {"positions", result["primary_points"]},
+                             {"unit", "mm"},
+                             {"count_status", pile_count >= 0 && std::size_t(pile_count) ==
+                                                                     result["primary_points"].size()
+                                                  ? "consistent"
+                                                  : "mismatch"}};
+    const auto cap_shape = result["named_values"]["plan_shape"].get<int>();
+    const auto edge_count = result["secondary_code"].get<int>();
+    Json profiles = Json::array();
+    for (const auto &points : result["secondary_point_arrays"]) {
+        Json profile = {{"source_values", points}, {"kind", "unassigned"}};
+        if (cap_shape == 0 && points.size() == 1 && points[0][1] == 0 && points[0][2] == 0) {
+            // A circular cap serializes [radius, 0, 0], not a polygon vertex.
+            profile["kind"] = "circle";
+            profile["radius"] = points[0][0];
+        } else if (cap_shape >= 1 && cap_shape <= 3) {
+            profile["kind"] = "polygon";
+            profile["vertices"] = points;
+            profile["edge_count_status"] =
+                edge_count >= 0 && std::size_t(edge_count) == points.size() ? "consistent"
+                                                                            : "mismatch";
+        }
+        profiles.push_back(std::move(profile));
+    }
+    result["cap_profiles"] = {
+        {"native_edge_count_member", "0x2ac"},
+        {"native_profiles_member", "0x288"},
+        {"edge_count", edge_count},
+        {"profiles", profiles},
+        {"unit", "mm"},
+        {"order", "lower_to_upper"},
+        {"step_count_status",
+         steps >= 0 && std::size_t(steps) == profiles.size() ? "consistent" : "mismatch"}};
     result.update({{"layout_status", "complete_for_supported_versions"},
                    {"semantic_status", "some_parameter_names_unassigned"},
                    {"unresolved_spans", Json::array()}});
@@ -686,15 +737,85 @@ static Json assembly(Reader &r, const std::string &cl) {
             out["flags"][n] = r.u8();
         out["semantic_status"] = "decoded";
     } else if (cl == "AssemblyLinkModel") {
-        out["link_merge_set"] = {
-            {"cereal_version", r.expect("I", 0)},
-            {"version", r.expect("I", 0)},
-            {"enum_codes", r.number("2i")},
-            {"collections", Json::array({empty("0x1a8", "vector"), empty("0x1c0", "vector")})}};
+        // Both vectors share one cereal LinkMergeGroup type registration. The
+        // version-0 payload stores only the integer vector at member 0x20;
+        // the native in-memory group name is not part of this archive.
+        bool group_type_seen = false;
+        auto groups = [&](const char *member, const char *name) {
+            auto off = r.p;
+            auto entries = collect(
+                r,
+                [&]() {
+                    Json item = {{"offset", r.p}};
+                    if (!group_type_seen) {
+                        item["cereal_version"] = r.expect("I", 0);
+                        group_type_seen = true;
+                    }
+                    item["version"] = r.expect("I", 0);
+                    item["native_values_member"] = "0x20";
+                    item["values"] = collect(r, [&]() { return Json(r.i32()); }, 'Q', 4);
+                    return item;
+                },
+                'Q', 12);
+            return Json{{"offset", off},
+                        {"native_member", member},
+                        {"name", name},
+                        {"kind", "vector"},
+                        {"native_type", "vector<LinkMergeGroup>"},
+                        {"count", entries.size()},
+                        {"entries", entries}};
+        };
+        out["link_merge_set"] = {{"cereal_version", r.expect("I", 0)},
+                                 {"version", r.expect("I", 0)},
+                                 {"enum_codes", r.number("2i")},
+                                 {"collections", Json::array({groups("0x1a8", "floor_groups"),
+                                                              groups("0x1c0", "link_groups")})}};
         out["display_control"] = {{"cereal_version", r.expect("I", 0)},
                                   {"version", r.expect("I", 0)},
                                   {"enum_codes", r.number("4i")}};
+        auto field = [](const Json &value, const char *member, const char *name,
+                        const std::map<int, std::string> &labels) {
+            Json f = {{"native_member", member},
+                      {"name", name},
+                      {"value", value},
+                      {"enum_label", nullptr},
+                      {"enum_status", "unknown_value"}};
+            auto it = labels.find(value.get<int>());
+            if (it != labels.end()) {
+                f["enum_label"] = it->second;
+                f["enum_status"] = "identified";
+            }
+            return f;
+        };
+        auto &merge = out["link_merge_set"];
+        merge["fields"] =
+            Json::array({field(merge["enum_codes"][0], "0x1a0", "link_merge_numbering_type",
+                               {{0, "1,2,3,4,5..."}, {1, "1/1,2/1,1/2,3/2..."}}),
+                         field(merge["enum_codes"][1], "0x1a4", "link_merge_type",
+                               {{0, "相同节点连接归并"},
+                                {1, "单楼层节点连接归并"},
+                                {2, "全楼节点连接归并"},
+                                {3, "任选楼层节点连接归并"},
+                                {4, "圈选节点连接归并"}})});
+        auto &display = out["display_control"];
+        display["fields"] = Json::array(
+            {field(display["enum_codes"][0], "0x1e0", "member_display_mode",
+                   {{0, "实体显示"}, {1, "线框显示"}, {2, "半透明显示"}, {6, "隐藏"}}),
+             field(display["enum_codes"][1], "0x1e4", "weld_display_mode",
+                   {{3, "精细显示"}, {5, "简化显示"}, {4, "精细显示-带焊接标记"}, {6, "隐藏"}}),
+             field(display["enum_codes"][2], "0x1e8", "bolt_display_mode",
+                   {{3, "精细显示"}, {5, "简化显示"}, {6, "隐藏"}}),
+             field(display["enum_codes"][3], "0x1ec", "rebar_display_mode",
+                   {{5, "简化显示"}, {3, "精细显示"}, {6, "隐藏"}})});
+        for (auto *block : {&merge, &display}) {
+            (*block)["named_values"] = Json::object();
+            for (const auto &f : (*block)["fields"])
+                (*block)["named_values"][f["name"].get<std::string>()] = f["value"];
+        }
         out["boolean_vector"] = collect(r, [&]() { return Json(r.u8()); });
+        out["storey_design_flags"] = {{"native_member", "0x1f8"},
+                                      {"source_values", out["boolean_vector"]},
+                                      {"index_basis", "native_assembly_storey_order"}};
         if (ver == 1)
             out["load_g_para_id"] = r.i64();
     } else if (cl == "ElecParaData") {
