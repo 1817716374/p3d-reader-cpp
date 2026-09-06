@@ -270,6 +270,122 @@ int main() {
         check(!decode_binary_field("DesignPara", floor_values, "StructStandardFloorModel")
                    .contains("decoded"),
               "truncated floor memory image is not accepted");
+        auto cap_fixture = [](std::int32_t concrete, std::int32_t rebar, std::int32_t cap_type,
+                              std::int32_t shape, std::int32_t steps,
+                              const std::vector<std::int32_t> &heights) {
+            Bytes b(24, 0); // Cap, pile section and pile base cereal/version pairs.
+            for (std::int32_t v : {1, concrete, 701, 702})
+                put(b, v);
+            for (double v : {1.25, 2.5, 3.75})
+                put(b, v);
+            for (std::int32_t v : {71, 72, 73, 74, 75})
+                put(b, v);
+            put(b, 10.5);
+            put(b, 20.5);
+            put(b, std::int32_t(111));
+            put(b, std::int32_t(-222));
+            put(b, 12.5);
+            put(b, 9.75);
+            put(b, std::int64_t(123456789));
+            for (std::int32_t v : {cap_type, 4321, steps})
+                put(b, v);
+            put(b, std::uint64_t(heights.size()));
+            for (auto v : heights)
+                put(b, v);
+            put(b, std::int32_t(4));
+            put(b, std::uint64_t(0)); // Primary points.
+            put(b, std::int32_t(4));
+            put(b, std::uint64_t(0)); // Secondary point arrays.
+            for (std::int32_t v : {shape, 31, -32, 0, 0, rebar, 175, 22, 1200, 0, 3, 225, 16, 900})
+                put(b, v);
+            put(b, std::uint8_t(1));
+            put(b, std::int32_t(126));
+            return b;
+        };
+        auto decode_cap = [](const Bytes &b) {
+            return decode_binary_field("BinaryData", b, "PBStandardSectionProfile",
+                                       {{"Type", 0x40002}});
+        };
+        auto cap_bytes = cap_fixture(3, 0, 2, 1, 2, {400, 600});
+        auto cap_result = decode_cap(cap_bytes);
+        check(cap_result.value("encoding", "") == "pilecap_section_cereal",
+              "cap fixture is decoded in its native class and type");
+        const auto &cap = cap_result.at("decoded");
+        const auto &pile = cap["pile_section"]["base"];
+        check(pile["named_values"] == Json({{"concrete_grade", 3},
+                                            {"x_offset", 111},
+                                            {"y_offset", -222},
+                                            {"rotation", 12.5},
+                                            {"top_elevation", 9.75}}) &&
+                  pile["members"][1]["enum_label"] == "C30" &&
+                  pile["members"][14]["unit"] == "mm" && pile["members"][17]["unit"] == "m" &&
+                  !pile["members"][16].contains("unit"),
+              "pile getters identify offsets and units without guessing angle units");
+        check(cap["named_values"] == Json({{"cap_type", 2},
+                                           {"plan_shape", 1},
+                                           {"step_count", 2},
+                                           {"top_offset_x", 31},
+                                           {"top_offset_y", -32}}) &&
+                  cap["members"][0]["enum_label"] == "阶形现浇" &&
+                  cap["members"][3]["enum_label"] == "矩形" &&
+                  cap["step_heights"] == Json({400, 600}) &&
+                  cap["step_heights_order"] == "lower_to_upper",
+              "cap dialog bindings preserve lower and upper step order");
+        check(cap["reinforcement"][0]["named_values"] == Json({{"rebar_type", 0},
+                                                               {"spacing", 175},
+                                                               {"diameter", 22},
+                                                               {"distribution_width", 1200}}) &&
+                  cap["reinforcement"][0]["members"][0]["enum_label"] == "HPB235" &&
+                  cap["reinforcement"][1]["members"][0]["enum_label"] == "HRB400" &&
+                  cap["reinforcement"][1]["named_values"]["diameter"] == 16,
+              "reinforcement diameter and spacing follow native storage, with scoped enum");
+        check(pile["identified_member_count"] == 5 && pile["unassigned_member_count"] == 13 &&
+                  cap["identified_member_count"] == 5 && cap["unassigned_member_count"] == 3 &&
+                  cap["members"][1]["name"].is_null() && cap["members"][1]["value"] == 4321 &&
+                  unbase64(cap_result["binary_base64"]) == cap_bytes,
+              "cap annotations retain unknown fields and every original byte");
+        const char *cap_rebar[] = {"HPB235", "HPB300", "HRB335",  "HRB400", "HRB500",
+                                   "CRB550", "CRB600", "HTRB600", "T63"};
+        const char *cap_types[] = {"阶形预制", "锥形预制", "阶形现浇", "锥形现浇"};
+        const char *cap_shapes[] = {"圆形", "矩形", "正多边形", "多边形"};
+        for (std::int32_t v = -1; v <= 14; ++v) {
+            auto d = decode_cap(cap_fixture(v, v, v, v, 1, {800})).at("decoded");
+            auto enum_is = [&](const Json &field, int count, const std::string &label) {
+                return field["value"] == v &&
+                       (v >= 0 && v < count
+                            ? field["enum_label"] == label && field["enum_status"] == "identified"
+                            : field["enum_label"].is_null() &&
+                                  field["enum_status"] == "unknown_value");
+            };
+            check(enum_is(d["pile_section"]["base"]["members"][1], 14,
+                          "C" + std::to_string(15 + 5 * v)) &&
+                      enum_is(d["reinforcement"][0]["members"][0], 9,
+                              v >= 0 && v < 9 ? cap_rebar[v] : "") &&
+                      enum_is(d["members"][0], 4, v >= 0 && v < 4 ? cap_types[v] : "") &&
+                      enum_is(d["members"][3], 4, v >= 0 && v < 4 ? cap_shapes[v] : ""),
+                  "cap enum tables preserve negative and out-of-range codes");
+        }
+        check(decode_cap(cap_fixture(0, 0, 0, 0, 1, {800}))["decoded"]["step_heights"] ==
+                  Json({800}),
+              "single cap step retains its height");
+        for (auto steps : {0, 1, 3}) {
+            auto d = decode_cap(cap_fixture(0, 0, 0, 0, steps, {400, 600})).at("decoded");
+            check(!d.contains("step_heights") &&
+                      d["step_heights_status"] == "unsupported_step_layout" &&
+                      d["integer_array_0x250"] == Json({400, 600}),
+                  "unrecognized cap step layout is retained without a semantic alias");
+        }
+        check(decode_binary_field("BinaryData", cap_bytes, "PBStandardSectionProfile",
+                                  {{"Type", 0x40001}})
+                      .value("encoding", "") != "pilecap_section_cereal",
+              "cap semantics require the native type discriminator");
+        cap_bytes[0] = 1;
+        check(decode_cap(cap_bytes).value("encoding", "") != "pilecap_section_cereal",
+              "unsupported cap cereal version is not accepted");
+        cap_bytes[0] = 0;
+        cap_bytes.pop_back();
+        check(decode_cap(cap_bytes).value("encoding", "") != "pilecap_section_cereal",
+              "truncated cap is not accepted");
         NativeScene views;
         auto shared = std::make_shared<GeometryDefinition>();
         shared->source_key = "stream@1";

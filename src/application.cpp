@@ -373,6 +373,82 @@ static Json pilecap(Reader &r) {
     }
     result["members"].push_back(scalar("0x2e4", "B"));
     result["members"].push_back(scalar("0x2e8", "i"));
+    // Each native type has its own member namespace and enum numbering.
+    // PileBasePara: managed property getters. PileCapSectionPara / reinforcement:
+    // native cap-dialog data exchange and its resource lists.
+    struct Meaning {
+        const char *member;
+        const char *name;
+        const char *label;
+        const char *unit;
+        std::vector<std::string> choices;
+    };
+    auto identify = [](Json &block, const std::vector<Meaning> &meanings) {
+        Json values = Json::object();
+        for (auto &field : block["members"]) {
+            for (const auto &m : meanings) {
+                if (field["native_member"] != m.member)
+                    continue;
+                field.update(
+                    {{"name", m.name},
+                     {"label", m.label},
+                     {"semantic_status", "identified"},
+                     {"declared_type", field["numeric_view_format"] == "d" ? "float64" : "int32"}});
+                values[m.name] = field["value"];
+                if (*m.unit)
+                    field["unit"] = m.unit;
+                if (!m.choices.empty()) {
+                    auto value = field["value"].get<std::int64_t>();
+                    field["enum_label"] = nullptr;
+                    field["enum_status"] = "unknown_value";
+                    if (value >= 0 && std::uint64_t(value) < m.choices.size()) {
+                        field["enum_label"] = m.choices[std::size_t(value)];
+                        field["enum_status"] = "identified";
+                    }
+                }
+            }
+        }
+        block["named_values"] = values;
+        block["identified_member_count"] = values.size();
+        block["unassigned_member_count"] = block["members"].size() - values.size();
+    };
+    static const std::vector<Meaning> base_meanings = {
+        {"0x4",
+         "concrete_grade",
+         "混凝土强度等级",
+         "",
+         {"C15", "C20", "C25", "C30", "C35", "C40", "C45", "C50", "C55", "C60", "C65", "C70", "C75",
+          "C80"}},
+        {"0x218", "x_offset", "x轴偏移", "mm", {}},
+        {"0x21c", "y_offset", "y轴偏移", "mm", {}},
+        {"0x220", "rotation", "旋转角度", "", {}},
+        {"0x228", "top_elevation", "顶部标高", "m", {}}};
+    static const std::vector<Meaning> cap_meanings = {
+        {"0x2a0", "cap_type", "承台类型", "", {"阶形预制", "锥形预制", "阶形现浇", "锥形现浇"}},
+        {"0x2a4", "plan_shape", "平面形状", "", {"圆形", "矩形", "正多边形", "多边形"}},
+        {"0x248", "step_count", "承台阶数", "", {}},
+        {"0x2b0", "top_offset_x", "承台顶面相对底面X偏心", "", {}},
+        {"0x2b4", "top_offset_y", "承台顶面相对底面Y偏心", "", {}}};
+    static const std::vector<Meaning> reinforcement_meanings = {
+        {"0x0",
+         "rebar_type",
+         "钢筋级别",
+         "",
+         {"HPB235", "HPB300", "HRB335", "HRB400", "HRB500", "CRB550", "CRB600", "HTRB600", "T63"}},
+        {"0x4", "spacing", "间距", "mm", {}},
+        {"0x8", "diameter", "直径", "mm", {}},
+        {"0xc", "distribution_width", "布置宽度", "mm", {}}};
+    identify(result["pile_section"]["base"], base_meanings);
+    identify(result, cap_meanings);
+    for (auto &reinforcement : result["reinforcement"])
+        identify(reinforcement, reinforcement_meanings);
+    auto steps = result["named_values"]["step_count"].get<int>();
+    if ((steps == 1 || steps == 2) && result["integer_array_0x250"].size() == std::size_t(steps)) {
+        result["step_heights"] = result["integer_array_0x250"];
+        result["step_heights_order"] = "lower_to_upper";
+        result["step_heights_status"] = "identified";
+    } else
+        result["step_heights_status"] = "unsupported_step_layout";
     result.update({{"layout_status", "complete_for_supported_versions"},
                    {"semantic_status", "some_parameter_names_unassigned"},
                    {"unresolved_spans", Json::array()}});
