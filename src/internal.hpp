@@ -169,6 +169,7 @@ Json native_display_state(unsigned type, const Bytes &);
 Json decode_terrain(const Json &);
 Json decode_symbology(const Bytes &);
 Json decode_curve_identifier(const Bytes &);
+Json decode_native_layer(const Bytes &, const Json &);
 Json decode_symbology_extension(const Bytes &);
 void apply_symbology_extension(Json &, const Json &);
 void apply_symbology(Json &, const Json &);

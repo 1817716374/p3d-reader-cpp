@@ -246,6 +246,9 @@ Json parse_native(const Bytes &b) {
                        {"data", rawbytes(slice(b, pos, attr - pos))},
                        {"zero_padding", pad},
                        {"base_boundary_adjustment", adjustment}});
+        if (type == 49 && r.at<std::uint32_t>(pos + 16) == 1)
+            out.back()["layer_definition"] =
+                decode_native_layer(slice(b, pos, attr - pos), out.back()["links"]);
         // The in-memory native header starts after the four-byte stream prefix.
         // Type 47 / subtype 33 persists the root model's explicit link ordering.
         if (type == 47 && attr - pos >= 20 && r.at<std::uint32_t>(pos + 16) == 33) {
@@ -256,13 +259,19 @@ Json parse_native(const Bytes &b) {
                 auto flag = order.u16();
                 auto count = order.u32();
                 require(count <= order.left() / 8, "view link sequence count");
-                Json ids = Json::array();
-                for (std::uint32_t i = 0; i < count; ++i)
-                    ids.push_back(order.u64());
+                Json ids = Json::array(), entries = Json::array();
+                for (std::uint32_t i = 0; i < count; ++i) {
+                    auto id = order.u64();
+                    ids.push_back(id);
+                    entries.push_back({{"source_index", i},
+                                       {"source_id", id},
+                                       {"kind", id == 0 ? "current_model" : "model_link"}});
+                }
                 order.finish();
                 sequence.update({{"sequence_flag", flag},
                                  {"entry_count", count},
                                  {"entry_ids", ids},
+                                 {"entries", entries},
                                  {"entry_ids_source_offset", 44},
                                  {"ordering", "source_order"},
                                  {"runtime_reconciliation", "not_evaluated"}});

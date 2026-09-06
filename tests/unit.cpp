@@ -56,6 +56,11 @@ static void view_link_sequence_tests() {
     check(n["view_link_sequence"]["entry_ids"] == Json({0xfedcba9876543210ull, 7, 7, 0}) &&
               n["view_link_sequence"]["sequence_flag"] == 0x8001 && bytesof(n["data"]) == raw,
           "native link sequence preserves 64 bit IDs, duplicates, zero entries and raw flag");
+    check(n["view_link_sequence"]["entries"][3]["kind"] == "current_model" &&
+              n["view_link_sequence"]["entries"][0]["kind"] == "model_link" &&
+              n["view_link_sequence"]["entries"][0]["source_id"] == 0xfedcba9876543210ull &&
+              n["view_link_sequence"]["entries"][2]["source_index"] == 2,
+          "zero sequence sentinel denotes current model without rewriting source IDs");
     check(parse_native(record(0, {}))[0]["view_link_sequence"]["entry_ids"].empty() &&
               !parse_native(record(0, {}, 1, 34))[0].contains("view_link_sequence"),
           "empty view sequence distinguished from another type 47 subtype");
@@ -71,6 +76,160 @@ static void view_link_sequence_tests() {
     check(records.size() == 2 && records[0]["view_link_sequence"].contains("decode_error") &&
               records[1]["view_link_sequence"]["entry_ids"] == Json({9}),
           "semantic sequence error preserves following records");
+}
+static void native_layer_tests() {
+    auto set = [](Bytes &b, std::size_t at, auto value) {
+        require(at + sizeof(value) <= b.size(), "test layer offset");
+        std::memcpy(b.data() + at, &value, sizeof(value));
+    };
+    auto header = [&](Bytes &b, unsigned subtype = 1) {
+        set(b, 4, std::uint16_t(49));
+        auto words = std::uint32_t((b.size() - 4) / 2);
+        set(b, 8, words);
+        set(b, 12, words);
+        set(b, 16, std::uint32_t(subtype));
+    };
+    Bytes raw(244, 0);
+    header(raw);
+    set(raw, 20, std::uint64_t(0xfedcba9876543210ull));
+    set(raw, 36, std::uint32_t(0xffffffff));
+    set(raw, 44, std::uint16_t(6));
+    set(raw, 46, std::uint16_t(0x4070));
+    set(raw, 68, std::int32_t(-2));
+    set(raw, 72, std::uint32_t(0xffffffff));
+    set(raw, 76, std::uint32_t(0x56));
+    set(raw, 80, std::uint32_t(0x123456));
+    set(raw, 84, float(0.375));
+    set(raw, 92, std::uint32_t(0xfffa091b));
+    auto n = parse_native(raw)[0];
+    auto d = n["layer_definition"];
+    check(n["id"] == 0xfedcba9876543210ull && d["layer_id"] == 0xffffffffu &&
+              bytesof(n["data"]) == raw,
+          "layer and native element IDs remain distinct and unsigned source is preserved");
+    check(d["display"] == true && d["print"] == true && d["frozen"] == true &&
+              d["access_mode"] == 1 && d["locked"] == true && d["state_flags"] == 0x4070 &&
+              d["view_visibility"] == "not_evaluated",
+          "layer state decodes native bits and legacy lock restoration");
+    check(d["by_layer_symbology"]["color_index"] == 0x123456 &&
+              d["by_layer_symbology"]["line_style"] == -2 &&
+              d["by_layer_symbology"]["line_weight"] == 0xffffffffu && d["transparency"] == 0.375 &&
+              d["business_code"] == ((0xfffa091bu >> 3) & 0xffff),
+          "layer properties retain signed styles, extended colors and source transparency");
+    check((d["unassigned_extended_bits"].get<unsigned>() |
+           (d["business_code"].get<unsigned>() << 3)) == 0xfffa091bu,
+          "business code does not discard unrelated extended flags");
+    for (auto pair : {std::pair<unsigned, unsigned>{0, 0}, {0x2000, 2}, {0x3010, 3}}) {
+        auto b = raw;
+        set(b, 46, std::uint16_t(pair.first));
+        auto state = decode_native_layer(b, Json::array());
+        check(state["access_mode"] == pair.second && state["locked"] == (pair.second == 1),
+              "multi-bit access state is not flattened into any-nonzero locked");
+    }
+    for (auto pair : {std::pair<unsigned, unsigned>{0x123456, 0x123456},
+                      {0, 0},
+                      {0xfffffffd, 0xfd},
+                      {0xfffffffe, 0xfffffffe},
+                      {0xffffffff, 0xffffffff}}) {
+        auto b = raw;
+        set(b, 76, std::uint32_t(pair.second));
+        set(b, 80, std::uint32_t(pair.first));
+        unsigned expected = pair.first == 0x123456 ? pair.second : pair.first;
+        check(decode_native_layer(b, Json::array())["by_layer_symbology"]["color_index"] ==
+                  expected,
+              "color compatibility follows native truncation and special sentinel boundaries");
+    }
+    auto mismatch = raw;
+    set(mismatch, 76, std::uint32_t(0x55));
+    check(decode_native_layer(mismatch, Json::array())["by_layer_symbology"]["color_index"] == 0x55,
+          "inconsistent extended color falls back to the legacy field");
+    for (unsigned version = 0; version <= 8; ++version) {
+        auto b = slice(raw, 0, 108);
+        header(b);
+        set(b, 44, std::uint16_t(version));
+        auto layer = parse_native(b)[0]["layer_definition"];
+        if (version == 0 || version == 8)
+            check(layer["status"] == "unsupported_version" && !layer.contains("display"),
+                  "unconfirmed layer versions do not inherit a guessed layout");
+        else
+            check(layer["status"] == "decoded" && layer["business_code"].is_null() == (version < 4),
+                  "common layer layout supports old lengths with version-specific flags");
+    }
+    for (std::size_t length = 36; length < 108; length += 2) {
+        auto b = slice(raw, 0, length);
+        header(b);
+        b.insert(b.end(), raw.begin(), raw.end());
+        auto records = parse_native(b);
+        check(records.size() == 2 && records[0]["layer_definition"].contains("decode_error") &&
+                  records[1]["layer_definition"]["status"] == "decoded",
+              "truncated layer body preserves following native records");
+    }
+    auto wrong = raw;
+    header(wrong, 18);
+    check(!parse_native(wrong)[0].contains("layer_definition"),
+          "another type 49 subtype is not interpreted as a layer");
+    auto bad_float = raw;
+    set(bad_float, 84, std::uint32_t(0x7fc00001));
+    auto bad = decode_native_layer(bad_float, Json::array());
+    check(bad["transparency"].is_null() && bad.contains("transparency_error") &&
+              bad["transparency_source_bits"] == 0x7fc00001 && bad["display"] == true,
+          "nonfinite transparency is explicit and leaves independent layer values available");
+    auto link = [](unsigned key, const char *value) {
+        Bytes b;
+        put<std::uint16_t>(b, key);
+        put<std::uint16_t>(b, 0);
+        put<std::uint32_t>(b, std::uint32_t(std::strlen(value) + 4));
+        append_wire(b, "fffe0100");
+        b.insert(b.end(), value, value + std::strlen(value));
+        b.push_back(0xa5);
+        return Json{{"app", 0x56d2},
+                    {"header", 0x1000},
+                    {"offset", 0x100000000ull},
+                    {"payload", rawbytes(b)}};
+    };
+    Json links = Json::array({link(1, "Layer A"), link(2, "Description"), link(1, "Layer B"),
+                              link(37, "Unassigned"), link(1, "Broken")});
+    auto broken = bytesof(links[4]["payload"]);
+    set(broken, 4, std::uint32_t(0xffffffff));
+    links[4]["payload"] = rawbytes(broken);
+    auto named = decode_native_layer(raw, links);
+    check(named["name"] == "Layer B" && named["description"] == "Description" &&
+              named["strings"].size() == 5 && named["strings"][3]["key"] == 37 &&
+              !named["strings"][3].contains("role") &&
+              named["strings"][4].contains("decode_error") &&
+              named["strings"][0]["source_offset"] == 0x100000000ull &&
+              bytesof(named["strings"][0]["trailing_storage"]) == Bytes{0xa5},
+          "layer names preserve duplicate links, unknown keys, padding and individual errors");
+    for (auto item : {std::pair<const char *, const char *>{"44656661756c74", "Default"},
+                      {"e9", u8"é"},
+                      {"fffe0100e9", u8"é"},
+                      {"fffee900", u8"é"},
+                      {"fffde900", u8"é"},
+                      {"fffe3dd800de", u8"😀"},
+                      {"", ""},
+                      {"410042", "A"},
+                      {"fffe410000004200", "A"}}) {
+        Bytes payload;
+        auto bytes = wire_bytes(item.first);
+        put<std::uint32_t>(payload, 1);
+        put<std::uint32_t>(payload, std::uint32_t(bytes.size()));
+        payload.insert(payload.end(), bytes.begin(), bytes.end());
+        auto l = link(1, "");
+        l["payload"] = rawbytes(payload);
+        check(decode_native_layer(raw, Json::array({l}))["name"] == item.second,
+              "layer strings follow code page 1200 widening and wide-prefix rules");
+    }
+    for (auto bytes : {"fffeff", "fffdff", "feff0041", "fdff0041"}) {
+        auto content = wire_bytes(bytes);
+        Bytes payload;
+        put<std::uint32_t>(payload, 1);
+        put<std::uint32_t>(payload, std::uint32_t(content.size()));
+        payload.insert(payload.end(), content.begin(), content.end());
+        auto l = link(1, "");
+        l["payload"] = rawbytes(payload);
+        auto d = decode_native_layer(raw, Json::array({l}));
+        check(!d.contains("name") && d["strings"][0].contains("decode_error"),
+              "malformed wide lengths and rejected byte orders are not recoded as narrow text");
+    }
 }
 static void layer_group_tests() {
     // Three source entries: packed bits span several words, while the wire stores
@@ -1477,6 +1636,7 @@ int main() {
         attribute_semantics_tests();
         layer_group_tests();
         view_link_sequence_tests();
+        native_layer_tests();
         material_index_tests();
         section_clip_tests();
         inline_material_tests();
