@@ -1,0 +1,152 @@
+[
+  {
+    "file": "nlohmann/json.hpp",
+    "url": "https://raw.githubusercontent.com/nlohmann/json/v3.12.0/single_include/nlohmann/json.hpp",
+    "sha256": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63",
+    "bytes": 953436
+  },
+  {
+    "file": "nlohmann/LICENSE.MIT",
+    "url": "https://raw.githubusercontent.com/nlohmann/json/v3.12.0/LICENSE.MIT",
+    "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603",
+    "bytes": 1076
+  },
+  {
+    "file": "lz4/lz4.c",
+    "url": "https://raw.githubusercontent.com/lz4/lz4/v1.10.0/lib/lz4.c",
+    "sha256": "9396f7de527bc8435de9c7569fb7998e56545a84b4f3c2d808c0235c01774539",
+    "bytes": 118145
+  },
+  {
+    "file": "lz4/lz4.h",
+    "url": "https://raw.githubusercontent.com/lz4/lz4/v1.10.0/lib/lz4.h",
+    "sha256": "26b82efc53d1570f3b54eef02e9c4764c1ad374ff03cac04e2ced5ea4d4c552f",
+    "bytes": 46014
+  },
+  {
+    "file": "lz4/LICENSE",
+    "url": "https://raw.githubusercontent.com/lz4/lz4/v1.10.0/lib/LICENSE",
+    "sha256": "8b58c446121a109ccf32edc094bba3010a3d85e4ee3702950db55e4d3e87736c",
+    "bytes": 1311
+  },
+  {
+    "file": "pugixml/pugixml.cpp",
+    "url": "https://raw.githubusercontent.com/zeux/pugixml/v1.15/src/pugixml.cpp",
+    "sha256": "67c3892efba51d4e4eb6ce5609286fd2703aede6ba49a6d2130068cad09e0744",
+    "bytes": 356069
+  },
+  {
+    "file": "pugixml/pugixml.hpp",
+    "url": "https://raw.githubusercontent.com/zeux/pugixml/v1.15/src/pugixml.hpp",
+    "sha256": "2555f950fd080e02ff16f36698ddf8d4a46d3a484b9337b4cbfc6300043be734",
+    "bytes": 55963
+  },
+  {
+    "file": "pugixml/pugiconfig.hpp",
+    "url": "https://raw.githubusercontent.com/zeux/pugixml/v1.15/src/pugiconfig.hpp",
+    "sha256": "981cd9ad3313878817d7b548c9929cc09d3bc42be2c0c1dcb0d77290fc98b92d",
+    "bytes": 3053
+  },
+  {
+    "file": "pugixml/LICENSE.md",
+    "url": "https://raw.githubusercontent.com/zeux/pugixml/v1.15/LICENSE.md",
+    "sha256": "0d0b3772af2fa45628a548a3b34583707ebcc68bb6f83ec48ca273aab4a510f1",
+    "bytes": 1079
+  },
+  {
+    "file": "mapbox/earcut.hpp",
+    "url": "https://raw.githubusercontent.com/mapbox/earcut.hpp/v2.2.4/include/mapbox/earcut.hpp",
+    "sha256": "3b838bc3f643d34ced850b6d53b19e2d9abdf6c2c067425b02868d131379b3cc",
+    "bytes": 25024
+  },
+  {
+    "file": "mapbox/LICENSE",
+    "url": "https://raw.githubusercontent.com/mapbox/earcut.hpp/v2.2.4/LICENSE",
+    "sha256": "828f2aed51b6526881a236758ec9b08cd69928fbfc70346d9d44a0b3a3444fe1",
+    "bytes": 738
+  },
+  {
+    "file": "miniz/miniz_tinfl.c",
+    "url": "https://raw.githubusercontent.com/richgel999/miniz/3.1.0/miniz_tinfl.c",
+    "sha256": "ff9cc5426df23a78070b5b8fa2dcb7aea68faac466169a883b4ffb8727532350",
+    "bytes": 40259
+  },
+  {
+    "file": "miniz/miniz_tinfl.h",
+    "url": "https://raw.githubusercontent.com/richgel999/miniz/3.1.0/miniz_tinfl.h",
+    "sha256": "da4850920fdf09f8877d9affabe1ebba1852ce4b1ebbd121f2ba7a7ea8e57e5d",
+    "bytes": 8695
+  },
+  {
+    "file": "miniz/miniz_common.h",
+    "url": "https://raw.githubusercontent.com/richgel999/miniz/3.1.0/miniz_common.h",
+    "sha256": "6320fa10a5d21db9f78594d92745bc27593c1e6bed657104c22da0a9bd687b49",
+    "bytes": 2719
+  },
+  {
+    "file": "miniz/miniz.h",
+    "url": "https://raw.githubusercontent.com/richgel999/miniz/3.1.0/miniz.h",
+    "sha256": "232abb0b807fd4962a8e61822459dd49baecb61d0e557f23497732978640f6a7",
+    "bytes": 27754
+  },
+  {
+    "file": "miniz/miniz_tdef.h",
+    "url": "https://raw.githubusercontent.com/richgel999/miniz/3.1.0/miniz_tdef.h",
+    "sha256": "d62da02953c3834dfcbde4db026c6d9345013ef9b0e53185131016a3a4e48c33",
+    "bytes": 10733
+  },
+  {
+    "file": "miniz/miniz_zip.h",
+    "url": "https://raw.githubusercontent.com/richgel999/miniz/3.1.0/miniz_zip.h",
+    "sha256": "b062a5def545445c73fd1d664e35a89165dfb0d996ab848f507244e819cfcf04",
+    "bytes": 26742
+  },
+  {
+    "file": "miniz/LICENSE",
+    "url": "https://raw.githubusercontent.com/richgel999/miniz/3.1.0/LICENSE",
+    "sha256": "0115478d567121238cf6cc1c0c361926cf07a49d9e4c9e66da97fac6a01646b3",
+    "bytes": 1184
+  },
+  {
+    "file": "gcc-runtime/COPYING3",
+    "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-16.1.0/COPYING3",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "bytes": 35147
+  },
+  {
+    "file": "gcc-runtime/COPYING.RUNTIME",
+    "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-16.1.0/COPYING.RUNTIME",
+    "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+    "bytes": 3324
+  },
+  {
+    "file": "gcc-runtime/MINGW_COPYING",
+    "url": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/v14.0.0/COPYING",
+    "sha256": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
+    "bytes": 2326
+  },
+  {
+    "file": "gcc-runtime/WINPTHREADS_COPYING",
+    "url": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/v14.0.0/mingw-w64-libraries/winpthreads/COPYING",
+    "sha256": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177",
+    "bytes": 2883
+  },
+  {
+    "file": "BGFB_LICENSE.txt",
+    "origin": "Apache-2.0 license for Bentley schema; source provenance in src/data.cpp",
+    "sha256": "a1226353de0975c3556b2628a53b22af4dd82804cb272e7052cec5c480b80e9d",
+    "bytes": 9857
+  },
+  {
+    "file": "GDAL_PALETTE_LICENSE.txt",
+    "origin": "MIT license with original Avenza copyright; source URL in notice",
+    "sha256": "7a9d5691adf4d070345be6cbfac81b00a36ed57e149f0aba3cd8e54729377477",
+    "bytes": 1243
+  },
+  {
+    "file": "miniz/miniz_export.h",
+    "origin": "Local static-build export macro configuration",
+    "sha256": "36bc4b8f74820c36f6705d082206a4b934aaf62217db0621545afb238179f680",
+    "bytes": 36
+  }
+]

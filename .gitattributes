@@ -1,0 +1,7 @@
+* text=auto
+*.md text eol=lf
+*.json text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+# 保留第三方文件的原始字节，避免换行转换影响来源校验。
+third_party/** -text
