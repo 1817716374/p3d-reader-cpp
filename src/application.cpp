@@ -224,27 +224,79 @@ static Json standard_floor(const Bytes &b) {
     addr.fill('0');
     addr << ptr;
     abi[0]["address_hex"] = addr.str();
-    Json fields = Json::array();
+    // Offsets are relative to TagStdFlrDesignPara, including its serialized vptr.
+    // The standard-floor dialog and grid bind these members to named controls.
+    // These are library field names, not recovered C++ member identifiers.
+    struct Field {
+        int offset;
+        const char *name;
+        const char *label;
+        const char *kind;
+    };
+    static constexpr Field known[] = {
+        {8, "slab_thickness", "板厚", "length"},
+        {12, "column_concrete_grade", "柱混凝土强度等级", "concrete_grade"},
+        {16, "beam_concrete_grade", "梁混凝土强度等级", "concrete_grade"},
+        {20, "shear_wall_concrete_grade", "剪力墙混凝土强度等级", "concrete_grade"},
+        {24, "slab_concrete_grade", "板混凝土强度等级", "concrete_grade"},
+        {28, "brace_concrete_grade", "斜杆混凝土强度等级", "concrete_grade"},
+        {40, "slab_rebar_cover", "板钢筋保护层厚度", "length"},
+        {48, "column_main_rebar_type", "柱主筋类别", "rebar_type"},
+        {52, "beam_main_rebar_type", "梁主筋类别", "rebar_type"},
+        {56, "wall_main_rebar_type", "墙主筋类别", "rebar_type"}};
+    // Native combo indices, also used directly by the standard-floor grid.
+    static constexpr const char *rebar[] = {"HPB300",      "HRB335",      "HRB400",  "HRB500",
+                                            "冷轧带肋550", "冷轧带肋600", "HTRB600", "HPB235"};
+    Json fields = Json::array(), values = Json::object();
     for (int i = 0; i < 21; ++i) {
         auto u = r.u32();
-        fields.push_back({{"offset", 8 + 4 * i},
-                          {"bytes", 4},
-                          {"name", nullptr},
-                          {"storage_uint32", u},
-                          {"int32_view", std::int32_t(u)},
-                          {"semantic_status", "unassigned"}});
+        Json field = {{"offset", 8 + 4 * i},
+                      {"bytes", 4},
+                      {"name", nullptr},
+                      {"storage_uint32", u},
+                      {"int32_view", std::int32_t(u)},
+                      {"semantic_status", "unassigned"}};
+        for (const auto &k : known) {
+            if (k.offset != 8 + 4 * i)
+                continue;
+            auto value = std::int32_t(u);
+            field.update({{"name", k.name},
+                          {"label", k.label},
+                          {"kind", k.kind},
+                          {"value", value},
+                          {"storage_type", "int32"},
+                          {"semantic_status", "identified"}});
+            values[k.name] = value;
+            if (std::string(k.kind) == "length")
+                field["unit"] = "mm";
+            if (std::string(k.kind) == "concrete_grade")
+                field["display_value"] = "C" + std::to_string(value);
+            if (std::string(k.kind) == "rebar_type") {
+                field["enum_label"] = nullptr;
+                field["enum_status"] = "unknown_value";
+                if (u < sizeof(rebar) / sizeof(*rebar)) {
+                    field["enum_label"] = rebar[u];
+                    field["enum_status"] = "identified";
+                }
+            }
+        }
+        fields.push_back(std::move(field));
     }
     return {{"native_type", "PBBim::PBBimStruct::TagStdFlrDesignPara"},
             {"layout", "observed_msvc_x64_memory_image_96"},
             {"abi_fields", abi},
             {"fields", fields},
+            {"named_values", values},
+            {"identified_field_count", values.size()},
+            {"unassigned_field_count", fields.size() - values.size()},
             {"layout_status", "complete_for_observed_abi"},
-            {"semantic_status", "member_names_and_types_unassigned"},
+            {"semantic_status", "partially_identified"},
             {"unresolved_spans", Json::array()},
             {"note",
              "The pointer is source-process residue and is never dereferenced or treated as an "
-             "object ID. All member storage and nonzero padding are retained; individual field "
-             "names and signedness are not established by the copy routines."}};
+             "object ID. All member storage and nonzero padding are retained. Named values use "
+             "the standard-floor UI bindings; other members remain unassigned. Field units do "
+             "not establish the document's geometry units."}};
 }
 static Json pilecap(Reader &r) {
     auto version = [&]() {

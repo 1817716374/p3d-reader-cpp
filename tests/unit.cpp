@@ -218,6 +218,58 @@ int main() {
         check(design["decoded"]["fields"].size() == 21 &&
                   design["decoded"]["abi_fields"][1]["raw_hex"] == "7e000000",
               "ABI residue and padding preserved");
+        Bytes floor_values = slice(floor, 0, 8);
+        for (std::int32_t v :
+             {175, 45, 35, 40, 30, 50, 21, 22, 25, 17, 4, 7, 6, 1, 2, 3, 4, 5, 6, 7, 8})
+            put(floor_values, v);
+        put(floor_values, std::uint32_t(0x01020304));
+        auto floor_result =
+            decode_binary_field("DesignPara", floor_values, "StructStandardFloorModel");
+        const auto &fd = floor_result["decoded"];
+        check(fd["named_values"] == Json({{"slab_thickness", 175},
+                                          {"column_concrete_grade", 45},
+                                          {"beam_concrete_grade", 35},
+                                          {"shear_wall_concrete_grade", 40},
+                                          {"slab_concrete_grade", 30},
+                                          {"brace_concrete_grade", 50},
+                                          {"slab_rebar_cover", 25},
+                                          {"column_main_rebar_type", 4},
+                                          {"beam_main_rebar_type", 7},
+                                          {"wall_main_rebar_type", 6}}),
+              "floor fields follow native member offsets");
+        check(fd["identified_field_count"] == 10 && fd["unassigned_field_count"] == 11 &&
+                  fd["fields"][6]["name"].is_null() && fd["fields"][6]["storage_uint32"] == 21,
+              "floor unassigned members are not guessed or discarded");
+        check(fd["fields"][0]["unit"] == "mm" && fd["fields"][8]["unit"] == "mm" &&
+                  fd["fields"][1]["display_value"] == "C45" &&
+                  fd["fields"][11]["enum_label"] == "HPB235" &&
+                  unbase64(floor_result["binary_base64"]) == floor_values,
+              "floor units, grade display and raw bytes preserved");
+        const char *expected_rebar[] = {"HPB300",      "HRB335",      "HRB400",  "HRB500",
+                                        "冷轧带肋550", "冷轧带肋600", "HTRB600", "HPB235"};
+        for (std::int32_t v = -1; v <= 8; ++v) {
+            for (auto off : {48, 52, 56})
+                std::memcpy(floor_values.data() + off, &v, sizeof(v));
+            auto result = decode_binary_field("DesignPara", floor_values,
+                                              "StructStandardFloorModel")["decoded"];
+            bool valid = true;
+            for (auto index : {10, 11, 12}) {
+                const auto &f = result["fields"][index];
+                valid &=
+                    f["value"] == v &&
+                    (v >= 0 && v < 8
+                         ? f["enum_label"] == expected_rebar[v] && f["enum_status"] == "identified"
+                         : f["enum_label"].is_null() && f["enum_status"] == "unknown_value");
+            }
+            check(valid, "floor rebar indices include unknown and negative values");
+        }
+        check(
+            !decode_binary_field("DesignPara", floor_values, "UnrelatedClass").contains("decoded"),
+            "floor semantics are scoped to the source class");
+        floor_values.pop_back();
+        check(!decode_binary_field("DesignPara", floor_values, "StructStandardFloorModel")
+                   .contains("decoded"),
+              "truncated floor memory image is not accepted");
         NativeScene views;
         auto shared = std::make_shared<GeometryDefinition>();
         shared->source_key = "stream@1";
