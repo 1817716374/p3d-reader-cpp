@@ -37,8 +37,133 @@ static Geometry triangle() {
         {{"channel", "faces"}, {"start", 0}, {"count", 1}, {"style", Json::object()}});
     return g;
 }
+static Bytes drawing_fixture(bool substation, unsigned version) {
+    Bytes b;
+    put<std::uint32_t>(b, 1);
+    for (int i = 0; i < 13; ++i)
+        put<std::uint64_t>(b, 0);
+    put<std::uint32_t>(b, 0);
+    auto ids =
+        substation ? std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7} : std::vector<int>{4, 5, 3, 6, 7};
+    for (std::size_t index = 0; index < ids.size(); ++index) {
+        int id = ids[index];
+        put<std::uint32_t>(b, 0);
+        auto v = !substation && id != 6 ? version : 0;
+        put<std::uint32_t>(b, v);
+        if (!index)
+            put<std::uint32_t>(b, 0);
+        put<std::uint32_t>(b, 0);
+        put<std::uint32_t>(b, id);
+        put<std::uint32_t>(b, 2);
+        if (substation) {
+            put<double>(b, 901);
+            put<std::uint32_t>(b, 902);
+        }
+        for (double x : {101., 102., 103.})
+            put(b, x);
+        if (substation) {
+            auto n = id == 2 || id == 3 ? 4 : id == 7 ? 3 : 2;
+            for (int i = 0; i < n; ++i)
+                put<double>(b, 201 + i);
+        } else {
+            put<std::uint32_t>(b, 3);
+            if (id == 4 || id == 5) {
+                put<std::uint32_t>(b, 1);
+                if (id == 5)
+                    put<std::uint32_t>(b, 2);
+                for (int i = 0; i < (id == 4 ? 4 : 3); ++i)
+                    put<double>(b, 201 + i);
+                for (auto x : id == 4 ? Bytes{1, 0, 1, 0} : Bytes{0, 1})
+                    put(b, x);
+                if (id == 5) {
+                    put<double>(b, 205);
+                    put<std::uint8_t>(b, 1);
+                }
+            } else if (id == 3) {
+                put<std::uint8_t>(b, 1);
+                put<double>(b, 206);
+            } else {
+                put<std::uint8_t>(b, 0);
+                put<std::uint8_t>(b, 1);
+                if (id == 7)
+                    put<std::uint8_t>(b, 0);
+            }
+            if (v) {
+                if (id == 7)
+                    put<std::uint8_t>(b, 0);
+                else
+                    put<std::uint32_t>(b, 1);
+            }
+        }
+    }
+    return b;
+}
 int main() {
     try {
+        for (unsigned version : {0u, 1u}) {
+            auto payload = drawing_fixture(false, version);
+            auto decoded = decode_binary_field("CerealDatas", payload, "PSDrawingManager");
+            auto &sheets = decoded.at("decoded").at("records");
+            auto &plan = sheets[0]["named_values"];
+            check(plan["scale_denominator"] == 101 &&
+                      plan["connection_number_text_height"] == 103 &&
+                      plan["member_number_text_height"] == 203 && plan["beam_end_gap"] == 204,
+                  "plan scales and text heights follow native members");
+            check(plan["draw_column_leader"] == 1 && plan["draw_section_table"] == 0 &&
+                      plan["merged_output"] == 0 && plan["beam_drawing_mode"] == 1,
+                  "native drawing flags are not UI combo indices");
+            auto &elevation = sheets[1]["named_values"];
+            check(elevation["column_drawing_mode"] == 2 && elevation["beam_end_gap"] == 205 &&
+                      elevation["show_member_numbers"] == 1 && elevation["merged_output"] == 1,
+                  "elevation parameters preserve noncontiguous native layout");
+            check(sheets[3]["named_values"]["leader_text_height"] == 102 &&
+                      sheets[4]["named_values"]["connection_drawing_type"] == 1 &&
+                      sheets[4]["named_values"]["generate_connection_drawing"] == 0,
+                  "node and connection settings have distinct meanings");
+            check(sheets[0].contains("node_number_mode_code") == (version == 1) &&
+                      sheets[4].contains("splice_annotation_origin_flag") == (version == 1),
+                  "drawing version-specific parameters are only present in their archive version");
+            if (version == 1)
+                check(plan["node_number_mode"] == 1 &&
+                          sheets[2]["named_values"]["node_number_mode"] == 1 &&
+                          sheets[4]["named_values"]["splice_annotation_origin"] == 0,
+                      "drawing version 1 tail fields decoded");
+            payload.pop_back();
+            check(!decode_binary_field("CerealDatas", payload, "PSDrawingManager")
+                       .contains("encoding"),
+                  "truncated drawing tail is not accepted");
+        }
+        auto subs =
+            decode_binary_field("CerealDatas", drawing_fixture(true, 0), "SubsDrawingManager")
+                .at("decoded");
+        for (auto &sheet : subs["records"])
+            check(sheet["named_values"]["dimension_text_height"] == 101 &&
+                      sheet["named_values"]["name_text_height"] == 102 &&
+                      sheet["named_values"]["table_text_height"] == 103 &&
+                      sheet["unassigned_scale"] == 901,
+                  "substation text heights are independent of the retained base double");
+        check(subs["records"][2]["named_values"]["section_scale_denominator"] == 203 &&
+                  subs["records"][3]["named_values"]["connection_scale_denominator"] == 204 &&
+                  subs["records"][7]["named_values"]["elevation_scale_denominator"] == 201,
+              "substation per-type scales retain native ordering");
+        auto drawing_unknown = drawing_fixture(false, 0);
+        // First sheet: 112-byte manager prefix, 16-byte cereal/base header.
+        std::uint32_t unknown_paper = 99;
+        std::memcpy(drawing_unknown.data() + 132, &unknown_paper, sizeof(unknown_paper));
+        drawing_unknown[200] = 7;
+        auto unknown_sheet = decode_binary_field("CerealDatas", drawing_unknown, "PSDrawingManager")
+                                 .at("decoded")
+                                 .at("records")[0];
+        check(unknown_sheet["fields"][0]["enum_status"] == "unknown_value" &&
+                  unknown_sheet["named_values"]["paper_size"] == 99 &&
+                  unknown_sheet["named_values"]["draw_column_leader"] == 7,
+              "unknown drawing enums and flag bytes remain lossless");
+        std::uint32_t future_sheet_version = 2;
+        std::memcpy(drawing_unknown.data() + 116, &future_sheet_version,
+                    sizeof(future_sheet_version));
+        check(!decode_binary_field("CerealDatas", drawing_unknown, "PSDrawingManager")
+                   .contains("encoding"),
+              "unsupported future drawing version is not decoded as version zero");
         Bytes zipped = {3,    0,    0,    0,    3,    0,    0,    0,    0x78, 0x9c,
                         0x4b, 0x4c, 0x4a, 0x06, 0x00, 0x02, 0x4d, 0x01, 0x27};
         auto inflated = decode_attribute(7, 99, zipped);

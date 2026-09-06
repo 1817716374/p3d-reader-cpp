@@ -625,6 +625,99 @@ static Json feature_catalog(Reader &r) {
         'Q', 64);
     return out;
 }
+static void drawing_fields(Json &item, bool substation, int id) {
+    item["fields"] = Json::array();
+    item["named_values"] = Json::object();
+    auto field = [&](const Json &value, const char *member, const char *name,
+                     const std::map<int, std::string> &labels = std::map<int, std::string>{}) {
+        Json f = {{"native_member", member}, {"name", name}, {"value", value}};
+        if (!labels.empty()) {
+            auto it = labels.find(value.get<int>());
+            f["enum_label"] = it == labels.end() ? Json() : Json(it->second);
+            f["enum_status"] = it == labels.end() ? "unknown_value" : "identified";
+        }
+        item["fields"].push_back(f);
+        item["named_values"][name] = value;
+    };
+    const std::map<int, std::string> yes_no = {{0, "否"}, {1, "是"}};
+    field(item["mode_code"], "0x4", "paper_size",
+          {{0, "A0"}, {1, "A1"}, {2, "A2"}, {3, "A3"}, {4, "A4"}});
+    field(item["unassigned_code"], substation ? "0x8" : "0x20", "drawing_frame_style",
+          {{1, "A0"}, {2, "A1"}, {3, "A2"}, {4, "A3"}, {5, "A4"}});
+    auto &common = item["unassigned_values"];
+    if (substation) {
+        static const char *types[] = {"SubsLayoutSheetInfo",  "SubsFoundationSheetInfo",
+                                      "SubsBeamSheetInfo",    "SubsColumnSheetInfo",
+                                      "SubsGNSheetInfo",      "SubsRLSheetInfo",
+                                      "SubsColHeadSheetInfo", "SubsLadderSheetInfo"};
+        item["native_type"] = types[id];
+        field(common[0], "0x10", "dimension_text_height");
+        field(common[1], "0x18", "name_text_height");
+        field(common[2], "0x20", "table_text_height");
+        static const std::vector<const char *> scales[] = {
+            {"axonometric_scale_denominator", "elevation_scale_denominator"},
+            {"layout_scale_denominator", "foundation_detail_scale_denominator"},
+            {"front_view_scale_denominator", "unfolded_view_scale_denominator",
+             "section_scale_denominator", "node_scale_denominator"},
+            {"front_view_scale_denominator", "section_scale_denominator", "node_scale_denominator",
+             "connection_scale_denominator"},
+            {"schematic_scale_denominator", "section_scale_denominator"},
+            {"schematic_scale_denominator", "section_scale_denominator"},
+            {"node_scale_denominator", "connection_scale_denominator"},
+            {"elevation_scale_denominator", "schematic_scale_denominator",
+             "section_scale_denominator"}};
+        const char *members[] = {"0x38", "0x40", "0x48", "0x50"};
+        for (std::size_t i = 0; i < scales[id].size(); ++i)
+            field(item["type_specific_values"][i], members[i], scales[id][i]);
+        return;
+    }
+    field(common[0], "0x8", "scale_denominator");
+    field(common[2], "0x18", "connection_number_text_height");
+    if (id == 4 || id == 5) {
+        auto &values = item["type_specific_values"];
+        field(id == 4 ? item["type_specific_code"] : item["type_specific_codes"][0], "0x28",
+              "beam_drawing_mode", {{0, "单线"}, {1, "双线"}, {2, "多线"}});
+        field(values[0], "0x30", "rigid_end_symbol_size");
+        field(values[1], "0x38",
+              id == 4 ? "beam_annotation_distance" : "member_annotation_distance");
+        field(values[2], "0x40", "member_number_text_height");
+        if (id == 4) {
+            field(values[3], "0x48", "beam_end_gap");
+            field(item["flags"][0], "0x50", "draw_column_leader", yes_no);
+            field(item["flags"][1], "0x51", "draw_section_table", yes_no);
+            field(item["flags"][2], "0x52", "show_member_numbers", yes_no);
+            field(item["flags"][3], "0x58", "merged_output", yes_no);
+        } else {
+            field(item["type_specific_codes"][1], "0x2c", "column_drawing_mode",
+                  {{0, "单线"}, {2, "多线"}});
+            field(item["flags"][0], "0x48", "draw_section_table", yes_no);
+            field(item["flags"][1], "0x49", "show_member_numbers", yes_no);
+            field(item["unassigned_value"], "0x50", "beam_end_gap");
+            field(item["trailing_flag"], "0x58", "merged_output", yes_no);
+        }
+    } else if (id == 3) {
+        field(item["flag"], "0x28", "draw_column_leader", yes_no);
+    } else {
+        field(common[1], "0x10", "leader_text_height");
+        field(item["flags"][0], "0x28", "merged_output", yes_no);
+        if (id == 6)
+            field(item["flags"][1], "0x29", "generate_3d_node_detail", yes_no);
+        else {
+            field(item["flags"][1], "0x29", "connection_drawing_type",
+                  {{0, "节点列表出图"}, {1, "节点连接图"}});
+            field(item["flags"][2], "0x2a", "generate_connection_drawing", yes_no);
+        }
+    }
+    if (item.contains("node_number_mode_code"))
+        field(item["node_number_mode_code"],
+              id == 4   ? "0x54"
+              : id == 5 ? "0x5c"
+                        : "0x38",
+              "node_number_mode", {{0, "简化"}, {1, "详细"}});
+    if (item.contains("splice_annotation_origin_flag"))
+        field(item["splice_annotation_origin_flag"], "0x2b", "splice_annotation_origin",
+              {{0, "柱边缘"}, {1, "柱中心"}});
+}
 static Json drawing(Reader &r, const std::string &cl) {
     Json out = {{"class", cl}, {"semantic_status", "partial"}, {"unresolved_spans", Json::array()}};
     if (cl == "PSDrawingGlobalParametrer") {
@@ -655,7 +748,10 @@ static Json drawing(Reader &r, const std::string &cl) {
         Json records = Json::array();
         for (auto id : ids) {
             auto ho = r.p;
-            auto cv = r.expect("I", 0), v = r.expect("I", 0);
+            auto cv = r.expect("I", 0);
+            auto v = r.u32();
+            require(v == 0 || (cl == "PSDrawingManager" && id != 6 && v == 1),
+                    "drawing sheet version");
             Json bcv = records.empty() ? r.expect("I", 0) : Json();
             auto bv = r.expect("I", 0);
             Json item = {{"header_offset", ho}, {"cereal_version", cv},
@@ -692,6 +788,13 @@ static Json drawing(Reader &r, const std::string &cl) {
                 } else
                     item["flags"] = r.uints(id == 6 ? 2 : 3, 1);
             }
+            if (v == 1) {
+                if (id == 7)
+                    item["splice_annotation_origin_flag"] = r.u8();
+                else
+                    item["node_number_mode_code"] = r.u32();
+            }
+            drawing_fields(item, cl == "SubsDrawingManager", id);
             if (!bcv.is_null())
                 item["base_cereal_version"] = bcv;
             records.push_back(item);
