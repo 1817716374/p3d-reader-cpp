@@ -15,5 +15,6 @@ struct GuidedMesh {
 };
 GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,
                           const std::vector<GuidedBoundary> &top,
-                          const std::vector<GuidedBoundary> &guides, const Tessellation &);
+                          const std::vector<GuidedBoundary> &guides, const Tessellation &,
+                          bool closed = true);
 } // namespace p3d

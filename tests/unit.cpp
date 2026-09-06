@@ -1400,6 +1400,108 @@ static void rational_guided_tests() {
     // Ordinary parameter blending would instead yield y=-.625.
     check(native_blend, "unequal profiles retain native piecewise pole blending");
 }
+static void guided_open_tests() {
+    std::vector<GuidedBoundary> bottom(2), top(2), rails(3);
+    const std::array<Point3, 3> points = {{{0, 0, 0}, {2, 0, 0}, {2, 3, 0}}};
+    for (unsigned i = 0; i < 3; ++i) {
+        auto q = points[i];
+        q[2] = 4;
+        rails[i].points = {points[i], q};
+        if (i < 2) {
+            bottom[i].points = {points[i], points[i + 1]};
+            auto r = points[i + 1];
+            r[2] = 4;
+            top[i].points = {q, r};
+        }
+    }
+    Tessellation policy;
+    policy.full_circle_segments = 8;
+    auto mesh = guided_surface(bottom, top, rails, policy, false);
+    check(mesh.rings.size() == 2 && mesh.rings[0].front() == points[0] &&
+              mesh.rings[0].back() == points[2] && mesh.rings[1].back() == Point3({2, 3, 4}) &&
+              mesh.note["profile_closed"] == false,
+          "open guided strip retains its final endpoint instead of closing onto its first");
+    rejects([&] { guided_surface(bottom, top, rails, policy); },
+            "closed profile rejects the extra end guide");
+    auto missing = rails;
+    missing.pop_back();
+    rejects([&] { guided_surface(bottom, top, missing, policy, false); },
+            "open profile requires a guide at both ends");
+    Json commands = Json::array({command(56, Bytes{0})});
+    auto line = [&](const std::vector<Point3> &points) {
+        Bytes raw;
+        put<std::uint32_t>(raw, unsigned(points.size()));
+        for (auto p : points)
+            for (auto x : p)
+                put(raw, x);
+        commands.push_back(command(1, raw));
+    };
+    for (unsigned stage : {53, 54}) {
+        commands.push_back(command(stage, {}));
+        commands.push_back(command(20, {}));
+        for (const auto &b : stage == 53 ? bottom : top)
+            line(b.points);
+        commands.push_back(command(22, {}));
+    }
+    Bytes groups;
+    put<std::uint32_t>(groups, 1);
+    put<std::uint32_t>(groups, 3);
+    commands.push_back(command(55, groups));
+    for (const auto &rail : rails) {
+        commands.push_back(command(20, {}));
+        line(rail.points);
+        commands.push_back(command(22, {}));
+    }
+    commands.push_back(command(19, {}));
+    auto geometry = reconstruct(commands, policy);
+    check(geometry.unknown.empty() && !geometry.faces.empty(),
+          "native open-profile command blocks reconstruct a guided surface");
+    double area = 0;
+    for (auto f : geometry.faces) {
+        auto a = geometry.vertices[f[0]], b = geometry.vertices[f[1]], c = geometry.vertices[f[2]];
+        Point3 u{}, v{};
+        for (unsigned k = 0; k < 3; ++k) {
+            u[k] = b[k] - a[k];
+            v[k] = c[k] - a[k];
+        }
+        area += .5 * std::hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                                u[0] * v[1] - u[1] * v[0]);
+        check((a[1] == 0 && b[1] == 0 && c[1] == 0) || (a[0] == 2 && b[0] == 2 && c[0] == 2),
+              "open L-profile contains only its two intended side strips");
+    }
+    check(std::abs(area - 20) < 1e-12,
+          "open L-profile area has no artificial closing wall or caps");
+    auto mismatched = commands;
+    mismatched[7] = command(21, {});
+    auto failed = reconstruct(mismatched, policy);
+    check(!failed.unknown.empty() && failed.vertices.empty(),
+          "mixed open and closed profile types fail without a partial solid");
+    auto capped = commands;
+    capped[0] = command(56, Bytes{1});
+    failed = reconstruct(capped, policy);
+    check(!failed.unknown.empty() && failed.vertices.empty(),
+          "unconfirmed capped open-profile behavior remains explicit");
+    GuidedBoundary arc;
+    arc.ellipse = true;
+    arc.axis_x = {1, 0, 0};
+    arc.axis_y = {0, 1, 0};
+    arc.sweep = std::acos(-1.0);
+    auto upper = arc;
+    upper.center[2] = 4;
+    std::vector<GuidedBoundary> end_rails(2);
+    end_rails[0].points = {{1, 0, 0}, {1, 0, 4}};
+    end_rails[1].points = {{-1, 0, 0}, {-1, 0, 4}};
+    policy.chord_tolerance = .01;
+    auto curved = guided_surface({arc}, {upper}, end_rails, policy, false);
+    bool cylinder = true;
+    for (const auto &row : curved.rings) {
+        cylinder &= std::abs(row.front()[0] - 1) < 1e-12 && std::abs(row.back()[0] + 1) < 1e-12;
+        for (auto p : row)
+            cylinder &= std::abs(std::hypot(p[0], p[1]) - 1) < 1e-12 && p[1] >= -1e-12;
+    }
+    check(cylinder && curved.note["surface_to_mesh_error_bound"].get<double>() <= .01,
+          "open rational profile follows the analytic half-cylinder with its tolerance bound");
+}
 static void guided_ring_tests() {
     auto groups = command_fields(55, Bytes{2, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0});
     check(groups["guide_group_count"] == 2 && groups["guide_counts"] == Json({4, 4}),
@@ -1952,6 +2054,7 @@ int main() {
         embedded_texture_tests();
         box_center_tests();
         guided_surface_tests();
+        guided_open_tests();
         rational_guided_tests();
         guided_ring_tests();
         command_metadata_tests();

@@ -313,6 +313,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
     bool in_path = false;
     std::vector<GuidedBoundary> path_native, guide_native;
     std::vector<std::vector<GuidedBoundary>> section_native;
+    std::vector<bool> section_closed;
     std::vector<std::vector<std::size_t>> section_native_lengths;
     std::vector<std::size_t> native_ring_ends, guide_counts;
     Matrix4 matrix = identity();
@@ -499,6 +500,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     stage = 0;
                     guides.clear();
                     section_native.clear();
+                    section_closed.clear();
                     section_native_lengths.clear();
                     guide_native.clear();
                     guide_counts.clear();
@@ -545,6 +547,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             section_rings.push_back(lengths);
                             section_tangents.push_back(path_tangents);
                             section_native.push_back(path_native);
+                            section_closed.push_back(path_kind == 21);
                             auto ends = native_ring_ends;
                             ends.push_back(path_native.size());
                             std::vector<std::size_t> native_lengths;
@@ -633,6 +636,12 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     } else if (solid == 56) {
                         require(section_native.size() == 2 && section_native_lengths.size() == 2,
                                 "guided loft requires two sections");
+                        require(section_closed.size() == 2 &&
+                                    section_closed[0] == section_closed[1],
+                                "guided loft profile boundary types differ");
+                        const bool closed = section_closed[0];
+                        require(closed || guide_counts.size() == 1,
+                                "open guided loft cannot contain inner rings");
                         require(section_native_lengths[0] == section_native_lengths[1] &&
                                     guide_counts.size() == section_native_lengths[0].size(),
                                 "guided loft native ring/group correspondence mismatch");
@@ -649,6 +658,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         std::vector<std::size_t> cap_lengths;
                         std::size_t boundary_start = 0, guide_start = 0;
                         const bool capped = !payload.empty() && payload[0];
+                        require(closed || !capped, "capped open guided loft is not supported");
                         for (std::size_t ring = 0; ring < guide_counts.size(); ++ring) {
                             auto n = section_native_lengths[0][ring], ng = guide_counts[ring];
                             std::vector<GuidedBoundary> a(
@@ -660,7 +670,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             std::vector<GuidedBoundary> rails(guide_native.begin() + guide_start,
                                                               guide_native.begin() + guide_start +
                                                                   ng);
-                            auto mesh = guided_surface(a, b, rails, policy);
+                            auto mesh = guided_surface(a, b, rails, policy, closed);
                             require(mesh.rings.size() <= policy.max_segments &&
                                         mesh.rings.front().size() <=
                                             (policy.max_segments - result.vertices.size()) /

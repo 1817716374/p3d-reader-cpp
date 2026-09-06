@@ -322,9 +322,11 @@ std::vector<double> grid(const std::vector<double> &breaks, unsigned n) {
 } // namespace
 GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,
                           const std::vector<GuidedBoundary> &top,
-                          const std::vector<GuidedBoundary> &guides, const Tessellation &policy) {
+                          const std::vector<GuidedBoundary> &guides, const Tessellation &policy,
+                          bool closed) {
     auto count = bottom.size();
-    require(count && top.size() == count && guides.size() == count, "guided boundary count");
+    require(count && top.size() == count && guides.size() == count + (closed ? 0 : 1),
+            "guided boundary count");
     require(count <= policy.max_segments, "guided patch budget");
     if (policy.chord_tolerance)
         require(std::isfinite(*policy.chord_tolerance) && *policy.chord_tolerance > 0,
@@ -348,7 +350,7 @@ GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,
     for (std::size_t i = 0; i < count; ++i) {
         patches.emplace_back(source_curve(bottom[i], policy.max_segments),
                              source_curve(top[i], policy.max_segments), rails[i],
-                             rails[(i + 1) % count], policy.max_segments);
+                             rails[(i + 1) % rails.size()], policy.max_segments);
         auto &p = patches.back();
         if (policy.chord_tolerance)
             for (unsigned u = 0; u < p.bottom.pieces.size(); ++u)
@@ -397,10 +399,11 @@ GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,
         for (std::size_t i = 0; i < count; ++i)
             for (std::size_t u = 0; u + 1 < us[i].size(); ++u)
                 ring.push_back(patches[i].at(us[i][u], v));
-        ring.push_back(ring.front());
+        ring.push_back(closed ? ring.front() : patches.back().at(1, v));
         out.rings.push_back(std::move(ring));
     }
     out.note = {{"method", "native_control_net_coons"},
+                {"profile_closed", closed},
                 {"control_blend", "half_zero_half_one_odd_middle_half"},
                 {"arc_max_span_degrees", 120},
                 {"composite_guide_parameterization", length_weighted
