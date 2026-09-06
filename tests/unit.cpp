@@ -1472,9 +1472,10 @@ static void guided_open_tests() {
     check(std::abs(area - 20) < 1e-12,
           "open L-profile area has no artificial closing wall or caps");
     auto mismatched = commands;
-    mismatched[7] = command(21, {});
+    mismatched[7] = command(21, Bytes{1});
     auto failed = reconstruct(mismatched, policy);
-    check(!failed.unknown.empty() && failed.vertices.empty(),
+    check(!failed.unknown.empty() && failed.vertices.empty() &&
+              failed.unknown.at(0)["reason"] == "guided loft profile boundary types differ",
           "mixed open and closed profile types fail without a partial solid");
     auto capped = commands;
     capped[0] = command(56, Bytes{1});
@@ -1524,8 +1525,9 @@ static void guided_cap_tests() {
             rails[i].points = {a[i], b[i]};
         return guided_surface(boundaries(a), boundaries(b), rails, policy, false);
     };
-    auto encoded = [&](const std::vector<Point3> &a, const std::vector<Point3> &b) {
-        Json commands = Json::array({command(56, Bytes{1})});
+    auto encoded = [&](const std::vector<Point3> &a, const std::vector<Point3> &b,
+                       bool closed = false, bool capped = true) {
+        Json commands = Json::array({command(56, Bytes{std::uint8_t(capped)})});
         auto line = [&](Point3 p, Point3 q) {
             Bytes raw;
             put<std::uint32_t>(raw, 2);
@@ -1536,7 +1538,7 @@ static void guided_cap_tests() {
         };
         for (unsigned s = 0; s < 2; ++s) {
             commands.push_back(command(s ? 54 : 53, {}));
-            commands.push_back(command(20, {}));
+            commands.push_back(command(closed ? 21 : 20, closed ? Bytes{1} : Bytes{}));
             const auto &points = s ? b : a;
             for (std::size_t i = 1; i < points.size(); ++i)
                 line(points[i - 1], points[i]);
@@ -1544,9 +1546,10 @@ static void guided_cap_tests() {
         }
         Bytes groups;
         put<std::uint32_t>(groups, 1);
-        put<std::uint32_t>(groups, unsigned(a.size()));
+        const auto guide_count = a.size() - (closed ? 1 : 0);
+        put<std::uint32_t>(groups, unsigned(guide_count));
         commands.push_back(command(55, groups));
-        for (std::size_t i = 0; i < a.size(); ++i) {
+        for (std::size_t i = 0; i < guide_count; ++i) {
             commands.push_back(command(20, {}));
             line(a[i], b[i]);
             commands.push_back(command(22, {}));
@@ -1621,6 +1624,85 @@ static void guided_cap_tests() {
         separate_interior |= std::abs(row.front()[0] - row.back()[0]) > .1;
     check(separate.cap_boundaries_closed == std::array<bool, 2>{true, true} && separate_interior,
           "cap closure does not merge independent first and last source guides");
+
+    near = lower;
+    near.back()[0] = 5e-8;
+    failed = encoded(near, upper, true, false);
+    check(!failed.unknown.empty() && failed.vertices.empty() &&
+              failed.unknown.at(0)["reason"] == "closed guided profile endpoints do not coincide",
+          "closed lower source profile must close even when caps are disabled");
+    distant = upper;
+    distant.back()[0] = 5e-8;
+    failed = encoded(lower, distant, true, false);
+    check(!failed.unknown.empty() && failed.vertices.empty() &&
+              failed.unknown.at(0)["reason"] == "closed guided profile endpoints do not coincide",
+          "closed upper source profile must close independently of cap generation");
+    check(encoded(near, distant, false, false).unknown.empty(),
+          "Open source type keeps its separate ends without a closure requirement");
+    near.back()[0] = 5e-11;
+    failed = encoded(near, upper, true, false);
+    check(failed.unknown.empty(), "closed source profile uses the native scaled closure tolerance");
+}
+static void guided_endpoint_tests() {
+    std::vector<GuidedBoundary> bottom(1), top(1), rails(2);
+    bottom[0].points = {{0, 0, 0}, {2, 0, 0}};
+    top[0].points = {{0, 0, 4}, {2, 0, 4}};
+    rails[0].points = {{0, 0, 0}, {0, 0, 4}};
+    rails[1].points = {{2, 0, 0}, {2, 0, 4}};
+    Tessellation policy;
+    policy.full_circle_segments = 8;
+    auto shifted = rails;
+    shifted[0].points.front() = {1e-5, 1e-5, 1e-5};
+    auto mesh = guided_surface(bottom, top, shifted, policy, false);
+    check(mesh.rings.front().front() == shifted[0].points.front(),
+          "Coons corner accepts the inclusive per-coordinate tolerance without snapping");
+    for (unsigned corner = 0; corner < 4; ++corner) {
+        auto invalid = rails;
+        auto &p = invalid[corner % 2].points[corner / 2];
+        p[1] = std::nextafter(1e-5, std::numeric_limits<double>::infinity());
+        rejects([&] { guided_surface(bottom, top, invalid, policy, false); },
+                "each corner independently rejects a component beyond the native tolerance");
+    }
+    auto reversed = rails;
+    std::reverse(reversed[0].points.begin(), reversed[0].points.end());
+    rejects([&] { guided_surface(bottom, top, reversed, policy, false); },
+            "native fixed boundary orientation does not guess a reversal for a misplaced guide");
+
+    auto composite = rails;
+    for (unsigned i = 0; i < 2; ++i) {
+        GuidedBoundary a, b;
+        a.points = {{double(2 * i), 0, 0}, {double(2 * i), 0, 1}};
+        b.points = {{double(2 * i), 0, 1}, {double(2 * i), 0, 4}};
+        composite[i].points.clear();
+        composite[i].parts = {a, b};
+    }
+    auto joined = guided_surface(bottom, top, composite, policy, false);
+    auto near = composite;
+    near[0].parts[1].points.front() = {5e-9, 5e-9, 1 + 5e-9};
+    auto snapped = guided_surface(bottom, top, near, policy, false);
+    check(joined.rings == snapped.rings,
+          "contiguous join retains the preceding endpoint and omits the following endpoint");
+    auto gap = composite;
+    gap[0].parts[1].points.front()[1] = 5e-8;
+    rejects([&] { guided_surface(bottom, top, gap, policy, false); },
+            "native noncontiguous join is not silently converted to a shared endpoint");
+
+    for (auto *set : {&bottom, &top})
+        for (auto &b : *set)
+            for (auto &p : b.points)
+                p[0] += 10000;
+    for (auto &b : composite)
+        for (auto &part : b.parts)
+            for (auto &p : part.points)
+                p[0] += 10000;
+    joined = guided_surface(bottom, top, composite, policy, false);
+    composite[0].parts[1].points.front()[1] = 5e-5;
+    snapped = guided_surface(bottom, top, composite, policy, false);
+    check(joined.rings == snapped.rings,
+          "native contiguous join scales with coordinate extent and preserves its first endpoint");
+    composite[0].parts[1].points.front()[1] = 2e-4;
+    rejects([&] { guided_surface(bottom, top, composite, policy, false); },
+            "coordinate-scaled join still rejects a larger discontinuity");
 }
 static void guided_ring_tests() {
     auto groups = command_fields(55, Bytes{2, 0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0});
@@ -2176,6 +2258,7 @@ int main() {
         guided_surface_tests();
         guided_open_tests();
         guided_cap_tests();
+        guided_endpoint_tests();
         rational_guided_tests();
         guided_ring_tests();
         command_metadata_tests();

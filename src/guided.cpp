@@ -25,7 +25,7 @@ Point3 mul(Point3 a, double s) {
 double norm(Point3 a) {
     return std::hypot(a[0], a[1], a[2]);
 }
-bool cap_endpoints_coincide(Point3 a, Point3 b) {
+bool curve_array_closed(Point3 a, Point3 b) {
     // Native curve-array closure uses a strict, coordinate-scaled squared distance.
     // Keep this separate from fitting tolerances and the source boundary type.
     auto d = sub(a, b);
@@ -34,6 +34,17 @@ bool cap_endpoints_coincide(Point3 a, Point3 b) {
         a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + b[0] * b[0] + b[1] * b[1] + b[2] * b[2] + 1.;
     return std::isfinite(distance2) && std::isfinite(scale2) &&
            distance2 < scale2 * 1.0000000000000001e-20;
+}
+double max_component(Point3 p) {
+    return std::max({std::abs(p[0]), std::abs(p[1]), std::abs(p[2])});
+}
+bool contiguous_curves(Point3 a, Point3 b) {
+    const double distance = max_component(sub(a, b));
+    const double extent = std::max(max_component(a), max_component(b));
+    return distance < 1e-8 || distance < extent * 1e-8 + 1e-8;
+}
+bool coons_corner_aligned(Point3 a, Point3 b) {
+    return max_component(sub(a, b)) <= 1e-5;
 }
 HPoint mix(HPoint a, HPoint b, double t) {
     for (unsigned k = 0; k < 4; ++k)
@@ -120,9 +131,9 @@ Curve source_curve(const GuidedBoundary &input, unsigned budget, bool length_wei
                 out.elevate();
             while (next.degree < out.degree)
                 next.elevate();
-            require(norm(sub(cartesian(out.pole(out.count() - 1)), cartesian(next.pole(0)))) <=
-                        1e-7,
-                    "disconnected composite guide");
+            require(
+                contiguous_curves(cartesian(out.pole(out.count() - 1)), cartesian(next.pole(0))),
+                "discontinuous composite guide is not supported");
             double cut = .5;
             if (length_weighted) {
                 double a = length(out), b = length(next);
@@ -134,6 +145,9 @@ Curve source_curve(const GuidedBoundary &input, unsigned budget, bool length_wei
                 t *= cut;
             for (std::size_t i = 1; i < next.breaks.size(); ++i)
                 out.breaks.push_back(cut + (1 - cut) * next.breaks[i]);
+            // A native contiguous join retains the preceding curve's last pole/weight,
+            // omitting the following curve's first pole. Do this after length weighting.
+            next.pieces.front().front() = out.pieces.back().back();
             out.pieces.insert(out.pieces.end(), next.pieces.begin(), next.pieces.end());
             require(out.count() <= budget, "guided composite control budget");
         }
@@ -232,10 +246,10 @@ struct Patch {
         require(nv <= budget && nu <= budget / nv, "guided control net budget");
         auto p00 = cartesian(bottom.pole(0)), p10 = cartesian(bottom.pole(nu - 1));
         auto p01 = cartesian(top.pole(0)), p11 = cartesian(top.pole(nu - 1));
-        require(norm(sub(p00, cartesian(left.pole(0)))) <= 1e-7 &&
-                    norm(sub(p10, cartesian(right.pole(0)))) <= 1e-7 &&
-                    norm(sub(p01, cartesian(left.pole(nv - 1)))) <= 1e-7 &&
-                    norm(sub(p11, cartesian(right.pole(nv - 1)))) <= 1e-7,
+        require(coons_corner_aligned(p00, cartesian(left.pole(0))) &&
+                    coons_corner_aligned(p10, cartesian(right.pole(0))) &&
+                    coons_corner_aligned(p01, cartesian(left.pole(nv - 1))) &&
+                    coons_corner_aligned(p11, cartesian(right.pole(nv - 1))),
                 "guided boundary corner mismatch");
         for (unsigned i = 0; i < nu; ++i)
             for (unsigned j = 0; j < nv; ++j) {
@@ -368,6 +382,14 @@ GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,
                     bound =
                         std::max(bound, error_bound(p.cell(u, v), p.bottom.degree, p.left.degree));
     }
+    if (closed)
+        for (bool upper : {false, true}) {
+            const auto &first = upper ? patches.front().top : patches.front().bottom;
+            const auto &last = upper ? patches.back().top : patches.back().bottom;
+            require(curve_array_closed(cartesian(first.pole(0)),
+                                       cartesian(last.pole(last.count() - 1))),
+                    "closed guided profile endpoints do not coincide");
+        }
     if (policy.chord_tolerance) {
         double required = std::ceil(std::sqrt(bound / (*policy.chord_tolerance)));
         require(std::isfinite(required) && required <= policy.max_segments,
@@ -406,7 +428,7 @@ GuidedMesh guided_surface(const std::vector<GuidedBoundary> &bottom,
     GuidedMesh out;
     for (unsigned end = 0; end < 2; ++end)
         out.cap_boundaries_closed[end] =
-            cap_endpoints_coincide(patches.front().at(0, end), patches.back().at(1, end));
+            curve_array_closed(patches.front().at(0, end), patches.back().at(1, end));
     for (auto v : vs) {
         std::vector<Point3> ring;
         for (std::size_t i = 0; i < count; ++i)
