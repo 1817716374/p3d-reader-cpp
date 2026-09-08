@@ -108,6 +108,28 @@ class BsplineCurve {
     std::vector<Point3> poles_;
     std::vector<double> weights_;
 };
+enum class TrimLocation { Inside, Outside, BoundaryBand, Indeterminate };
+// Derived UV polylines with source provenance and a declared approximation bound.
+// Original boundary curves remain available on BsplineSurface.
+class BsplineTrim {
+  public:
+    const std::vector<std::vector<Point2>> &loops() const {
+        return loops_;
+    }
+    const Json &report() const {
+        return report_;
+    }
+    TrimLocation classify(Point2 uv) const;
+
+  private:
+    friend class BsplineSurface;
+    BsplineTrim() = default;
+    std::vector<std::vector<Point2>> loops_;
+    std::vector<double> errors_;
+    Json report_;
+    double tolerance_ = 0;
+    bool complete_ = false, outer_active_ = true;
+};
 // Evaluates the underlying surface; trim containment/meshing is a separate step.
 // Source pole/weight index is v * u().pole_count() + u.
 class BsplineSurface {
@@ -147,6 +169,9 @@ class BsplineSurface {
     // Does not test whether the point belongs to the trimmed region.
     std::array<double, 4> homogeneous_at(double fraction_u, double fraction_v) const;
     Point3 point_at(double fraction_u, double fraction_v) const;
+    // Strokes source trim curves in UV coordinates. Incomplete results never
+    // classify points as inside/outside. Does not build a surface mesh.
+    BsplineTrim trim(double uv_tolerance, unsigned max_segments = 100000) const;
 
   private:
     BsplineSurface() = default;

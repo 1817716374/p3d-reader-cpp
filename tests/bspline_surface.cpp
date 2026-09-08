@@ -33,6 +33,39 @@ struct FlatSurface {
         write(p, std::int32_t(p - vt));
         return p;
     }
+    std::size_t boundary(const Json &source) {
+        const auto &curves = source.at("curves");
+        const auto p = table({4, std::uint16_t(curves.is_null() ? 0 : 8)}, 12);
+        write(p + 4, source.at("type").get<std::int32_t>());
+        if (curves.is_null())
+            return p;
+        align(4);
+        const auto vector = bytes.size();
+        append<std::uint32_t>(bytes, unsigned(curves.size()));
+        bytes.resize(bytes.size() + 4 * curves.size());
+        ref(p + 8, vector);
+        for (std::size_t i = 0; i < curves.size(); ++i) {
+            const auto &geometry = curves[i].at("geometry");
+            const auto root = table({4, 8}, 12);
+            ref(vector + 4 + 4 * i, root);
+            if (geometry.at("_type") == "CurveVector") {
+                bytes[root + 4] = 5;
+                ref(root + 8, boundary(geometry));
+            } else {
+                require(geometry.at("_type") == "LineString", "fixture trim curve type");
+                bytes[root + 4] = 4;
+                const auto line = table({4}, 8);
+                ref(root + 8, line);
+                align(8, 4);
+                const auto points = bytes.size();
+                append<std::uint32_t>(bytes, unsigned(geometry.at("points").size()));
+                for (const auto &v : geometry.at("points"))
+                    append<double>(bytes, v.get<double>());
+                ref(line + 4, points);
+            }
+        }
+        return p;
+    }
     explicit FlatSurface(const Json &source) {
         std::memcpy(bytes.data(), "bg0001fb", 8);
         const auto root = table({4, 8}, 12);
@@ -70,9 +103,7 @@ struct FlatSurface {
             ref(surface + 4 + 4 * i, p);
         }
         if (!source["boundaries"].is_null()) {
-            const auto boundary = table({4}, 8);
-            ref(surface + 48, boundary);
-            write(boundary + 4, source["boundaries"]["type"].get<std::int32_t>());
+            ref(surface + 48, boundary(source["boundaries"]));
         }
     }
 };
@@ -306,6 +337,15 @@ unsigned bspline_surface_tests() {
     check(bad_decoded["_spline"]["status"] == "invalid" && bad_decoded["weights"] == Json({1}),
           "invalid surface semantics retain the original decoded arrays");
     Bytes packet(32);
+    torus["holeOrigin"] = 1;
+    const Json trim_line = {{"_type", "LineString"},
+                            {"points", {.2, .2, 0, .8, .2, 0, .8, .8, 0, .2, .8, 0, .2, .2, 0}}};
+    const Json trim_loop = {{"_type", "CurveVector"},
+                            {"type", 2},
+                            {"curves", Json::array({Json{{"geometry", trim_line}}})}};
+    torus["boundaries"] = {{"_type", "CurveVector"},
+                           {"type", 4},
+                           {"curves", Json::array({Json{{"geometry", trim_loop}}})}};
     const auto bgfb = FlatSurface(torus).bytes;
     append<std::uint64_t>(packet, bgfb.size());
     packet.insert(packet.end(), bgfb.begin(), bgfb.end());
@@ -330,5 +370,13 @@ unsigned bspline_surface_tests() {
               near(BsplineSurface::from_bgfb(entry["geometry"]["geometry"]).point_at(0, 0),
                    {4, 0, 0}),
           "native component packet feeds surface evaluator and retains complete packet bytes");
+    const auto packet_surface = BsplineSurface::from_bgfb(entry["geometry"]["geometry"]);
+    const auto packet_trim = packet_surface.trim(1e-6);
+    check(packet_trim.report()["status"] == "complete" &&
+              packet_trim.report()["loops"][0]["source_path"] == "/curves/0/geometry" &&
+              packet_trim.classify({.5, .5}) == TrimLocation::Inside &&
+              packet_trim.classify({.1, .1}) == TrimLocation::Outside,
+          "complete component packet and nested BGFB trim tree reach native-parity UV "
+          "classification");
     return checks;
 }

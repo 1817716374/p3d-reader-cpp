@@ -5,6 +5,7 @@
 /tests/*
 !/tests/unit.cpp
 !/tests/bspline_surface.cpp
+!/tests/bspline_trim.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

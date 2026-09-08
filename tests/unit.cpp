@@ -7,6 +7,7 @@
 #include <lz4/lz4.h>
 using namespace p3d;
 unsigned bspline_surface_tests();
+unsigned bspline_trim_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2623,6 +2624,7 @@ int main() {
         bgfb_native_tests();
         bspline_tests();
         checks += bspline_surface_tests();
+        checks += bspline_trim_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();
