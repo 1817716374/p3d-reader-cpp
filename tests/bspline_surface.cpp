@@ -52,8 +52,10 @@ struct FlatSurface {
                 bytes[root + 4] = 5;
                 ref(root + 8, boundary(geometry));
             } else {
-                require(geometry.at("_type") == "LineString", "fixture trim curve type");
-                bytes[root + 4] = 4;
+                require(geometry.at("_type") == "LineString" ||
+                            geometry.at("_type") == "PointString",
+                        "fixture trim curve type");
+                bytes[root + 4] = geometry.at("_type") == "LineString" ? 4 : 18;
                 const auto line = table({4}, 8);
                 ref(root + 8, line);
                 align(8, 4);
@@ -340,9 +342,12 @@ unsigned bspline_surface_tests() {
     torus["holeOrigin"] = 1;
     const Json trim_line = {{"_type", "LineString"},
                             {"points", {.2, .2, 0, .8, .2, 0, .8, .8, 0, .2, .8, 0, .2, .2, 0}}};
-    const Json trim_loop = {{"_type", "CurveVector"},
-                            {"type", 2},
-                            {"curves", Json::array({Json{{"geometry", trim_line}}})}};
+    Json trim_loop = {{"_type", "CurveVector"},
+                      {"type", 2},
+                      {"curves", Json::array({Json{{"geometry", trim_line}}})}};
+    trim_loop["curves"].push_back({{"geometry", trim_loop}});
+    trim_loop["curves"].push_back(
+        {{"geometry", {{"_type", "PointString"}, {"points", {.4, .4, 0, .6, .6, 0}}}}});
     torus["boundaries"] = {{"_type", "CurveVector"},
                            {"type", 4},
                            {"curves", Json::array({Json{{"geometry", trim_loop}}})}};
@@ -378,5 +383,11 @@ unsigned bspline_surface_tests() {
               packet_trim.classify({.1, .1}) == TrimLocation::Outside,
           "complete component packet and nested BGFB trim tree reach native-parity UV "
           "classification");
+    check(packet_trim.report()["ignored"].size() == 2 &&
+              packet_trim.report()["ignored"][0]["source_type"] == "CurveVector" &&
+              packet_trim.report()["ignored"][1]["source_type"] == "PointString" &&
+              packet_surface.boundaries()["curves"][0]["geometry"]["curves"].size() == 3,
+          "full packet retains direct child-array and point-string source members while native "
+          "trim conversion excludes them");
     return checks;
 }

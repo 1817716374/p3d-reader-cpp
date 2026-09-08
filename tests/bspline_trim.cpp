@@ -117,6 +117,45 @@ unsigned bspline_trim_tests() {
     auto nonarray = surface(region_line).trim(1e-6);
     check(nonarray.report()["ignored"][0]["reason"] == "region_member_is_not_curve_array",
           "region members lacking a child curve array follow native ignore rule");
+    for (const auto &member :
+         std::vector<Json>{rectangle(.3, .3, .7, .7),
+                           {{"_type", "PointString"}, {"points", {.3, .3, 0, .7, .7, 0}}}}) {
+        auto root = rectangle(.2, .2, .8, .8);
+        root["curves"].push_back(variant(member));
+        const auto r = surface(root).trim(1e-6);
+        check(r.report()["status"] == "complete" && r.loops().size() == 1 &&
+                  r.classify({.5, .5}) == inside &&
+                  r.report()["ignored"][0]["source_path"] == "/curves/1/geometry" &&
+                  r.report()["ignored"][0]["reason"] == "native_trim_conversion_unavailable",
+              "direct array and point-string members follow native failed conversion without "
+              "becoming a hole or an inferred line");
+        const auto ignored_only = surface(array(2, Json::array({variant(member)}))).trim(1e-6);
+        check(ignored_only.report()["status"] == "complete" && ignored_only.loops().empty() &&
+                  ignored_only.classify({.1, .1}) == inside,
+              "a boundary containing only natively unconvertible members has no effective loop");
+    }
+    auto nested_open = rectangle(.2, .2, .8, .8, 1);
+    nested_open["curves"].push_back(
+        variant(array(1, Json::array({variant(line({.2, .2, 0}, {.1, .1, 0}))}))));
+    const auto source_open = surface(nested_open).trim(1e-6);
+    check(source_open.report()["status"] == "complete" && source_open.loops().empty() &&
+              source_open.report()["ignored"][0]["reason"] == "open_boundary_not_closed",
+          "source child-array endpoints are checked before ignoring its failed conversion");
+    nested_open["curves"][1]["geometry"]["curves"][0]["geometry"] = line({.1, .1, 0}, {.2, .2, 0});
+    const auto source_closed = surface(nested_open).trim(1e-6);
+    check(source_closed.report()["status"] == "complete" && source_closed.loops().size() == 1 &&
+              source_closed.report()["loops"][0]["effective_boundary_type"] == 2,
+          "a child array can close the source Open path while its own geometry is not stroked");
+    for (unsigned count : {0u, 1u, 2u}) {
+        auto with_points = rectangle(.2, .2, .8, .8, 1);
+        Json points = count == 0   ? Json::array()
+                      : count == 1 ? Json{.9, .9, 0}
+                                   : Json{.2, .2, 0, .9, .9, 0};
+        with_points["curves"].push_back(variant({{"_type", "PointString"}, {"points", points}}));
+        const auto r = surface(with_points).trim(1e-6);
+        check(r.report()["status"] == "complete" && r.loops().size() == (count == 0 ? 1 : 0),
+              "even a singleton PointString contributes endpoints to native Open closure");
+    }
     open["type"] = 2;
     auto gap = surface(open).trim(1e-6);
     check(gap.report()["status"] == "incomplete" && gap.classify({.5, .5}) == unknown,
@@ -184,14 +223,32 @@ unsigned bspline_trim_tests() {
               negative_trim.classify({.6, .6}) == inside &&
               negative_trim.classify({.75, .75}) == outside,
           "uniformly negative homogeneous scaling preserves rational trim geometry");
-    for (double middle_weight : {0., -1.}) {
+    for (double middle_weight : {0., -.2}) {
+        auto finite_sector = sector;
+        finite_sector["curves"][0]["geometry"]["weights"][1] = middle_weight;
+        const auto finite_trim = surface(finite_sector).trim(1e-5);
+        check(finite_trim.report()["status"] == "complete",
+              "zero or mixed-sign interior controls can have a strictly positive denominator");
+        const auto evaluator = BsplineCurve::from_bgfb(finite_sector["curves"][0]["geometry"]);
+        const auto &loop = finite_trim.loops().at(0);
+        const double bound = finite_trim.report()["loops"][0]["deviation_bound"].get<double>();
+        for (unsigned i = 0; i <= 100; ++i) {
+            const auto p = evaluator.point_at(i / 100.0);
+            double d = std::numeric_limits<double>::infinity();
+            for (std::size_t j = 1; j < loop.size(); ++j)
+                d = std::min(d, distance({p[0], p[1]}, loop[j - 1], loop[j]));
+            check(d <= bound + 1e-12, "mixed homogeneous weights preserve the evaluated curve "
+                                      "within the reported derived-polyline error");
+        }
+    }
+    for (double middle_weight : {-1., -2.}) {
         auto singular_sector = sector;
         singular_sector["curves"][0]["geometry"]["weights"][1] = middle_weight;
         const auto singular_trim = surface(singular_sector).trim(1e-5, 2000);
         check(singular_trim.report()["status"] == "incomplete" &&
                   !singular_trim.report()["errors"].empty() &&
                   singular_trim.classify({.6, .6}) == unknown,
-              "zero control weight or interior denominator singularity stays indeterminate");
+              "tangent or crossing interior denominator singularity stays indeterminate");
     }
     Json poles = Json::array(), weights = Json::array();
     for (const auto &h : std::vector<Point3>{{1, 0, 1},

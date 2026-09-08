@@ -142,6 +142,53 @@ std::vector<Piece> primitive(const Json &v, unsigned limit) {
         throw std::runtime_error("unsupported trim primitive: " + type);
     return result;
 }
+// Native Open-array closure is tested on the source tree before converting its
+// direct members. A child array can provide endpoints even though its virtual
+// B-spline conversion returns false in setTrim.
+bool endpoints(const Json &v, Point3 &first, Point3 &last, unsigned limit, unsigned depth = 0) {
+    require(depth <= 80, "trim endpoint tree depth");
+    if (v.is_null())
+        return false;
+    const auto type = v.at("_type").get<std::string>();
+    if (type == "CurveVector") {
+        const auto &curves = v.at("curves");
+        require(curves.is_null() || curves.is_array(), "trim endpoint curve array");
+        bool found = false;
+        for (const auto &entry : curves) {
+            Point3 a{}, b{};
+            if (endpoints(entry.at("geometry"), a, b, limit, depth + 1)) {
+                if (!found)
+                    first = a;
+                last = b;
+                found = true;
+            }
+        }
+        return found;
+    }
+    if (type == "PointString" || type == "LineString") {
+        const auto &points = v.at("points");
+        require(points.is_array() && points.size() % 3 == 0, "trim endpoint XYZ triplets");
+        if (points.empty())
+            return false;
+        for (unsigned k = 0; k < 3; ++k) {
+            first[k] = number(points[k]);
+            last[k] = number(points[points.size() - 3 + k]);
+        }
+        return true;
+    }
+    if (type == "BsplineCurve") {
+        const auto curve = BsplineCurve::from_bgfb(v);
+        first = curve.point_at(0);
+        last = curve.point_at(1);
+        return true;
+    }
+    const auto pieces = primitive(v, limit);
+    if (pieces.empty())
+        return false;
+    first = cartesian(pieces.front().front());
+    last = cartesian(pieces.back().back());
+    return true;
+}
 struct Loop {
     std::string path;
     int source_type = 0;
@@ -185,20 +232,36 @@ struct Builder {
                 ignored.push_back({{"source_path", path}, {"reason", "boundary_type_none"}});
                 return;
             }
+            if (type == 1) {
+                Point3 a{}, b{};
+                if (!endpoints(root, a, b, limit)) {
+                    ignored.push_back({{"source_path", path}, {"reason", "empty_boundary"}});
+                    return;
+                }
+                if (!native_closed(a, b)) {
+                    ignored.push_back(
+                        {{"source_path", path}, {"reason", "open_boundary_not_closed"}});
+                    return;
+                }
+            }
             Loop loop{path, type, {}};
             for (std::size_t i = 0; i < curves.size(); ++i) {
-                auto pieces = primitive(curves[i].at("geometry"), limit);
+                const auto &geometry = curves[i].at("geometry");
+                const auto member_type = geometry.at("_type").get<std::string>();
+                if (member_type == "CurveVector" || member_type == "PointString") {
+                    ignored.push_back(
+                        {{"source_path", path + "/curves/" + std::to_string(i) + "/geometry"},
+                         {"reason", "native_trim_conversion_unavailable"},
+                         {"source_type", member_type}});
+                    continue;
+                }
+                auto pieces = primitive(geometry, limit);
                 loop.pieces.insert(loop.pieces.end(), std::make_move_iterator(pieces.begin()),
                                    std::make_move_iterator(pieces.end()));
                 require(loop.pieces.size() <= limit, "trim primitive span limit");
             }
             if (loop.pieces.empty()) {
                 ignored.push_back({{"source_path", path}, {"reason", "empty_boundary"}});
-                return;
-            }
-            if (type == 1 && !native_closed(cartesian(loop.pieces.front().front()),
-                                            cartesian(loop.pieces.back().back()))) {
-                ignored.push_back({{"source_path", path}, {"reason", "open_boundary_not_closed"}});
                 return;
             }
             loops.push_back(std::move(loop));
@@ -208,7 +271,7 @@ struct Builder {
     }
     void stroke(const Piece &p, std::vector<Point2> &out, double &bound, unsigned depth = 0) {
         require(depth <= 60, "trim subdivision depth");
-        double sign = 0, deviation = 0;
+        double sign = 0, deviation = 0, scale = 1;
         bool finite_hull = true;
         std::vector<Point2> polygon;
         for (const auto &h : p) {
@@ -224,7 +287,11 @@ struct Builder {
             sign = s;
             const auto q = cartesian(h);
             polygon.push_back({q[0], q[1]});
+            scale = std::max({scale, std::abs(q[0]), std::abs(q[1])});
         }
+        const double roundoff = 64 * std::numeric_limits<double>::epsilon() * scale;
+        require(!finite_hull || roundoff < tolerance / 8,
+                "trim subdivision below coordinate precision");
         if (finite_hull)
             for (const auto &q : polygon)
                 deviation = std::max(deviation, distance(q, polygon.front(), polygon.back()));
@@ -234,7 +301,7 @@ struct Builder {
             if (out.empty())
                 out.push_back(polygon.front());
             out.push_back(polygon.back());
-            bound = std::max(bound, deviation);
+            bound = std::max(bound, deviation + roundoff);
             return;
         }
         Piece work = p, left(p.size()), right(p.size());
@@ -266,6 +333,10 @@ BsplineTrim BsplineSurface::trim(double tolerance, unsigned max_segments) const 
             double scale = 1;
             for (const auto &piece : loop.pieces)
                 for (const auto &h : piece) {
+                    for (double x : h)
+                        require(std::isfinite(x), "trim homogeneous control is not finite");
+                    if (h[3] == 0)
+                        continue; // A zero interior Bernstein weight is not a denominator root.
                     const auto p = cartesian(h);
                     scale = std::max({scale, std::abs(p[0]), std::abs(p[1])});
                 }
