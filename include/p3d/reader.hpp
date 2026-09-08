@@ -108,6 +108,31 @@ class BsplineCurve {
     std::vector<Point3> poles_;
     std::vector<double> weights_;
 };
+// Native Akima point data plus its derived, open cubic B-spline. The first/last
+// two retained points are tangent supports, not interpolated endpoints.
+class AkimaCurve {
+  public:
+    static AkimaCurve from_bgfb(const Json &table);
+    const std::vector<Point3> &source_points() const {
+        return source_points_;
+    }
+    const std::vector<std::size_t> &retained_point_indices() const {
+        return retained_indices_;
+    }
+    const BsplineCurve &bspline() const {
+        return bspline_;
+    }
+    const Json &report() const {
+        return report_;
+    }
+
+  private:
+    explicit AkimaCurve(BsplineCurve curve) : bspline_(std::move(curve)) {}
+    BsplineCurve bspline_;
+    std::vector<Point3> source_points_;
+    std::vector<std::size_t> retained_indices_;
+    Json report_;
+};
 enum class TrimLocation { Inside, Outside, BoundaryBand, Indeterminate };
 // Derived UV polylines with source provenance and a declared approximation bound.
 // Original boundary curves remain available on BsplineSurface.

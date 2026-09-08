@@ -53,9 +53,12 @@ struct FlatSurface {
                 ref(root + 8, boundary(geometry));
             } else {
                 require(geometry.at("_type") == "LineString" ||
-                            geometry.at("_type") == "PointString",
+                            geometry.at("_type") == "PointString" ||
+                            geometry.at("_type") == "AkimaCurve",
                         "fixture trim curve type");
-                bytes[root + 4] = geometry.at("_type") == "LineString" ? 4 : 18;
+                bytes[root + 4] = geometry.at("_type") == "LineString"    ? 4
+                                  : geometry.at("_type") == "PointString" ? 18
+                                                                          : 19;
                 const auto line = table({4}, 8);
                 ref(root + 8, line);
                 align(8, 4);
@@ -340,8 +343,9 @@ unsigned bspline_surface_tests() {
           "invalid surface semantics retain the original decoded arrays");
     Bytes packet(32);
     torus["holeOrigin"] = 1;
-    const Json trim_line = {{"_type", "LineString"},
-                            {"points", {.2, .2, 0, .8, .2, 0, .8, .8, 0, .2, .8, 0, .2, .2, 0}}};
+    const Json trim_line = {{"_type", "AkimaCurve"},
+                            {"points", {.8, .8, 0,  .2, .8, 0,  .2, .2, 0,  .8, .2, 0,  .8, .8,
+                                        0,  .2, .8, 0,  .2, .2, 0,  .8, .2, 0,  .8, .8, 0}}};
     Json trim_loop = {{"_type", "CurveVector"},
                       {"type", 2},
                       {"curves", Json::array({Json{{"geometry", trim_line}}})}};
@@ -389,5 +393,20 @@ unsigned bspline_surface_tests() {
               packet_surface.boundaries()["curves"][0]["geometry"]["curves"].size() == 3,
           "full packet retains direct child-array and point-string source members while native "
           "trim conversion excludes them");
+    const auto &packet_akima =
+        packet_surface.boundaries()["curves"][0]["geometry"]["curves"][0]["geometry"];
+    check(packet_akima["_type"] == "AkimaCurve" && packet_akima["_akima"]["status"] == "valid" &&
+              packet_akima["points"] == trim_line["points"] &&
+              packet_akima["_akima"]["source_point_count"] == 9,
+          "native BGFB type19 point vector survives full component decoding with Akima semantics");
+    auto invalid_trim = torus;
+    invalid_trim["boundaries"]["curves"][0]["geometry"]["curves"][0]["geometry"]["points"] =
+        Json::array({0., 0., 0.});
+    const auto invalid_packet = decode_bgfb(FlatSurface(invalid_trim).bytes);
+    const auto &bad_akima =
+        invalid_packet["geometry"]["boundaries"]["curves"][0]["geometry"]["curves"][0]["geometry"];
+    check(bad_akima["_akima"]["status"] == "invalid" &&
+              bad_akima["points"] == Json::array({0., 0., 0.}),
+          "invalid BGFB Akima input retains complete points and explicit conversion error");
     return checks;
 }
