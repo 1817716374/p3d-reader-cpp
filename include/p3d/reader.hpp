@@ -166,6 +166,39 @@ class InterpolationCurve {
     std::vector<std::size_t> indices_;
     std::vector<double> parameters_;
 };
+struct SpiralEvaluation {
+    Point3 point{}, derivative{}; // derivative with respect to the active [0,1] fraction
+    double local_bearing = 0, local_curvature = 0;
+    // Integration truncation bound in transformed coordinates; excludes roundoff.
+    double quadrature_error_bound = 0;
+    unsigned intervals = 0;
+};
+// Underlying transition spiral, independent of the native fitted B-spline cache.
+class TransitionSpiral {
+  public:
+    static TransitionSpiral from_bgfb(const Json &table);
+    const Json &source() const {
+        return source_;
+    }
+    const Json &report() const {
+        return report_;
+    }
+    double length() const {
+        return length_;
+    } // full local spiral, before affine transform
+    SpiralEvaluation evaluate(double fraction, double tolerance = 1e-8,
+                              unsigned max_intervals = 65536) const;
+
+  private:
+    TransitionSpiral() = default;
+    double angle(double) const;
+    double curvature(double) const;
+    double integrand_fourth_bound(double, double) const;
+    Json source_, report_;
+    int type_ = 0;
+    double length_ = 0, bearing_ = 0, curvature0_ = 0, curvature1_ = 0, start_ = 0, end_ = 1;
+    std::array<double, 12> transform_{};
+};
 enum class TrimLocation { Inside, Outside, BoundaryBand, Indeterminate };
 // Derived UV polylines with source provenance and a declared approximation bound.
 // Original boundary curves remain available on BsplineSurface.

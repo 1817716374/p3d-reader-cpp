@@ -10,6 +10,7 @@ unsigned bspline_surface_tests();
 unsigned bspline_trim_tests();
 unsigned akima_tests();
 unsigned interpolation_tests();
+unsigned spiral_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2629,6 +2630,7 @@ int main() {
         checks += bspline_trim_tests();
         checks += akima_tests();
         checks += interpolation_tests();
+        checks += spiral_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();

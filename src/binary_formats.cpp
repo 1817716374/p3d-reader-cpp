@@ -350,6 +350,13 @@ Json decode_bgfb(const Bytes &b) {
             if (off)
                 result["_unknown_field_slots"].push_back({{"slot", i}, {"offset", off}});
         }
+        if (typ == "TransitionSpiral") {
+            try {
+                result["_spiral"] = TransitionSpiral::from_bgfb(result).report();
+            } catch (const std::exception &e) {
+                result["_spiral"] = {{"status", "invalid"}, {"error", e.what()}};
+            }
+        }
         if (typ == "InterpolationCurve") {
             try {
                 result["_interpolation"] = InterpolationCurve::from_bgfb(result).report();
