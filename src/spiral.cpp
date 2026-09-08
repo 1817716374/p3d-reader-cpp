@@ -214,4 +214,97 @@ SpiralEvaluation TransitionSpiral::evaluate(double fraction, double tolerance,
     }
     return out;
 }
+Json TransitionSpiral::native_fit_input(unsigned budget) const {
+    require(budget > 0, "native spiral integration budget");
+    const double inner = std::sqrt((3 - 2 * std::sqrt(6. / 5)) / 7),
+                 outer = std::sqrt((3 + 2 * std::sqrt(6. / 5)) / 7),
+                 wi = (18 + std::sqrt(30.)) / 36, wo = (18 - std::sqrt(30.)) / 36;
+    const std::array<double, 4> nodes{-inner, inner, -outer, outer}, weights{wi, wi, wo, wo};
+    auto count = [&](double a, double b) {
+        const double raw = finite(std::abs(angle(b) - angle(a)) / .04 + .9999999999);
+        require(raw < std::numeric_limits<int>::max() - 1., "native spiral sample count overflow");
+        auto n = unsigned(raw);
+        if (n & 1)
+            ++n;
+        return std::max(1u, n);
+    };
+    auto gauss = [&](double a, double b, unsigned pieces) {
+        Point2 sum{};
+        const double step = (b - a) / pieces;
+        for (unsigned i = 0; i < pieces; ++i) {
+            const double left = a + i * step, right = a + (i + 1) * step,
+                         half = (right - left) * .5;
+            for (unsigned j = 0; j < 4; ++j) {
+                const double theta =
+                    angle(length_ == 0 ? 0 : (left + (nodes[j] + 1) * half) / length_);
+                const double weight = half * weights[j];
+                sum[0] += weight * std::cos(theta);
+                sum[1] += weight * std::sin(theta);
+            }
+        }
+        return sum;
+    };
+    const unsigned intervals = count(start_, end_), offset_intervals = count(0, start_);
+    require(intervals < 2000, "native spiral stroke exceeds its 2000 point buffer");
+    require(std::uint64_t(intervals) + offset_intervals <= budget,
+            "native spiral integration interval budget exceeded");
+    auto stroke = [&](double a, double b, unsigned n, bool save, std::vector<Point3> &points,
+                      std::vector<double> &fractions, double &estimate) {
+        const double start = finite(a * length_), end = finite(b * length_),
+                     step = finite(end - start) / n;
+        Point2 sum{};
+        if (save) {
+            points.push_back({0, 0, 0});
+            fractions.push_back(a);
+        }
+        for (unsigned i = 0; i < n; ++i) {
+            const double left = start + i * step, right = start + (i + 1) * step;
+            const auto coarse = gauss(left, right, 1), fine = gauss(left, right, 2);
+            Point2 difference{fine[0] - coarse[0], fine[1] - coarse[1]};
+            for (unsigned k = 0; k < 2; ++k)
+                sum[k] = finite(sum[k] + fine[k] + difference[k] / 255);
+            estimate =
+                finite(estimate + std::max(std::abs(difference[0]), std::abs(difference[1])) / 255);
+            if (save) {
+                points.push_back({sum[0], sum[1], 0});
+                // Parameter provenance for the generated samples, not an array
+                // serialized in BGFB. It also remains defined for zero length.
+                fractions.push_back(finite(a + (b - a) * (double(i + 1) / n)));
+            }
+        }
+        return sum;
+    };
+    std::vector<Point3> points;
+    std::vector<double> fractions;
+    double main_error = 0, offset_error = 0;
+    stroke(start_, end_, intervals, true, points, fractions, main_error);
+    const auto offset = stroke(0, start_, offset_intervals, false, points, fractions, offset_error);
+    for (auto &p : points)
+        for (unsigned k = 0; k < 2; ++k)
+            p[k] = finite(p[k] + offset[k]);
+    auto bearing = [&](std::size_t first, std::size_t second, double t) {
+        double theta = angle(t);
+        const double dot = finite((points[second][0] - points[first][0]) * std::cos(theta) +
+                                  (points[second][1] - points[first][1]) * std::sin(theta));
+        if (dot < 0)
+            theta = finite(theta + pi);
+        return theta;
+    };
+    const double k0 = curvature(start_), k1 = curvature(end_);
+    return {{"local_points", points},
+            {"source_fractions", fractions},
+            {"local_origin_offset", {offset[0], offset[1], 0.}},
+            {"endpoint_bearings",
+             {bearing(0, 1, start_), bearing(points.size() - 2, points.size() - 1, end_)}},
+            {"endpoint_radii", {k0 == 0 ? 0 : finite(1 / k0), k1 == 0 ? 0 : finite(1 / k1)}},
+            {"angular_step", .04},
+            {"stroke_intervals", intervals},
+            {"origin_intervals", offset_intervals},
+            {"stroke_error_estimate", main_error},
+            {"origin_error_estimate", offset_error},
+            {"error_estimate_kind", "native_gauss4_richardson_local_max_component"},
+            {"fit_point_limit", 998},
+            {"fits_native_point_limit", points.size() <= 998},
+            {"bspline_fit_status", "not_evaluated"}};
+}
 } // namespace p3d

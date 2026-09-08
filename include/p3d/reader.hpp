@@ -188,6 +188,9 @@ class TransitionSpiral {
     } // full local spiral, before affine transform
     SpiralEvaluation evaluate(double fraction, double tolerance = 1e-8,
                               unsigned max_intervals = 65536) const;
+    // Native cache fitter's local samples and endpoint constraints. The native
+    // error estimate is not a guaranteed error bound. Fitting remains separate.
+    Json native_fit_input(unsigned max_integration_intervals = 100000) const;
 
   private:
     TransitionSpiral() = default;

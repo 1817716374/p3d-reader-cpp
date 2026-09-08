@@ -86,6 +86,15 @@ unsigned spiral_tests() {
         check(s.source() == input && std::abs(s.length() - 1.7) < 1e-14,
               "spiral source and native length preserved");
         const auto endpoint = s.evaluate(1, 1e-9);
+        const auto native = s.native_fit_input();
+        check(native["stroke_intervals"] == 26 && native["local_points"].size() == 27 &&
+                  native["fits_native_point_limit"] == true &&
+                  native["bspline_fit_status"] == "not_evaluated",
+              "native spiral cache input uses angular count and retains fitter status");
+        check(near(native["local_points"].back().get<Point3>(), endpoint.point, 1e-9) &&
+                  native["endpoint_radii"] == Json({5., 1.}),
+              "native Gauss4 Richardson points agree with independently bounded underlying "
+              "integration");
         check(endpoint.quadrature_error_bound <= 1e-9 && endpoint.intervals > 0,
               "integration meets transformed truncation bound");
         check(near(endpoint.point, golden[type - 10], endpoint.quadrature_error_bound + 1e-13),
@@ -111,6 +120,17 @@ unsigned spiral_tests() {
         reverse["detail"]["fractionA"] = 1.;
         reverse["detail"]["fractionB"] = 0.;
         const auto reversed = TransitionSpiral::from_bgfb(reverse);
+        const auto native_reverse = reversed.native_fit_input();
+        check(near(native_reverse["local_points"][0].get<Point3>(), endpoint.point, 1e-9) &&
+                  near(native_reverse["local_points"].back().get<Point3>(), {0, 0, 0}, 1e-9),
+              "native reverse samples add the independently stroked origin offset");
+        check(
+            std::abs(native_reverse["endpoint_bearings"][0].get<double>() -
+                     (1.32 + std::acos(-1.))) < 1e-12 &&
+                std::abs(native_reverse["endpoint_bearings"][1].get<double>() -
+                         (.3 + std::acos(-1.))) < 1e-12 &&
+                native_reverse["endpoint_radii"] == Json({1., 5.}),
+            "native fitter aligns bearings to chords but does not negate reversed endpoint radii");
         check(near(reversed.evaluate(0, 1e-9).point, endpoint.point) &&
                   near(reversed.evaluate(1).point, {0, 0, 0}),
               "active interval reversal retains full spiral origin");
@@ -224,5 +244,41 @@ unsigned spiral_tests() {
         failed = true;
     }
     check(failed, "API fraction is checked separately from source active interval");
+    v = source();
+    v["detail"]["bearing0Radians"] = 0.;
+    v["detail"]["bearing1Radians"] = .080000000001;
+    check(TransitionSpiral::from_bgfb(v).native_fit_input()["stroke_intervals"] == 2,
+          "native angular count retains its near-integer downward bias");
+    v["detail"]["bearing1Radians"] = .0800000001;
+    check(TransitionSpiral::from_bgfb(v).native_fit_input()["stroke_intervals"] == 4,
+          "native positive angular count rounds upward to an even interval count");
+    v["detail"]["bearing1Radians"] = 0.;
+    const auto collapsed = TransitionSpiral::from_bgfb(v).native_fit_input();
+    check(
+        collapsed["stroke_intervals"] == 1 &&
+            collapsed["local_points"] == Json({Point3{}, Point3{}}) &&
+            collapsed["source_fractions"] == Json({0., 1.}),
+        "native zero-angle minimum interval retains both generated samples without deduplication");
+    v = source();
+    v["detail"]["bearing0Radians"] = 0.;
+    v["detail"]["bearing1Radians"] = 40.;
+    const auto large = TransitionSpiral::from_bgfb(v).native_fit_input();
+    check(large["local_points"].size() == 1001 && large["fits_native_point_limit"] == false,
+          "stroke buffer and downstream fitter point limits are independent");
+    v["detail"]["bearing1Radians"] = 80.;
+    failed = false;
+    try {
+        TransitionSpiral::from_bgfb(v).native_fit_input();
+    } catch (const std::exception &) {
+        failed = true;
+    }
+    check(failed, "native 2000 point stroke buffer includes the initial point");
+    failed = false;
+    try {
+        s.native_fit_input(26);
+    } catch (const std::exception &) {
+        failed = true;
+    }
+    check(failed, "caller work budget includes origin integration as well as main stroke");
     return checks;
 }
