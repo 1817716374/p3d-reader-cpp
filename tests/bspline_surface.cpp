@@ -51,6 +51,31 @@ struct FlatSurface {
             if (geometry.at("_type") == "CurveVector") {
                 bytes[root + 4] = 5;
                 ref(root + 8, boundary(geometry));
+            } else if (geometry.at("_type") == "InterpolationCurve") {
+                bytes[root + 4] = 16;
+                const auto curve = table({4, 8, 12, 16, 20, 24, 32, 56, 80, 84}, 88);
+                ref(root + 8, curve);
+                write(curve + 4, geometry.at("order").get<std::int32_t>());
+                bytes[curve + 8] = geometry.at("closed").get<bool>();
+                const std::array<const char *, 4> flags{"isChordLenKnots", "isColinearTangents",
+                                                        "isChordLenTangents", "isNaturalTangents"};
+                for (unsigned i = 0; i < 4; ++i)
+                    write(curve + 12 + 4 * i, geometry.at(flags[i]).get<std::int32_t>());
+                for (unsigned i = 0; i < 2; ++i)
+                    for (unsigned k = 0; k < 3; ++k)
+                        write(curve + 32 + 24 * i + 8 * k,
+                              geometry.at(i ? "endTangent" : "startTangent")
+                                  .at(std::array<const char *, 3>{"x", "y", "z"}[k])
+                                  .get<double>());
+                for (unsigned i = 0; i < 2; ++i) {
+                    const auto &a = geometry.at(i ? "knots" : "fitPoints");
+                    align(8, 4);
+                    const auto v = bytes.size();
+                    append<std::uint32_t>(bytes, unsigned(a.size()));
+                    for (const auto &x : a)
+                        append<double>(bytes, x.get<double>());
+                    ref(curve + 80 + 4 * i, v);
+                }
             } else {
                 require(geometry.at("_type") == "LineString" ||
                             geometry.at("_type") == "PointString" ||
@@ -358,21 +383,25 @@ unsigned bspline_surface_tests() {
     const auto bgfb = FlatSurface(torus).bytes;
     append<std::uint64_t>(packet, bgfb.size());
     packet.insert(packet.end(), bgfb.begin(), bgfb.end());
-    Bytes body(142);
-    body[0] = 1;
-    body[134] = 1;
-    append<std::uint32_t>(body, unsigned(packet.size()));
-    body.insert(body.end(), packet.begin(), packet.end());
-    append<std::int32_t>(body, 7);
-    body.push_back(3);
-    append<std::uint32_t>(body, 0);
-    append<std::uint64_t>(body, 0);
-    Bytes component(11);
-    append<std::uint32_t>(component, 1);
-    component.resize(component.size() + 11);
-    append<std::uint32_t>(component, unsigned(body.size()));
-    component.insert(component.end(), body.begin(), body.end());
-    component.resize(component.size() + 25);
+    auto component_for = [](const Bytes &packet) {
+        Bytes body(142);
+        body[0] = 1;
+        body[134] = 1;
+        append<std::uint32_t>(body, unsigned(packet.size()));
+        body.insert(body.end(), packet.begin(), packet.end());
+        append<std::int32_t>(body, 7);
+        body.push_back(3);
+        append<std::uint32_t>(body, 0);
+        append<std::uint64_t>(body, 0);
+        Bytes component(11);
+        append<std::uint32_t>(component, 1);
+        component.resize(component.size() + 11);
+        append<std::uint32_t>(component, unsigned(body.size()));
+        component.insert(component.end(), body.begin(), body.end());
+        component.resize(component.size() + 25);
+        return component;
+    };
+    const auto component = component_for(packet);
     const auto parsed = complex_blob("ParaCmptInstance", component);
     const auto &entry = parsed["instances"][0]["geometry_packets"][0];
     check(!entry.contains("decode_error") && entry["raw_base64"] == base64(packet) &&
@@ -408,5 +437,47 @@ unsigned bspline_surface_tests() {
     check(bad_akima["_akima"]["status"] == "invalid" &&
               bad_akima["points"] == Json::array({0., 0., 0.}),
           "invalid BGFB Akima input retains complete points and explicit conversion error");
+    Json interpolation = {{"_type", "InterpolationCurve"},
+                          {"order", 7},
+                          {"closed", true},
+                          {"isChordLenKnots", 1},
+                          {"isColinearTangents", -1},
+                          {"isChordLenTangents", 2},
+                          {"isNaturalTangents", 3},
+                          {"startTangent", {{"x", 1}, {"y", 2}, {"z", 3}}},
+                          {"endTangent", {{"x", 4}, {"y", 5}, {"z", 6}}},
+                          {"fitPoints", {.2, .2, 0, .8, .2, 0, .8, .8, 0, .2, .8, 0}},
+                          {"knots", {9, 8, 7}}};
+    torus["boundaries"] = {{"_type", "CurveVector"},
+                           {"type", 1},
+                           {"curves", Json::array({{{"geometry", interpolation}}})}};
+    const auto interpolation_fb = FlatSurface(torus).bytes;
+    Bytes interpolation_packet(32);
+    append<std::uint64_t>(interpolation_packet, interpolation_fb.size());
+    interpolation_packet.insert(interpolation_packet.end(), interpolation_fb.begin(),
+                                interpolation_fb.end());
+    const auto ic = complex_blob("ParaCmptInstance", component_for(interpolation_packet));
+    const auto &ip = ic["instances"][0]["geometry_packets"][0];
+    const auto isurface = BsplineSurface::from_bgfb(ip["geometry"]["geometry"]);
+    const auto &it = isurface.boundaries()["curves"][0]["geometry"];
+    check(ip["raw_base64"] == base64(interpolation_packet) && it["_type"] == "InterpolationCurve" &&
+              it["_interpolation"]["status"] == "valid" && it["order"] == 7 &&
+              it["knots"] == interpolation["knots"] && it["startTangent"]["x"] == 1 &&
+              it["endTangent"]["z"] == 6 && it["fitPoints"] == interpolation["fitPoints"],
+          "full component BGFB type16 decoding retains inactive order, knots and tangents "
+          "alongside conversion report");
+    const auto itrim = isurface.trim(1e-5);
+    check(itrim.report()["status"] == "complete" &&
+              itrim.report()["loops"][0]["effective_boundary_type"] == 2 &&
+              itrim.classify({.5, .5}) == TrimLocation::Inside &&
+              itrim.classify({.01, .01}) == TrimLocation::Outside,
+          "periodic interpolation endpoints and spans reach native Open promotion and trim "
+          "classification");
+    torus["boundaries"]["curves"][0]["geometry"]["fitPoints"] = {0., 0., 0.};
+    const auto invalid_interpolation =
+        decode_bgfb(FlatSurface(torus).bytes)["geometry"]["boundaries"]["curves"][0]["geometry"];
+    check(invalid_interpolation["_interpolation"]["status"] == "invalid" &&
+              invalid_interpolation["fitPoints"] == Json({0., 0., 0.}),
+          "invalid interpolation retains source with explicit conversion error");
     return checks;
 }

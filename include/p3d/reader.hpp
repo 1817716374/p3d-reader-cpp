@@ -133,6 +133,39 @@ class AkimaCurve {
     std::vector<std::size_t> retained_indices_;
     Json report_;
 };
+// BGFB interpolation data and its native cubic conversion. Serialized order,
+// knots and endpoint tangents remain in source(); the BGFB conversion path does
+// not use them. Prepared point indices include an appended closing point, if any.
+class InterpolationCurve {
+  public:
+    static InterpolationCurve from_bgfb(const Json &table);
+    const Json &source() const {
+        return source_;
+    }
+    const std::vector<Point3> &prepared_points() const {
+        return points_;
+    }
+    const std::vector<std::size_t> &prepared_point_indices() const {
+        return indices_;
+    }
+    const std::vector<double> &parameters() const {
+        return parameters_;
+    }
+    const BsplineCurve &bspline() const {
+        return bspline_;
+    }
+    const Json &report() const {
+        return report_;
+    }
+
+  private:
+    explicit InterpolationCurve(BsplineCurve curve) : bspline_(std::move(curve)) {}
+    BsplineCurve bspline_;
+    Json source_, report_;
+    std::vector<Point3> points_;
+    std::vector<std::size_t> indices_;
+    std::vector<double> parameters_;
+};
 enum class TrimLocation { Inside, Outside, BoundaryBand, Indeterminate };
 // Derived UV polylines with source provenance and a declared approximation bound.
 // Original boundary curves remain available on BsplineSurface.

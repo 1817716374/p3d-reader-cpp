@@ -7,6 +7,7 @@
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/akima.cpp
+!/tests/interpolation.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

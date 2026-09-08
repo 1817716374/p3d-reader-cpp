@@ -102,6 +102,8 @@ std::vector<Piece> primitive(const Json &v, unsigned limit) {
         return spans(BsplineCurve::from_bgfb(v), limit);
     if (type == "AkimaCurve")
         return spans(AkimaCurve::from_bgfb(v).bspline(), limit);
+    if (type == "InterpolationCurve")
+        return spans(InterpolationCurve::from_bgfb(v).bspline(), limit);
     std::vector<Piece> result;
     if (type == "LineSegment") {
         const auto &s = v.at("segment");
@@ -178,9 +180,10 @@ bool endpoints(const Json &v, Point3 &first, Point3 &last, unsigned limit, unsig
         }
         return true;
     }
-    if (type == "BsplineCurve" || type == "AkimaCurve") {
+    if (type == "BsplineCurve" || type == "AkimaCurve" || type == "InterpolationCurve") {
         const auto curve = type == "BsplineCurve" ? BsplineCurve::from_bgfb(v)
-                                                  : AkimaCurve::from_bgfb(v).bspline();
+                           : type == "AkimaCurve" ? AkimaCurve::from_bgfb(v).bspline()
+                                                  : InterpolationCurve::from_bgfb(v).bspline();
         first = curve.point_at(0);
         last = curve.point_at(1);
         return true;
