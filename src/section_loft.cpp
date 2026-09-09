@@ -37,12 +37,16 @@ bool closed(Point3 a, Point3 b) {
 struct Builder {
     unsigned limit;
     Json openings = Json::array();
-    Curve primitive(const Json &v, const std::string &path) {
+    Json closures = Json::array();
+    Curve primitive(const Json &v, const std::string &path,
+                    std::array<Point3, 2> *endpoints = nullptr) {
         const auto type = v.at("_type").get<std::string>();
         Curve c;
         if (type == "BsplineCurve") {
             const auto source = BsplineCurve::from_bgfb(v);
             c = Curve::from_bspline(source, limit);
+            if (endpoints)
+                *endpoints = {source.point_at(0), source.point_at(1)};
             if (source.closed()) {
                 const auto domain = source.knot_domain();
                 openings.push_back(
@@ -109,6 +113,8 @@ struct Builder {
                 return h;
             };
             c.poles.push_back(at(start, 1));
+            if (endpoints)
+                *endpoints = {cartesian(at(start, 1)), cartesian(at(start + sweep, 1))};
             for (unsigned i = 0; i < n; ++i) {
                 const double t0 = start + sweep * i / n, t1 = start + sweep * (i + 1) / n;
                 c.poles.push_back(at((t0 + t1) / 2, std::cos((t1 - t0) / 2)));
@@ -120,23 +126,33 @@ struct Builder {
         } else
             throw std::runtime_error("unsupported loft source primitive: " + type);
         c.check(limit);
+        if (endpoints && type != "BsplineCurve" && type != "EllipticArc")
+            *endpoints = {cartesian(c.poles.front()), cartesian(c.poles.back())};
         return c;
     }
     Curve guide(const Json &v, bool weighted, const std::string &path) {
         require(boundary_type(v) <= 3, "region or nested loft guide is not supported");
         const auto &array = members(v);
         require(array.size() <= limit, "loft guide member budget");
-        auto c = primitive(array[0].at("geometry"), path + "/curves/0/geometry");
-        const auto first = cartesian(c.poles.front());
-        auto last = cartesian(c.poles.back());
+        std::array<Point3, 2> endpoints;
+        const auto &source = array[0].at("geometry");
+        auto c = primitive(source, path + "/curves/0/geometry", &endpoints);
+        const auto first = endpoints[0];
+        auto last = endpoints[1];
         for (std::size_t i = 1; i < array.size(); ++i) {
             auto next = primitive(array[i].at("geometry"),
-                                  path + "/curves/" + std::to_string(i) + "/geometry");
-            last = cartesian(next.poles.back());
+                                  path + "/curves/" + std::to_string(i) + "/geometry", &endpoints);
+            last = endpoints[1];
             c = loft_detail::append(std::move(c), std::move(next), weighted, limit);
         }
-        require(!weighted || !closed(first, last),
-                "native close/reopen of length-weighted closed guides is not yet supported");
+        const bool already_closed = array.size() == 1 && source.at("_type") == "BsplineCurve" &&
+                                    source.at("closed") == true;
+        if (weighted && !already_closed && closed(first, last)) {
+            Json note;
+            c = loft_detail::close_reopen(std::move(c), limit, note);
+            note["source_path"] = path;
+            closures.push_back(std::move(note));
+        }
         return c;
     }
 };
@@ -246,17 +262,27 @@ SectionLoft SectionLoft::from_bgfb(const Json &table, unsigned max_control_point
                 "loft primitive/guide correspondence");
         require(g.size() >= 2 && g.size() <= 5000, "loft requires two to 5000 source guides");
         std::vector<Curve> lower, upper, guides;
+        std::array<Point3, 2> lower_ends, upper_ends, ends;
         for (std::size_t i = 0; i < a.size(); ++i) {
             const auto suffix = (parity ? "/curves/" + std::to_string(loop) + "/geometry" : "") +
                                 std::string("/curves/") + std::to_string(i) + "/geometry";
-            lower.push_back(builder.primitive(a[i].at("geometry"), "/section0" + suffix));
-            upper.push_back(builder.primitive(b[i].at("geometry"), "/section1" + suffix));
+            lower.push_back(builder.primitive(a[i].at("geometry"), "/section0" + suffix,
+                                              is_closed ? &ends : nullptr));
+            if (is_closed) {
+                if (i == 0)
+                    lower_ends[0] = ends[0];
+                lower_ends[1] = ends[1];
+            }
+            upper.push_back(builder.primitive(b[i].at("geometry"), "/section1" + suffix,
+                                              is_closed ? &ends : nullptr));
+            if (is_closed) {
+                if (i == 0)
+                    upper_ends[0] = ends[0];
+                upper_ends[1] = ends[1];
+            }
         }
         if (is_closed) {
-            require(closed(cartesian(lower.front().poles.front()),
-                           cartesian(lower.back().poles.back())) &&
-                        closed(cartesian(upper.front().poles.front()),
-                               cartesian(upper.back().poles.back())),
+            require(closed(lower_ends[0], lower_ends[1]) && closed(upper_ends[0], upper_ends[1]),
                     "loft closed section endpoints do not coincide");
         }
         bool equal_counts = true;
@@ -296,6 +322,8 @@ SectionLoft SectionLoft::from_bgfb(const Json &table, unsigned max_control_point
         {"cap_status", table.at("capped").get<bool>() ? "not_reconstructed" : "not_requested"}};
     if (!builder.openings.empty())
         out.report_["curve_openings"] = std::move(builder.openings);
+    if (!builder.closures.empty())
+        out.report_["guide_closures"] = std::move(builder.closures);
     return out;
 }
 } // namespace p3d

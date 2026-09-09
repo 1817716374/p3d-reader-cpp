@@ -179,6 +179,15 @@ unsigned section_loft_tests() {
             const auto eval = BsplineCurve::from_bgfb(opened.table());
             check(opened.poles.size() == count + order - (shift == -.173 ? 0 : 1),
                   "ordinary periodic opening preserves the native control count");
+            Json closure;
+            const auto reopened = loft_detail::close_reopen(opened, 1000, closure);
+            const auto closed_eval = BsplineCurve::from_bgfb(reopened.table());
+            check(reopened.poles.size() == opened.poles.size(),
+                  "close/open retains the clamped control count across cyclic seam positions");
+            if (order <= 6)
+                check(closure["method"] ==
+                          (order == 2 ? "linear_periodic_reopened" : "regular_periodic_reopened"),
+                      "smooth periodic lifts take the native periodic pole-reduction path");
             for (unsigned i = 0; i <= 100; ++i) {
                 const double f = i / 100.;
                 double t = f - shift;
@@ -187,6 +196,8 @@ unsigned section_loft_tests() {
                 check(near(eval.point_at(f), original.point_at(t), 3e-10),
                       "periodic opening preserves cyclic rational geometry and the absolute zero "
                       "seam");
+                check(near(closed_eval.point_at(f), eval.point_at(f), 5e-9),
+                      "native unclamping and reclosure preserve rational periodic geometry");
             }
         }
         input["knots"] = Json::array();
@@ -203,6 +214,77 @@ unsigned section_loft_tests() {
     circle_table["closed"] = true;
     const auto circle = BsplineCurve::from_bgfb(circle_table);
     const auto opened_circle = Curve::from_bspline(circle, 1000);
+    Json closure;
+    const auto reclosed_circle = loft_detail::close_reopen(opened_circle, 1000, closure);
+    check(closure["method"] == "special_periodic_reopened" &&
+              reclosed_circle.knots == opened_circle.knots &&
+              reclosed_circle.poles == opened_circle.poles,
+          "C0 rational circle falls back to the special closed knot layout without changing poles");
+    for (unsigned order : {3u, 4u, 5u, 6u, 7u, 8u, 9u, 26u}) {
+        Json xyz = Json::array(), w = Json::array();
+        for (unsigned i = 0; i < order; ++i) {
+            const double weight_value = i == 0 || i + 1 == order ? 1 : weight(random);
+            w.push_back(weight_value);
+            for (unsigned k = 0; k < 3; ++k)
+                xyz.push_back(i == 0 || i + 1 == order ? 0. : coord(random) * weight_value);
+        }
+        const auto short_closed =
+            Curve::from_bspline(BsplineCurve::from_bgfb(curve(order, xyz, nullptr, w)), order);
+        const auto result = loft_detail::close_reopen(short_closed, order, closure);
+        check(
+            closure["method"] == "special_periodic_reopened" &&
+                result.knots == short_closed.knots && result.poles == short_closed.poles,
+            "short closed Bezier curves keep every homogeneous pole through odd/even knot padding");
+    }
+    auto box = Curve::from_bspline(
+        BsplineCurve::from_bgfb(curve(3, {1, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0},
+                                      {0, 0, 0, .25, .5, .75, 1, 1, 1})),
+        100);
+    auto changed = box;
+    changed.poles.back()[0] += 5e-11;
+    auto recovered = loft_detail::close_reopen(changed, 100, closure);
+    check(closure["method"] == "regular_periodic_reopened" && closure["closed_pole_count"] == 4 &&
+              recovered.poles == box.poles,
+          "accepted periodic overlap drops only the native redundant end poles");
+    for (auto &h : changed.poles)
+        for (unsigned k = 0; k < 3; ++k)
+            h[k] -= 10;
+    recovered = loft_detail::close_reopen(changed, 100, closure);
+    check(closure["method"] == "special_periodic_reopened" && recovered.poles == changed.poles,
+          "negative stored coordinates do not acquire an invented absolute overlap tolerance");
+    changed = box;
+    changed.rational = true;
+    changed.poles.back()[3] += 7.5e-11;
+    recovered = loft_detail::close_reopen(changed, 100, closure);
+    check(closure["method"] == "regular_periodic_reopened" && recovered.poles == box.poles,
+          "signed periodic overlap weight test accepts a larger trailing weight");
+    changed.poles.back()[3] = 1 - 7.5e-11;
+    recovered = loft_detail::close_reopen(changed, 100, closure);
+    check(closure["method"] == "special_periodic_reopened" && recovered.poles == changed.poles,
+          "signed periodic overlap weight test rejects the opposite difference");
+    changed.poles.back()[3] = 1 + 2e-10;
+    recovered = loft_detail::close_reopen(changed, 100, closure);
+    check(closure["method"] == "retained_open" && closure["reason"] == "endpoint_weight_mismatch" &&
+              recovered.poles == changed.poles,
+          "failed native endpoint closure retains the input instead of aborting the guide");
+    changed = box;
+    changed.poles.back()[0] += 1e-6;
+    recovered = loft_detail::close_reopen(changed, 100, closure);
+    check(closure["method"] == "retained_open" &&
+              closure["reason"] == "endpoint_position_mismatch" && recovered.poles == changed.poles,
+          "endpoint closure tests stored XYZ before trying any periodic conversion");
+    auto closed_line = Curve::from_bspline(
+        BsplineCurve::from_bgfb(curve(2, {0, 0, 0, 1, 0, 0, 0, 0, 5e-11}, {0, 0, .3, 1, 1})), 3);
+    recovered = loft_detail::close_reopen(closed_line, 3, closure);
+    check(closure["method"] == "linear_periodic_reopened" && closure["closed_pole_count"] == 2 &&
+              recovered.knots == closed_line.knots &&
+              recovered.poles.back() == closed_line.poles.front(),
+          "linear closure uses the first pole at the reopened end and preserves the internal knot");
+    const auto straight =
+        Curve::from_bspline(BsplineCurve::from_bgfb(line({0, 0, 0}, {2, 0, 0})), 2);
+    recovered = loft_detail::close_reopen(straight, 2, closure);
+    check(closure["reason"] == "two_pole_line" && recovered.poles == straight.poles,
+          "two-pole line is a native no-op even with unequal endpoints");
     check(opened_circle.poles.size() == 7 &&
               BsplineCurve::from_bgfb(opened_circle.table()).poles() == circle.poles(),
           "special periodic conic strips exterior knots without duplicating or rotating poles");
@@ -322,6 +404,38 @@ unsigned section_loft_tests() {
                   "/section0/curves/0/geometry" &&
               near(shifted_loft.sides()[0].surface.point_at(0, 0), seam),
           "loft uses and reports native knot zero instead of silently using source fraction zero");
+    const auto original_start = shifted_eval.point_at(0);
+    auto detour = seam;
+    detour[2] += 1;
+    periodic_input["section0"] = periodic_input["section1"] =
+        array({line(seam, {3, seam[1], seam[2]})});
+    periodic_input["guide_groups"][0] = Json::array(
+        {array({shifted_curve, line(seam, detour), line(detour, seam)}), array({shifted_top})});
+    const auto shifted_guides = SectionLoft::from_bgfb(periodic_input);
+    check(!near(original_start, seam) && !shifted_guides.report().contains("guide_closures"),
+          "closure uses source fractions zero and one, not the opened periodic seam, and does not "
+          "reclose an already closed single source");
+    periodic_input["guide_groups"][0][0]["curves"][2]["geometry"] = line(detour, original_start);
+    periodic_input["section1"] = array({line(original_start, {3, seam[1], seam[2]})});
+    const auto source_closed = SectionLoft::from_bgfb(periodic_input);
+    check(source_closed.report()["guide_closures"].size() == 1 &&
+              source_closed.report()["guide_closures"][0]["method"] == "retained_open" &&
+              source_closed.report()["guide_closures"][0]["reason"] == "endpoint_position_mismatch",
+          "source closure can trigger a failed reclosure after periodic opening without discarding "
+          "the valid open guide");
+    periodic_input["section0"] = periodic_input["section1"] =
+        array({shifted_curve, curve(2, {seam[0], seam[1], seam[2], detour[0], detour[1], detour[2],
+                                        seam[0], seam[1], seam[2]})},
+              2);
+    bool original_section_endpoints = false;
+    try {
+        SectionLoft::from_bgfb(periodic_input);
+    } catch (const std::exception &e) {
+        original_section_endpoints =
+            std::string(e.what()).find("closed section endpoints") != std::string::npos;
+    }
+    check(original_section_endpoints,
+          "closed section arrays use the source endpoints before the individual curves are opened");
     for (unsigned p = 1; p <= 6; ++p)
         for (unsigned q = p + 1; q <= 9; ++q)
             for (unsigned m = 1; m <= p; ++m) {
@@ -576,14 +690,32 @@ unsigned section_loft_tests() {
         check(near(composite.sides()[0].surface.point_at(0, i / 20.), {0, 0, 2 * i / 20.}),
               "composite guide has source length parameterization after three-pole elevation");
     input["guide_groups"][0][0] = array({line({0, 0, 0}, {0, 0, 1}), line({0, 0, 1}, {0, 0, 0})});
-    bool closure_pending = false;
+    bool corner_mismatch = false;
     try {
         SectionLoft::from_bgfb(input);
     } catch (const std::exception &e) {
-        closure_pending = std::string(e.what()).find("close/reopen") != std::string::npos;
+        corner_mismatch = std::string(e.what()).find("corner mismatch") != std::string::npos;
     }
-    check(closure_pending,
-          "closed length-weighted guides cannot bypass the native reclosure branch");
+    check(corner_mismatch, "closed guide still must match the original section corners");
+    input["section0"] = input["section1"] = array({line({0, 0, 0}, {3, 0, 0})});
+    input["guide_groups"][0][1] = array({curve(2, {3, 0, 0, 4, 0, 1, 3, 0, 0}, {0, 0, .5, 1, 1})});
+    const auto closed_composite = SectionLoft::from_bgfb(input);
+    check(closed_composite.source() == input &&
+              closed_composite.report()["guide_closures"].size() == 2 &&
+              closed_composite.report()["guide_closures"][0]["method"] ==
+                  "linear_periodic_reopened" &&
+              closed_composite.report()["guide_closures"][1]["source_path"] == "/guide_groups/0/1",
+          "unequal source guide counts activate native closure and preserve source provenance");
+    const auto decoded_closed =
+        SectionLoft::from_bgfb(decode_bgfb(Wire{}.encode(input)).at("geometry"));
+    check(decoded_closed.sides()[0].surface.poles() == closed_composite.sides()[0].surface.poles(),
+          "closed composite guides roundtrip through the actual BGFB union decoder");
+    for (unsigned i = 0; i <= 40; ++i) {
+        const double t = i / 40., z = t <= .5 ? 2 * t : 2 * (1 - t);
+        check(near(closed_composite.sides()[0].surface.point_at(0, t), {0, 0, z}) &&
+                  near(closed_composite.sides()[0].surface.point_at(1, t), {3 + z, 0, z}),
+              "reclosed composite guides remain exact side boundaries after global compatibility");
+    }
     input = source();
     input["section0"] = array({{{"_type", "LineString"}, {"points", {0, 0, 0, 1, 1, 0, 3, 0, 0}}}});
     const auto unequal = SectionLoft::from_bgfb(input);
