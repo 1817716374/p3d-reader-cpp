@@ -297,9 +297,172 @@ unsigned section_loft_tests() {
     check(Curve::from_bspline(BsplineCurve::from_bgfb(imperfect), 1000).poles.back()[0] == 1 + 1e-6,
           "native special seam tolerance preserves an accepted endpoint without snapping");
     imperfect["weights"][6] = 1 + 2e-10;
-    rejects([&] { Curve::from_bspline(BsplineCurve::from_bgfb(imperfect), 1000); },
-            "special periodic opening enforces the separate strict endpoint weight test");
+    Json fallback_note;
+    const auto fallback =
+        loft_detail::open_periodic(BsplineCurve::from_bgfb(imperfect), 1000, &fallback_note);
+    check(fallback_note["method"] == "cyclic_seam_fallback" &&
+              fallback_note["pole_rotation"] == 1 && fallback.poles.back()[0] == 1 &&
+              fallback.poles[5][0] == 1 + 1e-6 && fallback.poles[5][3] == 1 + 2e-10 &&
+              fallback.knots == opened_circle.knots,
+          "failed special endpoint weight check takes the native cyclic fallback, retaining and "
+          "rotating every stored pole and weight");
+    for (unsigned order : {3u, 4u, 5u, 6u, 7u, 8u, 9u, 26u}) {
+        const unsigned n = order + 3, shift = order / 2;
+        Json xyz = Json::array(), w = Json::array();
+        for (unsigned i = 0; i < n; ++i) {
+            w.push_back(1 + .01 * i);
+            xyz.push_back(double(i));
+            xyz.push_back(double(i % 3));
+            xyz.push_back(0);
+        }
+        auto stored = curve(order, xyz, nullptr, w);
+        const auto clamped = BsplineCurve::from_bgfb(stored);
+        std::vector<double> u(n + 2 * order - 1);
+        std::copy_n(clamped.knots().begin() + (order + 1) / 2, n - 1, u.begin() + order);
+        for (unsigned i = 0; i < order; ++i) {
+            u[i] = u[i + n] - 1;
+            u[n + order - 1 + i] = u[order - 1 + i] + 1;
+        }
+        stored["closed"] = true;
+        stored["knots"] = u;
+        const auto native =
+            loft_detail::open_periodic(BsplineCurve::from_bgfb(stored), n, &fallback_note);
+        check(native.knots == clamped.knots() && native.poles.size() == n &&
+                  fallback_note["method"] == "cyclic_seam_fallback" &&
+                  fallback_note["inserted_knot_count"] == 0 &&
+                  fallback_note["pole_rotation"] == shift,
+              "full-multiplicity special fallback strips the original exterior knot counts");
+        for (unsigned i = 0; i < n; ++i) {
+            const auto at = (i + shift) % n;
+            check(native.poles[i] == loft_detail::H{double(at), double(at % 3), 0, 1 + .01 * at},
+                  "special fallback rotates weighted XYZ and weights together across odd/even "
+                  "orders");
+        }
+    }
+    auto exterior =
+        curve(3, {0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2, 0}, {-.5, -.1, 0, .25, .5, .75, 1, 1.25, 1.5});
+    exterior["closed"] = true;
+    const auto external_open =
+        loft_detail::open_periodic(BsplineCurve::from_bgfb(exterior), 6, &fallback_note);
+    check(
+        external_open.knots == std::vector<double>({0, 0, 0, .25, .5, .75, 1, 1, 1}) &&
+            std::abs(external_open.poles.front()[0] - 4. / 7) < 1e-15 &&
+            external_open.poles.back() == external_open.poles.front() &&
+            fallback_note["inserted_knot_count"] == 2,
+        "native cyclic insertion uses supplied exterior knots instead of forcing a periodic lift");
+    for (double sign : {-1., 1.}) {
+        auto near_seam =
+            curve(3, {0, 0, 0, 1, 0, 0, 2, 1, 0, 2, 2, 0, 1, 3, 0, 0, 3, 0, -1, 2, 0, -1, 1, 0});
+        near_seam["closed"] = true;
+        const auto unshifted = BsplineCurve::from_bgfb(near_seam);
+        near_seam["knots"] = Json::array();
+        for (double k : unshifted.knots())
+            near_seam["knots"].push_back(k - .5 + sign * 1e-12);
+        const auto original = BsplineCurve::from_bgfb(near_seam);
+        const auto prepared = loft_detail::open_periodic(original, 10, &fallback_note);
+        const auto evaluated = BsplineCurve::from_bgfb(prepared.table());
+        check(fallback_note["inserted_knot_count"] == 2 &&
+                  std::abs(fallback_note["effective_seam_knot"].get<double>() - sign * 1e-12) <
+                      1e-18 &&
+                  prepared.poles.size() == 10,
+              "a single nearby seam knot is retained and filled to native multiplicity, not "
+              "duplicated");
+        for (unsigned i = 0; i <= 80; ++i) {
+            const double f = i / 80.;
+            check(near(evaluated.point_at(f), original.point_at(std::fmod(.5 + f, 1.)), 5e-10),
+                  "the reported native snapped seam preserves its cyclic parameterization");
+        }
+    }
+    auto scaled = curve(3, {0, 0, 0, 1, 0, 0, 2, 0, 0, 1, 1, 0, 0, 1, 0},
+                        {-2e8, -1.5e8, -1e8, 1e-4, 1.2e-4, 3e8, 6e8, 9e8, 1.1e9, 1.2e9});
+    scaled["closed"] = true;
+    loft_detail::open_periodic(BsplineCurve::from_bgfb(scaled), 8, &fallback_note);
+    check(
+        std::abs(fallback_note["knot_tolerance"].get<double>() - 2e-6) < 1e-18 &&
+            fallback_note["effective_seam_knot"] == 0 && fallback_note["inserted_knot_count"] == 3,
+        "large knot domains reduce tolerance using native active-span differences before snapping");
+    auto compact = Curve::from_bspline(
+        BsplineCurve::from_bgfb(curve(3, {1e8, 0, 0, 1e8 + 1e-4, 0, 0, 1e8 + 4e-8, 0, 0})), 3);
+    const auto compact_open = loft_detail::close_reopen(compact, 3, closure);
+    check(closure["method"] == "special_periodic_reopened" &&
+              closure["opening"]["method"] == "cyclic_seam_fallback" &&
+              compact_open.poles[0] == compact.poles[1] &&
+              compact_open.poles[2] == compact.poles[0],
+          "a relative closure match can take the special opening fallback when the local range is "
+          "small");
+    for (unsigned order = 2; order <= 9; ++order) {
+        const unsigned n = order + 6, p = order - 1;
+        std::vector<double> cycle(n + 1);
+        Json xyz = Json::array(), weights = Json::array();
+        for (unsigned i = 0; i < n; ++i) {
+            cycle[i + 1] = cycle[i] + (order > 2 && i == 2 ? 0 : weight(random));
+            const double w = weight(random);
+            weights.push_back(w);
+            for (unsigned axis = 0; axis < 3; ++axis)
+                xyz.push_back(w * coord(random));
+        }
+        const double total = cycle.back();
+        for (auto &k : cycle)
+            k /= total;
+        for (double shift : {0., -.237, -1.}) {
+            Json knots = Json::array();
+            for (unsigned i = 0; i < n + 2 * order - 1; ++i) {
+                const int relative = int(i) - int(p);
+                const int turn = relative < 0 ? -1 : relative / int(n);
+                const unsigned j = unsigned(relative - turn * int(n));
+                knots.push_back(cycle[j] + turn + shift);
+            }
+            auto stored = curve(order, xyz, knots, weights);
+            stored["closed"] = true;
+            const auto original = BsplineCurve::from_bgfb(stored);
+            const auto prepared = loft_detail::open_periodic(original, 100, &fallback_note);
+            const auto evaluated = BsplineCurve::from_bgfb(prepared.table());
+            for (unsigned i = 0; i <= 70; ++i) {
+                const double f = i / 70.;
+                double source_parameter = f - shift;
+                while (source_parameter > 1)
+                    source_parameter -= 1;
+                check(near(evaluated.point_at(f), original.point_at(source_parameter), 2e-9),
+                      "native local cyclic insertion preserves nonuniform repeated-knot rational "
+                      "curves");
+            }
+        }
+    }
+    auto fallback_input = source();
+    const auto bottom_fallback = BsplineCurve::from_bgfb(fallback.table());
+    auto lifted = imperfect;
+    for (std::size_t i = 0; i < lifted["weights"].size(); ++i)
+        lifted["poles"][3 * i + 2] = 2 * lifted["weights"][i].get<double>();
+    fallback_input["section0"] = array({imperfect});
+    fallback_input["section1"] = array({lifted});
+    const auto f0 = bottom_fallback.point_at(0), f1 = bottom_fallback.point_at(1);
+    fallback_input["guide_groups"][0] =
+        Json::array({array({line(f0, {f0[0], f0[1], 2})}), array({line(f1, {f1[0], f1[1], 2})})});
+    const auto fallback_loft =
+        SectionLoft::from_bgfb(decode_bgfb(Wire{}.encode(fallback_input)).at("geometry"));
+    check(fallback_loft.report()["curve_openings"][0]["method"] == "cyclic_seam_fallback" &&
+              fallback_loft.report()["curve_openings"][0]["pole_rotation"] == 1 &&
+              fallback_loft.source()["section0"]["curves"][0]["geometry"]["weights"] ==
+                  imperfect["weights"],
+          "BGFB loft reports the actual fallback opening method and keeps the original weights");
+    for (unsigned i = 0; i <= 40; ++i) {
+        const auto point = bottom_fallback.point_at(i / 40.);
+        check(near(fallback_loft.sides()[0].surface.point_at(i / 40., 0), point) &&
+                  near(fallback_loft.sides()[0].surface.point_at(i / 40., 1),
+                       {point[0], point[1], 2}),
+              "special fallback controls reach both rational side boundaries without substitution");
+    }
     auto periodic_input = source();
+    auto clustered = curve(3, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                           {-.5, -.25, 0, 1e-12, .5, .75, 1, 1.25, 1.5});
+    clustered["closed"] = true;
+    rejects([&] { loft_detail::open_periodic(BsplineCurve::from_bgfb(clustered), 100); },
+            "distinct near seam knots are not silently collapsed to create a clamped loft curve");
+    auto tiny_domain = exterior;
+    for (auto &k : tiny_domain["knots"])
+        k = k.get<double>() * 1e-11;
+    rejects([&] { loft_detail::open_periodic(BsplineCurve::from_bgfb(tiny_domain), 100); },
+            "a knot domain below the native normalization threshold is not silently rescaled");
     periodic_input["section0"] = array({circle_table});
     auto raised = circle_table;
     for (std::size_t i = 0; i < raised["weights"].size(); ++i)
@@ -382,6 +545,12 @@ unsigned section_loft_tests() {
             "periodic opening preserves repeated interior knots without changing their continuity");
     rejects([&] { Curve::from_bspline(repeated_eval, 6); },
             "periodic preparation respects its final control budget");
+    auto repeated_end = repeated;
+    for (auto &k : repeated_end["knots"])
+        k = k.get<double>() - 1;
+    rejects(
+        [&] { loft_detail::open_periodic(BsplineCurve::from_bgfb(repeated_end), 100); },
+        "unsupported repeated end-seam insertion is rejected before an out-of-range control copy");
     auto shifted_curve = periodic_guide;
     shifted_curve["knots"] = Json::array();
     for (double k : guide_eval.knots())

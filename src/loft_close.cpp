@@ -102,7 +102,9 @@ Curve close_reopen(Curve c, unsigned limit, Json &report) {
         report["closed_pole_count"] = c.poles.size();
         auto table = c.table();
         table["closed"] = true;
-        c = open_periodic(BsplineCurve::from_bgfb(table), limit);
+        Json opening;
+        c = open_periodic(BsplineCurve::from_bgfb(table), limit, &opening);
+        report["opening"] = std::move(opening);
     }
     report["opened_pole_count"] = c.poles.size();
     return c;

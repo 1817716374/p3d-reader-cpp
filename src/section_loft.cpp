@@ -44,7 +44,9 @@ struct Builder {
         Curve c;
         if (type == "BsplineCurve") {
             const auto source = BsplineCurve::from_bgfb(v);
-            c = Curve::from_bspline(source, limit);
+            Json opening;
+            c = source.closed() ? loft_detail::open_periodic(source, limit, &opening)
+                                : Curve::from_bspline(source, limit);
             if (endpoints)
                 *endpoints = {source.point_at(0), source.point_at(1)};
             if (source.closed()) {
@@ -54,9 +56,8 @@ struct Builder {
                      {"source_knot_domain", domain},
                      {"seam_knot", 0},
                      {"source_fraction_at_seam", -domain[0] / (domain[1] - domain[0])},
-                     {"opened_pole_count", c.poles.size()},
-                     {"method", source.periodic_pole_shift() ? "strip_exterior_knots"
-                                                             : "cyclic_knot_insertion"}});
+                     {"opened_pole_count", c.poles.size()}});
+                openings.back().update(opening);
             }
         } else if (type == "AkimaCurve" || type == "InterpolationCurve" ||
                    type == "TransitionSpiral")
