@@ -100,7 +100,7 @@ struct Wire {
     std::size_t spline(const Json &v) {
         auto t = table(5);
         write<std::int32_t>(t + 4, v.at("order").get<int>());
-        b[t + 8] = 0;
+        b[t + 8] = v.at("closed").get<bool>();
         reference(t + 12, numbers(v.at("poles")));
         reference(t + 16, numbers(v.at("weights")));
         reference(t + 20, numbers(v.at("knots")));
@@ -157,6 +157,171 @@ unsigned section_loft_tests() {
     };
     std::mt19937 random(3401);
     std::uniform_real_distribution<double> coord(-2, 2), weight(.7, 1.3);
+    for (unsigned order : {2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 26u}) {
+        Json xyz = Json::array(), weights = Json::array();
+        const unsigned count = order + 4;
+        for (unsigned i = 0; i < count; ++i) {
+            const double w = weight(random);
+            weights.push_back(w);
+            for (unsigned k = 0; k < 3; ++k)
+                xyz.push_back(coord(random) * w);
+        }
+        auto input = curve(order, xyz, nullptr, weights);
+        input["closed"] = true;
+        const auto base = BsplineCurve::from_bgfb(input);
+        for (double shift : {0., -.173, -1.}) {
+            Json knots = Json::array();
+            for (double k : base.knots())
+                knots.push_back(k + shift);
+            input["knots"] = knots;
+            const auto original = BsplineCurve::from_bgfb(input);
+            const auto opened = Curve::from_bspline(original, 1000);
+            const auto eval = BsplineCurve::from_bgfb(opened.table());
+            check(opened.poles.size() == count + order - (shift == -.173 ? 0 : 1),
+                  "ordinary periodic opening preserves the native control count");
+            for (unsigned i = 0; i <= 100; ++i) {
+                const double f = i / 100.;
+                double t = f - shift;
+                while (t > 1)
+                    t -= 1;
+                check(near(eval.point_at(f), original.point_at(t), 3e-10),
+                      "periodic opening preserves cyclic rational geometry and the absolute zero "
+                      "seam");
+            }
+        }
+        input["knots"] = Json::array();
+        for (double k : base.knots())
+            input["knots"].push_back(k + 2);
+        rejects([&] { Curve::from_bspline(BsplineCurve::from_bgfb(input), 1000); },
+                "native zero-knot opening rejects a domain that excludes zero");
+    }
+    const double root3 = std::sqrt(3.) / 2;
+    auto circle_table = curve(
+        3, {1, 0, 0, .5, root3, 0, -.5, root3, 0, -1, 0, 0, -.5, -root3, 0, .5, -root3, 0, 1, 0, 0},
+        {-1. / 3, 0, 0, 0, 1. / 3, 1. / 3, 2. / 3, 2. / 3, 1, 1, 1, 4. / 3},
+        {1, .5, 1, .5, 1, .5, 1});
+    circle_table["closed"] = true;
+    const auto circle = BsplineCurve::from_bgfb(circle_table);
+    const auto opened_circle = Curve::from_bspline(circle, 1000);
+    check(opened_circle.poles.size() == 7 &&
+              BsplineCurve::from_bgfb(opened_circle.table()).poles() == circle.poles(),
+          "special periodic conic strips exterior knots without duplicating or rotating poles");
+    for (unsigned i = 0; i <= 90; ++i)
+        check(near(BsplineCurve::from_bgfb(opened_circle.table()).point_at(i / 90.),
+                   circle.point_at(i / 90.)),
+              "special periodic conic keeps its full rational locus and source seam");
+    auto imperfect = circle_table;
+    imperfect["poles"][18] = 1 + 1e-6;
+    check(Curve::from_bspline(BsplineCurve::from_bgfb(imperfect), 1000).poles.back()[0] == 1 + 1e-6,
+          "native special seam tolerance preserves an accepted endpoint without snapping");
+    imperfect["weights"][6] = 1 + 2e-10;
+    rejects([&] { Curve::from_bspline(BsplineCurve::from_bgfb(imperfect), 1000); },
+            "special periodic opening enforces the separate strict endpoint weight test");
+    auto periodic_input = source();
+    periodic_input["section0"] = array({circle_table});
+    auto raised = circle_table;
+    for (std::size_t i = 0; i < raised["weights"].size(); ++i)
+        raised["poles"][3 * i + 2] = 2 * raised["weights"][i].get<double>();
+    periodic_input["section1"] = array({raised});
+    periodic_input["guide_groups"][0] =
+        Json::array({array({line({1, 0, 0}, {1, 0, 2})}), array({line({1, 0, 0}, {1, 0, 2})})});
+    const auto cylinder = SectionLoft::from_bgfb(periodic_input);
+    check(cylinder.source() == periodic_input && cylinder.report()["curve_openings"].size() == 2 &&
+              cylinder.report()["curve_openings"][0]["method"] == "strip_exterior_knots" &&
+              cylinder.report()["curve_openings"][0]["opened_pole_count"] == 7,
+          "source periodic openings report provenance without changing source identity or arrays");
+    const auto decoded_cylinder =
+        SectionLoft::from_bgfb(decode_bgfb(Wire{}.encode(periodic_input)).at("geometry"));
+    check(decoded_cylinder.sides()[0].surface.poles() == cylinder.sides()[0].surface.poles(),
+          "periodic type 21 source crosses the actual BGFB decoder and loft opening path");
+    for (unsigned i = 0; i <= 60; ++i) {
+        const auto p = cylinder.sides()[0].surface.point_at(i / 60., .4);
+        check(std::abs(p[0] * p[0] + p[1] * p[1] - 1) < 2e-11 && std::abs(p[2] - .8) < 2e-11,
+              "closed BGFB B-spline sections now reach the native rational cylindrical side");
+    }
+    for (unsigned order = 2; order <= 9; ++order) {
+        const unsigned n = order + 2;
+        Json xyz = Json::array(), knots = Json::array();
+        for (unsigned i = 0; i < n; ++i)
+            for (unsigned k = 0; k < 3; ++k)
+                xyz.push_back(i == n - 1 ? 0. : double(i + k));
+        xyz[0] = xyz[1] = xyz[2] = 0.;
+        for (unsigned i = order / 2; i > 0; --i)
+            knots.push_back(-double(i));
+        for (unsigned i = 0; i < order; ++i)
+            knots.push_back(0);
+        knots.push_back(1. / 3);
+        knots.push_back(2. / 3);
+        for (unsigned i = 0; i < order; ++i)
+            knots.push_back(1);
+        for (unsigned i = 0; i < order - 1 - order / 2; ++i)
+            knots.push_back(2. + i);
+        auto table = curve(order, xyz, knots);
+        table["closed"] = true;
+        const auto original = BsplineCurve::from_bgfb(table),
+                   opened = BsplineCurve::from_bgfb(Curve::from_bspline(original, 1000).table());
+        check(
+            opened.poles() == original.poles() && opened.poles().size() == n,
+            "special odd and even orders preserve source poles with asymmetric exterior trimming");
+        for (unsigned i = 0; i <= 30; ++i)
+            check(
+                near(opened.point_at(i / 30.), original.point_at(i / 30.)),
+                "special opening agrees with the native cyclic index shift for every tested order");
+    }
+    auto periodic_guide = curve(3, {0, 0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2});
+    periodic_guide["closed"] = true;
+    auto right_guide = periodic_guide;
+    for (unsigned i = 0; i < 4; ++i)
+        right_guide["poles"][3 * i] = 3;
+    periodic_input = source();
+    periodic_input["section0"] = periodic_input["section1"] = array({line({0, 1, 0}, {3, 1, 0})});
+    periodic_input["guide_groups"][0] =
+        Json::array({array({periodic_guide}), array({right_guide})});
+    const auto guide_loft = SectionLoft::from_bgfb(periodic_input);
+    const auto guide_eval = BsplineCurve::from_bgfb(periodic_guide);
+    check(guide_loft.sides()[0].surface.v().pole_count() == 6,
+          "ordinary periodic guides are opened before global compatibility");
+    for (unsigned i = 0; i <= 30; ++i) {
+        const auto p = guide_eval.point_at(i / 30.);
+        check(near(guide_loft.sides()[0].surface.point_at(.3, i / 30.), {.9, p[1], p[2]}),
+              "periodic guide loft matches an independently evaluated ruled cyclic surface");
+    }
+    auto repeated = curve(3, {0, 0, 0, 2, 0, 0, 2, 1, 0, 2, 2, 0, 0, 2, 0, -1, 1, 0},
+                          {-.5, -.25, 0, 0, .25, .5, .5, .75, 1, 1, 1.25});
+    repeated["closed"] = true;
+    const auto repeated_eval = BsplineCurve::from_bgfb(repeated);
+    const auto repeated_open = Curve::from_bspline(repeated_eval, 1000);
+    check(repeated_open.poles.size() == 7,
+          "seam multiplicity two creates only one additional native pole");
+    for (unsigned i = 0; i <= 40; ++i)
+        check(
+            near(BsplineCurve::from_bgfb(repeated_open.table()).point_at(i / 40.),
+                 repeated_eval.point_at(i / 40.)),
+            "periodic opening preserves repeated interior knots without changing their continuity");
+    rejects([&] { Curve::from_bspline(repeated_eval, 6); },
+            "periodic preparation respects its final control budget");
+    auto shifted_curve = periodic_guide;
+    shifted_curve["knots"] = Json::array();
+    for (double k : guide_eval.knots())
+        shifted_curve["knots"].push_back(k - .173);
+    const auto shifted_eval = BsplineCurve::from_bgfb(shifted_curve);
+    const auto seam = shifted_eval.point_at(.173);
+    auto shifted_top = shifted_curve;
+    for (unsigned i = 0; i < 4; ++i)
+        shifted_top["poles"][3 * i] = 3;
+    periodic_input = source();
+    periodic_input["section0"] = array({shifted_curve});
+    periodic_input["section1"] = array({shifted_top});
+    periodic_input["guide_groups"][0] = Json::array(
+        {array({line(seam, {3, seam[1], seam[2]})}), array({line(seam, {3, seam[1], seam[2]})})});
+    const auto shifted_loft = SectionLoft::from_bgfb(periodic_input);
+    check(std::abs(
+              shifted_loft.report()["curve_openings"][0]["source_fraction_at_seam"].get<double>() -
+              .173) < 1e-15 &&
+              shifted_loft.report()["curve_openings"][0]["source_path"] ==
+                  "/section0/curves/0/geometry" &&
+              near(shifted_loft.sides()[0].surface.point_at(0, 0), seam),
+          "loft uses and reports native knot zero instead of silently using source fraction zero");
     for (unsigned p = 1; p <= 6; ++p)
         for (unsigned q = p + 1; q <= 9; ++q)
             for (unsigned m = 1; m <= p; ++m) {
@@ -437,7 +602,7 @@ unsigned section_loft_tests() {
     input = source();
     input["section0"]["curves"][0]["geometry"]["closed"] = true;
     rejects([&] { SectionLoft::from_bgfb(input); },
-            "unconfirmed periodic opening is explicitly rejected");
+            "closed source still requires the correct periodic knot array length");
     input = source();
     input["section0"] =
         array({curve(2, {0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0}, {0, 0, .5, .5, 1, 1})});

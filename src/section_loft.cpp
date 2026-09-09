@@ -36,12 +36,26 @@ bool closed(Point3 a, Point3 b) {
 }
 struct Builder {
     unsigned limit;
+    Json openings = Json::array();
     Curve primitive(const Json &v, const std::string &path) {
         const auto type = v.at("_type").get<std::string>();
         Curve c;
-        if (type == "BsplineCurve")
-            c = Curve::from_bspline(BsplineCurve::from_bgfb(v), limit);
-        else if (type == "AkimaCurve" || type == "InterpolationCurve" || type == "TransitionSpiral")
+        if (type == "BsplineCurve") {
+            const auto source = BsplineCurve::from_bgfb(v);
+            c = Curve::from_bspline(source, limit);
+            if (source.closed()) {
+                const auto domain = source.knot_domain();
+                openings.push_back(
+                    {{"source_path", path},
+                     {"source_knot_domain", domain},
+                     {"seam_knot", 0},
+                     {"source_fraction_at_seam", -domain[0] / (domain[1] - domain[0])},
+                     {"opened_pole_count", c.poles.size()},
+                     {"method", source.periodic_pole_shift() ? "strip_exterior_knots"
+                                                             : "cyclic_knot_insertion"}});
+            }
+        } else if (type == "AkimaCurve" || type == "InterpolationCurve" ||
+                   type == "TransitionSpiral")
             throw std::runtime_error("native loft conversion returns no curve for " + type +
                                      " at " + path);
         else if (type == "LineSegment" || type == "LineString") {
@@ -280,6 +294,8 @@ SectionLoft SectionLoft::from_bgfb(const Json &table, unsigned max_control_point
         {"loops", loop_notes},
         {"caps_requested", table.at("capped")},
         {"cap_status", table.at("capped").get<bool>() ? "not_reconstructed" : "not_requested"}};
+    if (!builder.openings.empty())
+        out.report_["curve_openings"] = std::move(builder.openings);
     return out;
 }
 } // namespace p3d

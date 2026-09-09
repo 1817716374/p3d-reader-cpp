@@ -66,10 +66,11 @@ void Curve::check(unsigned limit) const {
         cartesian(h);
 }
 Curve Curve::from_bspline(const BsplineCurve &b, unsigned limit) {
+    if (b.closed())
+        return open_periodic(b, limit);
     Curve c;
     c.degree = b.order() - 1;
     c.rational = b.rational();
-    require(!b.closed(), "periodic BGFB loft curve opening is not yet supported");
     c.knots = b.knots();
     const auto domain = b.knot_domain();
     for (auto &k : c.knots)

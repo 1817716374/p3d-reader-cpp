@@ -17,6 +17,7 @@ struct Curve {
     Json table() const;
 };
 Point3 cartesian(H);
+Curve open_periodic(const BsplineCurve &, unsigned limit);
 void compatible(std::vector<Curve *> curves, unsigned limit);
 Curve append(Curve a, Curve b, bool length_weighted, unsigned limit);
 } // namespace p3d::loft_detail
