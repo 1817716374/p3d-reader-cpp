@@ -26,6 +26,20 @@ Json material_settings(const Json &tree) {
                 (tag[1] == 'A' || tag[1] == 'a') && (tag[2] == 'P' || tag[2] == 'p')) {
                 auto &a = n["attributes"];
                 auto numeric = fields(a);
+                Json layers = Json::array();
+                for (std::size_t i = 0; i < n["children"].size(); ++i) {
+                    const auto &child = n["children"][i];
+                    // The native layer reader examines attributes, not the tag.
+                    // Retain source order; this is not a compositing expression.
+                    if (!child["attributes"].contains("LayerType"))
+                        continue;
+                    layers.push_back(
+                        {{"child_index", i},
+                         {"xml_path", path + "/" + child["tag"].get<std::string>() + "[" +
+                                          std::to_string(i) + "]"},
+                         {"source_parameters", child["attributes"]},
+                         {"semantics", material_layer_semantics(child["attributes"])}});
+                }
                 maps.push_back(
                     {{"index", maps.size()},
                      {"xml_path", path},
@@ -33,6 +47,11 @@ Json material_settings(const Json &tree) {
                      {"source_parameters", a},
                      {"numeric_parameters", numeric},
                      {"semantics", material_map_semantics(a)},
+                     {"texture_layers",
+                      {{"entries", layers},
+                       {"order", "source_child_order"},
+                       {"activation_status", "not_evaluated"},
+                       {"composition_status", "not_evaluated"}}},
                      {"filename", a.value("Filename", Json())},
                      {"source_type", a.value("Type", Json())},
                      {"source_pattern_off", numeric.value("pattern_off", Json())},

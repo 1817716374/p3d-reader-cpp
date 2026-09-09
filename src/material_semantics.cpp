@@ -182,4 +182,158 @@ Json material_map_semantics(const Json &a) {
         out["bump_factor"] = number(a, "bump_map_scale");
     return out;
 }
+Json material_layer_semantics(const Json &a) {
+    Json type = {{"source_keys", {"LayerType"}}, {"source_value", a.value("LayerType", Json())},
+                 {"status", "missing"},          {"token", nullptr},
+                 {"token_id", nullptr},          {"reader_type", nullptr},
+                 {"reader_type_name", nullptr},  {"argument", nullptr}};
+    Json out = {{"type", type},
+                {"value_policy", "explicit_source_values_without_defaults_or_compositing"}};
+    if (!a.contains("LayerType"))
+        return out;
+    auto &t = out["type"];
+    t["status"] = "invalid";
+    if (!a["LayerType"].is_string())
+        return out;
+    const auto source = a["LayerType"].get<std::string>();
+    if (source.find('\0') != std::string::npos)
+        return out;
+    const auto prefix = source.find("layer");
+    if (prefix == std::string::npos) {
+        t["status"] = "ignored_missing_layer_marker";
+        return out;
+    }
+    // Native trimming uses iswspace in the process locale. ASCII whitespace is
+    // stable; don't guess whether a non-ASCII boundary space was stripped.
+    auto trim = [](std::string &s) {
+        const auto start = s.find_first_not_of(" \t\r\n\v\f");
+        s = start == std::string::npos
+                ? std::string()
+                : s.substr(start, s.find_last_not_of(" \t\r\n\v\f") - start + 1);
+        static const char *spaces[] = {u8"\u0085", u8"\u00a0", u8"\u1680", u8"\u180e", u8"\u2000",
+                                       u8"\u2001", u8"\u2002", u8"\u2003", u8"\u2004", u8"\u2005",
+                                       u8"\u2006", u8"\u2007", u8"\u2008", u8"\u2009", u8"\u200a",
+                                       u8"\u2028", u8"\u2029", u8"\u202f", u8"\u205f", u8"\u3000"};
+        for (const auto space : spaces) {
+            const std::string w(space);
+            if (s.size() >= w.size() && (s.compare(0, w.size(), w) == 0 ||
+                                         s.compare(s.size() - w.size(), w.size(), w) == 0))
+                return false;
+        }
+        return true;
+    };
+    auto tail = source.substr(prefix + 5);
+    if (!trim(tail)) {
+        t["status"] = "locale_dependent_whitespace";
+        return out;
+    }
+    // Only a literal space separates the token from its argument. A tab can
+    // be trimmed at a token boundary but is not itself a token delimiter.
+    const auto split = tail.find(' ');
+    auto token = tail.substr(0, split);
+    auto argument = split == std::string::npos ? std::string() : tail.substr(split + 1);
+    if (!trim(token) || !trim(argument)) {
+        t["status"] = "locale_dependent_whitespace";
+        return out;
+    }
+    struct LayerType {
+        const char *token;
+        unsigned reader_type;
+    };
+    static const LayerType types[] = {{"IMAGE", 1},
+                                      {"PROCEDURE", 2},
+                                      {"GRADIENT", 3},
+                                      {"NORMAL", 0xf000},
+                                      {"ADD", 0xf001},
+                                      {"SUBTRACT", 0xf002},
+                                      {"ALPHA", 0xf003},
+                                      {"DISSOLVE", 1},
+                                      {"ATOP", 1},
+                                      {"IN", 1},
+                                      {"OUT", 1},
+                                      {"GAMMA", 0xf00c},
+                                      {"TINT", 0xf00d},
+                                      {"BRIGHTNESS", 0xf00e},
+                                      {"CONTRAST", 0xf00f},
+                                      {"GROUP_START", 0xf012},
+                                      {"GROUP_END", 0xf013},
+                                      {"ALPHABACKGROUND_START", 0xf014},
+                                      {"ALPHABACKGROUND_END", 0xf015},
+                                      {"LXOPROCEDURE", 4},
+                                      {"DIFFERENCE", 0xf016},
+                                      {"NORMALMULTIPLY", 0xf017},
+                                      {"DIVIDE", 0xf018},
+                                      {"MULTIPLY", 0xf019},
+                                      {"SCREEN", 0xf01a},
+                                      {"OVERLAY", 0xf01b},
+                                      {"SOFTLIGHT", 0xf01c},
+                                      {"HARDLIGHT", 0xf01d},
+                                      {"DARKEN", 0xf01e},
+                                      {"LIGHTEN", 0xf01f},
+                                      {"COLORDODGE", 0xf020},
+                                      {"COLORBURN", 0xf021},
+                                      {"8119LXOPROCEDURE", 4},
+                                      {"CELL", 5},
+                                      {"TEXTURE_REPLICATOR", 7}};
+    unsigned code = 1;
+    t["token"] = token;
+    t["argument"] = argument;
+    t["status"] = "unknown_token_image_fallback";
+    for (std::size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i) {
+        if (token != types[i].token)
+            continue;
+        code = types[i].reader_type;
+        t["token_id"] = i;
+        t["status"] = code == 1 && i != 0 ? "known_token_image_fallback" : "decoded";
+        break;
+    }
+    t["reader_type"] = code;
+    for (const auto &known : types)
+        if (known.reader_type == code) {
+            t["reader_type_name"] = known.token;
+            break;
+        }
+    auto data = number(a, "LayerDataFlags", true);
+    data["reader_value"] = nullptr;
+    if (data["status"] == "decoded") {
+        const auto v = data["value"].get<std::uint32_t>();
+        data["reader_value"] = (v & 0xfffff1ffu) | ((v & 0x200u) << 2);
+        data["discarded_source_bits"] = v & 0xc00u;
+    }
+    out["data_flags"] = std::move(data);
+    const bool texture = code == 1 || code == 2 || code == 3 || code == 4 || code == 7;
+    const bool group = code >= 0xf012 && code <= 0xf015;
+    const bool read_flags = texture || code == 0xf000 || (code >= 0xf001 && code <= 0xf003) ||
+                            code == 0xf00c || code == 0xf00d || group || code >= 0xf016;
+    auto flags = number(a, "LayerFlags", true);
+    flags["reader_applies"] = read_flags;
+    flags["bits"] = Json::array();
+    for (unsigned i = 0; i < 3; ++i)
+        flags["bits"].push_back(
+            {{"bit", i},
+             {"value", flags["status"] == "decoded"
+                           ? Json((flags["value"].get<std::uint32_t>() & (1u << i)) != 0)
+                           : Json()}});
+    flags["unassigned_bits"] =
+        flags["status"] == "decoded" ? Json(flags["value"].get<std::uint32_t>() & ~7u) : Json();
+    out["flags"] = std::move(flags);
+    t["argument_role"] = texture ? "texture_reference" : group ? "group_name" : "not_read";
+    Json params = Json::object();
+    if (texture) {
+        // These attributes are read for texture providers, not blend markers.
+        for (const auto key : {"pattern_mapping", "pattern_scalemode", "texture_filter_type"})
+            params[key] = number(a, key, true, true);
+        for (const auto key :
+             {"pattern_angle", "pattern_opacity", "image_gamma", "scale_z", "offset_z", "low_value",
+              "high_value", "antialias_strength", "minimum_spot"})
+            params[key] = number(a, key);
+        params["pattern_scale"] = vector(a, "pattern_scale", "xy");
+        params["pattern_offset"] = vector(a, "pattern_offset", "xy");
+    } else if (code == 0xf00c)
+        params["layer_gamma"] = number(a, "layer_gamma");
+    else if (code == 0xf00d)
+        params["layer_color"] = vector(a, "layer_color", "rgb");
+    out["parameters"] = std::move(params);
+    return out;
+}
 } // namespace p3d

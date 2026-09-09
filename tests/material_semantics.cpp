@@ -303,5 +303,155 @@ unsigned material_semantics_tests() {
     check(binding["entries"][0]["terminal_map_index"] == 0 &&
               binding["entries"][3999]["terminal_map_index"] == 3999,
           "long ascending missing chain has bounded iterative cleanup");
+    Json layer = {{"LayerType", u8"layer IMAGE E:\\材质\\红桦木.jpg"},
+                  {"LayerFlags", "4294967295"},
+                  {"LayerDataFlags", "4294967295"},
+                  {"pattern_scale.x", "2"},
+                  {"pattern_scale.y", "3"},
+                  {"pattern_mapping", "-1"},
+                  {"texture_filter_type", "7"},
+                  {"scale_z", "0"},
+                  {"offset_z", "4"},
+                  {"pattern_offset.x", "5"},
+                  {"image_gamma", "2.2"},
+                  {"pattern_opacity", ".4"},
+                  {"layer_gamma", "9"},
+                  {"custom", "untouched"}};
+    const auto layer_original = layer;
+    auto ls = material_layer_semantics(layer);
+    check(ls["type"]["reader_type"] == 1 && ls["type"]["argument"] == u8"E:\\材质\\红桦木.jpg" &&
+              ls["type"]["argument_role"] == "texture_reference",
+          "texture layer keeps opaque Unicode reference and source type");
+    check(ls["parameters"]["pattern_scale"]["value"] == Json::array({2, 3}) &&
+              ls["parameters"]["scale_z"]["value"] == 0 &&
+              ls["parameters"]["pattern_offset"]["status"] == "partial" &&
+              ls["parameters"]["offset_z"]["value"] == 4 &&
+              !ls["parameters"].contains("layer_gamma") && layer == layer_original,
+          "layer parameters retain source zeros, partial vectors and do not read gamma operator "
+          "field");
+    check(ls["data_flags"]["reader_value"] == 0xfffff9ffu &&
+              ls["data_flags"]["discarded_source_bits"] == 0xc00u &&
+              ls["flags"]["unassigned_bits"] == 0xfffffff8u &&
+              ls["flags"]["bits"][2]["value"] == true,
+          "layer data flags and object flags use distinct bit layouts");
+    for (unsigned i = 0; i < 32; ++i) {
+        layer["LayerDataFlags"] = std::to_string(1u << i);
+        ls = material_layer_semantics(layer);
+        const auto expected = i == 9 ? 0x800u : i == 10 || i == 11 ? 0u : 1u << i;
+        check(ls["data_flags"]["reader_value"] == expected,
+              "each serialized layer data flag follows native relocation");
+    }
+    const std::vector<std::string> tokens = {"IMAGE",
+                                             "PROCEDURE",
+                                             "GRADIENT",
+                                             "NORMAL",
+                                             "ADD",
+                                             "SUBTRACT",
+                                             "ALPHA",
+                                             "DISSOLVE",
+                                             "ATOP",
+                                             "IN",
+                                             "OUT",
+                                             "GAMMA",
+                                             "TINT",
+                                             "BRIGHTNESS",
+                                             "CONTRAST",
+                                             "GROUP_START",
+                                             "GROUP_END",
+                                             "ALPHABACKGROUND_START",
+                                             "ALPHABACKGROUND_END",
+                                             "LXOPROCEDURE",
+                                             "DIFFERENCE",
+                                             "NORMALMULTIPLY",
+                                             "DIVIDE",
+                                             "MULTIPLY",
+                                             "SCREEN",
+                                             "OVERLAY",
+                                             "SOFTLIGHT",
+                                             "HARDLIGHT",
+                                             "DARKEN",
+                                             "LIGHTEN",
+                                             "COLORDODGE",
+                                             "COLORBURN",
+                                             "8119LXOPROCEDURE",
+                                             "CELL",
+                                             "TEXTURE_REPLICATOR"};
+    const std::vector<unsigned> codes = {1,      2,      3,      0xf000, 0xf001, 0xf002, 0xf003,
+                                         1,      1,      1,      1,      0xf00c, 0xf00d, 0xf00e,
+                                         0xf00f, 0xf012, 0xf013, 0xf014, 0xf015, 4,      0xf016,
+                                         0xf017, 0xf018, 0xf019, 0xf01a, 0xf01b, 0xf01c, 0xf01d,
+                                         0xf01e, 0xf01f, 0xf020, 0xf021, 4,      5,      7};
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        layer["LayerType"] = "layer " + tokens[i] + " argument";
+        ls = material_layer_semantics(layer);
+        check(ls["type"]["token_id"] == i && ls["type"]["reader_type"] == codes[i],
+              "layer type token and reader code are different namespaces");
+        check(ls["flags"]["reader_applies"] == (i != 13 && i != 14 && i != 33),
+              "brightness contrast and cell reader skip layer flags");
+    }
+    layer["LayerType"] = "prefixlayer \tGAMMA  unused";
+    ls = material_layer_semantics(layer);
+    check(ls["parameters"].size() == 1 && ls["parameters"]["layer_gamma"]["value"] == 9 &&
+              ls["type"]["argument_role"] == "not_read",
+          "gamma reader finds the marker anywhere but only reads layer_gamma");
+    layer["LayerType"] = "layer TINT";
+    layer["layer_color.r"] = ".2";
+    layer["layer_color.g"] = "NaN";
+    ls = material_layer_semantics(layer);
+    check(ls["parameters"]["layer_color"]["status"] == "invalid" &&
+              ls["parameters"]["layer_color"]["value"].is_null(),
+          "tint rejects nonfinite components and preserves incomplete color");
+    layer["LayerType"] = "layer GROUP_START \tmy group  ";
+    ls = material_layer_semantics(layer);
+    check(ls["type"]["argument"] == "my group" && ls["type"]["argument_role"] == "group_name" &&
+              ls["parameters"].empty(),
+          "group name uses full trimmed remainder, not one filename token");
+    for (const auto text :
+         {"layer image name", "layer IMAGE\tname", "layer Unknown name", "layer"}) {
+        ls = material_layer_semantics({{"LayerType", text}});
+        check(ls["type"]["status"] == "unknown_token_image_fallback" &&
+                  ls["type"]["reader_type"] == 1 && ls["flags"]["value"].is_null(),
+              "case and literal space delimiter reproduce native fallback without inventing flags");
+    }
+    for (const auto &text : {std::string("Layer IMAGE name"), std::string("IMAGE")}) {
+        ls = material_layer_semantics({{"LayerType", text}});
+        check(ls["type"]["status"] == "ignored_missing_layer_marker" && !ls.contains("parameters"),
+              "missing lowercase marker is ignored");
+    }
+    for (const auto text : {u8"layer \u3000IMAGE name", u8"layer IMAGE \u00a0name"}) {
+        ls = material_layer_semantics({{"LayerType", text}});
+        check(ls["type"]["status"] == "locale_dependent_whitespace" &&
+                  ls["type"]["reader_type"].is_null(),
+              "non-ASCII boundary spaces are not silently normalized across locales");
+    }
+    check(material_layer_semantics(Json::object())["type"]["status"] == "missing" &&
+              material_layer_semantics({{"LayerType", 7}})["type"]["status"] == "invalid" &&
+              material_layer_semantics(
+                  {{"LayerType", std::string("layer IMAGE\0x", 13)}})["type"]["status"] ==
+                  "invalid",
+          "absent, non-string and embedded NUL layer identifiers remain distinguishable");
+    layer["LayerType"] = "layer IMAGE a";
+    layer["LayerFlags"] = "4294967296";
+    layer["LayerDataFlags"] = "-1";
+    ls = material_layer_semantics(layer);
+    check(ls["flags"]["status"] == "invalid" && ls["data_flags"]["status"] == "invalid",
+          "unsigned layer flags do not wrap invalid source values");
+    Json children = Json::array();
+    for (const auto &tag : {"Layer", "Other", "Container"})
+        children.push_back({{"tag", tag},
+                            {"attributes", {{"LayerType", "layer ADD"}, {"custom", "keep"}}},
+                            {"children", Json::array()}});
+    children[0]["children"].push_back(children[1]);
+    children[1]["attributes"].erase("LayerType");
+    nested["children"][0]["children"] = children;
+    auto source_tree = nested;
+    ns = material_settings(nested);
+    const auto &entries = ns["maps"][0]["texture_layers"]["entries"];
+    check(entries.size() == 2 && entries[0]["child_index"] == 0 && entries[1]["child_index"] == 2 &&
+              entries[1]["source_parameters"]["custom"] == "keep" && nested == source_tree,
+          "layer candidates preserve direct XML child order without flattening subtrees");
+    check(ns["maps"][0]["texture_layers"]["activation_status"] == "not_evaluated" &&
+              ns["maps"][0]["texture_layers"]["composition_status"] == "not_evaluated",
+          "source layer decoding does not claim map activation or evaluated compositing");
     return checks;
 }
