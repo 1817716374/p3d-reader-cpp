@@ -29,6 +29,7 @@ Json material_settings(const Json &tree) {
                  {"xml_path", path},
                  {"source_parameters", a},
                  {"numeric_parameters", numeric},
+                 {"semantics", material_map_semantics(a)},
                  {"filename", a.value("Filename", Json())},
                  {"source_type", a.value("Type", Json())},
                  {"source_pattern_off", numeric.value("pattern_off", Json())},
@@ -43,9 +44,10 @@ Json material_settings(const Json &tree) {
     walk(tree, "/" + tree["tag"].get<std::string>());
     return {{"source_parameters", tree["attributes"]},
             {"numeric_parameters", fields(tree["attributes"])},
+            {"semantics", material_parameter_semantics(tree["attributes"])},
             {"maps", maps},
-            {"shader_policy", "Source shader parameters; no inferred PBR channel assignments or "
-                              "renderer activation flags."}};
+            {"shader_policy", "Native parameter flags and map roles; no conversion to another "
+                              "renderer or color space."}};
 }
 Json read_materials(const Document &doc) {
     Json definitions = Json::array(), errors = Json::array();

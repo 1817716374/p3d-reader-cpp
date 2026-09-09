@@ -10,6 +10,7 @@
 !/tests/interpolation.cpp
 !/tests/spiral.cpp
 !/tests/section_loft.cpp
+!/tests/material_semantics.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

@@ -12,6 +12,7 @@ unsigned akima_tests();
 unsigned interpolation_tests();
 unsigned spiral_tests();
 unsigned section_loft_tests();
+unsigned material_semantics_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2633,6 +2634,7 @@ int main() {
         checks += interpolation_tests();
         checks += spiral_tests();
         checks += section_loft_tests();
+        checks += material_semantics_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();

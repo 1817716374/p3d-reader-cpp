@@ -184,6 +184,9 @@ Json build_graph_records(const Json &, const Json &, const Json &, const std::se
                          const std::set<std::string> &);
 Json build_scene(const Document &, unsigned);
 Json read_materials(const Document &);
+Json material_settings(const Json &tree);
+Json material_parameter_semantics(const Json &attributes);
+Json material_map_semantics(const Json &attributes);
 Json embedded_texture_records(const Json &graphics, const Json &materials);
 Json read_schemas(const Document &);
 Json read_models(const Document &);
