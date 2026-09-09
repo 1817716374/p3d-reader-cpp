@@ -9,6 +9,7 @@
 !/tests/akima.cpp
 !/tests/interpolation.cpp
 !/tests/spiral.cpp
+!/tests/section_loft.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

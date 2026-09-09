@@ -231,8 +231,7 @@ struct Patch {
     unsigned nu = 0, nv = 0;
     Patch(Curve a, Curve b, Curve c, Curve d, unsigned budget)
         : bottom(std::move(a)), top(std::move(b)), left(std::move(c)), right(std::move(d)) {
-        compatible({&bottom, &top}, budget);
-        // Native Coons elevates a three-pole boundary once before its control blend.
+        // The native three-pole rule runs before bottom/top knot compatibility.
         if (bottom.count() == 3) {
             bottom.elevate();
             top.elevate();
@@ -241,6 +240,7 @@ struct Patch {
             left.elevate();
             right.elevate();
         }
+        compatible({&bottom, &top}, budget);
         nu = unsigned(bottom.count());
         nv = unsigned(left.count());
         require(nv <= budget && nu <= budget / nv, "guided control net budget");

@@ -282,6 +282,30 @@ class BsplineSurface {
     Json boundaries_;
     int hole_origin_ = 0, num_rules_u_ = 0, num_rules_v_ = 0;
 };
+struct LoftSide {
+    BsplineSurface surface;
+    std::size_t loop_index = 0, primitive_index = 0;
+};
+// Explicit reconstruction of the side surfaces in a decoded P3DSectionLoft.
+// Keeps source order and source data; does not replace the active graphics cache.
+class SectionLoft {
+  public:
+    static SectionLoft from_bgfb(const Json &table, unsigned max_control_points = 100000);
+    const Json &source() const {
+        return source_;
+    }
+    const std::vector<LoftSide> &sides() const {
+        return sides_;
+    }
+    const Json &report() const {
+        return report_;
+    }
+
+  private:
+    SectionLoft() = default;
+    Json source_, report_;
+    std::vector<LoftSide> sides_;
+};
 struct Tessellation {
     unsigned full_circle_segments = 64;
     std::optional<double> chord_tolerance;
