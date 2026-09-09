@@ -173,6 +173,10 @@ struct SpiralEvaluation {
     double quadrature_error_bound = 0;
     unsigned intervals = 0;
 };
+struct SpiralFit {
+    BsplineCurve curve; // derived cubic, with the source affine transform applied
+    Json report;        // local fit points, parameters and convergence information
+};
 // Underlying transition spiral, independent of the native fitted B-spline cache.
 class TransitionSpiral {
   public:
@@ -191,6 +195,9 @@ class TransitionSpiral {
     // Native cache fitter's local samples and endpoint constraints. The native
     // error estimate is not a guaranteed error bound. Fitting remains separate.
     Json native_fit_input(unsigned max_integration_intervals = 100000) const;
+    // Reconstruct the native iterative fit. Throws on degenerate parameters,
+    // the native point limit, or failure to converge within 30 iterations.
+    SpiralFit native_fit(unsigned max_integration_intervals = 100000) const;
 
   private:
     TransitionSpiral() = default;

@@ -50,7 +50,7 @@ TransitionSpiral TransitionSpiral::from_bgfb(const Json &table) {
                  {"effective_curvature1", s.curvature1_},
                  {"local_length", s.length_},
                  {"active_fraction_range", {s.start_, s.end_}},
-                 {"native_bspline_conversion", "not_reconstructed"},
+                 {"native_bspline_conversion", "not_evaluated"},
                  {"bgfb_inactive_fields",
                   Json::array({"detail/constructionHint", "extraData", "directDetail"})}};
     return s;

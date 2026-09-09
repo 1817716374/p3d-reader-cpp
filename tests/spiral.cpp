@@ -280,5 +280,111 @@ unsigned spiral_tests() {
         failed = true;
     }
     check(failed, "caller work budget includes origin integration as well as main stroke");
+    for (int type = 10; type <= 14; ++type) {
+        const auto spiral = TransitionSpiral::from_bgfb(source(type));
+        const auto fit = spiral.native_fit();
+        const auto &report = fit.report;
+        check(report["iterations"] <= 30 && report["iterations"] > 0 &&
+                  report["max_interval_length_change"] < report["convergence_threshold"] &&
+                  report["convergence_is_geometric_error_bound"] == false,
+              "spiral iterative fit meets native parameter convergence criterion");
+        const auto prepared = report["expanded_local_points"].get<std::vector<Point2>>();
+        const auto parameters = report["expanded_parameters"].get<std::vector<double>>();
+        check(prepared.size() == 29 && fit.curve.poles().size() == 31 &&
+                  fit.curve.knots().size() == 35 && fit.curve.order() == 4,
+              "native spiral fit preserves two auxiliary nodes and cubic pole ordering");
+        for (std::size_t i = 0; i < prepared.size(); ++i)
+            check(
+                near(fit.curve.point_at(parameters[i]), {prepared[i][0], prepared[i][1], 0}, 1e-12),
+                "converted spiral B-spline interpolates every expanded local point");
+        const auto samples = spiral.native_fit_input()["local_points"].get<std::vector<Point3>>();
+        for (std::size_t i = 1; i + 1 < samples.size(); ++i)
+            check(near(fit.curve.point_at(parameters[i + 1]), samples[i], 1e-12),
+                  "native source samples retain their positions after arc length iteration");
+        const auto &p = fit.curve.poles();
+        const auto &knots = fit.curve.knots();
+        const double h = knots[4], hnext = knots[5] - knots[4];
+        Point2 d{}, dd{};
+        for (unsigned k = 0; k < 2; ++k) {
+            d[k] = 3 * (p[1][k] - p[0][k]) / h;
+            dd[k] = 6 / h * ((p[2][k] - p[1][k]) / (h + hnext) - (p[1][k] - p[0][k]) / h);
+        }
+        const double speed = std::hypot(d[0], d[1]);
+        check(std::abs(std::atan2(d[1], d[0]) - .3) < 1e-11 &&
+                  std::abs((d[0] * dd[1] - d[1] * dd[0]) / (speed * speed * speed) - .2) < 1e-9,
+              "native fitted poles preserve start bearing and curvature constraints");
+    }
+    v = source();
+    v["detail"]["curvature0"] = .5;
+    v["detail"]["curvature1"] = .5;
+    const auto circle = TransitionSpiral::from_bgfb(v);
+    const auto circle_fit = circle.native_fit();
+    for (unsigned i = 0; i <= 50; ++i)
+        check(near(circle_fit.curve.point_at(i / 50.), circle.evaluate(i / 50., 1e-11).point, 1e-6),
+              "native constant curvature fit agrees with independently integrated circular arc");
+    const auto untransformed = s.native_fit();
+    v = source();
+    v["detail"]["transform"]["axx"] = 2.;
+    v["detail"]["transform"]["axy"] = .4;
+    v["detail"]["transform"]["axw"] = 10.;
+    v["detail"]["transform"]["ayx"] = 1.;
+    v["detail"]["transform"]["ayy"] = -3.;
+    v["detail"]["transform"]["azx"] = 5.;
+    const auto transformed = TransitionSpiral::from_bgfb(v).native_fit();
+    check(transformed.report == untransformed.report &&
+              transformed.curve.knots() == untransformed.curve.knots(),
+          "affine transform does not alter local arc length fit or convergence");
+    // High precision dense collocation references. In particular the native
+    // three-point case overwrites a boundary row, and reverse fitting retains
+    // the source curvature signs; neither is a reversal of the forward poles.
+    const std::array<Point3, 4> short_mid{{{.007957700090909245, .00247372025197351, 0},
+                                           {.007957722647741739, .0024737272913157088, 0},
+                                           {.06346443007144283, .020407181328549653, 0},
+                                           {.06347302642506665, .020410008222561137, 0}}};
+    for (unsigned i = 0; i < short_mid.size(); ++i) {
+        auto input = source();
+        input["detail"]["bearing1Radians"] = i < 2 ? .31 : .38;
+        if (i & 1) {
+            input["detail"]["fractionA"] = 1.;
+            input["detail"]["fractionB"] = 0.;
+        }
+        const auto fitted = TransitionSpiral::from_bgfb(input).native_fit();
+        check(fitted.report["source_point_count"] == 3 &&
+                  fitted.report["iterations"] == (i == 0 ? 1 : 2) &&
+                  near(fitted.curve.point_at(.5), short_mid[i], 1e-13),
+              "short forward and reverse spiral fits agree with dense high precision reference");
+    }
+    auto two_source = source();
+    two_source["detail"]["fractionA"] = -.5;
+    two_source["detail"]["fractionB"] = 0.;
+    const auto two_fit = TransitionSpiral::from_bgfb(two_source).native_fit();
+    check(two_fit.report["source_point_count"] == 2 && two_fit.report["iterations"] == 11 &&
+              near(two_fit.curve.point_at(.5), {-.3754041580229958, -.10508754307469105, 0}, 1e-12),
+          "two-point fit keeps sequential auxiliary resets and native partial arc update");
+    for (unsigned i = 0; i <= 10; ++i) {
+        const auto p = untransformed.curve.point_at(i / 10.);
+        check(near(transformed.curve.point_at(i / 10.),
+                   {2 * p[0] + .4 * p[1] + 10, p[0] - 3 * p[1], 5 * p[0]}, 1e-12),
+              "source affine transform is applied after native pole fitting");
+    }
+    auto fit_rejects = [&](const Json &input, const char *message) {
+        bool bad = false;
+        try {
+            TransitionSpiral::from_bgfb(input).native_fit();
+        } catch (const std::exception &) {
+            bad = true;
+        }
+        check(bad, message);
+    };
+    v = source();
+    v["detail"]["fractionB"] = 0.;
+    fit_rejects(v, "native fit rejects zero active interval without inventing a fallback curve");
+    v = source();
+    v["detail"]["bearing1Radians"] = .3;
+    fit_rejects(v, "zero length underlying spiral does not imply a valid fitted B-spline");
+    v = source();
+    v["detail"]["bearing1Radians"] = 40.;
+    v["detail"]["bearing0Radians"] = 0.;
+    fit_rejects(v, "native fit independently enforces source point limit");
     return checks;
 }
