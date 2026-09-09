@@ -1,4 +1,5 @@
 #include "blob_internal.hpp"
+#include <future>
 using namespace p3d;
 namespace {
 const std::array<const char *, 12> matrix_names{"axx", "axy", "axz", "axw", "ayx", "ayy",
@@ -386,5 +387,116 @@ unsigned spiral_tests() {
     v["detail"]["bearing1Radians"] = 40.;
     v["detail"]["bearing0Radians"] = 0.;
     fit_rejects(v, "native fit independently enforces source point limit");
+    auto variant = [](const Json &geometry) {
+        return Json{{"_type", "VariantGeometry"}, {"geometry", geometry}};
+    };
+    auto line = [](Point3 a, Point3 b) {
+        return Json{{"_type", "LineSegment"},
+                    {"segment",
+                     {{"point0X", a[0]},
+                      {"point0Y", a[1]},
+                      {"point0Z", a[2]},
+                      {"point1X", b[0]},
+                      {"point1Y", b[1]},
+                      {"point1Z", b[2]}}}};
+    };
+    auto boundary = [](int type, const Json &curves) {
+        return Json{{"_type", "CurveVector"}, {"type", type}, {"curves", curves}};
+    };
+    auto surface = [](const Json &curves) {
+        return BsplineSurface::from_bgfb({{"_type", "BsplineSurface"},
+                                          {"numPolesU", 2},
+                                          {"numPolesV", 2},
+                                          {"orderU", 2},
+                                          {"orderV", 2},
+                                          {"closedU", false},
+                                          {"closedV", false},
+                                          {"poles", {0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0}},
+                                          {"weights", nullptr},
+                                          {"knotsU", nullptr},
+                                          {"knotsV", nullptr},
+                                          {"holeOrigin", 1},
+                                          {"numRulesU", 0},
+                                          {"numRulesV", 0},
+                                          {"boundaries", curves}});
+    };
+    for (int type = 10; type <= 14; ++type)
+        for (bool reversed : {false, true}) {
+            auto input = source(type);
+            auto &detail = input["detail"];
+            detail["bearing0Radians"] = 0.;
+            detail["bearing1Radians"] = 3.14159265358979323846 / 2;
+            detail["curvature0"] = detail["curvature1"] = 1.;
+            detail["transform"]["axx"] = detail["transform"]["ayy"] = .4;
+            detail["transform"]["axw"] = detail["transform"]["ayw"] = .2;
+            if (reversed) {
+                detail["fractionA"] = 1.;
+                detail["fractionB"] = 0.;
+            }
+            const auto decoded = decode_bgfb(packet(input))["geometry"];
+            const auto fitted = TransitionSpiral::from_bgfb(decoded).native_fit();
+            const auto a = fitted.curve.point_at(0), b = fitted.curve.point_at(1);
+            const auto source_boundary = boundary(1, {variant(decoded), variant(line(b, a))});
+            const auto surf = surface(source_boundary);
+            const auto trim = surf.trim(1e-5);
+            check(surf.boundaries() == source_boundary && trim.report()["status"] == "complete" &&
+                      trim.loops().size() == 1,
+                  "decoded spiral cache closes an Open trim loop without changing source data");
+            check(trim.classify({.45, .35}) == TrimLocation::Inside &&
+                      trim.classify({.3, .5}) == TrimLocation::Outside,
+                  "fitted quarter-circle and chord trim region classifies independent points");
+            const auto &report = trim.report();
+            check(report["curve_conversions"].size() == 1 &&
+                      report["curve_conversions"][0]["source_path"] == "/curves/0/geometry" &&
+                      report["curve_conversions"][0]["representation"] == "native_fitted_bspline" &&
+                      report["bounds_underlying_spiral_error"] == false,
+                  "trim provenance identifies fitted spiral and excludes underlying fit error");
+            Json flat = Json::array();
+            for (const auto &p : fitted.curve.poles())
+                for (double x : p)
+                    flat.push_back(x);
+            const Json explicit_curve{{"_type", "BsplineCurve"},
+                                      {"order", 4},
+                                      {"closed", false},
+                                      {"poles", flat},
+                                      {"knots", fitted.curve.knots()},
+                                      {"weights", nullptr}};
+            const auto explicit_trim =
+                surface(boundary(1, {variant(explicit_curve), variant(line(b, a))})).trim(1e-5);
+            check(explicit_trim.loops() == trim.loops() &&
+                      explicit_trim.report()["loops"] == report["loops"],
+                  "spiral trim conversion and endpoint check use the same fitted B-spline");
+            const auto open = surface(boundary(1, Json::array({variant(decoded)}))).trim(1e-5);
+            check(open.report()["status"] == "complete" && open.loops().empty() &&
+                      open.report()["ignored"][0]["reason"] == "open_boundary_not_closed",
+                  "unclosed spiral remains subject to native source-tree closure filtering");
+            const auto limited = surf.trim(1e-5, 1);
+            check(limited.report()["status"] == "incomplete" &&
+                      limited.classify({.45, .35}) == TrimLocation::Indeterminate,
+                  "spiral trim preserves segment budget failure and indeterminate queries");
+            if (type == 10 && !reversed) {
+                const auto duplicates =
+                    surface(boundary(4, {variant(source_boundary), variant(source_boundary)}))
+                        .trim(1e-5);
+                check(duplicates.loops().size() == 2 &&
+                          duplicates.report()["curve_conversions"].size() == 2 &&
+                          duplicates.classify({.45, .35}) == TrimLocation::Outside,
+                      "equal but independent spiral boundary records retain native parity");
+                auto first = std::async(std::launch::async, [&surf] { return surf.trim(1e-5); });
+                auto second = std::async(std::launch::async, [&surf] { return surf.trim(1e-5); });
+                const auto r1 = first.get(), r2 = second.get();
+                check(r1.loops() == trim.loops() && r2.loops() == trim.loops() &&
+                          r1.report() == trim.report() && r2.report() == trim.report(),
+                      "concurrent trim calls on one surface keep independent deterministic caches");
+            }
+        }
+    v = source();
+    v["detail"]["fractionB"] = 0.;
+    const auto invalid_trim = surface(boundary(2, Json::array({variant(v)}))).trim(1e-5);
+    check(invalid_trim.report()["status"] == "incomplete" &&
+              invalid_trim.classify({.5, .5}) == TrimLocation::Indeterminate &&
+              invalid_trim.report()["errors"][0]["error"].get<std::string>().find(
+                  "native spiral fit") != std::string::npos,
+          "failed native spiral fit does not become a successful trim or fallback polyline");
     return checks;
 }

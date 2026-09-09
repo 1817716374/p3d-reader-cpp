@@ -3,6 +3,19 @@ namespace p3d {
 namespace {
 using H = std::array<double, 4>;
 using Piece = std::vector<H>;
+// A trim call checks source-tree endpoints before converting direct members.
+// Reuse the fit for that same JSON object within this call only. Distinct source
+// records (even identical ones) remain distinct; this is not geometry deduplication.
+struct SpiralCache {
+    std::map<const Json *, SpiralFit> fits;
+    const SpiralFit &get(const Json &source) {
+        const auto found = fits.find(&source);
+        if (found != fits.end())
+            return found->second;
+        return fits.emplace(&source, TransitionSpiral::from_bgfb(source).native_fit())
+            .first->second;
+    }
+};
 double number(const Json &v) {
     require(v.is_number(), "trim coordinate is not numeric");
     const double x = v.get<double>();
@@ -96,7 +109,7 @@ std::vector<Piece> spans(const BsplineCurve &c, unsigned limit) {
     }
     return result;
 }
-std::vector<Piece> primitive(const Json &v, unsigned limit) {
+std::vector<Piece> primitive(const Json &v, unsigned limit, SpiralCache &spirals) {
     const auto type = v.at("_type").get<std::string>();
     if (type == "BsplineCurve")
         return spans(BsplineCurve::from_bgfb(v), limit);
@@ -104,6 +117,8 @@ std::vector<Piece> primitive(const Json &v, unsigned limit) {
         return spans(AkimaCurve::from_bgfb(v).bspline(), limit);
     if (type == "InterpolationCurve")
         return spans(InterpolationCurve::from_bgfb(v).bspline(), limit);
+    if (type == "TransitionSpiral")
+        return spans(spirals.get(v).curve, limit);
     std::vector<Piece> result;
     if (type == "LineSegment") {
         const auto &s = v.at("segment");
@@ -149,7 +164,8 @@ std::vector<Piece> primitive(const Json &v, unsigned limit) {
 // Native Open-array closure is tested on the source tree before converting its
 // direct members. A child array can provide endpoints even though its virtual
 // B-spline conversion returns false in setTrim.
-bool endpoints(const Json &v, Point3 &first, Point3 &last, unsigned limit, unsigned depth = 0) {
+bool endpoints(const Json &v, Point3 &first, Point3 &last, unsigned limit, SpiralCache &spirals,
+               unsigned depth = 0) {
     require(depth <= 80, "trim endpoint tree depth");
     if (v.is_null())
         return false;
@@ -160,7 +176,7 @@ bool endpoints(const Json &v, Point3 &first, Point3 &last, unsigned limit, unsig
         bool found = false;
         for (const auto &entry : curves) {
             Point3 a{}, b{};
-            if (endpoints(entry.at("geometry"), a, b, limit, depth + 1)) {
+            if (endpoints(entry.at("geometry"), a, b, limit, spirals, depth + 1)) {
                 if (!found)
                     first = a;
                 last = b;
@@ -188,7 +204,13 @@ bool endpoints(const Json &v, Point3 &first, Point3 &last, unsigned limit, unsig
         last = curve.point_at(1);
         return true;
     }
-    const auto pieces = primitive(v, limit);
+    if (type == "TransitionSpiral") {
+        const auto &curve = spirals.get(v).curve;
+        first = curve.point_at(0);
+        last = curve.point_at(1);
+        return true;
+    }
+    const auto pieces = primitive(v, limit, spirals);
     if (pieces.empty())
         return false;
     first = cartesian(pieces.front().front());
@@ -205,6 +227,8 @@ struct Builder {
     unsigned limit, segments = 0;
     bool complete = true;
     Json sources = Json::array(), ignored = Json::array(), errors = Json::array();
+    Json conversions = Json::array();
+    SpiralCache spirals;
     std::vector<Loop> loops;
     Builder(double tolerance_, unsigned limit_) : tolerance(tolerance_), limit(limit_) {}
     void error(const std::string &path, const std::string &message) {
@@ -240,7 +264,7 @@ struct Builder {
             }
             if (type == 1) {
                 Point3 a{}, b{};
-                if (!endpoints(root, a, b, limit)) {
+                if (!endpoints(root, a, b, limit, spirals)) {
                     ignored.push_back({{"source_path", path}, {"reason", "empty_boundary"}});
                     return;
                 }
@@ -261,7 +285,16 @@ struct Builder {
                          {"source_type", member_type}});
                     continue;
                 }
-                auto pieces = primitive(geometry, limit);
+                auto pieces = primitive(geometry, limit, spirals);
+                if (member_type == "TransitionSpiral") {
+                    const auto &fit = spirals.get(geometry);
+                    conversions.push_back(
+                        {{"source_path", path + "/curves/" + std::to_string(i) + "/geometry"},
+                         {"source_type", member_type},
+                         {"representation", "native_fitted_bspline"},
+                         {"derived_pole_count", fit.curve.poles().size()},
+                         {"fit_iterations", fit.report.at("iterations")}});
+                }
                 loop.pieces.insert(loop.pieces.end(), std::make_move_iterator(pieces.begin()),
                                    std::make_move_iterator(pieces.end()));
                 require(loop.pieces.size() <= limit, "trim primitive span limit");
@@ -382,6 +415,11 @@ BsplineTrim BsplineSurface::trim(double tolerance, unsigned max_segments) const 
                       {"ignored", build.ignored},
                       {"errors", build.errors},
                       {"representation", "derived_polylines"}};
+    if (!build.conversions.empty()) {
+        result.report_["curve_conversions"] = std::move(build.conversions);
+        result.report_["deviation_reference"] = "converted_boundary_curves";
+        result.report_["bounds_underlying_spiral_error"] = false;
+    }
     return result;
 }
 TrimLocation BsplineTrim::classify(Point2 uv) const {
