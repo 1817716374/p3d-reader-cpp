@@ -541,5 +541,104 @@ unsigned material_semantics_tests() {
               inventory[4]["filename"] == "detail.jpg" && inventory[4]["layer_child_index"] == 0 &&
               inventory[4]["map_index"] == 0 && ref_tree == saved_ref_tree,
           "material resource inventory includes ordered additional and layer primary references");
+    auto xml_node = [](const std::string &tag, const Json &attributes,
+                       const Json &children = Json::array()) {
+        return Json{{"tag", tag}, {"attributes", attributes}, {"children", children}};
+    };
+    auto procedure_owner = [&](const Json &attributes) {
+        return xml_node("Map", Json::object(), Json::array({xml_node("M633", attributes)}));
+    };
+    Json procedure = {{"M634", "1"},          {"Color1.R", ".2"}, {"Color1.G", ".3"},
+                      {"Color1.B", ".4"},     {"Color2.R", "2"},  {"Alpha1", ".5"},
+                      {"M711", "4294967295"}, {"M1", "7"},        {"unknown", "kept"}};
+    auto procedural = material_procedure_nodes(procedure_owner(procedure));
+    auto first = procedural["entries"][0];
+    check(first["parameters"]["Color1"]["value"] == Json::array({.2, .3, .4}) &&
+              first["parameters"]["Color2"]["status"] == "partial" &&
+              first["parameters"]["Alpha1"]["value"] == .5 &&
+              first["parameters"]["M711"]["value"] == 4294967295u &&
+              first["unmapped_source_parameters"] == Json({{"M1", "7"}, {"unknown", "kept"}}),
+          "procedure schemas decode only attributes read for the selected source type");
+    procedure = {{"M634", "32"},       {"M24.R", "1"},    {"M24.G", "2"},   {"M24.B", "3"},
+                 {"NoiseSeed", "7.5"}, {"Absolute", "2"}, {"Color1.R", "4"}};
+    first = material_procedure_nodes(procedure_owner(procedure))["entries"][0];
+    check(first["parameters"]["M24"]["value"] == Json::array({1, 2, 3}) &&
+              first["parameters"]["NoiseSeed"]["value"] == 7.5 &&
+              first["parameters"]["Absolute"]["source_type"] == "uint32" &&
+              first["unmapped_source_parameters"]["Color1.R"] == "4",
+          "procedure noise seed is stored as floating point, not guessed from its name");
+    first = material_procedure_nodes(procedure_owner(
+        {{"M634", "54"}, {"M81", "2.5"}, {"M82.R", "1"}, {"M82.G", "NaN"}}))["entries"][0];
+    check(first["parameters"]["M81"]["value"] == 2.5 &&
+              first["parameters"]["M82"]["status"] == "invalid" &&
+              !first["parameters"].contains("M24"),
+          "procedure type controls color grouping and finite source validation");
+    for (const auto &id : {"0", "71", "4294967295", "-1", "4294967296", "invalid"}) {
+        first =
+            material_procedure_nodes(procedure_owner({{"M634", id}, {"M1", "3"}}))["entries"][0];
+        check(first["reader_schema_status"] == "unavailable" && first["parameters"].empty() &&
+                  first["source_parameters"]["M634"] == id &&
+                  first["unmapped_source_parameters"]["M1"] == "3",
+              "unknown or invalid procedure types retain source without selecting another schema");
+    }
+    auto no_fallback = xml_node(
+        "Map", Json::object(),
+        Json::array({xml_node("m633", {{"M634", "32"}}), xml_node("M633", {{"M634", "invalid"}}),
+                     xml_node("M633", {{"M634", "1"}})}));
+    procedural = material_procedure_nodes(no_fallback);
+    check(procedural["entries"].size() == 2 && procedural["entries"][0]["child_index"] == 1 &&
+              procedural["entries"][0]["selection"] == "selected" &&
+              procedural["entries"][0]["type"]["status"] == "invalid" &&
+              procedural["entries"][1]["selection"] == "later_matching_node",
+          "native procedure lookup selects first exact child even if its type is invalid");
+    Json controls = Json::array({xml_node("AnyTag", {{"M175", ".25"},
+                                                     {"M176", ".75"},
+                                                     {"M211", "0"},
+                                                     {"M177", "3"},
+                                                     {"unknown", "value"}}),
+                                 xml_node("Second", {{"M211", "4"}})});
+    auto channel = xml_node(
+        "ArbitraryChannel", Json::object(),
+        Json::array({xml_node("M635", {{"M171", "999"}, {"M173", "3"}, {"M174", "5"}}, controls),
+                     xml_node("M635", {{"M173", "9"}})}));
+    Json channels = Json::array();
+    for (unsigned i = 0; i < 6; ++i)
+        channels.push_back(channel);
+    auto type10 =
+        xml_node("M633", {{"M634", "10"}, {"M218", "3"}, {"M175", "unrelated"}}, channels);
+    auto type10_owner = xml_node("Map", Json::object(), Json::array({type10}));
+    first = material_procedure_nodes(type10_owner)["entries"][0];
+    const auto &c0 = first["channels"][0]["channel"]["entries"][0];
+    check(first["parameters"].size() == 1 && first["parameters"]["M218"]["value"] == 3 &&
+              first["unmapped_source_parameters"]["M175"] == "unrelated" &&
+              first["channels"][4]["selection"] == "selected" &&
+              first["channels"][5]["selection"] == "outside_native_channel_limit",
+          "type ten consumes five source channels without flattening control fields");
+    check(c0["parameters"]["M171"]["reader_applies"] == false &&
+              c0["reader_selector"]["source_keys"] == Json::array({"M174"}) &&
+              c0["reader_selector"]["value"] == 5 && c0["control_entries"].size() == 2 &&
+              first["channels"][0]["channel"]["entries"][1]["selection"] == "later_matching_node",
+          "channel count marker is discarded, later selector replaces earlier value, first M635 "
+          "wins");
+    check(c0["control_entries"][0]["parameters"]["M175"]["value"] == .25 &&
+              c0["control_entries"][0]["parameters"]["M211"]["value"] == 0 &&
+              c0["control_entries"][0]["parameters"]["M211"]["reader_value"] == 1 &&
+              c0["control_entries"][1]["parameters"]["M211"]["reader_value"] == 4 &&
+              c0["control_entries"][0]["unmapped_source_parameters"]["unknown"] == "value",
+          "control entry order and explicit zero normalization preserve original values");
+    type10_owner["children"][0]["children"][0]["children"][0]["attributes"].erase("M174");
+    first = material_procedure_nodes(type10_owner)["entries"][0];
+    check(first["channels"][0]["channel"]["entries"][0]["reader_selector"]["value"] == 3,
+          "missing channel selector uses earlier explicitly stored value");
+    auto layer_proc = xml_node("Layer", {{"LayerType", "layer GRADIENT"}}, Json::array({type10}));
+    auto map_proc = xml_node("Map", {{"Type", "1"}}, Json::array({layer_proc}));
+    auto root_proc = xml_node("Material", Json::object(), Json::array({map_proc}));
+    const auto original_proc = root_proc;
+    auto integration = material_settings(root_proc);
+    check(integration["maps"][0]["procedures"]["entries"].empty() &&
+              integration["maps"][0]["texture_layers"]["entries"][0]["procedures"]["entries"][0]
+                         ["type"]["value"] == 10 &&
+              root_proc == original_proc,
+          "nested procedure belongs to its layer, not the enclosing map");
     return checks;
 }

@@ -189,6 +189,7 @@ Json material_parameter_semantics(const Json &attributes);
 Json material_map_semantics(const Json &attributes);
 Json material_layer_semantics(const Json &attributes);
 Json material_texture_references(const Json &tree, const Json &settings);
+Json material_procedure_nodes(const Json &owner);
 Json material_map_bindings(const Json &maps);
 Json embedded_texture_records(const Json &graphics, const Json &materials);
 Json read_schemas(const Document &);

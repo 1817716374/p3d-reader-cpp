@@ -144,7 +144,112 @@ Json additional_texture_references(const Json &a) {
     }
     return out;
 }
+struct ProcedureFields {
+    const char *scalars;
+    const char *integers;
+    const char *colors;
+};
+#include "material_procedure_fields.inc"
+Json procedure_parameters(const Json &a, const ProcedureFields &fields) {
+    Json out = Json::object();
+    for (unsigned kind = 0; kind < 3; ++kind) {
+        std::istringstream names(kind == 0   ? fields.scalars
+                                 : kind == 1 ? fields.integers
+                                             : fields.colors);
+        std::string name;
+        while (names >> name) {
+            auto param = kind == 2 ? vector(a, name, "RGB") : number(a, name, kind == 1);
+            param["source_type"] = kind == 0 ? "float64" : kind == 1 ? "uint32" : "rgb_float64";
+            out[name] = std::move(param);
+        }
+    }
+    return out;
+}
+Json unmapped_parameters(const Json &source, const Json &parameters) {
+    auto out = source;
+    for (const auto &param : parameters)
+        for (const auto &key : param["source_keys"])
+            out.erase(key.get<std::string>());
+    return out;
+}
+Json procedure_channel(const Json &owner) {
+    Json entries = Json::array();
+    for (std::size_t i = 0; i < owner["children"].size(); ++i) {
+        const auto &n = owner["children"][i];
+        if (n["tag"] != "M635")
+            continue;
+        auto params = procedure_parameters(n["attributes"], {"", "M171 M173 M174", ""});
+        params["M171"]["reader_applies"] = false; // Read into a temporary, then discarded.
+        auto selector = params["M174"]["status"] == "missing" ? params["M173"] : params["M174"];
+        Json points = Json::array();
+        for (std::size_t j = 0; j < n["children"].size(); ++j) {
+            const auto &child = n["children"][j];
+            auto p = procedure_parameters(
+                child["attributes"],
+                {"M175 M176 M179 M180 M181 M214 M215 M216", "M177 M178 M211 M212 M213 M217", ""});
+            auto &order = p["M211"];
+            order["reader_value"] = order["status"] == "decoded"
+                                        ? (order["value"] == 0 ? Json(1) : order["value"])
+                                        : Json();
+            points.push_back(
+                {{"child_index", j},
+                 {"source_tag", child["tag"]},
+                 {"source_parameters", child["attributes"]},
+                 {"parameters", p},
+                 {"unmapped_source_parameters", unmapped_parameters(child["attributes"], p)}});
+        }
+        entries.push_back(
+            {{"child_index", i},
+             {"selection", entries.empty() ? "selected" : "later_matching_node"},
+             {"source_parameters", n["attributes"]},
+             {"parameters", params},
+             {"reader_selector", selector},
+             {"unmapped_source_parameters", unmapped_parameters(n["attributes"], params)},
+             {"control_entries", points}});
+    }
+    return {{"entries", entries}, {"selection_rule", "first_exact_M635_child"}};
+}
 } // namespace
+Json material_procedure_nodes(const Json &owner) {
+    Json entries = Json::array();
+    for (std::size_t i = 0; i < owner["children"].size(); ++i) {
+        const auto &node = owner["children"][i];
+        if (node["tag"] != "M633")
+            continue;
+        const auto &a = node["attributes"];
+        auto type = number(a, "M634", true);
+        const auto value = type["status"] == "decoded" ? type["value"].get<std::uint32_t>() : 0;
+        const bool known = value >= 1 && value <= 70;
+        auto params = known ? procedure_parameters(a, procedure_fields[value]) : Json::object();
+        auto unmapped = unmapped_parameters(a, params);
+        unmapped.erase("M634");
+        Json entry = {{"child_index", i},
+                      {"selection", entries.empty() ? "selected" : "later_matching_node"},
+                      {"source_parameters", a},
+                      {"type", type},
+                      {"reader_schema_status", known ? "identified" : "unavailable"},
+                      {"parameters", params},
+                      {"unmapped_source_parameters", unmapped}};
+        if (value == 10 && known) {
+            Json channels = Json::array();
+            for (std::size_t j = 0; j < node["children"].size(); ++j) {
+                const auto &child = node["children"][j];
+                channels.push_back(
+                    {{"child_index", j},
+                     {"source_tag", child["tag"]},
+                     {"selection", j < 5 ? "selected" : "outside_native_channel_limit"},
+                     {"channel", procedure_channel(child)}});
+            }
+            entry["channels"] = channels;
+        }
+        entries.push_back(std::move(entry));
+    }
+    return {{"entries", entries},
+            {"selection_rule", "first_exact_M633_child"},
+            {"activation_status", "not_evaluated"},
+            {"evaluation_status", "not_evaluated"},
+            {"value_policy", "explicit_source_values_without_constructor_defaults"}};
+}
 Json material_parameter_semantics(const Json &a) {
     auto flags = number(a, "Flags", true);
     Json parameters = Json::object();

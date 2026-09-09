@@ -33,12 +33,12 @@ Json material_settings(const Json &tree) {
                     // Retain source order; this is not a compositing expression.
                     if (!child["attributes"].contains("LayerType"))
                         continue;
-                    layers.push_back(
-                        {{"child_index", i},
-                         {"xml_path", path + "/" + child["tag"].get<std::string>() + "[" +
-                                          std::to_string(i) + "]"},
-                         {"source_parameters", child["attributes"]},
-                         {"semantics", material_layer_semantics(child["attributes"])}});
+                    layers.push_back({{"child_index", i},
+                                      {"xml_path", path + "/" + child["tag"].get<std::string>() +
+                                                       "[" + std::to_string(i) + "]"},
+                                      {"source_parameters", child["attributes"]},
+                                      {"semantics", material_layer_semantics(child["attributes"])},
+                                      {"procedures", material_procedure_nodes(child)}});
                 }
                 maps.push_back(
                     {{"index", maps.size()},
@@ -47,6 +47,7 @@ Json material_settings(const Json &tree) {
                      {"source_parameters", a},
                      {"numeric_parameters", numeric},
                      {"semantics", material_map_semantics(a)},
+                     {"procedures", material_procedure_nodes(n)},
                      {"texture_layers",
                       {{"entries", layers},
                        {"order", "source_child_order"},
