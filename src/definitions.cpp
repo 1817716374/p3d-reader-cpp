@@ -74,6 +74,57 @@ Json material_settings(const Json &tree) {
             {"shader_policy", "Native parameter flags and map roles; no conversion to another "
                               "renderer or color space."}};
 }
+Json material_texture_references(const Json &tree, const Json &settings) {
+    Json out = Json::array();
+    std::function<void(const Json &, const std::string &)> walk = [&](const Json &n,
+                                                                      const std::string &path) {
+        if (n["attributes"].contains("Filename"))
+            out.push_back({{"xml_path", path},
+                           {"filename", n["attributes"]["Filename"]},
+                           {"parameters", n["attributes"]}});
+        for (std::size_t i = 0; i < n["children"].size(); ++i) {
+            const auto &child = n["children"][i];
+            walk(child,
+                 path + "/" + child["tag"].get<std::string>() + "[" + std::to_string(i) + "]");
+        }
+    };
+    walk(tree, "/" + tree["tag"].get<std::string>());
+    // Preserve the legacy Filename inventory first. Additional references carry
+    // explicit ownership; their presence does not assert renderer activation.
+    for (const auto &map : settings["maps"]) {
+        auto append = [&](const Json &owner, const Json &child_index) {
+            const auto &sem = owner["semantics"];
+            if (!sem.contains("additional_texture_references"))
+                return;
+            for (const auto &ref : sem["additional_texture_references"]["entries"])
+                out.push_back({{"xml_path", owner["xml_path"]},
+                               {"filename", ref["value"]},
+                               {"parameters", owner["source_parameters"]},
+                               {"source_attribute", "M556"},
+                               {"reference_kind", "additional_texture"},
+                               {"map_index", map["index"]},
+                               {"layer_child_index", child_index},
+                               {"append_index", ref["append_index"]},
+                               {"source_fragment", ref["source_fragment"]},
+                               {"activation_status", "not_evaluated"}});
+        };
+        append(map, nullptr);
+        for (const auto &layer : map["texture_layers"]["entries"]) {
+            const auto &type = layer["semantics"]["type"];
+            if (type.value("argument_role", Json()) == "texture_reference")
+                out.push_back({{"xml_path", layer["xml_path"]},
+                               {"filename", type["argument"]},
+                               {"parameters", layer["source_parameters"]},
+                               {"source_attribute", "LayerType"},
+                               {"reference_kind", "layer_primary"},
+                               {"map_index", map["index"]},
+                               {"layer_child_index", layer["child_index"]},
+                               {"activation_status", "not_evaluated"}});
+            append(layer, layer["child_index"]);
+        }
+    }
+    return out;
+}
 Json read_materials(const Document &doc) {
     Json definitions = Json::array(), errors = Json::array();
     std::map<std::string, Json> names;
@@ -135,26 +186,14 @@ Json read_materials(const Document &doc) {
                             "material XML envelope");
                     auto &tree = dec["tree"];
                     require(tree["tag"] == "Material", "material XML root");
-                    Json textures = Json::array();
-                    std::function<void(const Json &, const std::string &)> walk =
-                        [&](const Json &n, const std::string &path) {
-                            if (n["attributes"].contains("Filename"))
-                                textures.push_back({{"xml_path", path},
-                                                    {"filename", n["attributes"]["Filename"]},
-                                                    {"parameters", n["attributes"]}});
-                            for (std::size_t i = 0; i < n["children"].size(); ++i) {
-                                auto &c = n["children"][i];
-                                walk(c, path + "/" + c["tag"].get<std::string>() + "[" +
-                                            std::to_string(i) + "]");
-                            }
-                        };
-                    walk(tree, "/Material");
+                    auto settings = material_settings(tree);
+                    auto textures = material_texture_references(tree, settings);
                     item.update({{"version", dec["version"]},
                                  {"xml_byte_count", dec["decoded_bytes"]},
                                  {"xml", dec["xml"]},
                                  {"tree", tree},
                                  {"texture_references", textures},
-                                 {"settings", material_settings(tree)}});
+                                 {"settings", settings}});
                     auto &at = tree["attributes"];
                     if (at.contains("color.r") && at.contains("color.g") && at.contains("color.b"))
                         item["base_color_rgb"] = {std::stod(at["color.r"].get<std::string>()),

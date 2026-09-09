@@ -453,5 +453,93 @@ unsigned material_semantics_tests() {
     check(ns["maps"][0]["texture_layers"]["activation_status"] == "not_evaluated" &&
               ns["maps"][0]["texture_layers"]["composition_status"] == "not_evaluated",
           "source layer decoding does not claim map activation or evaluated compositing");
+    auto extra = [](const Json &source) {
+        return material_map_semantics({{"M556", source}})["additional_texture_references"];
+    };
+    auto values = [&](const std::string &source) {
+        Json result = Json::array();
+        const auto parsed = extra(source);
+        for (const auto &entry : parsed["entries"])
+            result.push_back(entry["value"]);
+        return result;
+    };
+    check(values(u8R"("E:\材质\含 空格.jpg","纹理,颜色.jpg",relative.jpg,)") ==
+              Json::array({u8"E:\\材质\\含 空格.jpg", u8"纹理,颜色.jpg", "relative.jpg"}),
+          "M556 quoted references preserve Unicode paths and embedded commas");
+    check(values("a,,b,") == Json::array({"a", "", "b"}) &&
+              values(", ,") == Json::array({"", ""}) &&
+              values("a ,b") == Json::array({"a", "", "b"}) &&
+              values("a\t b") == Json::array({"a", "b"}) && values("a\nb") == Json::array({"a\nb"}),
+          "M556 skips spaces and tabs but preserves empty comma tokens and newlines");
+    check(values(R"("" "a""b c")") == Json::array({"", "a\"b", "c"}),
+          "M556 native doubled quote toggles quote state, unlike CSV");
+    auto unterminated = extra(R"("a,b)");
+    check(unterminated["status"] == "decoded" && unterminated["entries"][0]["value"] == "a,b" &&
+              unterminated["entries"][0]["unterminated_quote"] == true,
+          "M556 reports an accepted unterminated quote without losing the native token");
+    for (unsigned n = 0; n < 14; ++n) {
+        const std::string slashes(n, '\\');
+        const auto input = slashes + "\"a b" + (n % 2 == 0 ? "\"" : "");
+        Json expected = n % 2 == 0 ? Json::array({std::string(n / 2, '\\') + "a b"})
+                                   : Json::array({std::string(n / 2, '\\') + "\"a", "b"});
+        check(values(input) == expected, "M556 backslash parity controls quote escaping");
+        check(values(slashes + "x,") == Json::array({slashes + "x"}),
+              "M556 backslashes before ordinary characters remain literal");
+    }
+    const std::string extra_source = u8"  \"纹理,颜色.jpg\",same,same,";
+    auto refs = extra(extra_source);
+    check(refs["entries"].size() == 3 && refs["entries"][1]["value"] == "same" &&
+              refs["entries"][2]["value"] == "same" && refs["entries"][2]["append_index"] == 2,
+          "M556 preserves native reference order and duplicate references");
+    for (const auto &entry : refs["entries"]) {
+        const auto offset = entry["source_byte_offset"].get<std::size_t>();
+        const auto count = entry["source_byte_count"].get<std::size_t>();
+        check(extra_source.substr(offset, count) == entry["source_fragment"],
+              "M556 source spans use UTF-8 bytes and retain original quoting");
+    }
+    check(extra(5)["status"] == "invalid" && extra(nullptr)["status"] == "invalid" &&
+              extra(std::string("a\0b", 3))["status"] == "invalid" &&
+              extra(" \t")["entries"].empty() && extra("")["status"] == "decoded" &&
+              material_map_semantics(Json::object())["additional_texture_references"]["status"] ==
+                  "missing",
+          "invalid, empty and missing additional reference lists stay distinct");
+    const auto ignored_extra =
+        material_layer_semantics({{"LayerType", "layer GAMMA"}, {"M556", "ignored.jpg"}});
+    const auto image_extra =
+        material_layer_semantics({{"LayerType", "layer IMAGE primary.jpg"}, {"M556", "extra.jpg"}});
+    check(!ignored_extra.contains("additional_texture_references") &&
+              image_extra["additional_texture_references"]["entries"][0]["value"] == "extra.jpg",
+          "only native texture provider layer branches consume M556");
+    Json ref_tree = {
+        {"tag", "Material"},
+        {"attributes", Json::object()},
+        {"children",
+         Json::array(
+             {{{"tag", "Map"},
+               {"attributes", {{"Type", "1"}, {"Filename", "primary.jpg"}, {"M556", "same,same,"}}},
+               {"children",
+                Json::array(
+                    {{{"tag", "Layer"},
+                      {"attributes",
+                       {{"LayerType", "layer IMAGE layer.jpg"}, {"M556", "detail.jpg"}}},
+                      {"children", Json::array()}},
+                     {{"tag", "Layer"},
+                      {"attributes",
+                       {{"LayerType", "layer GROUP_START named group"}, {"M556", "not_read"}}},
+                      {"children", Json::array()}},
+                     {{"tag", "Unrelated"},
+                      {"attributes", {{"M556", "unrelated"}}},
+                      {"children", Json::array()}}})}}})}};
+    const auto saved_ref_tree = ref_tree;
+    auto ref_settings = material_settings(ref_tree);
+    auto inventory = material_texture_references(ref_tree, ref_settings);
+    check(inventory.size() == 5 && inventory[0]["filename"] == "primary.jpg" &&
+              !inventory[0].contains("source_attribute") && inventory[1]["filename"] == "same" &&
+              inventory[2]["append_index"] == 1 && inventory[1]["layer_child_index"].is_null() &&
+              inventory[3]["filename"] == "layer.jpg" &&
+              inventory[3]["source_attribute"] == "LayerType" &&
+              inventory[4]["filename"] == "detail.jpg" && inventory[4]["layer_child_index"] == 0 &&
+              inventory[4]["map_index"] == 0 && ref_tree == saved_ref_tree,
+          "material resource inventory includes ordered additional and layer primary references");
     return checks;
 }

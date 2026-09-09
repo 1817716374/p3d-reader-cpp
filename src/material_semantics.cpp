@@ -79,6 +79,71 @@ Json boolean(const Json &a, const std::string &key, bool invert = false, bool lo
     }
     return out;
 }
+Json additional_texture_references(const Json &a) {
+    Json out = {{"source_keys", {"M556"}},
+                {"source_value", a.value("M556", Json())},
+                {"status", "missing"},
+                {"entries", Json::array()},
+                {"order", "append_in_source_order"},
+                {"resolution_status", "not_evaluated"}};
+    if (!a.contains("M556"))
+        return out;
+    out["status"] = "invalid";
+    if (!a["M556"].is_string())
+        return out;
+    const auto source = a["M556"].get<std::string>();
+    if (source.find('\0') != std::string::npos)
+        return out;
+    out["status"] = "decoded";
+    std::size_t pos = 0;
+    bool quoted = false;
+    while (pos < source.size()) {
+        // Native token boundaries skip spaces and tabs, not commas or newlines.
+        while (pos < source.size() && (source[pos] == ' ' || source[pos] == '\t'))
+            ++pos;
+        if (pos == source.size())
+            break;
+        const auto start = pos;
+        std::string value;
+        while (true) {
+            std::size_t slashes = 0;
+            while (pos < source.size() && source[pos] == '\\') {
+                ++slashes;
+                ++pos;
+            }
+            bool copy = true;
+            if (pos < source.size() && source[pos] == '"') {
+                if ((slashes & 1) == 0) {
+                    copy = false;
+                    if (quoted && pos + 1 < source.size() && source[pos + 1] == '"') {
+                        ++pos;
+                        copy = true;
+                    }
+                    // The native parser toggles even after a doubled quote.
+                    // This is not CSV or JSON escaping.
+                    quoted = !quoted;
+                }
+                slashes /= 2;
+            }
+            value.append(slashes, '\\');
+            if (pos == source.size() ||
+                (!quoted && (source[pos] == ' ' || source[pos] == '\t' || source[pos] == ',')))
+                break;
+            if (copy)
+                value.push_back(source[pos]);
+            ++pos;
+        }
+        out["entries"].push_back({{"append_index", out["entries"].size()},
+                                  {"source_byte_offset", start},
+                                  {"source_byte_count", pos - start},
+                                  {"source_fragment", source.substr(start, pos - start)},
+                                  {"value", value},
+                                  {"unterminated_quote", quoted}});
+        if (pos < source.size())
+            ++pos;
+    }
+    return out;
+}
 } // namespace
 Json material_parameter_semantics(const Json &a) {
     auto flags = number(a, "Flags", true);
@@ -155,6 +220,7 @@ Json material_map_semantics(const Json &a) {
         rows.push_back(std::move(row));
     }
     Json out = {{"type", type},
+                {"additional_texture_references", additional_texture_references(a)},
                 {"map_link", number(a, "map_link", true, true)},
                 {"enabled", boolean(a, "pattern_off", true)},
                 {"mapping_mode", mode},
@@ -320,6 +386,7 @@ Json material_layer_semantics(const Json &a) {
     t["argument_role"] = texture ? "texture_reference" : group ? "group_name" : "not_read";
     Json params = Json::object();
     if (texture) {
+        out["additional_texture_references"] = additional_texture_references(a);
         // These attributes are read for texture providers, not blend markers.
         for (const auto key : {"pattern_mapping", "pattern_scalemode", "texture_filter_type"})
             params[key] = number(a, key, true, true);
