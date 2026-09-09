@@ -9,7 +9,7 @@ add_library(p3d_reader STATIC src/core.cpp src/records.cpp src/command_metadata.
 # Only tinfl is linked; unused zlib wrappers otherwise require miniz.c in Debug builds.
 target_sources(p3d_reader PRIVATE src/layers.cpp src/bspline.cpp src/bspline_trim.cpp src/akima.cpp src/interpolation.cpp src/spiral.cpp src/spiral_fit.cpp)
 target_sources(p3d_reader PRIVATE src/loft_curve.cpp src/loft_open.cpp src/loft_close.cpp src/section_loft.cpp)
-target_sources(p3d_reader PRIVATE src/material_semantics.cpp)
+target_sources(p3d_reader PRIVATE src/material_semantics.cpp src/material_links.cpp)
 set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES COMPILE_DEFINITIONS MINIZ_NO_ZLIB_APIS)
 add_library(p3d::reader ALIAS p3d_reader)
 set_target_properties(p3d_reader PROPERTIES EXPORT_NAME reader)

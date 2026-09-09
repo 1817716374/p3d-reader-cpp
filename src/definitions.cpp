@@ -19,33 +19,39 @@ Json material_settings(const Json &tree) {
         return o;
     };
     Json maps = Json::array();
-    std::function<void(const Json &, const std::string &)> walk = [&](const Json &n,
-                                                                      const std::string &path) {
-        if (n["tag"] == "Map") {
-            auto &a = n["attributes"];
-            auto numeric = fields(a);
-            maps.push_back(
-                {{"index", maps.size()},
-                 {"xml_path", path},
-                 {"source_parameters", a},
-                 {"numeric_parameters", numeric},
-                 {"semantics", material_map_semantics(a)},
-                 {"filename", a.value("Filename", Json())},
-                 {"source_type", a.value("Type", Json())},
-                 {"source_pattern_off", numeric.value("pattern_off", Json())},
-                 {"source_projection_matrix_on", numeric.value("origin_uv_pro_matrix_on", Json())},
-                 {"uv_evaluation_status", "native_mapping_semantics_not_evaluated"}});
-        }
-        for (std::size_t i = 0; i < n["children"].size(); ++i) {
-            auto &c = n["children"][i];
-            walk(c, path + "/" + c["tag"].get<std::string>() + "[" + std::to_string(i) + "]");
-        }
-    };
-    walk(tree, "/" + tree["tag"].get<std::string>());
+    std::function<void(const Json &, const std::string &, unsigned)> walk =
+        [&](const Json &n, const std::string &path, unsigned depth) {
+            const auto tag = n["tag"].get<std::string>();
+            if (tag.size() == 3 && (tag[0] == 'M' || tag[0] == 'm') &&
+                (tag[1] == 'A' || tag[1] == 'a') && (tag[2] == 'P' || tag[2] == 'p')) {
+                auto &a = n["attributes"];
+                auto numeric = fields(a);
+                maps.push_back(
+                    {{"index", maps.size()},
+                     {"xml_path", path},
+                     {"native_table_member", depth == 1},
+                     {"source_parameters", a},
+                     {"numeric_parameters", numeric},
+                     {"semantics", material_map_semantics(a)},
+                     {"filename", a.value("Filename", Json())},
+                     {"source_type", a.value("Type", Json())},
+                     {"source_pattern_off", numeric.value("pattern_off", Json())},
+                     {"source_projection_matrix_on",
+                      numeric.value("origin_uv_pro_matrix_on", Json())},
+                     {"uv_evaluation_status", "native_mapping_semantics_not_evaluated"}});
+            }
+            for (std::size_t i = 0; i < n["children"].size(); ++i) {
+                auto &c = n["children"][i];
+                walk(c, path + "/" + c["tag"].get<std::string>() + "[" + std::to_string(i) + "]",
+                     depth + 1);
+            }
+        };
+    walk(tree, "/" + tree["tag"].get<std::string>(), 0);
     return {{"source_parameters", tree["attributes"]},
             {"numeric_parameters", fields(tree["attributes"])},
             {"semantics", material_parameter_semantics(tree["attributes"])},
             {"maps", maps},
+            {"map_bindings", material_map_bindings(maps)},
             {"shader_policy", "Native parameter flags and map roles; no conversion to another "
                               "renderer or color space."}};
 }

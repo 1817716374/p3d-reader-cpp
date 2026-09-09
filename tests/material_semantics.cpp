@@ -169,5 +169,139 @@ unsigned material_semantics_tests() {
     check(settings["semantics"]["parameters"]["glow_factor"]["value"] == 24 &&
               settings["maps"][0].contains("semantics"),
           "material settings integrates semantic views");
+    auto node = [](std::uint32_t type, std::int32_t link) {
+        return Json{{"native_table_member", true},
+                    {"semantics",
+                     {{"type", {{"status", "decoded"}, {"value", type}}},
+                      {"map_link", {{"status", "decoded"}, {"value", link}}}}}};
+    };
+    auto frame = material_map_semantics({{"pattern_proj_offset.x", "1"},
+                                         {"pattern_proj_offset.y", "2"},
+                                         {"pattern_proj_offset.z", "3"},
+                                         {"pattern_proj_angles.x", "4"},
+                                         {"pattern_proj_angles.y", "5"},
+                                         {"pattern_proj_angles.z", "6"},
+                                         {"pattern_proj_scale.x", "7"},
+                                         {"pattern_proj_scale.y", "8"},
+                                         {"pattern_proj_scale.z", "9"}});
+    check(frame["projection_frame"]["offset"]["value"] == Json({1, 2, 3}) &&
+              frame["projection_frame"]["angles"]["value"] == Json({4, 5, 6}) &&
+              frame["projection_frame"]["scale"]["value"] == Json({7, 8, 9}),
+          "projection frame components retain source order and scale");
+    Json maps = Json::array({node(1, 2), node(2, 31), node(31, 0), node(30, 1)});
+    auto binding = material_map_bindings(maps);
+    check(binding["status"] == "resolved" && binding["entries"][0]["terminal_map_index"] == 2 &&
+              binding["entries"][0]["texture_layers_mode"] == "native_shared",
+          "transitive native texture layer sharing");
+    check(binding["entries"][3]["texture_layers_source_map_index"] == 3 &&
+              binding["entries"][3]["texture_mapping_source_map_index"] == 2 &&
+              binding["entries"][3]["projection_frame_source_map_index"] == 2 &&
+              binding["entries"][3]["map_settings_source_map_index"] == 3,
+          "type30 retains local layers and map settings while inheriting mapping");
+    maps.push_back(node(31, 0));
+    binding = material_map_bindings(maps);
+    check(binding["entries"][2]["selection"] == "superseded" &&
+              binding["entries"][2]["replaced_by_map_index"] == 4 &&
+              binding["entries"][0]["terminal_map_index"] == 4,
+          "duplicate native type is replaced by later occurrence without deleting source");
+    maps = Json::array({node(1, 2), node(2, 7), node(3, 1)});
+    binding = material_map_bindings(maps);
+    check(binding["entries"][0]["status"] == "dangling_link_cleared" &&
+              binding["entries"][1]["status"] == "dangling_link_cleared" &&
+              binding["entries"][2]["terminal_map_index"] == 0,
+          "dangling chain cleanup follows signed type order rather than simultaneous clearing");
+    maps = Json::array({node(3, 2), node(2, 7), node(1, 3)});
+    binding = material_map_bindings(maps);
+    check(binding["entries"][2]["status"] == "dangling_link_cleared" &&
+              binding["entries"][1]["status"] == "dangling_link_cleared" &&
+              binding["entries"][0]["terminal_map_index"] == 1,
+          "cleanup independent of XML order and can resolve predecessor to newly cleared node");
+    maps = Json::array({node(UINT32_MAX, 9), node(1, -1)});
+    binding = material_map_bindings(maps);
+    check(binding["entries"][0]["native_type_key"] == -1 &&
+              binding["entries"][1]["terminal_map_index"] == 0 &&
+              binding["entries"][1]["status"] == "linked",
+          "uint XML types use signed native key order");
+    maps = Json::array({node(1, 1), node(2, 0), node(0, 1), node(3, 4), node(4, 3), node(5, 3)});
+    binding = material_map_bindings(maps);
+    check(binding["entries"][0]["status"] == "local" &&
+              binding["entries"][0]["normalized_link_type"] == 0 &&
+              binding["entries"][2]["selection"] == "ignored_zero_type",
+          "self references normalize and zero type is ignored");
+    for (unsigned i : {3, 4, 5})
+        check(binding["entries"][i]["status"] == "cyclic_link_chain" &&
+                  !binding["entries"][i].contains("terminal_map_index"),
+              "cycles and incoming chains cannot invent fallback");
+    maps = Json::array({node(1, 2), node(2, 0), node(3, 0)});
+    maps[1]["semantics"]["map_link"] = {{"status", "invalid"}, {"value", nullptr}};
+    maps[2]["semantics"]["map_link"] = {{"status", "missing"}, {"value", nullptr}};
+    binding = material_map_bindings(maps);
+    check(binding["status"] == "incomplete" &&
+              binding["entries"][0]["status"] == "invalid_link_chain" &&
+              binding["entries"][2]["status"] == "local",
+          "invalid links propagate while missing links use native zero");
+    Json nested = {
+        {"tag", "Material"},
+        {"attributes", Json::object()},
+        {"children",
+         Json::array(
+             {{{"tag", "mAp"},
+               {"attributes", {{"Type", "1"}, {"map_link", "2"}}},
+               {"children", Json::array()}},
+              {{"tag", "Container"},
+               {"attributes", Json::object()},
+               {"children", Json::array({{{"tag", "Map"},
+                                          {"attributes", {{"Type", "2"}, {"map_link", "0"}}},
+                                          {"children", Json::array()}}})}},
+              {{"tag", "Map"}, {"attributes", {{"Type", "3"}}}, {"children", Json::array()}}})}};
+    auto ns = material_settings(nested);
+    check(ns["maps"].size() == 3 &&
+              ns["map_bindings"]["entries"][0]["status"] == "dangling_link_cleared" &&
+              ns["map_bindings"]["entries"][1]["selection"] == "outside_native_table",
+          "ASCII case-insensitive native child tags do not flatten nested maps into the table");
+    // A separate traversal oracle reproduces the reader's sequential loop.
+    // This checks the linear reverse-propagation implementation against both
+    // chain directions, missing targets, cycles and several clearing orders.
+    std::uint32_t random = 0x97b43210u;
+    for (unsigned trial = 0; trial < 80; ++trial) {
+        std::vector<int> links(12);
+        maps = Json::array();
+        for (int i = 0; i < 12; ++i) {
+            random = random * 1664525u + 1013904223u;
+            links[i] = int(random % 16);
+            maps.push_back(node(i + 1, links[i]));
+            if (links[i] == i + 1)
+                links[i] = 0;
+        }
+        auto find = [&](int start) {
+            std::set<int> visited;
+            int at = start;
+            while (links[at]) {
+                if (!visited.insert(at).second)
+                    return -2;
+                at = links[at] - 1;
+                if (at >= 12)
+                    return -1;
+            }
+            return at;
+        };
+        for (int i = 0; i < 12; ++i)
+            if (find(i) == -1)
+                links[i] = 0;
+        binding = material_map_bindings(maps);
+        for (int i = 0; i < 12; ++i) {
+            auto terminal = find(i);
+            check(terminal == -2 ? binding["entries"][i]["status"] == "cyclic_link_chain"
+                                 : binding["entries"][i]["terminal_map_index"] == terminal,
+                  "native sequential lookup oracle matches binding graph");
+        }
+    }
+    maps = Json::array();
+    for (unsigned i = 1; i <= 4000; ++i)
+        maps.push_back(node(i, i + 1));
+    binding = material_map_bindings(maps);
+    check(binding["entries"][0]["terminal_map_index"] == 0 &&
+              binding["entries"][3999]["terminal_map_index"] == 3999,
+          "long ascending missing chain has bounded iterative cleanup");
     return checks;
 }

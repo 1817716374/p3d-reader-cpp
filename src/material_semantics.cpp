@@ -155,6 +155,7 @@ Json material_map_semantics(const Json &a) {
         rows.push_back(std::move(row));
     }
     Json out = {{"type", type},
+                {"map_link", number(a, "map_link", true, true)},
                 {"enabled", boolean(a, "pattern_off", true)},
                 {"mapping_mode", mode},
                 {"mapping_unit", unit},
@@ -163,6 +164,10 @@ Json material_map_semantics(const Json &a) {
                 {"rotation_degrees", number(a, "pattern_angle")},
                 {"scale_z", number(a, "scale_z")},
                 {"offset_z", number(a, "offset_z")},
+                {"projection_frame",
+                 {{"offset", vector(a, "pattern_proj_offset", "xyz")},
+                  {"angles", vector(a, "pattern_proj_angles", "xyz")},
+                  {"scale", vector(a, "pattern_proj_scale", "xyz")}}},
                 {"projection",
                  {{"enabled", boolean(a, "origin_uv_pro_matrix_on")},
                   {"source_rows", rows},
