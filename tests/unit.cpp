@@ -14,6 +14,7 @@ unsigned spiral_tests();
 unsigned section_loft_tests();
 unsigned material_semantics_tests();
 unsigned material_legacy_tests();
+unsigned material_resource_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2637,6 +2638,7 @@ int main() {
         checks += section_loft_tests();
         checks += material_semantics_tests();
         checks += material_legacy_tests();
+        checks += material_resource_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();

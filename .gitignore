@@ -12,6 +12,7 @@
 !/tests/section_loft.cpp
 !/tests/material_semantics.cpp
 !/tests/material_legacy.cpp
+!/tests/material_resource.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

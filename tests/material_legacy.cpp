@@ -158,9 +158,10 @@ unsigned material_legacy_tests() {
     auto single = tree;
     single["children"][0]["attributes"]["Filename"] = "boards.pma";
     settings = material_settings(single);
-    check(settings["maps"][0]["legacy_parameters"]["status"] == "unresolved_dispatch" &&
+    check(settings["maps"][0]["legacy_parameters"]["status"] == "decoded" &&
+              settings["maps"][0]["reader_path"]["provider_dispatch"]["preset"]["name"] == "boards" &&
               settings["maps"][0]["texture_layers"]["entries"][0]["legacy_parameters"]
                       ["reader_applicability"]["status"] == "skipped",
-          "single Map resource indirection is not bypassed by the legacy content parser");
+          "resolved single Map resource selects its preset while nested layer stays inactive");
     return checks;
 }

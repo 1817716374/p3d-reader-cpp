@@ -702,10 +702,11 @@ unsigned material_semantics_tests() {
             reader_tree({{"Type", "1"}, {"layer", "0"}, {"Filename", filename}}, packages));
         check(reader["maps"][0]["reader_path"]["branch"] == "single_provider" &&
                   reader["maps"][0]["reader_path"]["single_provider_type_before_preset"]
-                        ["reader_value"]
-                            .is_null() &&
-                  reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "unresolved",
-              "raw Map filename is not substituted for the resource service reference");
+                        ["reader_value"] == (std::string(filename) == "wood.pma" ? 2 : 1) &&
+                  reader["maps"][0]["reader_path"]["first_resource_reference"]["value"] ==
+                      filename &&
+                  reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "skipped",
+              "ordinary Map filenames pass through the default resource service unchanged");
     }
     for (const auto &root_attrs :
          {Json({{"material_version", "9"}}), Json({{"material_version", "bad"}})}) {

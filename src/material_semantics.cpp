@@ -395,6 +395,13 @@ Json material_reader_paths(const Json &tree, Json &maps) {
                 reader["branch"] = "single_provider";
                 layers = reader_applicability("skipped", "single_provider_branch");
                 extras = reader_applicability("read", "single_provider_branch");
+                auto reference = material_resource_reference(a.value("Filename", Json("")));
+                reference["source_keys"] = {"Filename"};
+                reference["source_status"] = a.contains("Filename") ? "present" : "missing";
+                reference["resource_created"] = a.contains("Filename");
+                const auto resource_path = texture_path_parts(reference["value"]);
+                reference["path_parts"] = resource_path;
+                reader["first_resource_reference"] = reference;
                 Json provider = {{"source_keys", Json::array()},
                                  {"status", "unresolved"},
                                  {"value", nullptr},
@@ -410,10 +417,14 @@ Json material_reader_paths(const Json &tree, Json &maps) {
                         provider["reader_value"] = 4;
                         provider["normalization"] = "six_to_four";
                     } else if (provider["value"] == 0) {
-                        provider["reader_value"] = a.contains("Filename") ? Json() : Json(1);
-                        provider["normalization"] = a.contains("Filename")
-                                                        ? "requires_first_resource_extension"
-                                                        : "empty_resource_list_uses_image";
+                        const auto resource_pma =
+                            texture_name_equal(resource_path["extension"], "pma");
+                        provider["reader_value"] =
+                            resource_pma < 0 ? Json() : Json(resource_pma ? 2 : 1);
+                        provider["normalization"] =
+                            !a.contains("Filename") ? "empty_resource_list_uses_image"
+                            : resource_pma < 0      ? "requires_first_resource_extension"
+                                                    : "first_resource_extension";
                     }
                 }
                 if (type["value"] == 30) {
@@ -421,15 +432,7 @@ Json material_reader_paths(const Json &tree, Json &maps) {
                     provider["normalization"] = "map_type_thirty_override";
                 }
                 reader["single_provider_type_before_preset"] = provider;
-                // Unlike the layered-reader argument, Map.Filename is passed
-                // through a resource service before the procedural extension
-                // test. Do not substitute the raw reference for that result.
-                auto dispatch = a.contains("Filename")
-                                    ? Json{{"status", "unresolved"},
-                                           {"branch", nullptr},
-                                           {"reason", "requires_first_resource_reference"},
-                                           {"provider_type_after_dispatch", nullptr}}
-                                    : texture_provider_dispatch(provider["reader_value"], path);
+                auto dispatch = texture_provider_dispatch(provider["reader_value"], resource_path);
                 reader["provider_dispatch"] = dispatch;
                 map["procedures"]["reader_applicability"] = package_applicability(dispatch, "M633");
                 map["replicators"]["reader_applicability"] =
