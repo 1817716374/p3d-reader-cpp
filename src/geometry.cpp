@@ -62,6 +62,80 @@ static void affine(const Matrix4 &m) {
             require(std::isfinite(x), "nonfinite affine transform");
     require(m[3] == std::array<double, 4>{0, 0, 0, 1}, "nonaffine transform");
 }
+bool reverses_winding(const Matrix4 &m) {
+    // Positive row scaling preserves orientation and avoids overflow/underflow
+    // of the determinant for uniformly large/small instance scales.
+    long double a[3][3];
+    for (unsigned i = 0; i < 3; ++i) {
+        long double bound = 0;
+        for (unsigned j = 0; j < 3; ++j) {
+            if (!std::isfinite(m[i][j]))
+                return false;
+            bound = std::max(bound, std::abs(static_cast<long double>(m[i][j])));
+        }
+        if (bound == 0)
+            return false;
+        for (unsigned j = 0; j < 3; ++j)
+            a[i][j] = m[i][j] / bound;
+    }
+    return a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+               a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+               a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]) <
+           0;
+}
+// Solve the inverse once per placement. Long-double elimination avoids a
+// determinant threshold that would reject small but invertible model scales.
+static void transform_normals(Geometry &g, const Matrix4 &m, std::size_t start = 0) {
+    if (start == g.normals.size())
+        return;
+    long double a[3][6]{};
+    bool valid = true;
+    for (unsigned i = 0; i < 3; ++i) {
+        for (unsigned j = 0; j < 3; ++j)
+            a[i][j] = m[i][j];
+        a[i][i + 3] = 1;
+    }
+    for (unsigned col = 0; col < 3 && valid; ++col) {
+        unsigned pivot = col;
+        for (unsigned row = col + 1; row < 3; ++row)
+            if (std::abs(a[row][col]) > std::abs(a[pivot][col]))
+                pivot = row;
+        if (a[pivot][col] == 0) {
+            valid = false;
+            break;
+        }
+        for (unsigned j = 0; j < 6; ++j)
+            std::swap(a[col][j], a[pivot][j]);
+        const auto divisor = a[col][col];
+        for (auto &v : a[col])
+            v /= divisor;
+        for (unsigned row = 0; row < 3; ++row) {
+            if (row == col)
+                continue;
+            const auto factor = a[row][col];
+            for (unsigned j = 0; j < 6; ++j)
+                a[row][j] -= factor * a[col][j];
+        }
+    }
+    for (const auto &row : a)
+        for (auto value : row)
+            valid &= std::isfinite(value);
+    for (auto it = g.normals.begin() + start; it != g.normals.end(); ++it) {
+        auto &normal = *it;
+        if (!normal)
+            continue;
+        Point3 result{};
+        bool finite = valid;
+        for (unsigned i = 0; i < 3 && finite; ++i) {
+            long double value = 0;
+            for (unsigned j = 0; j < 3; ++j)
+                value += a[j][i + 3] * (*normal)[j];
+            result[i] = static_cast<double>(value);
+            finite &= std::isfinite(result[i]);
+        }
+        normal = finite ? std::optional<Point3>(result) : std::nullopt;
+    }
+}
 unsigned Tessellation::segments(double radius, double sweep) const {
     require(std::isfinite(radius) && std::isfinite(sweep), "nonfinite curve extent");
     radius = std::abs(radius);
@@ -212,6 +286,8 @@ static void append(Geometry &g, const std::vector<Point3> &p, const std::vector<
         g.faces.push_back(tri);
         g.face_uvs.push_back(uv ? uv->at(i) : std::nullopt);
         g.face_source_polygons.push_back(src ? src->at(i) : std::nullopt);
+        g.face_normal_indices.push_back(std::nullopt);
+        g.face_uv_indices.push_back(std::nullopt);
     }
 }
 static void loft(Geometry &g, const std::vector<std::vector<Point3>> &sections, bool capped,
@@ -413,6 +489,12 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 }
                 if (op == 25) {
                     auto points = d["points"].get<std::vector<Point3>>();
+                    Geometry channels;
+                    channels.source_normals = d["normals"].get<std::vector<Point3>>();
+                    for (auto normal : channels.source_normals)
+                        channels.normals.push_back(normal);
+                    channels.uvs = d["uvs"].get<std::vector<Point2>>();
+                    transform_normals(channels, matrix);
                     std::vector<Triangle> faces;
                     std::vector<std::optional<std::array<Point2, 3>>> uvs;
                     std::vector<std::optional<std::uint32_t>> sources;
@@ -430,6 +512,22 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         for (auto tri : tris) {
                             faces.push_back({ids[tri[0]], ids[tri[1]], ids[tri[2]]});
                             sources.push_back(unsigned(i));
+                            for (const auto &channel :
+                                 {std::pair<const char *, std::vector<std::optional<Triangle>> *>(
+                                      "normal_indices", &channels.face_normal_indices),
+                                  {"uv_indices", &channels.face_uv_indices}}) {
+                                if (poly[channel.first].empty())
+                                    channel.second->push_back(std::nullopt);
+                                else {
+                                    Triangle indices;
+                                    for (unsigned j = 0; j < 3; ++j)
+                                        indices[j] = static_cast<std::uint32_t>(
+                                            std::llabs(
+                                                poly[channel.first][tri[j]].get<std::int64_t>()) -
+                                            1);
+                                    channel.second->push_back(indices);
+                                }
+                            }
                             if (poly["uv_indices"].empty())
                                 uvs.push_back(std::nullopt);
                             else {
@@ -445,6 +543,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         }
                     }
                     append(g, world(points), faces, &uvs, &sources);
+                    channels.faces = std::move(faces);
+                    merge_mesh_channels(g, channels, first_face);
                     if (d["trailing_channels_status"] == "opaque")
                         g.unknown.push_back({{"opcode", 25},
                                              {"offset", cmd["offset"]},
@@ -747,12 +847,15 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
         } catch (const std::exception &e) {
             g.unknown.push_back({{"opcode", op}, {"offset", cmd["offset"]}, {"reason", e.what()}});
         }
-        bool mirrored = determinant(matrix) < 0;
+        bool mirrored = reverses_winding(matrix);
         if (mirrored)
             for (auto i = first_face; i < g.faces.size(); ++i) {
                 std::swap(g.faces[i][1], g.faces[i][2]);
                 if (g.face_uvs[i])
                     std::swap((*g.face_uvs[i])[1], (*g.face_uvs[i])[2]);
+                for (auto *indices : {&g.face_normal_indices, &g.face_uv_indices})
+                    if ((*indices)[i])
+                        std::swap((*(*indices)[i])[1], (*(*indices)[i])[2]);
             }
         for (auto item : std::vector<std::tuple<std::string, std::size_t, std::size_t>>{
                  {"faces", first_face, g.faces.size()},
@@ -861,12 +964,49 @@ Geometry reconstruct_native(const Json &n, const Tessellation &policy) {
     }
     return g;
 }
+void merge_mesh_channels(Geometry &target, const Geometry &source, std::size_t first_face) {
+    require(first_face <= target.faces.size() &&
+                source.faces.size() <= target.faces.size() - first_face,
+            "mesh channel face range");
+    require(source.normals.size() == source.source_normals.size(), "mesh normal source pool size");
+    const auto normal_base = target.normals.size(), uv_base = target.uvs.size();
+    require(normal_base + source.normals.size() <= UINT32_MAX &&
+                uv_base + source.uvs.size() <= UINT32_MAX,
+            "mesh channel index capacity");
+    auto validate_indices = [&](const auto &indices, std::size_t count) {
+        require(indices.empty() || indices.size() == source.faces.size(),
+                "mesh channel corner count");
+        for (const auto &tri : indices)
+            if (tri)
+                for (auto index : *tri)
+                    require(index < count, "mesh channel index range");
+    };
+    validate_indices(source.face_normal_indices, source.normals.size());
+    validate_indices(source.face_uv_indices, source.uvs.size());
+    auto append_indices = [&](auto &dest, const auto &indices, std::size_t base) {
+        dest.resize(target.faces.size());
+        for (std::size_t i = 0; i < source.faces.size(); ++i) {
+            auto value = indices.empty() ? std::optional<Triangle>() : indices[i];
+            if (value)
+                for (auto &index : *value) {
+                    index += static_cast<std::uint32_t>(base);
+                }
+            dest[first_face + i] = value;
+        }
+    };
+    append_indices(target.face_normal_indices, source.face_normal_indices, normal_base);
+    append_indices(target.face_uv_indices, source.face_uv_indices, uv_base);
+    target.normals.insert(target.normals.end(), source.normals.begin(), source.normals.end());
+    target.source_normals.insert(target.source_normals.end(), source.source_normals.begin(),
+                                 source.source_normals.end());
+    target.uvs.insert(target.uvs.end(), source.uvs.begin(), source.uvs.end());
+}
 void merge_geometry(Geometry &target, const Geometry &source, const Matrix4 &m, bool parent) {
     affine(m);
     std::map<std::string, std::size_t> offsets = {{"faces", target.faces.size()},
                                                   {"lines", target.lines.size()},
                                                   {"texts", target.texts.size()}};
-    bool mirror = determinant(m) < 0;
+    bool mirror = reverses_winding(m);
     std::vector<Point3> points;
     for (auto p : source.vertices)
         points.push_back(transform(m, p));
@@ -879,6 +1019,14 @@ void merge_geometry(Geometry &target, const Geometry &source, const Matrix4 &m, 
                 std::swap((*uv[i])[1], (*uv[i])[2]);
         }
     append(target, points, faces, &uv, &source.face_source_polygons);
+    const auto normal_base = target.normals.size();
+    merge_mesh_channels(target, source, offsets.at("faces"));
+    transform_normals(target, m, normal_base);
+    if (mirror)
+        for (auto *indices : {&target.face_normal_indices, &target.face_uv_indices})
+            for (auto i = offsets.at("faces"); i < target.faces.size(); ++i)
+                if ((*indices)[i])
+                    std::swap((*(*indices)[i])[1], (*(*indices)[i])[2]);
     for (auto &line : source.lines) {
         std::vector<Point3> p;
         for (auto v : line)
@@ -916,6 +1064,12 @@ Json geometry_json(const Geometry &g) {
         uv.push_back(v ? Json(*v) : Json());
     for (auto &v : g.face_source_polygons)
         src.push_back(v ? Json(*v) : Json());
+    auto optional_values = [](const auto &values) {
+        Json result = Json::array();
+        for (const auto &value : values)
+            result.push_back(value ? Json(*value) : Json());
+        return result;
+    };
     return {{"vertices", g.vertices},
             {"faces", g.faces},
             {"lines", g.lines},
@@ -924,6 +1078,11 @@ Json geometry_json(const Geometry &g) {
             {"notes", g.notes},
             {"primitive_ranges", g.primitive_ranges},
             {"face_uvs", uv},
+            {"source_normals", g.source_normals},
+            {"normals", optional_values(g.normals)},
+            {"uvs", g.uvs},
+            {"face_normal_indices", optional_values(g.face_normal_indices)},
+            {"face_uv_indices", optional_values(g.face_uv_indices)},
             {"face_source_polygons", src}};
 }
 } // namespace p3d

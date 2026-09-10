@@ -321,6 +321,13 @@ struct Geometry {
          primitive_ranges = Json::array();
     std::vector<std::optional<std::array<Point2, 3>>> face_uvs;
     std::vector<std::optional<std::uint32_t>> face_source_polygons;
+    // Independent source pools, concatenated without deduplication. Normal
+    // values use inverse-transpose placement without unit normalization.
+    // source_normals retain the original mesh values, including unused entries.
+    std::vector<Point3> source_normals;
+    std::vector<std::optional<Point3>> normals;
+    std::vector<Point2> uvs;
+    std::vector<std::optional<Triangle>> face_normal_indices, face_uv_indices;
 };
 struct GeometryDefinition {
     std::string source_key;

@@ -16,6 +16,7 @@ unsigned material_semantics_tests();
 unsigned material_legacy_tests();
 unsigned material_resource_tests();
 unsigned material_numeric_tests();
+unsigned mesh_channel_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2641,6 +2642,7 @@ int main() {
         checks += material_legacy_tests();
         checks += material_resource_tests();
         checks += material_numeric_tests();
+        checks += mesh_channel_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();

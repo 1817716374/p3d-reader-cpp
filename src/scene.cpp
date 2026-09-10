@@ -187,6 +187,8 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                         geo.vertices = t["vertices"].get<std::vector<Point3>>();
                         geo.faces = t["faces"].get<std::vector<Triangle>>();
                         geo.face_uvs.resize(geo.faces.size());
+                        geo.face_normal_indices.resize(geo.faces.size());
+                        geo.face_uv_indices.resize(geo.faces.size());
                         geo.face_source_polygons.resize(geo.faces.size());
                         geo.primitive_ranges.push_back({{"channel", "faces"},
                                                         {"start", 0},
@@ -702,6 +704,7 @@ Json NativeScene::expanded() const {
                 geo.faces.push_back(f);
             }
             geo.face_uvs.insert(geo.face_uvs.end(), placed.face_uvs.begin(), placed.face_uvs.end());
+            merge_mesh_channels(geo, placed, offsets.at("faces"));
             geo.face_source_polygons.insert(geo.face_source_polygons.end(),
                                             placed.face_source_polygons.begin(),
                                             placed.face_source_polygons.end());
@@ -825,7 +828,7 @@ void NativeScene::for_each_primitive(
                                                  : 0;
                 require(start <= size && count <= size - start, "primitive range extent");
                 v.winding_reversed =
-                    inst.apply_placement && determinant(inst.matrix) < 0 && channel == "faces";
+                    inst.apply_placement && reverses_winding(inst.matrix) && channel == "faces";
                 v.style = inst.style;
                 v.style.update(range["style"]);
                 v.appearance = {
