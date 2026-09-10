@@ -1,5 +1,110 @@
 #include "internal.hpp"
 namespace p3d {
+namespace {
+// This consumer uses zero delimiters even when the mesh declares a fixed width.
+// Keep its view separate from the source polygons used for ordinary geometry.
+struct FaceLayout {
+    std::size_t faces = 0, corners = 0, trailing_corners = 0;
+    bool matches = true, negative = false;
+};
+FaceLayout consumer_layout(const Json &indices, const Json &polygons) {
+    FaceLayout result;
+    std::size_t start = 0, source = 0;
+    for (std::size_t end = 0; end < indices.size(); ++end) {
+        if (indices[end] != 0)
+            continue;
+        if (end > start) {
+            while (source < polygons.size() && polygons[source]["point_indices"].empty())
+                ++source;
+            if (source >= polygons.size() ||
+                polygons[source]["point_indices"].size() != end - start)
+                result.matches = false;
+            for (std::size_t i = start; i < end; ++i) {
+                result.negative |= indices[i].get<std::int64_t>() < 0;
+                if (result.matches && indices[i] != polygons[source]["point_indices"][i - start])
+                    result.matches = false;
+            }
+            ++source;
+            ++result.faces;
+            result.corners += end - start;
+        }
+        start = end + 1;
+    }
+    while (source < polygons.size() && polygons[source]["point_indices"].empty())
+        ++source;
+    result.trailing_corners = indices.size() - start;
+    result.matches &= source == polygons.size() && result.trailing_corners == 0;
+    return result;
+}
+Json native_mesh_routing(const Json &channels, const FaceLayout &layout, const Json &polygons) {
+    const auto &materials = channels["face_material_ids"];
+    const auto &groups = channels["face_smoothing_groups"];
+    Json out = {{"profile", "bimbase_2025_triangulate2"},
+                {"evaluation", "input_routing_only"},
+                {"status", "mapped"},
+                {"polygon_layout", "nonempty_zero_terminated"},
+                {"polygon_count", layout.faces},
+                {"corner_count", layout.corners},
+                {"ignored_unterminated_corner_count", layout.trailing_corners},
+                {"source_polygon_layout_matches", layout.matches},
+                {"material_copy_count_source", "face_smoothing_groups_count"},
+                {"requested_material_copy_count", groups.size()},
+                {"polygons", Json::array()}};
+    // Model only bounded source reads. The native routine does not check the
+    // material list length before copying the smoothing-group count of IDs.
+    if (channels["status"] != "decoded")
+        out["status"] = "unavailable_extension";
+    else if (materials.empty())
+        out["status"] = "no_face_materials";
+    else if (!layout.faces)
+        out["status"] = "no_terminated_faces";
+    else if (layout.negative)
+        out["status"] = "unsafe_signed_point_lookup";
+    else if (channels["face_uv_points"].size() != layout.corners)
+        out["status"] = "face_uv_count_mismatch";
+    else if (groups.size() > materials.size())
+        out["status"] = "unsafe_material_copy";
+    if (out["status"] != "mapped")
+        return out;
+    bool smoothing = false;
+    if (groups.size() == layout.faces)
+        for (const auto &group : groups)
+            smoothing |= group.get<std::int32_t>() > 0;
+    out["uv_source"] = "face_uv_points";
+    out["explicit_normals_used"] = false;
+    out["normal_mode"] = smoothing ? "smoothing_groups" : "flat_triangles";
+    out["normal_rule"] = {{"group_comparison", "signed_integer_equality"},
+                          {"zero_group", "flat_triangles"},
+                          {"weighting", "unit_triangle_normals"},
+                          {"normalize_sum", true},
+                          {"position_comparison", "componentwise_tolerance"},
+                          {"position_tolerance", 1e-7}};
+    out["copied_material_count"] = groups.size();
+    out["unused_source_material_count"] = materials.size() - groups.size();
+    out["discarded_copied_material_count"] =
+        groups.size() > layout.faces ? groups.size() - layout.faces : 0;
+    out["zero_padded_material_count"] =
+        layout.faces > groups.size() ? layout.faces - groups.size() : 0;
+    // The consumer's polygons remain in their own order if they do not match
+    // fixed-width source polygons; never guess a triangle correspondence.
+    std::size_t source = 0;
+    for (std::size_t face = 0; face < layout.faces; ++face) {
+        Json source_polygon = nullptr;
+        if (layout.matches) {
+            while (polygons[source]["point_indices"].empty())
+                ++source;
+            source_polygon = source++;
+        }
+        const bool copied = face < groups.size();
+        out["polygons"].push_back(
+            {{"source_polygon", source_polygon},
+             {"material_id", copied ? materials[face] : Json(std::uint64_t(0))},
+             {"source_material_index", copied ? Json(face) : Json()},
+             {"normal_group", smoothing && groups[face] != 0 ? groups[face] : Json()}});
+    }
+    return out;
+}
+} // namespace
 Json decode_mesh_channels(const Bytes &b, const Json &arrays, const Json &polygons,
                           std::uint32_t num_per_face) {
     Json out = {{"status", "decoded"},
@@ -98,12 +203,14 @@ Json decode_mesh_channels(const Bytes &b, const Json &arrays, const Json &polygo
         }
     }
     auto complete = [&](unsigned i) { return out["fields"][i]["status"] == "decoded"; };
+    const auto layout = consumer_layout(arrays[0], polygons);
+    out["native_triangulation"] = native_mesh_routing(out, layout, polygons);
     auto state = [&](unsigned i, std::size_t expected) -> std::string {
         if (!complete(i))
             return out["fields"][i]["status"] == "omitted" ? "absent" : "unavailable";
         if (out[names[i]].empty())
             return "absent";
-        if (num_per_face > 1)
+        if (num_per_face > 1 && !layout.matches)
             return "not_evaluated_for_fixed_width";
         return out[names[i]].size() == expected ? "mapped" : "count_mismatch";
     };
@@ -175,6 +282,11 @@ Json mesh_triangle_channels(const Json &channels,
                             const std::vector<Triangle> &corners) {
     require(polygons.size() == corners.size(), "mesh source corner count");
     Json triangles = Json::array();
+    std::map<std::size_t, const Json *> native_polygons;
+    if (channels.contains("native_triangulation"))
+        for (const auto &poly : channels["native_triangulation"]["polygons"])
+            if (!poly["source_polygon"].is_null())
+                native_polygons.emplace(poly["source_polygon"].get<std::size_t>(), &poly);
     for (std::size_t i = 0; i < corners.size(); ++i) {
         require(polygons[i].has_value(), "mesh source polygon missing");
         const auto polygon = *polygons[i];
@@ -186,6 +298,9 @@ Json mesh_triangle_channels(const Json &channels,
             binding = channels["bindings"]["polygons"].at(polygon);
         binding["source_polygon"] = polygon;
         binding["source_corners"] = corners[i];
+        auto native = native_polygons.find(polygon);
+        if (native != native_polygons.end())
+            binding["native_triangulation"] = *native->second;
         for (const auto *name : {"color_indices", "face_uv_point_indices"}) {
             auto values = binding[name];
             if (!values.is_null()) {

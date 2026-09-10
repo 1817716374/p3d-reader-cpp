@@ -114,6 +114,69 @@ unsigned mesh_extension_tests() {
               triangles[1]["face_uv_point_indices"] == Json({3, 4, 5}),
           "triangle bindings retain full source material IDs and corner identity");
     check((*g.face_uvs[0])[0] == Point2{0, 0}, "additional face UV does not overwrite primary UV");
+    auto native = c["native_triangulation"];
+    check(native["status"] == "mapped" && native["uv_source"] == "face_uv_points" &&
+              native["normal_mode"] == "smoothing_groups" &&
+              native["explicit_normals_used"] == false,
+          "native triangulation selects additional UV and generated normals");
+    check(native["polygons"][0]["normal_group"] == -7 &&
+              native["polygons"][1]["normal_group"] == 3 &&
+              native["normal_rule"]["group_comparison"] == "signed_integer_equality" &&
+              native["normal_rule"]["position_tolerance"] == 1e-7,
+          "one positive group activates exact signed group matching including negative groups");
+    check(triangles[1]["native_triangulation"]["material_id"] ==
+              native["polygons"][1]["material_id"],
+          "native material routing follows source polygon into triangles");
+    auto route = [&](const std::vector<std::int32_t> &groups,
+                     const std::vector<std::uint64_t> &materials, std::size_t uv_count = 6) {
+        Bytes data(12);
+        put(data, std::uint32_t(uv_count));
+        for (std::size_t i = 0; i < uv_count * 2; ++i)
+            put(data, double(i));
+        array(data, groups);
+        array(data, materials);
+        return command(data)["decoded"]["mesh_channels"];
+    };
+    auto no_groups = route({}, {81, 82});
+    check(no_groups["bindings"]["polygons"][0]["material_id"] == 81 &&
+              no_groups["native_triangulation"]["polygons"][0]["material_id"] == 0 &&
+              no_groups["native_triangulation"]["polygons"][0]["source_material_index"].is_null() &&
+              no_groups["native_triangulation"]["zero_padded_material_count"] == 2 &&
+              no_groups["native_triangulation"]["unused_source_material_count"] == 2,
+          "source material association differs from native zero padding when no groups exist");
+    auto short_groups = route({7}, {81, 82})["native_triangulation"];
+    check(short_groups["normal_mode"] == "flat_triangles" &&
+              short_groups["polygons"][0]["material_id"] == 81 &&
+              short_groups["polygons"][1]["material_id"] == 0 &&
+              short_groups["copied_material_count"] == 1,
+          "short group list copies only its count of materials and disables smoothing");
+    auto long_groups = route({7, 8, 9}, {81, 82, 83, 84})["native_triangulation"];
+    check(long_groups["normal_mode"] == "flat_triangles" && long_groups["polygons"].size() == 2 &&
+              long_groups["discarded_copied_material_count"] == 1 &&
+              long_groups["unused_source_material_count"] == 1,
+          "native copied materials are resized to face count after bounded copying");
+    auto unsafe = route({7, 8, 9}, {81, 82})["native_triangulation"];
+    check(unsafe["status"] == "unsafe_material_copy" && unsafe["polygons"].empty(),
+          "native out-of-range material copy is diagnosed without reading or inventing values");
+    for (auto groups : {std::vector<std::int32_t>{0, 0}, std::vector<std::int32_t>{-7, -7}}) {
+        auto r = route(groups, {81, 82})["native_triangulation"];
+        check(r["normal_mode"] == "flat_triangles" && r["polygons"][0]["normal_group"].is_null(),
+              "zero or only negative groups do not activate native smoothing");
+    }
+    auto mixed = route({0, 7}, {81, 82})["native_triangulation"];
+    check(mixed["normal_mode"] == "smoothing_groups" &&
+              mixed["polygons"][0]["normal_group"].is_null() &&
+              mixed["polygons"][1]["normal_group"] == 7,
+          "zero-group triangles stay flat when another group activates smoothing");
+    check(route({1, 2}, {})["native_triangulation"]["status"] == "no_face_materials" &&
+              route({1, 2}, {81, 82}, 5)["native_triangulation"]["status"] ==
+                  "face_uv_count_mismatch",
+          "native path requires both face materials and complete corner UVs");
+    auto signed_arrays = d["index_arrays"];
+    signed_arrays[0][0] = -1;
+    check(decode_mesh_channels(extra, signed_arrays, d["polygons"],
+                               0)["native_triangulation"]["status"] == "unsafe_signed_point_lookup",
+          "native direct point lookup does not silently adopt absolute-value source indexing");
     auto mirror = identity();
     mirror[0][0] = -1;
     Geometry placed, twice;
@@ -202,6 +265,30 @@ unsigned mesh_extension_tests() {
               channels(fixed_ext)["source"]["bindings"]["face_uv_status"] ==
                   "not_evaluated_for_fixed_width",
           "fixed-width extension grouping does not borrow zero-terminated consumer assumptions");
+    check(
+        channels(fixed_ext)["source"]["native_triangulation"]["status"] == "no_terminated_faces" &&
+            channels(
+                fixed_ext)["source"]["native_triangulation"]["ignored_unterminated_corner_count"] ==
+                6,
+        "native face getter ignores an unterminated fixed-width index sequence");
+    auto padded_ext = command(extra);
+    auto padded_ext_bytes = prefix();
+    padded_ext_bytes[0] = 4;
+    padded_ext_bytes.insert(padded_ext_bytes.end(), extra.begin(), extra.end());
+    padded_ext["body"] = rawbytes(padded_ext_bytes);
+    padded_ext["decoded"] = command_fields(25, padded_ext_bytes);
+    auto padded_ext_geo = reconstruct(Json::array({padded_ext}), {});
+    check(padded_ext_geo.unknown.empty() && padded_ext_geo.faces.size() == 2 &&
+              channels(padded_ext_geo)["source"]["bindings"]["face_uv_status"] == "mapped" &&
+              channels(padded_ext_geo)["triangles"] == triangles,
+          "zero-padded fixed-width faces share the confirmed native corner and material layout");
+    // Different consumer segmentation must not be assigned to source triangles.
+    auto misleading_arrays = d["index_arrays"];
+    misleading_arrays[0] = {1, 0, 2, 0, 3, 0, 4, 0};
+    auto misleading = decode_mesh_channels(extra, misleading_arrays, d["polygons"], 4);
+    check(misleading["bindings"]["face_uv_status"] == "not_evaluated_for_fixed_width" &&
+              misleading["native_triangulation"]["source_polygon_layout_matches"] == false,
+          "more zero-delimited faces than source polygons are bounded and kept separate");
     // Name payload and later fields remain locatable even for invalid text.
     Bytes name;
     put(name, std::uint32_t(0));
