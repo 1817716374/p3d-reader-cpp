@@ -234,6 +234,7 @@ Json decode_mesh_channels(const Bytes &b, const Json &arrays, const Json &polygo
         Json binding = {{"color_indices", nullptr},
                         {"face_uv_point_indices", nullptr},
                         {"material_id", nullptr},
+                        {"source_material_index", nullptr},
                         {"smoothing_group", nullptr}};
         const auto count = poly["point_indices"].size();
         if (count) {
@@ -257,8 +258,10 @@ Json decode_mesh_channels(const Bytes &b, const Json &arrays, const Json &polygo
                     indices.push_back(corner + i);
                 binding["face_uv_point_indices"] = std::move(indices);
             }
-            if (bindings["material_id_status"] == "mapped")
+            if (bindings["material_id_status"] == "mapped") {
                 binding["material_id"] = out["face_material_ids"][face];
+                binding["source_material_index"] = face;
+            }
             if (bindings["smoothing_group_status"] == "mapped")
                 binding["smoothing_group"] = out["face_smoothing_groups"][face];
             ++face;
@@ -293,6 +296,7 @@ Json mesh_triangle_channels(const Json &channels,
         Json binding = {{"color_indices", nullptr},
                         {"face_uv_point_indices", nullptr},
                         {"material_id", nullptr},
+                        {"source_material_index", nullptr},
                         {"smoothing_group", nullptr}};
         if (!channels["bindings"]["polygons"].empty())
             binding = channels["bindings"]["polygons"].at(polygon);

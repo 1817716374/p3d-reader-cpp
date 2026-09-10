@@ -344,6 +344,12 @@ struct SceneElement {
     Json metadata;
     std::vector<GeometryInstance> instances;
 };
+struct MeshMaterialReference {
+    std::uint64_t material_id = 0;
+    // Indices into NativeScene::metadata["materials"]["definitions"].
+    std::vector<std::size_t> candidates;
+    std::string status;
+};
 struct PrimitiveView {
     std::size_t element_index, instance_index, definition_index;
     const Geometry *geometry = nullptr;
@@ -353,6 +359,9 @@ struct PrimitiveView {
     Json style, appearance;
     std::vector<std::size_t> material_candidates;
     std::string material_status, topology, uv_status;
+    // One entry per source face_material_ids item; duplicates and order survive.
+    // These are references, not the result of final appearance inheritance.
+    std::vector<MeshMaterialReference> mesh_material_references;
 };
 struct NativeScene {
     std::vector<std::shared_ptr<const GeometryDefinition>> definitions;

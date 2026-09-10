@@ -384,5 +384,84 @@ unsigned mesh_extension_tests() {
               channels(def->geometry) == channels(g),
           "expanded scene retains independent face material and corner metadata without mutating "
           "definition");
+    check(channels(g)["triangles"][1]["source_material_index"] == 1 &&
+              channels(placed)["triangles"][1]["source_material_index"] == 1,
+          "source material list index survives placement and triangle routing");
+    const auto large_id = UINT64_MAX - 123;
+    scene.metadata["materials"]["definitions"] =
+        Json::array({{{"scope", "model:1"}, {"id", large_id}, {"base_color_rgb", {1., 0., 0.}}},
+                     {{"scope", "global"}, {"id", large_id}, {"base_color_rgb", {0., 1., 0.}}},
+                     {{"scope", "model:2"}, {"id", large_id}, {"base_color_rgb", {0., 0., 1.}}},
+                     {{"scope", "global"}, {"id", 0}}});
+    // One shared geometry definition is used by elements in distinct model scopes.
+    scene.elements[0].instances[0].style = {{"material_id", 91}};
+    auto second = scene.elements[0];
+    second.metadata["model_id"] = 2;
+    scene.elements.push_back(second);
+    auto third = second;
+    third.metadata["model_id"] = 3;
+    scene.elements.push_back(third);
+    const auto original_range = def->geometry.primitive_ranges;
+    auto scoped_output = scene.expanded();
+    std::size_t visits = 0;
+    scene.for_each_primitive([&](const PrimitiveView &view) {
+        ++visits;
+        const auto &refs = view.mesh_material_references;
+        auto expected = view.element_index == 0 ? 0u : view.element_index == 1 ? 2u : 1u;
+        check(refs.size() == 2 && refs[0].material_id == 0 && refs[0].status == "unassigned" &&
+                  refs[0].candidates.empty(),
+              "zero face material stays unassigned even if a zero-ID definition exists");
+        check(refs[1].material_id == large_id && refs[1].status == "resolved" &&
+                  refs[1].candidates == std::vector<std::size_t>{expected},
+              "face material resolves in each instance model scope before global scope");
+        const auto &expanded_ref =
+            scoped_output["elements"][view.element_index]["primitive_ranges"][view.instance_index]
+                         ["mesh_material_references"][1];
+        check(expanded_ref["material_id"] == large_id && expanded_ref["status"] == refs[1].status &&
+                  expanded_ref["candidates"] == Json(refs[1].candidates),
+              "expanded and borrowed views agree on mesh material candidates");
+        check(view.instance_index != 0 ||
+                  (view.material_status == "missing" && view.style["material_id"] == 91 &&
+                   view.appearance["material_id"] == 91),
+              "resolved face references do not silently override unresolved range material");
+    });
+    check(visits == 6 && def->geometry.primitive_ranges == original_range,
+          "reference lookup preserves shared geometry and visits all model instances");
+    scene.metadata["materials"]["definitions"].push_back(
+        scene.metadata["materials"]["definitions"][0]);
+    scene.for_each_primitive([&](const PrimitiveView &view) {
+        if (view.element_index == 0)
+            check(view.mesh_material_references[1].status == "ambiguous" &&
+                      view.mesh_material_references[1].candidates ==
+                          std::vector<std::size_t>({0, 4}),
+                  "ambiguous local face materials retain every candidate without global fallback");
+    });
+    scene.metadata["materials"]["definitions"] = Json::array();
+    scene.for_each_primitive([&](const PrimitiveView &view) {
+        check(view.mesh_material_references[1].status == "missing" &&
+                  view.mesh_material_references[1].candidates.empty(),
+              "missing face materials remain explicit references");
+    });
+    auto duplicates = slice(extra, 0, ends[4]);
+    array(duplicates, std::vector<std::uint64_t>{large_id, large_id});
+    def->geometry = reconstruct(Json::array({command(duplicates)}), {});
+    scene.elements.resize(1);
+    scene.elements[0].instances.resize(1);
+    scene.for_each_primitive([&](const PrimitiveView &view) {
+        check(view.mesh_material_references.size() == 2 &&
+                  view.mesh_material_references[0].material_id == large_id &&
+                  view.mesh_material_references[1].material_id == large_id &&
+                  (*view.source_range)["mesh_channels"]["triangles"][0]["source_material_index"] ==
+                      0 &&
+                  (*view.source_range)["mesh_channels"]["triangles"][1]["source_material_index"] ==
+                      1,
+              "duplicate source material entries keep distinct source list indices");
+    });
+    def->geometry = plain;
+    scene.elements[0].metadata.erase("model_id");
+    scene.elements[0].instances[0].style = Json::object();
+    scene.for_each_primitive([&](const PrimitiveView &view) {
+        check(view.mesh_material_references.empty(), "ordinary geometry has no extra references");
+    });
     return checks;
 }

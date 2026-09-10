@@ -2,6 +2,39 @@
 #include <atomic>
 #include <thread>
 namespace p3d {
+using MaterialIndex = std::map<std::string, std::vector<std::size_t>>;
+static MaterialIndex material_index(const Json &definitions) {
+    MaterialIndex index;
+    for (std::size_t i = 0; i < definitions.size(); ++i)
+        index[definitions[i]["scope"].get<std::string>() + ":" + definitions[i]["id"].dump()]
+            .push_back(i);
+    return index;
+}
+static std::vector<std::size_t> material_candidates(const MaterialIndex &index, const Json &model,
+                                                    const Json &id) {
+    auto found = index.find("model:" + model.dump() + ":" + id.dump());
+    if (found == index.end())
+        found = index.find("global:" + id.dump());
+    return found == index.end() ? std::vector<std::size_t>{} : found->second;
+}
+static std::vector<MeshMaterialReference>
+mesh_material_references(const Json &range, const MaterialIndex &index, const Json &model) {
+    std::vector<MeshMaterialReference> refs;
+    if (!range.contains("mesh_channels"))
+        return refs;
+    for (const auto &id : range["mesh_channels"]["source"]["face_material_ids"]) {
+        MeshMaterialReference ref;
+        ref.material_id = id.get<std::uint64_t>();
+        if (ref.material_id)
+            ref.candidates = material_candidates(index, model, id);
+        ref.status = !ref.material_id             ? "unassigned"
+                     : ref.candidates.empty()     ? "missing"
+                     : ref.candidates.size() == 1 ? "resolved"
+                                                  : "ambiguous";
+        refs.push_back(std::move(ref));
+    }
+    return refs;
+}
 static std::string scoped(const Json &model, const Json &id) {
     return model.dump() + ":" + id.dump();
 }
@@ -648,9 +681,8 @@ Json NativeScene::expanded() const {
     Json extended = metadata["color_tables"].empty()
                         ? Json::array()
                         : metadata["color_tables"].back().value("color_entries", Json::array());
-    std::map<std::string, std::vector<const Json *>> mats;
-    for (auto &m : metadata["materials"]["definitions"])
-        mats[m["scope"].get<std::string>() + ":" + m["id"].dump()].push_back(&m);
+    const auto &material_definitions = metadata["materials"]["definitions"];
+    const auto mats = material_index(material_definitions);
     auto &graph = metadata["document_graph"];
     for (auto &element : elements) {
         auto item = element.metadata;
@@ -678,15 +710,13 @@ Json NativeScene::expanded() const {
                      range.value("style_status", std::string("decoded_command_style"))}};
                 auto mid = style.value("material_id", Json());
                 if (!mid.is_null() && mid != 0) {
-                    auto key = "model:" + item["model_id"].dump() + ":" + mid.dump();
-                    auto candidates = mats[key];
-                    if (candidates.empty())
-                        candidates = mats["global:" + mid.dump()];
+                    auto candidates = material_candidates(mats, item["model_id"], mid);
                     appearance["material_id"] = mid;
                     appearance["material_resolved"] = candidates.size() == 1;
                     if (candidates.size() == 1) {
-                        appearance["material_scope"] = candidates[0]->at("scope");
-                        appearance["material_rgb"] = candidates[0]->value("base_color_rgb", Json());
+                        const auto &material = material_definitions[candidates[0]];
+                        appearance["material_scope"] = material.at("scope");
+                        appearance["material_rgb"] = material.value("base_color_rgb", Json());
                     }
                 }
                 range["start"] = range["start"].get<std::size_t>() +
@@ -694,6 +724,16 @@ Json NativeScene::expanded() const {
                 range["geometry_id"] = instance.geometry_id;
                 range["instance_style"] = instance.style;
                 range["appearance"] = appearance;
+                if (range.contains("mesh_channels")) {
+                    auto refs =
+                        mesh_material_references(range, mats, item.value("model_id", Json()));
+                    Json output_refs = Json::array();
+                    for (const auto &ref : refs)
+                        output_refs.push_back({{"material_id", ref.material_id},
+                                               {"candidates", ref.candidates},
+                                               {"status", ref.status}});
+                    range["mesh_material_references"] = std::move(output_refs);
+                }
                 geo.primitive_ranges.push_back(range);
             }
             auto vbase = geo.vertices.size();
@@ -799,10 +839,8 @@ Json build_scene(const Document &doc, unsigned segments) {
 }
 void NativeScene::for_each_primitive(
     const std::function<void(const PrimitiveView &)> &callback) const {
-    std::map<std::string, std::vector<std::size_t>> materials;
     const auto &defs = metadata.at("materials").at("definitions");
-    for (std::size_t i = 0; i < defs.size(); ++i)
-        materials[defs[i]["scope"].get<std::string>() + ":" + defs[i]["id"].dump()].push_back(i);
+    const auto materials = material_index(defs);
     auto &colors = metadata.at("color_tables");
     Json extended =
         colors.empty() ? Json::array() : colors.back().value("color_entries", Json::array());
@@ -839,10 +877,8 @@ void NativeScene::for_each_primitive(
                 bool assigned = !mid.is_null() && mid != 0;
                 if (assigned) {
                     v.appearance["material_id"] = mid;
-                    auto k = "model:" + element.metadata["model_id"].dump() + ":" + mid.dump();
-                    v.material_candidates = materials[k];
-                    if (v.material_candidates.empty())
-                        v.material_candidates = materials["global:" + mid.dump()];
+                    v.material_candidates =
+                        material_candidates(materials, element.metadata["model_id"], mid);
                 }
                 v.material_status = !assigned                           ? "unassigned"
                                     : v.material_candidates.empty()     ? "missing"
@@ -855,6 +891,9 @@ void NativeScene::for_each_primitive(
                     v.appearance["material_scope"] = m["scope"];
                     v.appearance["material_rgb"] = m.value("base_color_rgb", Json());
                 }
+                if (range.contains("mesh_channels"))
+                    v.mesh_material_references = mesh_material_references(
+                        range, materials, element.metadata.value("model_id", Json()));
                 v.topology = channel == "faces"              ? "triangles"
                              : channel == "texts"            ? "annotations"
                              : range.value("opcode", 0) == 3 ? "points"
