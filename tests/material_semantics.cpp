@@ -819,8 +819,7 @@ unsigned material_semantics_tests() {
               reader["maps"][0]["texture_layers"]["entries"][0]["replicators"]
                     ["reader_applicability"]["status"] == "skipped" &&
               reader["maps"][0]["texture_layers"]["entries"][0]["semantics"]["reader_path"]
-                    ["preset"]["parameter_status"] == "not_decoded",
-          "recognized legacy preset does not apply the modern M633 schema or claim its parameter "
-          "decoding");
+                    ["preset"]["parameter_status"] == "decoded",
+          "recognized legacy preset uses its content reader and skips modern parameter packages");
     return checks;
 }

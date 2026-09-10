@@ -19,12 +19,14 @@ Json material_settings(const Json &tree) {
         return o;
     };
     Json maps = Json::array();
+    std::vector<const Json *> map_sources;
     std::function<void(const Json &, const std::string &, unsigned)> walk =
         [&](const Json &n, const std::string &path, unsigned depth) {
             const auto tag = n["tag"].get<std::string>();
             if (tag.size() == 3 && (tag[0] == 'M' || tag[0] == 'm') &&
                 (tag[1] == 'A' || tag[1] == 'a') && (tag[2] == 'P' || tag[2] == 'p')) {
                 auto &a = n["attributes"];
+                map_sources.push_back(&n);
                 auto numeric = fields(a);
                 Json layers = Json::array();
                 for (std::size_t i = 0; i < n["children"].size(); ++i) {
@@ -70,6 +72,34 @@ Json material_settings(const Json &tree) {
         };
     walk(tree, "/" + tree["tag"].get<std::string>(), 0);
     auto reader_profile = material_reader_paths(tree, maps);
+    auto attach_legacy = [](const Json &source, Json &target, Json &dispatch, const Json &parent) {
+        auto legacy = material_legacy_parameters(source, dispatch);
+        auto applicability = parent;
+        if (legacy["status"] == "not_applicable") {
+            applicability["status"] = "skipped";
+            applicability["reason"] = "not_a_pma_content_branch";
+        } else if (applicability["status"] == "read" && legacy["status"] == "unresolved_dispatch") {
+            applicability["status"] = "unresolved";
+            applicability["reason"] = "unresolved_provider_dispatch";
+        }
+        legacy["reader_applicability"] = std::move(applicability);
+        if (dispatch.value("preset", Json()).is_object())
+            dispatch["preset"]["parameter_status"] = legacy["status"];
+        target["legacy_parameters"] = std::move(legacy);
+    };
+    for (std::size_t i = 0; i < maps.size(); ++i) {
+        auto &map = maps[i];
+        auto dispatch = map["reader_path"].value("provider_dispatch", Json::object());
+        attach_legacy(*map_sources[i], map, dispatch,
+                      map["semantics"]["additional_texture_references"]["reader_applicability"]);
+        if (map["reader_path"].contains("provider_dispatch"))
+            map["reader_path"]["provider_dispatch"] = dispatch;
+        for (auto &layer : map["texture_layers"]["entries"]) {
+            auto &local = layer["semantics"]["reader_path"];
+            attach_legacy((*map_sources[i])["children"][layer["child_index"].get<std::size_t>()],
+                          layer, local, layer["reader_applicability"]);
+        }
+    }
     return {{"source_parameters", tree["attributes"]},
             {"numeric_parameters", fields(tree["attributes"])},
             {"semantics", material_parameter_semantics(tree["attributes"])},
