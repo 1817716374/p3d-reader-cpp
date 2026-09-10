@@ -15,6 +15,7 @@
 !/tests/material_resource.cpp
 !/tests/material_numeric.cpp
 !/tests/mesh_channels.cpp
+!/tests/mesh_extensions.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

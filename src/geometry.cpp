@@ -409,6 +409,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
         unsigned op = cmd["op"];
         auto body = bytesof(cmd["body"]);
         auto &d = cmd["decoded"];
+        Json mesh_metadata;
         auto first_face = g.faces.size(), first_line = g.lines.size(), first_text = g.texts.size();
         try {
             auto execute = [&]() {
@@ -496,6 +497,9 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     channels.uvs = d["uvs"].get<std::vector<Point2>>();
                     transform_normals(channels, matrix);
                     std::vector<Triangle> faces;
+                    std::vector<Triangle> source_corners;
+                    const bool extended =
+                        d.contains("mesh_channels") && has_mesh_channels(d["mesh_channels"]);
                     std::vector<std::optional<std::array<Point2, 3>>> uvs;
                     std::vector<std::optional<std::uint32_t>> sources;
                     for (std::size_t i = 0; i < d["polygons"].size(); ++i) {
@@ -507,10 +511,14 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             ids.push_back(index);
                             pts.push_back(points.at(index));
                         }
+                        if (ids.empty())
+                            continue;
                         auto tris =
                             ids.size() == 3 ? std::vector<Triangle>{{0, 1, 2}} : polygon_faces(pts);
                         for (auto tri : tris) {
                             faces.push_back({ids[tri[0]], ids[tri[1]], ids[tri[2]]});
+                            if (extended)
+                                source_corners.push_back(tri);
                             sources.push_back(unsigned(i));
                             for (const auto &channel :
                                  {std::pair<const char *, std::vector<std::optional<Triangle>> *>(
@@ -542,6 +550,9 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             }
                         }
                     }
+                    if (extended)
+                        mesh_metadata =
+                            mesh_triangle_channels(d["mesh_channels"], sources, source_corners);
                     append(g, world(points), faces, &uvs, &sources);
                     channels.faces = std::move(faces);
                     merge_mesh_channels(g, channels, first_face);
@@ -549,6 +560,19 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         g.unknown.push_back({{"opcode", 25},
                                              {"offset", cmd["offset"]},
                                              {"reason", "uninterpreted mesh channels after UVs"}});
+                    if (!mesh_metadata.is_null())
+                        for (const auto *name : {"color_status", "face_uv_status",
+                                                 "material_id_status", "smoothing_group_status"}) {
+                            const auto &status = mesh_metadata["source"]["bindings"][name];
+                            if (status == "count_mismatch" || status == "invalid_reader_indices" ||
+                                status == "not_evaluated_for_fixed_width")
+                                g.unknown.push_back(
+                                    {{"opcode", 25},
+                                     {"offset", cmd["offset"]},
+                                     {"reason", "mesh extension binding unavailable"},
+                                     {"channel", name},
+                                     {"status", status}});
+                        }
                     return;
                 }
                 if (op == 11 || op == 30) {
@@ -848,6 +872,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
             g.unknown.push_back({{"opcode", op}, {"offset", cmd["offset"]}, {"reason", e.what()}});
         }
         bool mirrored = reverses_winding(matrix);
+        if (mirrored && !mesh_metadata.is_null())
+            reverse_mesh_channel_corners(mesh_metadata);
         if (mirrored)
             for (auto i = first_face; i < g.faces.size(); ++i) {
                 std::swap(g.faces[i][1], g.faces[i][2]);
@@ -863,7 +889,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                  {"texts", first_text, g.texts.size()}}) {
             auto channel = std::get<0>(item);
             auto start = std::get<1>(item), end = std::get<2>(item);
-            if (end > start)
+            if (end > start || (channel == "faces" && !mesh_metadata.is_null())) {
                 g.primitive_ranges.push_back(
                     {{"channel", channel},
                      {"start", start},
@@ -872,6 +898,9 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                      {"opcode", op},
                      {"style", style},
                      {"winding_reversed", mirrored && channel == "faces"}});
+                if (channel == "faces" && !mesh_metadata.is_null())
+                    g.primitive_ranges.back()["mesh_channels"] = std::move(mesh_metadata);
+            }
         }
     }
     if (solid || in_path || !stack.empty())
@@ -1055,6 +1084,8 @@ void merge_geometry(Geometry &target, const Geometry &source, const Matrix4 &m, 
         range["start"] = range["start"].get<std::size_t>() + offsets.at(channel);
         range["winding_reversed"] =
             bool(range.value("winding_reversed", false) ^ (mirror && channel == "faces"));
+        if (mirror && range.contains("mesh_channels"))
+            reverse_mesh_channel_corners(range["mesh_channels"]);
         target.primitive_ranges.push_back(range);
     }
 }

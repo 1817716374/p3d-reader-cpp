@@ -452,7 +452,6 @@ Json decode_polyface(const Bytes &b) {
     auto tail = r.p;
     auto normals = points(3), uv = points(2);
     auto extra = r.take(r.left());
-    require(extra.size() >= 24, "polyface trailing channels");
     std::array<std::size_t, 3> sizes = {p.size(), normals.size(), uv.size()};
     for (unsigned j = 0; j < 3; ++j) {
         auto &a = arrays[j];
@@ -463,26 +462,50 @@ Json decode_polyface(const Bytes &b) {
             require((a[i] == 0) == (arrays[0][i] == 0), "polyface separators");
         }
     }
-    require(arrays[0].empty() || arrays[0].back() == 0, "unterminated polygon");
+    const bool fixed = flags > 1;
+    if (fixed)
+        require(arrays[0].size() % flags == 0, "incomplete fixed-width polygon");
+    else
+        require(arrays[0].empty() || arrays[0].back() == 0, "unterminated polygon");
     Json polygons = Json::array();
-    std::size_t start = 0;
-    for (std::size_t i = 0; i < arrays[0].size(); ++i)
-        if (arrays[0][i] == 0) {
-            Json poly;
-            for (unsigned j = 0; j < 3; ++j) {
-                Json a = Json::array();
-                if (!arrays[j].empty())
-                    for (auto k = start; k < i; ++k)
-                        a.push_back(arrays[j][k]);
-                poly[j == 0   ? "point_indices"
-                     : j == 1 ? "normal_indices"
-                              : "uv_indices"] = std::move(a);
-            }
-            polygons.push_back(std::move(poly));
-            start = i + 1;
+    auto add_polygon = [&](std::size_t start, std::size_t end) {
+        Json poly;
+        for (unsigned j = 0; j < 3; ++j) {
+            Json a = Json::array();
+            if (!arrays[j].empty())
+                for (auto k = start; k < end; ++k)
+                    a.push_back(arrays[j][k]);
+            poly[j == 0   ? "point_indices"
+                 : j == 1 ? "normal_indices"
+                          : "uv_indices"] = std::move(a);
         }
+        polygons.push_back(std::move(poly));
+    };
+    if (fixed) {
+        for (std::size_t start = 0; start < arrays[0].size(); start += flags) {
+            auto end = start;
+            while (end < start + flags && arrays[0][end] != 0)
+                ++end;
+            add_polygon(start, end);
+        }
+    } else {
+        std::size_t start = 0;
+        for (std::size_t i = 0; i < arrays[0].size(); ++i)
+            if (arrays[0][i] == 0) {
+                add_polygon(start, i);
+                start = i + 1;
+            }
+    }
+    auto channels = decode_mesh_channels(extra, arrays, polygons, flags);
+    const auto channel_status = channels["status"] == "decoded"
+                                    ? (extra == Bytes(24) ? "six empty channels" : "decoded")
+                                    : "opaque";
     return {{"flags", flags},
+            {"num_per_face", flags},
+            {"polygon_layout", fixed ? "fixed_width" : "zero_terminated"},
             {"reported_indices", reported},
+            {"reported_point_index_count", reported},
+            {"point_index_count_matches_header", reported == arrays[0].size()},
             {"index_arrays", std::move(arrays)},
             {"points", std::move(p)},
             {"normals", std::move(normals)},
@@ -490,8 +513,11 @@ Json decode_polyface(const Bytes &b) {
             {"polygons", std::move(polygons)},
             {"tail_hex", hex(slice(b, tail, b.size() - tail))},
             {"trailing_channels_hex", hex(extra)},
-            {"trailing_channels_status", extra == Bytes(24) ? "six empty channels" : "opaque"},
-            {"index_convention", "signed one-based indices; zero terminates face; sign retained"}};
+            {"trailing_channels_status", channel_status},
+            {"mesh_channels", std::move(channels)},
+            {"index_convention",
+             fixed ? "signed one-based indices; fixed-width faces with zero padding; sign retained"
+                   : "signed one-based indices; zero terminates face; sign retained"}};
 }
 Json command_fields(unsigned op, const Bytes &b) {
     static std::map<unsigned, std::string> names = {{1, "polyline"},

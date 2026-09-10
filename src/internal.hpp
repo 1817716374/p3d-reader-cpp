@@ -176,6 +176,12 @@ Json decode_symbology_extension(const Bytes &);
 void apply_symbology_extension(Json &, const Json &);
 void apply_symbology(Json &, const Json &);
 Json decode_polyface(const Bytes &);
+Json decode_mesh_channels(const Bytes &, const Json &indices, const Json &polygons,
+                          std::uint32_t num_per_face);
+bool has_mesh_channels(const Json &);
+Json mesh_triangle_channels(const Json &, const std::vector<std::optional<std::uint32_t>> &polygons,
+                            const std::vector<Triangle> &corners);
+void reverse_mesh_channel_corners(Json &);
 Json decode_bgfb(const Bytes &);
 Json decode_inline_material(const Bytes &);
 Json parse_relationships(const Bytes &);
