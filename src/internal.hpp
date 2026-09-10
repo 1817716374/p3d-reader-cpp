@@ -188,6 +188,8 @@ Json material_settings(const Json &tree);
 Json material_parameter_semantics(const Json &attributes);
 Json material_map_semantics(const Json &attributes);
 Json material_layer_semantics(const Json &attributes);
+Json material_replicator_nodes(const Json &owner);
+Json material_reader_paths(const Json &tree, Json &maps);
 Json material_texture_references(const Json &tree, const Json &settings);
 Json material_procedure_nodes(const Json &owner);
 Json material_map_bindings(const Json &maps);

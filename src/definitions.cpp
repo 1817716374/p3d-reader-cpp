@@ -38,7 +38,8 @@ Json material_settings(const Json &tree) {
                                                        "[" + std::to_string(i) + "]"},
                                       {"source_parameters", child["attributes"]},
                                       {"semantics", material_layer_semantics(child["attributes"])},
-                                      {"procedures", material_procedure_nodes(child)}});
+                                      {"procedures", material_procedure_nodes(child)},
+                                      {"replicators", material_replicator_nodes(child)}});
                 }
                 maps.push_back(
                     {{"index", maps.size()},
@@ -48,6 +49,7 @@ Json material_settings(const Json &tree) {
                      {"numeric_parameters", numeric},
                      {"semantics", material_map_semantics(a)},
                      {"procedures", material_procedure_nodes(n)},
+                     {"replicators", material_replicator_nodes(n)},
                      {"texture_layers",
                       {{"entries", layers},
                        {"order", "source_child_order"},
@@ -67,9 +69,11 @@ Json material_settings(const Json &tree) {
             }
         };
     walk(tree, "/" + tree["tag"].get<std::string>(), 0);
+    auto reader_profile = material_reader_paths(tree, maps);
     return {{"source_parameters", tree["attributes"]},
             {"numeric_parameters", fields(tree["attributes"])},
             {"semantics", material_parameter_semantics(tree["attributes"])},
+            {"reader_profile", reader_profile},
             {"maps", maps},
             {"map_bindings", material_map_bindings(maps)},
             {"shader_policy", "Native parameter flags and map roles; no conversion to another "

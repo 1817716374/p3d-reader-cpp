@@ -640,5 +640,187 @@ unsigned material_semantics_tests() {
                          ["type"]["value"] == 10 &&
               root_proc == original_proc,
           "nested procedure belongs to its layer, not the enclosing map");
+    auto replication = xml_node("M541", {{"M542", "2.5"},
+                                         {"M547", "-3"},
+                                         {"M548", "4294967295"},
+                                         {"M549", "0"},
+                                         {"M550", "1e-3"},
+                                         {"M554", "17"},
+                                         {"M555", "4294967296"},
+                                         {"unmapped", "preserved"}});
+    auto repl_owner = xml_node("Layer", Json::object(),
+                               Json::array({xml_node("m541", {{"M542", "99"}}), replication,
+                                            xml_node("M541", {{"M542", "6"}})}));
+    auto replicas = material_replicator_nodes(repl_owner);
+    const auto &rp = replicas["entries"][0]["parameters"];
+    check(
+        replicas["entries"].size() == 2 && replicas["entries"][0]["child_index"] == 1 &&
+            replicas["entries"][1]["selection"] == "later_matching_node" && rp.size() == 14 &&
+            rp["M542"]["value"] == 2.5 && rp["M547"]["value"] == -3 &&
+            rp["M548"]["value"] == 4294967295u && rp["M548"]["reader_value"] == true &&
+            rp["M549"]["reader_value"] == false && rp["M550"]["value"] == .001 &&
+            rp["M554"]["value"] == 17 && rp["M555"]["status"] == "invalid" &&
+            rp["M543"]["status"] == "missing" &&
+            replicas["entries"][0]["unmapped_source_parameters"] ==
+                Json({{"unmapped", "preserved"}}),
+        "replicator selects exact first child and preserves source boolean integers and unknowns");
+    auto reader_tree = [&](const Json &attrs, const Json &children = Json::array(),
+                           const Json &root_attrs = Json({{"material_version", "9"}})) {
+        return xml_node("Material", root_attrs, Json::array({xml_node("Map", attrs, children)}));
+    };
+    const auto packages = Json::array({xml_node("M633", {{"M634", "1"}}), replication});
+    auto reader = material_settings(reader_tree({{"Type", "1"}, {"layer", "6"}}, packages));
+    check(reader["reader_profile"]["mode"] == 9 &&
+              reader["reader_profile"]["provider_type_source_key"] == "layer" &&
+              reader["maps"][0]["reader_path"]["single_provider_type_before_preset"]
+                    ["reader_value"] == 4 &&
+              reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "read" &&
+              reader["maps"][0]["replicators"]["reader_applicability"]["status"] == "skipped",
+          "single Map type six normalizes before procedure selection when resource list is empty");
+    for (const auto &attrs : {Json::object(), Json({{"material_version", "0"}})}) {
+        reader = material_settings(
+            reader_tree({{"Type", "1"}, {"layer", "3"}, {"layer_state", "7"}}, packages, attrs));
+        check(reader["reader_profile"]["mode"] == 0 &&
+                  reader["reader_profile"]["provider_type_source_key"] == "layer_state" &&
+                  reader["maps"][0]["replicators"]["reader_applicability"]["status"] == "read" &&
+                  reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "skipped",
+              "XML file reader missing or zero version uses layer_state instead of layer");
+    }
+    reader = material_settings(reader_tree({{"Type", "1"}}, packages));
+    check(reader["maps"][0]["reader_path"]["single_provider_type_before_preset"]["status"] ==
+                  "missing" &&
+              reader["maps"][0]["reader_path"]["single_provider_type_before_preset"]
+                    ["reader_value"] == 1 &&
+              reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "skipped",
+          "missing provider type retains source absence while reporting native constructor type");
+    reader = material_settings(reader_tree({{"Type", "1"}, {"layer", "0"}}, packages));
+    check(reader["maps"][0]["reader_path"]["single_provider_type_before_preset"]["reader_value"] ==
+              1,
+          "explicit zero provider type uses image type for an empty resource list");
+    for (const auto filename : {"image.jpg", "wood.pma", "", "LAYEREDPROCEDURALNAME"}) {
+        reader = material_settings(
+            reader_tree({{"Type", "1"}, {"layer", "0"}, {"Filename", filename}}, packages));
+        check(reader["maps"][0]["reader_path"]["branch"] == "single_provider" &&
+                  reader["maps"][0]["reader_path"]["single_provider_type_before_preset"]
+                        ["reader_value"]
+                            .is_null() &&
+                  reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "unresolved",
+              "raw Map filename is not substituted for the resource service reference");
+    }
+    for (const auto &root_attrs :
+         {Json({{"material_version", "9"}}), Json({{"material_version", "bad"}})}) {
+        reader = material_settings(
+            reader_tree({{"Type", "30"}, {"layer", "bad"}}, packages, root_attrs));
+        check(reader["maps"][0]["reader_path"]["single_provider_type_before_preset"]
+                    ["reader_value"] == 5 &&
+                  reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "skipped",
+              "Map type thirty overrides the single provider even with an undecodable source "
+              "selector");
+    }
+    reader = material_settings(
+        reader_tree({{"Type", "1"}, {"layer", "3"}}, packages, {{"material_version", "bad"}}));
+    check(reader["reader_profile"]["mode"].is_null() &&
+              reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "unresolved",
+          "invalid version is not silently treated as a confirmed legacy profile");
+    Json layers_for_reader = packages;
+    layers_for_reader.push_back(
+        xml_node("AnyTag", {{"LayerType", "layer GRADIENT image.jpg"}}, packages));
+    layers_for_reader.push_back(
+        xml_node("AnyTag", {{"LayerType", "layer TEXTURE_REPLICATOR image.jpg"}}, packages));
+    layers_for_reader.push_back(xml_node("AnyTag", {{"LayerType", "layer GAMMA"}}, packages));
+    layers_for_reader.push_back(xml_node("AnyTag", {{"LayerType", "LAYER GRADIENT"}}, packages));
+    for (const auto filename : {u8"E:\\材质\\LaYeRs.PmA", "catalog:layers.pma", "layers.pma"}) {
+        auto source = reader_tree(
+            {{"Type", "1"}, {"Filename", filename}, {"layer", "7"}, {"M556", "ignored.jpg"}},
+            layers_for_reader);
+        auto original = source;
+        reader = material_settings(source);
+        const auto &m = reader["maps"][0];
+        const auto &le = m["texture_layers"]["entries"];
+        check(
+            m["reader_path"]["branch"] == "layer_collection" &&
+                m["procedures"]["reader_applicability"]["status"] == "skipped" &&
+                m["semantics"]["additional_texture_references"]["reader_applicability"]["status"] ==
+                    "skipped" &&
+                le[0]["child_index"] == 2 && le[0]["reader_applicability"]["status"] == "read" &&
+                le[0]["procedures"]["reader_applicability"]["status"] == "read" &&
+                le[1]["replicators"]["reader_applicability"]["status"] == "read" &&
+                le[2]["procedures"]["reader_applicability"]["status"] == "skipped" &&
+                le[3]["reader_applicability"]["status"] == "skipped" && source == original,
+            "layers.pma activates direct source layers, not Map-level packages or texture "
+            "references");
+    }
+    reader = material_settings(
+        reader_tree({{"Type", "1"}, {"Filename", "layers.pma.backup"}}, layers_for_reader));
+    check(reader["maps"][0]["texture_layers"]["entries"][0]["procedures"]["reader_applicability"]
+                ["status"] == "skipped",
+          "layer nodes are not read by a single provider just because they exist in XML");
+    for (const auto &attrs : {Json::object(), Json({{"Type", "0"}, {"Filename", "layers.pma"}})}) {
+        reader = material_settings(reader_tree(attrs, layers_for_reader));
+        check(reader["maps"][0]["reader_path"]["branch"] == "skipped" &&
+                  reader["maps"][0]["texture_layers"]["reader_applicability"]["status"] ==
+                      "skipped",
+              "missing and zero Map type cannot activate source layers");
+    }
+    reader = material_settings(xml_node(
+        "Material", Json::object(),
+        Json::array(
+            {xml_node("Wrapper", Json::object(),
+                      Json::array({xml_node("Map", {{"Type", "1"}, {"Filename", "layers.pma"}},
+                                            layers_for_reader)}))})));
+    check(reader["maps"][0]["reader_path"]["branch"] == "skipped" &&
+              reader["maps"][0]["procedures"]["reader_applicability"]["reason"] ==
+                  "outside_native_table",
+          "nested Map inventory is separate from native direct Map reader");
+    for (const auto &preset : std::vector<std::pair<std::string, unsigned>>{
+             {"checker", 14}, {"wood01", 29}, {"grad1d", 31}}) {
+        auto name = preset.first;
+        for (auto &c : name)
+            if (c >= 'a' && c <= 'z')
+                c += 'A' - 'a';
+        const auto p = material_layer_semantics(
+            {{"LayerType", "layer TEXTURE_REPLICATOR " + name + ".PMA"}})["reader_path"];
+        check(p["branch"] == "pma_preset" && p["preset"]["procedure_type"] == preset.second &&
+                  p["provider_type_after_dispatch"] == (preset.second == 31 ? 3 : 4),
+              "PMA basename selects native preset and replaces the previous provider type");
+    }
+    auto layer_reader = [&](const std::string &reference) {
+        return material_layer_semantics(
+            {{"LayerType", "layer LXOPROCEDURE " + reference}})["reader_path"];
+    };
+    check(layer_reader("custom.pma")["branch"] == "pma_user_data" &&
+              layer_reader("custom.pma")["provider_type_after_dispatch"] == 4 &&
+              layer_reader("custom.jpg")["branch"] == "M633" &&
+              layer_reader("library:WOOD.PMA")["preset"]["procedure_type"] == 28 &&
+              layer_reader("lib:E:wood.pma")["branch"] == "pma_user_data" &&
+              layer_reader(u8"E:\\材质\\wood.pma")["preset"]["procedure_type"] == 28,
+          "layer dispatch observes native prefix splitting and PMA priority over M633");
+    auto overlong = layer_reader(std::string(260, 'x') + ".pma");
+    auto boundary = layer_reader(std::string(259, 'x') + ".pma");
+    check(overlong["source_reference"]["status"] == "native_buffer_limit_clears_parts" &&
+              overlong["branch"] == "M633" && boundary["branch"] == "pma_user_data" &&
+              layer_reader(std::string(259, 'x') + "/wood.pma")["branch"] == "M633" &&
+              layer_reader(std::string(258, 'x') + "/wood.pma")["preset"]["procedure_type"] == 28,
+          "native per-component UTF16 buffer limits affect dispatch, not total path length");
+    std::string unicode_dir;
+    for (unsigned i = 0; i < 129; ++i)
+        unicode_dir += u8"\U0001f333";
+    check(layer_reader(unicode_dir + "/wood.pma")["preset"]["procedure_type"] == 28 &&
+              layer_reader(unicode_dir + "x/wood.pma")["source_reference"]["status"] ==
+                  "native_buffer_limit_clears_parts" &&
+              layer_reader(u8"wood.p\u00e1")["status"] == "unresolved",
+          "supplementary Unicode counts as two native wchar units and locale comparisons remain "
+          "explicit");
+    auto preset_layer = xml_node("L", {{"LayerType", "layer GRADIENT wood.pma"}}, packages);
+    reader = material_settings(
+        reader_tree({{"Type", "1"}, {"Filename", "layers.pma"}}, Json::array({preset_layer})));
+    check(reader["maps"][0]["texture_layers"]["entries"][0]["procedures"]["reader_applicability"]
+                ["status"] == "skipped" &&
+              reader["maps"][0]["texture_layers"]["entries"][0]["replicators"]
+                    ["reader_applicability"]["status"] == "skipped" &&
+              reader["maps"][0]["texture_layers"]["entries"][0]["semantics"]["reader_path"]
+                    ["preset"]["parameter_status"] == "not_decoded",
+          "recognized legacy preset does not apply the modern M633 schema or claim its parameter "
+          "decoding");
     return checks;
 }
