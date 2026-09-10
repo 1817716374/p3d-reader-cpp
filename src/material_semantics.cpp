@@ -322,6 +322,7 @@ Json procedure_channel(const Json &owner) {
     }
     return {{"entries", entries}, {"selection_rule", "first_exact_M635_child"}};
 }
+#include "material_numeric.inc"
 } // namespace
 Json material_replicator_nodes(const Json &owner) {
     Json entries = Json::array();
@@ -443,6 +444,14 @@ Json material_reader_paths(const Json &tree, Json &maps) {
             map["procedures"]["reader_applicability"] = packages;
             map["replicators"]["reader_applicability"] = packages;
         }
+        const auto map_app = !map["native_table_member"].get<bool>() ||
+                                     type["status"] == "missing" || type["value"] == 0
+                                 ? reader_applicability("skipped", "map_reader_not_invoked")
+                             : type["status"] == "decoded"
+                                 ? reader_applicability("read", "valid_map_type")
+                                 : reader_applicability("unresolved", "unresolved_map_type");
+        map["numeric_reader"] =
+            material_numeric_reads(a, mode, map_app, false, type["value"], reader["branch"]);
         map["reader_path"] = std::move(reader);
         map["semantics"]["additional_texture_references"]["reader_applicability"] = extras;
         map["texture_layers"]["reader_applicability"] = layers;
@@ -454,6 +463,9 @@ Json material_reader_paths(const Json &tree, Json &maps) {
                                     ? reader_applicability("skipped", "missing_layer_marker")
                                     : reader_applicability("unresolved", "unresolved_layer_type");
             layer["reader_applicability"] = applicability;
+            layer["numeric_reader"] =
+                material_numeric_reads(layer["source_parameters"], mode, applicability, true,
+                                       sem["type"]["reader_type"], nullptr);
             for (const auto &pair : {std::pair<const char *, const char *>("procedures", "M633"),
                                      {"replicators", "M541"}})
                 layer[pair.first]["reader_applicability"] =
