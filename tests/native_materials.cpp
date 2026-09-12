@@ -303,6 +303,8 @@ unsigned native_material_tests() {
               fallback_resource["lookup_request"].is_null(),
           "missing resource key initializes the current-context descriptor without inventing "
           "source text");
+    check(fallback_resource["descriptor_mode"] == 0,
+          "failed resource getter initializes mode zero independently of string contents");
     auto raw_catalog_text = [&](const Bytes &bytes, unsigned key = 3) {
         Bytes p;
         append(p, key, 2);
@@ -487,6 +489,10 @@ unsigned native_material_tests() {
           "library and member Unicode text are decoded from native UTF16 without losing source "
           "bytes");
     auto ordinary = interpret("../folder.with.dot/Stone.PaL");
+    check(ordinary["descriptor_mode"].is_null() &&
+              ordinary["descriptor_mode_rule"] ==
+                  "one_if_palette_loaded_without_matching_resource_member",
+          "ordinary palette descriptor mode depends on both resource lookup and member existence");
     check(ordinary["status"] == "decoded" && ordinary["kind"] == "palette_resource" &&
               ordinary["member_name"] == "Stone" && ordinary["extension"] == "PaL" &&
               ordinary["lookup_request"]["reference"] == "../folder.with.dot/Stone.PaL" &&
@@ -503,18 +509,30 @@ unsigned native_material_tests() {
           "name key one");
     check(ordinary["context_cases"] ==
               Json::array({{{"lookup", "failure"},
+                            {"descriptor_mode", 0},
                             {"matching_resource_member", nullptr},
                             {"primary_context", "current_resource_context"},
                             {"secondary_context", "current_resource_context"}},
                            {{"lookup", "success"},
+                            {"descriptor_mode", 0},
                             {"matching_resource_member", true},
                             {"primary_context", "current_resource_context"},
                             {"secondary_context", "resolved_palette_resource"}},
                            {{"lookup", "success"},
+                            {"descriptor_mode", 1},
                             {"matching_resource_member", false},
                             {"primary_context", "resolved_palette_resource"},
                             {"secondary_context", "resolved_palette_resource"}}}),
           "ordinary palette context choice preserves all native lookup and membership branches");
+    check(interpret("$(_P3DPROJECT)\\Stone.pal")["descriptor_mode"] == 0 &&
+              interpret("$(_P3DLIB)|library|Stone.pal")["descriptor_mode"] == 0 &&
+              interpret("Stone.p3d")["descriptor_mode"] == 0 &&
+              interpret("Stone")["descriptor_mode"] == 0,
+          "project library document and extensionless readers all explicitly use descriptor mode "
+          "zero");
+    check(!interpret("").contains("descriptor_mode") &&
+              !interpret("image.jpg").contains("descriptor_mode"),
+          "rejected resource references do not gain a usable descriptor mode");
     for (const auto &value : {"scene.p3d", "folder/Scene.P3D", "name"}) {
         ordinary = interpret(value);
         check(ordinary["status"] == "decoded" && ordinary["kind"] == "current_context_resource" &&

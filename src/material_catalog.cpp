@@ -134,6 +134,7 @@ Json catalog_resource_interpretation(const Json &field) {
              {"reader_fallback", reader.at("status") == "missing" ? "missing_resource_reference"
                                                                   : "resource_string_read_failed"},
              {"member_name", ""},
+             {"descriptor_mode", 0},
              {"primary_context", "current_resource_context"},
              {"secondary_context_initial_state", "unset"},
              {"secondary_context_rule", "default_resource_service"},
@@ -232,6 +233,7 @@ Json catalog_resource_interpretation(const Json &field) {
         out.update(
             {{"status", "decoded"},
              {"member_name", codec.to_bytes(stem)},
+             {"descriptor_mode", 0},
              {"primary_context", "current_resource_context"},
              {"secondary_context_rule", "library_resource_service"},
              {"lookup_request",
@@ -272,6 +274,8 @@ Json catalog_resource_interpretation(const Json &field) {
                 {{"status", "decoded"},
                  {"kind", "palette_resource"},
                  {"primary_context", nullptr},
+                 {"descriptor_mode", nullptr},
+                 {"descriptor_mode_rule", "one_if_palette_loaded_without_matching_resource_member"},
                  {"primary_context_rule", "palette_if_loaded_and_no_matching_resource_member"},
                  {"secondary_context_rule", "palette_lookup_or_current_context"},
                  {"matching_resource_member",
@@ -283,14 +287,17 @@ Json catalog_resource_interpretation(const Json &field) {
                   {{"reference", codec.to_bytes(text)}, {"search_path_setting", "P3d_Material"}}},
                  {"context_cases",
                   Json::array({{{"lookup", "failure"},
+                                {"descriptor_mode", 0},
                                 {"matching_resource_member", nullptr},
                                 {"primary_context", "current_resource_context"},
                                 {"secondary_context", "current_resource_context"}},
                                {{"lookup", "success"},
+                                {"descriptor_mode", 0},
                                 {"matching_resource_member", true},
                                 {"primary_context", "current_resource_context"},
                                 {"secondary_context", "resolved_palette_resource"}},
                                {{"lookup", "success"},
+                                {"descriptor_mode", 1},
                                 {"matching_resource_member", false},
                                 {"primary_context", "resolved_palette_resource"},
                                 {"secondary_context", "resolved_palette_resource"}}})}});
@@ -307,6 +314,7 @@ Json catalog_resource_interpretation(const Json &field) {
         out["kind"] = "current_context_resource";
     out[project ? "project_member_name" : "member_name"] = codec.to_bytes(stem);
     out.update({{"status", "decoded"},
+                {"descriptor_mode", 0},
                 {"extension", codec.to_bytes(extension)},
                 {"primary_context", "current_resource_context"},
                 {"secondary_context_rule",
