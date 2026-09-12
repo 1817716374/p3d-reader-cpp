@@ -272,4 +272,102 @@ Json native_material_catalog_records(const Json &native_records) {
     }
     return out;
 }
+Json native_material_catalog_tables(const Json &native_records, Json &catalog_records) {
+    Json tables = Json::array();
+    std::map<std::size_t, std::size_t> catalog_indices;
+    for (std::size_t ci = 0; ci < catalog_records.size(); ++ci) {
+        catalog_indices.emplace(catalog_records[ci].at("native_record_index").get<std::size_t>(),
+                                ci);
+        catalog_records[ci]["table_memberships"] = Json::array();
+    }
+    auto compound = [](const Json &record) {
+        const auto type = record.at("element_type").get<unsigned>();
+        return (type >= 10 && type <= 32) ||
+               ((type < 33 || type > 63) && (record.at("element_flags").get<unsigned>() & 0x40));
+    };
+    auto count_offset = [](const Json &record) -> std::size_t {
+        return (record.at("element_flags").get<unsigned>() & 0x20) ? 108 : 36;
+    };
+    for (std::size_t ni = 0; ni < native_records.size(); ++ni) {
+        const auto &n = native_records[ni];
+        if (n.at("element_type") != 10)
+            continue;
+        const auto base = bytesof(n.at("data"));
+        if (base.size() < 20 || Reader(base, 16).u32() != 18)
+            continue;
+        Json table = {{"native_record_index", ni},
+                      {"stream", n.value("stream", Json())},
+                      {"record_id", n.at("id")},
+                      {"record_offset", n.at("offset")},
+                      {"membership_status", "invalid"},
+                      {"runtime_selection", "not_evaluated"},
+                      {"member_record_indices", Json::array()},
+                      {"members", Json::array()}};
+        try {
+            const auto offset = count_offset(n);
+            const auto count = Reader(base, offset).u32();
+            Json unassigned = Json::array();
+            if (offset > 36)
+                unassigned.push_back(
+                    {{"source_offset", 36}, {"data", rawbytes(slice(base, 36, offset - 36))}});
+            if (base.size() > offset + 4)
+                unassigned.push_back(
+                    {{"source_offset", offset + 4},
+                     {"data", rawbytes(slice(base, offset + 4, base.size() - offset - 4))}});
+            table.update({{"declared_descendant_count", count},
+                          {"descendant_count_source_offset", offset},
+                          {"unassigned_ranges", std::move(unassigned)}});
+            require(count <= native_records.size() - ni - 1, "material table descendant count");
+            const auto end = ni + 1 + count;
+            // The count covers all descendants. A nested compound record consumes
+            // its own span; its children are not direct members of this table.
+            std::vector<std::size_t> parent_ends{end};
+            Json members = Json::array(), indices = Json::array();
+            auto next_offset =
+                n.at("offset").get<std::uint64_t>() + n.at("length").get<std::uint64_t>();
+            for (std::size_t j = ni + 1; j < end; ++j) {
+                const auto &child = native_records[j];
+                require(child.value("stream", Json()) == table["stream"] &&
+                            child.at("offset") == next_offset,
+                        "material table descendants cross stream or record boundary");
+                require(child.at("element_flags").get<unsigned>() & 0x80,
+                        "material table descendant lacks child flag");
+                while (!parent_ends.empty() && parent_ends.back() == j)
+                    parent_ends.pop_back();
+                require(!parent_ends.empty(), "material table parent span");
+                if (parent_ends.size() == 1) {
+                    auto found = catalog_indices.find(j);
+                    members.push_back(
+                        {{"native_record_index", j},
+                         {"catalog_record_index",
+                          found == catalog_indices.end() ? Json() : Json(found->second)}});
+                    indices.push_back(j);
+                }
+                if (compound(child)) {
+                    const auto data = bytesof(child.at("data"));
+                    const auto descendants = Reader(data, count_offset(child)).u32();
+                    require(descendants <= parent_ends.back() - j - 1,
+                            "nested material table member exceeds parent span");
+                    if (descendants)
+                        parent_ends.push_back(j + 1 + descendants);
+                }
+                next_offset += child.at("length").get<std::uint64_t>();
+            }
+            table["member_record_indices"] = std::move(indices);
+            table["members"] = std::move(members);
+            table["membership_status"] = "resolved";
+            // Publish associations only after the entire source span is valid.
+            for (std::size_t mi = 0; mi < table["members"].size(); ++mi) {
+                const auto &ci = table["members"][mi]["catalog_record_index"];
+                if (!ci.is_null())
+                    catalog_records[ci.get<std::size_t>()]["table_memberships"].push_back(
+                        {{"table_index", tables.size()}, {"member_index", mi}});
+            }
+        } catch (const std::exception &e) {
+            table["membership_error"] = e.what();
+        }
+        tables.push_back(std::move(table));
+    }
+    return tables;
+}
 } // namespace p3d

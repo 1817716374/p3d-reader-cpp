@@ -184,6 +184,7 @@ Json native_material_references(const Json &native_records) {
 Json read_materials(const Document &doc) {
     Json definitions = Json::array(), errors = Json::array();
     auto catalog = native_material_catalog_records(doc.native_records());
+    auto catalog_tables = native_material_catalog_tables(doc.native_records(), catalog);
     std::map<std::string, std::vector<std::size_t>> catalog_indices;
     std::map<std::string, Json> names;
     auto key = [](const StreamPath &p, const Json &id) { return Json(p).dump() + ":" + id.dump(); };
@@ -274,6 +275,7 @@ Json read_materials(const Document &doc) {
     return {
         {"definitions", definitions},
         {"native_catalog_records", std::move(catalog)},
+        {"native_catalog_tables", std::move(catalog_tables)},
         {"native_element_references", native_material_references(doc.native_records())},
         {"errors", errors},
         {"assignment_rules",

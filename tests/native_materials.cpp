@@ -443,5 +443,139 @@ unsigned native_material_tests() {
               ordinary["matching_resource_member"]["member_name"] == "",
           "ordinary pal with an empty member still uses palette membership selection because its "
           "extension is nonempty");
+    auto table_record = [&](std::uint32_t count, unsigned flags = 0x40, unsigned subtype = 18) {
+        const std::size_t count_at = (flags & 0x20) ? 108 : 36;
+        Bytes b(count_at + 8, 0);
+        put(b, 4, 10, 2);
+        put(b, 6, flags, 2);
+        put(b, 8, (b.size() - 4) / 2, 4);
+        put(b, 12, (b.size() - 4) / 2, 4);
+        put(b, 16, subtype, 4);
+        put(b, 20, 77, 8);
+        put(b, count_at, count, 4);
+        put(b, count_at + 4, 0x12345678, 4);
+        return b;
+    };
+    auto child_record = [&]() {
+        auto b = catalog_record({linkage(string_payload(1, "same"), 0x56d2)});
+        put(b, 6, 0x80, 2);
+        return b;
+    };
+    auto native_rows = [&](const std::vector<Bytes> &source) {
+        Bytes joined;
+        for (const auto &b : source)
+            joined.insert(joined.end(), b.begin(), b.end());
+        auto result = parse_native(joined);
+        for (auto &n : result)
+            n["stream"] = Json::array({"root", "system", "native"});
+        return result;
+    };
+    auto inspect_tables = [&](const Json &source) {
+        auto catalog = native_material_catalog_records(source);
+        auto tables = native_material_catalog_tables(source, catalog);
+        return Json{{"catalog", catalog}, {"tables", tables}};
+    };
+    auto source =
+        native_rows({child_record(), table_record(4), child_record(), table_record(1, 0xc0),
+                     child_record(), child_record(), table_record(1), child_record()});
+    auto original_source = source;
+    auto membership = inspect_tables(source);
+    const auto &tables = membership["tables"];
+    const auto &entries = membership["catalog"];
+    check(
+        tables.size() == 3 && tables[0]["membership_status"] == "resolved" &&
+            tables[0]["declared_descendant_count"] == 4 &&
+            tables[0]["member_record_indices"] == Json::array({2, 3, 5}) &&
+            tables[1]["member_record_indices"] == Json::array({4}) &&
+            tables[2]["member_record_indices"] == Json::array({7}),
+        "material table counts include descendants while membership includes direct children only");
+    check(tables[0]["members"][0]["catalog_record_index"] == 1 &&
+              tables[0]["members"][1]["catalog_record_index"].is_null() &&
+              tables[0]["members"][2]["catalog_record_index"] == 3 &&
+              entries[0]["table_memberships"].empty() &&
+              entries[2]["table_memberships"] ==
+                  Json::array({{{"table_index", 1}, {"member_index", 0}}}) &&
+              entries[4]["table_memberships"] ==
+                  Json::array({{{"table_index", 2}, {"member_index", 0}}}),
+          "table membership links exact records without merging duplicate IDs or adopting orphans");
+    check(source == original_source && tables[0]["native_record_index"] == 1 &&
+              tables[0]["record_offset"] == source[1]["offset"] &&
+              tables[0]["stream"] == source[1]["stream"] &&
+              tables[0]["runtime_selection"] == "not_evaluated" &&
+              bytesof(tables[0]["unassigned_ranges"][0]["data"]) == Bytes({0x78, 0x56, 0x34, 0x12}),
+          "table source locations and unnamed suffix survive without claiming runtime table "
+          "selection");
+    auto extended_table = table_record(1, 0x60);
+    put(extended_table, 36, 0xffffffff, 4);
+    auto leaf = child_record();
+    put(leaf, 6, 0xc0, 2);
+    membership = inspect_tables(native_rows({extended_table, leaf}));
+    check(membership["tables"][0]["membership_status"] == "resolved" &&
+              membership["tables"][0]["descendant_count_source_offset"] == 108 &&
+              membership["tables"][0]["declared_descendant_count"] == 1 &&
+              bytesof(membership["tables"][0]["unassigned_ranges"][0]["data"]).size() == 72 &&
+              membership["tables"][0]["member_record_indices"] == Json::array({1}),
+          "extended headers move the count and type 49 remains a leaf even with compound flag set");
+    membership = inspect_tables(native_rows({table_record(0), child_record(), table_record(0)}));
+    check(membership["tables"].size() == 2 &&
+              membership["tables"][0]["membership_status"] == "resolved" &&
+              membership["tables"][0]["members"].empty() &&
+              membership["catalog"][0]["table_memberships"].empty(),
+          "empty material tables do not adopt adjacent records");
+    auto other = record({});
+    put(other, 6, 0x80, 2);
+    membership = inspect_tables(native_rows({table_record(1), other}));
+    check(membership["tables"][0]["membership_status"] == "resolved" &&
+              membership["tables"][0]["member_record_indices"] == Json::array({1}) &&
+              membership["tables"][0]["members"][0]["catalog_record_index"].is_null(),
+          "noncatalog source children remain in their original table order");
+    for (unsigned type : {10u, 32u, 64u}) {
+        auto nested = table_record(1, 0xc0, 19);
+        put(nested, 4, type, 2);
+        membership =
+            inspect_tables(native_rows({table_record(3), nested, child_record(), child_record()}));
+        check(membership["tables"].size() == 1 &&
+                  membership["tables"][0]["member_record_indices"] == Json::array({1, 3}) &&
+                  membership["catalog"][0]["table_memberships"].empty(),
+              "native compound classification excludes nested descendants from outer catalog "
+              "membership");
+    }
+    auto valid = native_rows({table_record(2), child_record(), child_record()});
+    for (unsigned damage = 0; damage != 7; ++damage) {
+        auto bad = valid;
+        if (damage == 0)
+            bad[2]["stream"] = Json::array({"other"});
+        if (damage == 1)
+            bad[2]["offset"] = bad[2]["offset"].get<std::size_t>() + 2;
+        if (damage == 2)
+            bad[2]["element_flags"] = 0;
+        if (damage == 3)
+            bad = native_rows({table_record(UINT32_MAX), child_record()});
+        if (damage == 4) {
+            auto b = table_record(0);
+            b.resize(36);
+            put(b, 8, 16, 4);
+            put(b, 12, 16, 4);
+            bad = native_rows({b, child_record()});
+        }
+        if (damage == 5)
+            bad = native_rows({table_record(2), table_record(2, 0xc0, 19), child_record()});
+        if (damage == 6) {
+            auto b = other;
+            put(b, 4, 10, 2);
+            put(b, 16, 19, 4);
+            bad = native_rows({table_record(1), b});
+        }
+        membership = inspect_tables(bad);
+        bool unowned = true;
+        for (const auto &entry : membership["catalog"])
+            unowned = unowned && entry["table_memberships"].empty();
+        check(membership["tables"].size() == 1 &&
+                  membership["tables"][0]["membership_status"] == "invalid" &&
+                  membership["tables"][0].contains("membership_error") &&
+                  membership["tables"][0]["members"].empty() && unowned,
+              "invalid table spans publish no partial membership and retain independent catalog "
+              "records");
+    }
     return checks;
 }

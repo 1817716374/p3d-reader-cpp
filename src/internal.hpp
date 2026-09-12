@@ -192,6 +192,7 @@ Json build_scene(const Document &, unsigned);
 Json read_materials(const Document &);
 Json native_material_references(const Json &native_records);
 Json native_material_catalog_records(const Json &native_records);
+Json native_material_catalog_tables(const Json &native_records, Json &catalog_records);
 Json material_settings(const Json &tree);
 Json material_parameter_semantics(const Json &attributes);
 Json material_map_semantics(const Json &attributes);
