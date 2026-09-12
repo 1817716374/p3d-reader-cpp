@@ -93,6 +93,62 @@ unsigned mesh_extension_tests() {
     check(c["illumination_name"] == u8"木材" && c["illumination_name_status"] == "decoded" &&
               c["fields"][2]["count"] == 3,
           "UTF16 illumination name count includes terminator");
+    check(c["illumination_texture"]["status"] == "lookup_requested" &&
+              c["illumination_texture"]["reference"]["filename"] == u8"木材" &&
+              c["illumination_texture"]["reference"]["search_path_setting"] == "P3d_Pattern" &&
+              c["illumination_texture"]["runtime_texture_id_serialized"] == false,
+          "illumination name is a pattern resource reference, not a material ID");
+    auto named_command = [&](const std::vector<std::uint16_t> &units) {
+        Bytes payload;
+        put(payload, std::uint32_t(0));
+        put(payload, std::uint32_t(0));
+        array(payload, units);
+        return command(payload);
+    };
+    auto absent_name = named_command({});
+    auto empty_name = named_command({0});
+    auto disabled_name = named_command({'~', 0});
+    check(absent_name["decoded"]["mesh_channels"]["illumination_texture"]["status"] == "absent" &&
+              empty_name["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+                  "lookup_requested" &&
+              empty_name["decoded"]["mesh_channels"]["illumination_texture"]["reference"]
+                        ["filename"] == "",
+          "native null name and present empty string remain distinct");
+    check(disabled_name["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+                  "disabled_sentinel" &&
+              disabled_name["decoded"]["mesh_channels"]["illumination_texture"]["reference"]
+                  .is_null(),
+          "exact tilde bypasses texture lookup without deleting the source string");
+    for (const auto &units : std::vector<std::vector<std::uint16_t>>{
+             {'~', 'a', 0},
+             {' ', '~', 0},
+             {'~', ' ', 0},
+             {'.', '.', '\\', 0x7eb9, 0x7406, '.', 'p', 'n', 'g', 0},
+             {'C', ':', '\\', 'a', '.', 'p', 'm', 'a', 0}}) {
+        auto named = named_command(units);
+        const auto &source = named["decoded"]["mesh_channels"];
+        check(source["illumination_texture"]["status"] == "lookup_requested" &&
+                  source["illumination_texture"]["reference"]["filename"] ==
+                      source["illumination_name"],
+              "resource references retain whitespace, tilde prefixes, paths and resource suffixes");
+    }
+    auto trailing_name = named_command({'~', 0, 'x', 0xd800});
+    check(trailing_name["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+                  "disabled_sentinel" &&
+              trailing_name["decoded"]["mesh_channels"]["illumination_name_utf16_hex"] ==
+                  "7e000000780000d8",
+          "lookup stops at the first null while all source UTF16 units remain preserved");
+    auto named_geo = reconstruct(Json::array({empty_name, disabled_name}), {});
+    Geometry mirrored_names;
+    auto named_transform = identity();
+    named_transform[0][0] = -1;
+    merge_geometry(mirrored_names, named_geo, named_transform);
+    check(named_geo.faces.size() == 4 && mirrored_names.faces.size() == 4 &&
+              mirrored_names.primitive_ranges[0]["mesh_channels"]["source"]["illumination_texture"]
+                                             ["status"] == "lookup_requested" &&
+              mirrored_names.primitive_ranges[1]["mesh_channels"]["source"]["illumination_texture"]
+                                             ["status"] == "disabled_sentinel",
+          "texture reference semantics propagate through geometry ranges and mirrored instances");
     check(c["face_uv_points"][5] == Json({15., -5.}) &&
               c["face_smoothing_groups"] == Json({-7, 3}) &&
               c["face_material_ids"][1].get<std::uint64_t>() == UINT64_MAX - 123,
@@ -288,6 +344,19 @@ unsigned mesh_extension_tests() {
             "all extension truncation boundaries are safe and distinguish omitted optional fields");
     }
     auto legacy = command(slice(extra, 0, ends[2]));
+    auto short_name = command(slice(extra, 0, ends[2] - 1));
+    auto short_later_channel = command(slice(extra, 0, ends[2] + 1));
+    check(short_name["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+                  "unavailable_name" &&
+              command(Bytes{})["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+                  "unavailable_name",
+          "truncated and unread name fields are not confused with absent pointers");
+    check(short_later_channel["decoded"]["mesh_channels"]["status"] == "invalid" &&
+              short_later_channel["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+                  "lookup_requested" &&
+              short_later_channel["decoded"]["mesh_channels"]["illumination_texture"]["reference"]
+                                 ["filename"] == u8"木材",
+          "a later broken extension does not discard a fully read texture reference");
     check(legacy["decoded"]["mesh_channels"]["fields"][3]["status"] == "omitted" &&
               legacy["decoded"]["mesh_channels"]["bindings"]["material_id_status"] == "absent" &&
               reconstruct(Json::array({legacy}), {}).unknown.empty(),
@@ -363,6 +432,11 @@ unsigned mesh_extension_tests() {
     check(unterminated["decoded"]["mesh_channels"]["illumination_name_status"] == "unterminated" &&
               unterminated["decoded"]["mesh_channels"]["status"] == "partial",
           "unterminated illumination name is not reported as a valid native string");
+    check(
+        unterminated["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+                "unavailable_name" &&
+            unterminated["decoded"]["mesh_channels"]["illumination_texture"]["reference"].is_null(),
+        "unterminated strings do not produce guessed texture references");
     name.clear();
     put(name, std::uint32_t(0));
     put(name, std::uint32_t(0));
@@ -372,6 +446,9 @@ unsigned mesh_extension_tests() {
     check(unicode["decoded"]["mesh_channels"]["illumination_name_status"] == "invalid_unicode" &&
               unicode["decoded"]["mesh_channels"]["illumination_name"].is_null(),
           "invalid UTF16 source remains raw without invalid UTF8 output");
+    check(unicode["decoded"]["mesh_channels"]["illumination_texture"]["status"] ==
+              "unavailable_name",
+          "invalid UTF16 cannot become a decoded resource reference");
     auto source_polygons = d["polygons"];
     source_polygons.insert(source_polygons.begin(), Json{{"point_indices", Json::array()},
                                                          {"normal_indices", Json::array()},

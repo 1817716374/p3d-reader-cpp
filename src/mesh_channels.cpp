@@ -104,6 +104,31 @@ Json native_mesh_routing(const Json &channels, const FaceLayout &layout, const J
     }
     return out;
 }
+Json illumination_texture(const Json &channels) {
+    Json out = {{"reader_profile", "bimbase_2025_poly_export_texture_lookup"},
+                {"scope", "lookup_if_invoked"},
+                {"status", "unavailable_name"},
+                {"reference", nullptr},
+                {"runtime_texture_id_serialized", false}};
+    // A null pointer and the exact native sentinel bypass resource lookup.
+    // Do not treat an empty, but present, string as the absent pointer.
+    if (channels["fields"][2]["status"] != "decoded")
+        return out;
+    if (channels["illumination_name_status"] == "absent")
+        out["status"] = "absent";
+    else if (channels["illumination_name_status"] == "decoded") {
+        if (channels["illumination_name"] == "~")
+            out["status"] = "disabled_sentinel";
+        else {
+            out["status"] = "lookup_requested";
+            out["reference"] = {{"filename", channels["illumination_name"]},
+                                {"reference_kind", "mesh_illumination"},
+                                {"source_field", "illumination_name"},
+                                {"search_path_setting", "P3d_Pattern"}};
+        }
+    }
+    return out;
+}
 } // namespace
 Json decode_mesh_channels(const Bytes &b, const Json &arrays, const Json &polygons,
                           std::uint32_t num_per_face) {
@@ -190,6 +215,7 @@ Json decode_mesh_channels(const Bytes &b, const Json &arrays, const Json &polygo
              out["illumination_name_status"] == "invalid_unicode")
         out["status"] = "partial";
     out["raw_hex"] = hex(b);
+    out["illumination_texture"] = illumination_texture(out);
     Json bindings = {{"scope", "source_command_polygons"},
                      {"color_index_source", "param_index_array"},
                      {"serialized_color_indices_used_by_reader", false},
