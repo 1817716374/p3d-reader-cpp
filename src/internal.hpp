@@ -204,7 +204,10 @@ Json native_list_record_header(const Json &, const Json &conversion, bool child,
                               bool compound, std::uint32_t descendants, bool system);
 Json native_list_input_preparation(const Json &container, const Json &records);
 Json native_input_containers(const std::vector<Stream> &, const Json &index, const Json &records);
-Json native_material_catalog_records(const Json &native_records);
+Json native_material_catalog_records(const Json &native_records,
+                                    const std::vector<std::size_t> *selected_members = nullptr);
+Json native_material_catalog_registration(const Json &selection, const Json &sources,
+                                          const MaterialCatalogOptions &);
 Json native_material_catalog_tables(const Json &native_records, Json &catalog_records);
 Json native_system_material_table(const Json &list, const Json &records, const Json &ids);
 Json native_attribute_lookup(const Json &attributes);

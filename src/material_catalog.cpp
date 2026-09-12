@@ -328,14 +328,17 @@ Json catalog_resource_interpretation(const Json &field) {
     return out;
 }
 } // namespace
-Json native_material_catalog_records(const Json &native_records) {
+Json native_material_catalog_records(const Json &native_records,
+                                    const std::vector<std::size_t> *selected_members) {
     Json out = Json::array();
-    for (std::size_t ni = 0; ni < native_records.size(); ++ni) {
+    const auto count = selected_members ? selected_members->size() : native_records.size();
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto ni = selected_members ? selected_members->at(i) : i;
         const auto &n = native_records[ni];
-        if (n.at("element_type") != 49)
+        if (!selected_members && n.at("element_type") != 49)
             continue;
         const auto base = bytesof(n.at("data"));
-        if (base.size() < 20 || Reader(base, 16).u32() != 18)
+        if (!selected_members && (base.size() < 20 || Reader(base, 16).u32() != 18))
             continue;
         Json strings = Json::array();
         Json name = {{"status", "missing"}, {"entry_index", nullptr}, {"value", nullptr}};

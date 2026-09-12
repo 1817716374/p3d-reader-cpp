@@ -374,6 +374,25 @@ struct NativeScene {
     // Views borrow geometry/ranges from this scene; callback must not mutate it.
     void for_each_primitive(const std::function<void(const PrimitiveView &)> &) const;
 };
+struct MaterialCatalogContext {
+    // Native ID-index key and context-comparison key can differ after lookup failure.
+    std::string index_key, comparison_key;
+};
+struct MaterialCatalogResource {
+    std::string member_name;
+    std::uint32_t descriptor_mode = 0;
+    // Unset denotes this system container's current resource context.
+    std::optional<MaterialCatalogContext> primary_context;
+};
+struct MaterialCatalogOptions {
+    std::optional<MaterialCatalogContext> current_context;
+    // Called only when the source reference cannot determine the descriptor.
+    // Arguments are the input member identity and its parsed catalog source fields.
+    std::function<std::optional<MaterialCatalogResource>(const Json &, const Json &)> resolve_resource;
+    // UTF-8 strings. Default: native CRT C-locale equality (ASCII case conversion).
+    // Supply the relevant host-locale equality when reproducing another locale.
+    std::function<bool(const std::string &, const std::string &)> case_equal;
+};
 // Parsed once in source stream order. All IDs retain their original scopes.
 // References returned by accessors are immutable and remain valid for the document lifetime.
 class Document {
@@ -388,6 +407,9 @@ class Document {
     // Conditional block input and trees, initial SSYS IDs, attributes/material table;
     // does not instantiate host runtime objects or evaluate later host events.
     Json native_input_containers() const;
+    // Initial registration of each system table into an empty material catalog.
+    // External resources are never searched automatically.
+    Json native_material_catalog(const MaterialCatalogOptions & = {}) const;
     const Json &graphics_records() const;
     const Json &bindings() const;
     const Json &relationships() const;
