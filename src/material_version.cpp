@@ -298,6 +298,7 @@ Json converted_maps(const Json &input, const Json &maps, const Json &bindings, c
 Json material_version_conversion(const Json &input, const Json &maps, const Json &bindings,
                                  const Json &mode) {
     auto topology = converted_maps(input, maps, bindings, mode);
+    auto layers = material_layer_containers(maps, topology);
     auto parameters = converted_roots(input, mode, topology.at("status") == "resolved");
     const bool resolved =
         topology.at("status") == "resolved" && parameters.at("status") == "resolved";
@@ -306,6 +307,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
             {"mode", mode},
             {"status", resolved ? "resolved" : "partial"},
             {"root_parameters", std::move(parameters)},
+            {"layer_containers", std::move(layers)},
             {"map_topology", std::move(topology)}};
 }
 } // namespace p3d

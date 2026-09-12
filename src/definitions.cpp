@@ -89,6 +89,7 @@ Json material_settings(const Json &tree) {
     };
     for (std::size_t i = 0; i < maps.size(); ++i) {
         auto &map = maps[i];
+        map["initial_layer_state"] = material_layer_input(map, (*map_sources[i])["children"].size());
         map["replicators"]["initial_state"] = material_replicator_input(map["replicators"]);
         auto dispatch = map["reader_path"].value("provider_dispatch", Json::object());
         attach_legacy(*map_sources[i], map, dispatch,
