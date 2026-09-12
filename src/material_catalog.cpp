@@ -31,20 +31,91 @@ Json native_catalog_input_filter(const Json &record, const Bytes &base) {
             {"native_error_code", read_error ? Json(0x12005) : Json()},
             {"record_word_count", words}};
 }
+Json native_catalog_input_child(const Json &n, const Bytes &base) {
+    const auto type = n.at("element_type").get<unsigned>();
+    const auto flags = n.at("element_flags").get<unsigned>();
+    const bool compound =
+        (type >= 10 && type <= 32) || ((type < 33 || type > 63) && (flags & 0x40));
+    Json result = {{"compound", compound}, {"descendant_count", 0}};
+    auto count_offset = (flags & 0x20) ? 108u : 36u;
+    if (type == 24) {
+        const auto words = Reader(base, 8).u32(), base_words = Reader(base, 12).u32();
+        const bool extended = (flags & 0x20) != 0;
+        if (extended)
+            require(base_words >= 52 && words >= base_words && base.size() >= 108,
+                    "type 24 input extension exceeds declared header");
+        result["conversion"] = {{"kind", "type_24_extended_header_removal"},
+                                {"applied", extended},
+                                {"output_element_flags", flags & ~0x20u},
+                                {"output_record_word_count", words - (extended ? 36u : 0u)},
+                                {"output_base_word_count", base_words - (extended ? 36u : 0u)},
+                                {"descendant_count_source_offset", count_offset},
+                                {"descendant_count_source_bytes", 4}};
+    } else if (type == 13) {
+        // All addresses include the four-byte physical record prefix. The
+        // legacy discriminator is tested in this order before upgrading fields.
+        bool legacy = Reader(base, 160).u32() == 0;
+        if (legacy)
+            legacy = Reader(base, 342).u16() == 0;
+        if (legacy)
+            legacy = Reader(base, 344).u16() == 0;
+        std::uint16_t entries = 0;
+        if (legacy) {
+            entries = Reader(base, 346).u16();
+            legacy = entries <= 2500;
+        }
+        const auto base_words = Reader(base, 12).u32();
+        if (legacy)
+            legacy = base_words == 172u + 8u * entries;
+        Json conversion = {
+            {"kind", "type_13_legacy_layout_upgrade"},
+            {"applied", legacy},
+            {"output_element_flags", flags},
+            {"output_base_word_count", base_words + (legacy ? 12u : 0u)},
+            {"output_record_word_count", Reader(base, 8).u32() + (legacy ? 12u : 0u)},
+            {"payload_reconstruction", "not_evaluated"}};
+        if (legacy) {
+            require(base.size() >= 348u + 16u * entries, "truncated type 13 legacy entries");
+            conversion["legacy_entry_count"] = entries;
+        }
+        // The upgrade preserves native +0x20. In an extended-header record,
+        // however, native +0x68 is one repeated u16 from old native +0x3c,
+        // followed by two zero bytes, rather than the old extended count.
+        if (legacy && (flags & 0x20)) {
+            count_offset = 64;
+            result["descendant_count"] = Reader(base, count_offset).u16();
+            conversion["descendant_count_source_bytes"] = 2;
+        } else {
+            result["descendant_count"] = Reader(base, count_offset).u32();
+            conversion["descendant_count_source_bytes"] = 4;
+        }
+        conversion["descendant_count_source_offset"] = count_offset;
+        result["conversion"] = std::move(conversion);
+        return result;
+    } else if (type == 62) {
+        // The native branch only updates the 3x3 matrix at native +0xa0.
+        // It cannot change the type/flags or add descendants. Matrix repair
+        // itself is a separate geometry operation, not needed to resolve a leaf.
+        require(base.size() >= 236, "truncated type 62 input matrix");
+        result["conversion"] = {{"kind", "type_62_matrix_repair"},
+                                {"matrix_source_offset", 164},
+                                {"matrix_value_count", 9},
+                                {"payload_reconstruction", "not_evaluated"}};
+    }
+    if (compound)
+        result["descendant_count"] = Reader(base, count_offset).u32();
+    return result;
+}
 Json native_catalog_input_members(std::size_t ni, const Json &records,
                                   const std::map<std::size_t, std::size_t> &catalog_indices,
                                   std::uint32_t counter) {
     Json out = {
         {"scope", "table_input_if_reached"},        {"status", "invalid"},
         {"member_record_indices", Json::array()},   {"members", Json::array()},
-        {"consumed_record_indices", Json::array()}, {"skipped_record_indices", Json::array()}};
+        {"consumed_record_indices", Json::array()}, {"skipped_record_indices", Json::array()},
+        {"record_conversions", Json::array()}};
     const auto &table = records[ni];
     const auto stream = table.value("stream", Json());
-    auto compound = [](const Json &n) {
-        auto type = n.at("element_type").get<unsigned>();
-        return (type >= 10 && type <= 32) ||
-               ((type < 33 || type > 63) && (n.at("element_flags").get<unsigned>() & 0x40));
-    };
     auto count = [](const Json &n, const Bytes &b) {
         return Reader(b, (n.at("element_flags").get<unsigned>() & 0x20) ? 108 : 36).u32();
     };
@@ -91,11 +162,13 @@ Json native_catalog_input_members(std::size_t ni, const Json &records,
                 // the counter again until an accepted complete child returns.
                 continue;
             }
-            const auto type = n.at("element_type").get<unsigned>();
-            if (type == 13 || type == 24 || type == 62) {
-                out["status"] = "unsupported_record_conversion";
-                out["error_record_index"] = current;
-                return out;
+            const auto child = native_catalog_input_child(n, b);
+            if (child.contains("conversion")) {
+                auto conversion = child["conversion"];
+                conversion["native_record_index"] = current;
+                conversion["compound"] = child["compound"];
+                conversion["descendant_count"] = child["descendant_count"];
+                out["record_conversions"].push_back(std::move(conversion));
             }
             if (ends.size() == 1) {
                 const auto ci = catalog_indices.find(current);
@@ -104,8 +177,9 @@ Json native_catalog_input_members(std::size_t ni, const Json &records,
                                    {"catalog_record_index",
                                     ci == catalog_indices.end() ? Json() : Json(ci->second)}});
             }
-            if (compound(n)) {
-                const auto child_end = std::uint32_t(counter + count(n, b));
+            if (child["compound"] == true) {
+                const auto child_end =
+                    std::uint32_t(counter + child["descendant_count"].get<std::uint32_t>());
                 if (counter < child_end)
                     ends.push_back(child_end);
             }

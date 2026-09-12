@@ -700,11 +700,105 @@ unsigned native_material_tests() {
         auto conversion = other;
         put(conversion, 4, type, 2);
         input = input_members({table_record(2), child_record(), conversion});
-        check(input["status"] == "unsupported_record_conversion" &&
-                  input["error_record_index"] == 2 && input["members"].empty(),
-              "native conversion branches are reported explicitly instead of guessing their "
-              "output topology");
+        check(input["status"] == "invalid" && input.contains("error") && input["members"].empty(),
+              "truncated conversion inputs fail without publishing a partial table");
     }
+    auto typed_compound = [&](unsigned type, unsigned flags, std::uint32_t count) {
+        auto b = table_record(count, flags, 19);
+        put(b, 4, type, 2);
+        return b;
+    };
+    for (unsigned flags : {0x80u, 0xa0u}) {
+        auto converted = typed_compound(24, flags, 1);
+        input = input_members({table_record(3), converted, child_record(), child_record()});
+        const auto &conversion = input["record_conversions"][0];
+        check(input["status"] == "resolved" &&
+                  input["member_record_indices"] == Json::array({1, 3}) &&
+                  conversion["native_record_index"] == 1 && conversion["compound"] == true &&
+                  conversion["descendant_count"] == 1 &&
+                  conversion["applied"] == bool(flags & 0x20) &&
+                  conversion["output_element_flags"] == 0x80 &&
+                  conversion["output_base_word_count"] == 20 &&
+                  conversion["output_record_word_count"] == 20 &&
+                  conversion["descendant_count_source_offset"] == ((flags & 0x20) ? 108 : 36),
+              "type 24 input removes its optional extension and reads the same nested count "
+              "from the relocated header");
+    }
+    auto legacy_13 = [&](unsigned flags, unsigned entries) {
+        Bytes b(348 + entries * 16, 0);
+        put(b, 4, 13, 2);
+        put(b, 6, flags, 2);
+        put(b, 8, (b.size() - 4) / 2, 4);
+        put(b, 12, (b.size() - 4) / 2, 4);
+        put(b, 36, 1, 4);
+        put(b, 346, entries, 2);
+        return b;
+    };
+    for (unsigned entries : {0u, 1u, 2500u}) {
+        auto converted = legacy_13(0x80, entries);
+        input = input_members({table_record(3), converted, child_record(), child_record()});
+        const auto &conversion = input["record_conversions"][0];
+        check(input["status"] == "resolved" &&
+                  input["member_record_indices"] == Json::array({1, 3}) &&
+                  conversion["kind"] == "type_13_legacy_layout_upgrade" &&
+                  conversion["applied"] == true && conversion["legacy_entry_count"] == entries &&
+                  conversion["output_base_word_count"] == 184 + 8 * entries &&
+                  conversion["output_record_word_count"] == 184 + 8 * entries &&
+                  conversion["descendant_count_source_offset"] == 36 &&
+                  conversion["descendant_count_source_bytes"] == 4 &&
+                  conversion["payload_reconstruction"] == "not_evaluated",
+              "type 13 legacy upgrade preserves the ordinary descendant count and records "
+              "the twelve-word header growth independently of payload reconstruction");
+    }
+    auto extended_13 = legacy_13(0xa0, 0);
+    put(extended_13, 64, 1, 2);
+    put(extended_13, 66, 0xffff, 2);
+    put(extended_13, 108, 100, 4);
+    auto original_conversion_rows =
+        native_rows({table_record(3), extended_13, child_record(), child_record()});
+    auto unchanged_conversion_rows = original_conversion_rows;
+    membership = inspect_tables(original_conversion_rows);
+    input = membership["tables"][0]["initial_load_members"];
+    check(input["status"] == "resolved" && input["member_record_indices"] == Json::array({1, 3}) &&
+              input["record_conversions"][0]["descendant_count"] == 1 &&
+              input["record_conversions"][0]["descendant_count_source_offset"] == 64 &&
+              input["record_conversions"][0]["descendant_count_source_bytes"] == 2 &&
+              original_conversion_rows == unchanged_conversion_rows,
+          "extended type 13 legacy upgrade uses the repeated old u16 and zero padding for "
+          "the new count rather than old count or neighboring bytes, preserving source data");
+    for (unsigned discriminator : {160u, 342u, 344u, 346u, 12u}) {
+        auto modern = legacy_13(0x80, 0);
+        if (discriminator == 160)
+            put(modern, 160, 1, 4);
+        else if (discriminator == 346)
+            put(modern, 346, 2501, 2);
+        else if (discriminator == 12) {
+            modern.resize(modern.size() + 2);
+            put(modern, 8, (modern.size() - 4) / 2, 4);
+            put(modern, 12, (modern.size() - 4) / 2, 4);
+        } else
+            put(modern, discriminator, 1, 2);
+        input = input_members({table_record(2), modern, child_record()});
+        check(input["status"] == "resolved" && input["member_record_indices"] == Json::array({1}) &&
+                  input["record_conversions"][0]["applied"] == false &&
+                  input["record_conversions"][0]["descendant_count"] == 1,
+              "each nonlegacy type 13 discriminator preserves the original layout and count");
+    }
+    auto reference_62 = other;
+    reference_62.resize(260, 0);
+    put(reference_62, 4, 62, 2);
+    put(reference_62, 6, 0xe0, 2);
+    put(reference_62, 8, 128, 4);
+    put(reference_62, 12, 128, 4);
+    input = input_members({table_record(2), reference_62, child_record()});
+    check(input["status"] == "resolved" && input["member_record_indices"] == Json::array({1, 2}) &&
+              input["record_conversions"][0]["kind"] == "type_62_matrix_repair" &&
+              input["record_conversions"][0]["compound"] == false &&
+              input["record_conversions"][0]["descendant_count"] == 0 &&
+              input["record_conversions"][0]["matrix_source_offset"] == 164 &&
+              input["record_conversions"][0]["payload_reconstruction"] == "not_evaluated",
+          "type 62 matrix conversion leaves the input record a leaf even with compound and "
+          "extended-header flags and does not claim repaired geometry");
     input = input_members({table_record(UINT32_MAX), child_record()});
     check(input["status"] == "resolved" && input["start_counter"] == 1 &&
               input["target_counter"] == 0 && input["end_counter"] == 1 &&
