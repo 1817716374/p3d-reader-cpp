@@ -198,9 +198,127 @@ unsigned native_reference_input_tests() {
           "native length overflow is reported rather than replaced by a different norm algorithm");
     for (unsigned offset : {8u, 12u, 370u}) {
         auto b = wire(identity, 1);
-        put(b, offset, offset == 370 ? 1 : 185, offset == 370 ? 2 : 4);
+        put(b, offset, offset == 370 ? 4 : 185, offset == 370 ? 2 : 4);
         const auto result = native_reference_input(b);
         check(result["status"] == "invalid", "truncated declarations and entry arrays fail safely");
     }
+    for (unsigned count : {0u, 1u, 3u, 4u, 5u, 2499u, 2500u, 2501u, 65535u}) {
+        for (bool complete : {false, true}) {
+            if (complete && count == 65535)
+                continue;
+            auto b = wire(identity, 1);
+            if (complete)
+                b.resize(372 + 16 * count);
+            put(b, 8, (b.size() - 4) / 2, 4);
+            put(b, 12, (b.size() - 4) / 2, 4);
+            put(b, 370, count, 2);
+            if (complete)
+                for (unsigned i = 0; i < count; ++i) {
+                    number(b, 372 + 16 * i, 1.25 + i);
+                    number(b, 380 + 16 * i, -3.5 - 2 * i);
+                }
+            const bool accepted = count >= 4 && count <= 2500;
+            const auto decoded = native_reference_input(b);
+            check(decoded["status"] == (accepted && !complete ? "invalid" : "decoded"),
+                  "only a loader-accepted clipping count requires complete point bytes");
+            const auto &boundary = decoded["clipping"]["boundary"];
+            check(boundary["source_point_count"] == count &&
+                      boundary["loader_return_code"] ==
+                          (accepted && !complete ? Json() : Json(count == 0 || accepted ? 0 : 1)) &&
+                      boundary["loaded_point_count"] ==
+                          (accepted && !complete ? Json() : Json(accepted ? count : 0)) &&
+                      boundary["source_points_status"] ==
+                          (complete || count == 0 ? "decoded" : "truncated"),
+                  "clip loader selection and source array availability remain separate");
+            if (complete && count) {
+                check(boundary["source_points"].size() == count &&
+                          boundary["source_points"][0] == Json::array({1.25, -3.5}) &&
+                          boundary["source_points"][count - 1] ==
+                              Json::array({0.25 + count, -1.5 - 2 * count}),
+                      "two-dimensional clip vertices preserve source order without auto-closing");
+            }
+        }
+    }
+    for (auto range : {Point2{10, -5}, Point2{-5, 10}, Point2{3, 3}}) {
+        for (unsigned mask : {0u, 0x400u, 0x800u, 0xc00u}) {
+            auto b = wire(identity, 1);
+            put(b, 64, 0x80401234u | mask, 4);
+            number(b, 316, range[0]);
+            number(b, 324, range[1]);
+            const auto d = native_reference_input(b)["clipping"]["depths"];
+            const bool clear = range[1] >= range[0];
+            const unsigned effective = clear ? 0 : mask;
+            check(d["depth_flags_cleared"] == clear &&
+                      d["flags_after_depth_validation"] == (0x80401234u | effective) &&
+                      d["local_interval"]["lower"] ==
+                          ((effective & 0x400) ? range[1] : -4503599627370496.) &&
+                      d["local_interval"]["upper"] ==
+                          ((effective & 0x800) ? range[0] : 4503599627370495.),
+                  "depth input clears both flags for reversed or equal intervals and uses native "
+                  "defaults");
+        }
+    }
+    const auto infinity = std::numeric_limits<double>::infinity();
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    for (auto range : {Point2{infinity, infinity}, Point2{infinity, -infinity}, Point2{nan, 0},
+                       Point2{1, nan}}) {
+        for (unsigned mask : {0u, 0xc00u}) {
+            auto b = wire(identity, 1);
+            put(b, 64, mask, 4);
+            number(b, 316, range[0]);
+            number(b, 324, range[1]);
+            const auto clip = native_reference_input(b)["clipping"];
+            const auto &d = clip["depths"];
+            const bool clear = range[1] >= range[0];
+            check(d["depth_flags_cleared"] == clear &&
+                      d["local_interval"]["status"] ==
+                          (clear || !mask ? "computed" : "not_evaluated") &&
+                      Json::parse(clip.dump()) == clip,
+                  "unordered and infinite depth values keep native flag branches and lossless IEEE "
+                  "metadata");
+        }
+    }
+    auto b = wire(identity, 1);
+    b.resize(436, 0);
+    put(b, 8, 216, 4);
+    put(b, 12, 216, 4);
+    put(b, 370, 4, 2);
+    number(b, 372, nan);
+    number(b, 380, -infinity);
+    auto clip = native_reference_input(b)["clipping"];
+    check(clip["status"] == "decoded" && clip["boundary"]["loader_status"] == "accepted" &&
+              clip["boundary"]["all_components_finite"] == false &&
+              clip["boundary"]["source_points"][0][0]["floating_point"] == "nan" &&
+              clip["boundary"]["source_points"][0][1]["negative"] == true &&
+              Json::parse(clip.dump()) == clip,
+          "native clip copying does not reject NaN points, while metadata preserves their bits");
+    put(b, 12, 184, 4);
+    const auto truncated = native_reference_input(b);
+    check(truncated["status"] == "invalid" &&
+              truncated["clipping"]["boundary"]["loader_status"] == "truncated" &&
+              truncated["clipping"]["boundary"]["source_points"].empty(),
+          "attribute tail bytes cannot satisfy missing clipping vertices in the declared base");
+    Bytes old(348 + 5 * 16, 0);
+    put(old, 4, 13, 2);
+    put(old, 8, (old.size() - 4) / 2, 4);
+    put(old, 12, (old.size() - 4) / 2, 4);
+    put(old, 346, 5, 2);
+    put(old, 56, 0xc00, 4);
+    number(old, 292, 9);
+    number(old, 300, -2);
+    for (unsigned i = 0; i < 5; ++i) {
+        number(old, 348 + 16 * i, i + 0.5);
+        number(old, 356 + 16 * i, -static_cast<double>(i) - 0.75);
+    }
+    clip = native_reference_input(old)["clipping"];
+    check(
+        clip["boundary"]["loaded_point_count"] == 5 &&
+            clip["boundary"]["points_source_offset"] == 348 &&
+            clip["depths"]["flags_source_offset"] == 56 &&
+            clip["depths"]["upper_source_offset"] == 292 &&
+            clip["depths"]["lower_source_offset"] == 300 &&
+            clip["depths"]["local_interval"] ==
+                Json{{"status", "computed"}, {"lower", -2.}, {"upper", 9.}},
+        "legacy clipping vertices, flags and depths use their own source offsets after conversion");
     return checks;
 }

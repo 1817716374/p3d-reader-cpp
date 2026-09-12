@@ -56,6 +56,89 @@ NativeReferenceLayout native_reference_layout(const Bytes &source) {
     return {std::move(data), true, entries};
 }
 namespace {
+Json source_number(const Bytes &data, std::size_t offset) {
+    const auto value = Reader(data, offset).f64();
+    if (std::isfinite(value))
+        return value;
+    const auto bits = Reader(data, offset).u64();
+    std::string encoded(16, '0');
+    for (unsigned i = 0; i < 16; ++i)
+        encoded[15 - i] = "0123456789abcdef"[(bits >> (i * 4)) & 15];
+    return {{"floating_point", std::isinf(value) ? "infinity" : "nan"},
+            {"negative", bool(bits >> 63)},
+            {"ieee754_hex", encoded}};
+}
+Json reference_clipping(const Bytes &data, bool upgraded) {
+    const auto base_size = 4 + std::uint64_t(Reader(data, 12).u32()) * 2;
+    const auto count = Reader(data, 370).u16();
+    const bool accepted = count >= 4 && count <= 2500;
+    const bool complete = 372u + 16u * count <= base_size;
+    Json boundary = {
+        {"source_point_count", count},
+        {"point_count_layout_offset", 370},
+        {"point_count_source_offset", upgraded ? 346 : 370},
+        {"points_layout_offset", 372},
+        {"points_source_offset", upgraded ? 348 : 372},
+        {"loader_status", count == 0  ? "empty"
+                          : !accepted ? "rejected_count"
+                          : complete  ? "accepted"
+                                      : "truncated"},
+        {"loader_return_code",
+         accepted && !complete ? Json() : Json(count == 0 || accepted ? 0 : 1)},
+        {"loaded_point_count", accepted && !complete ? Json() : Json(accepted ? count : 0)},
+        {"source_points_status", complete ? "decoded" : "truncated"},
+        {"source_points", Json::array()}};
+    // Rejected counts never cause the native loader to dereference the array.
+    // Decode any complete source array separately without making it active.
+    if (complete) {
+        bool finite = true;
+        for (unsigned i = 0; i < count; ++i) {
+            const auto offset = 372u + 16u * i;
+            boundary["source_points"].push_back(
+                {source_number(data, offset), source_number(data, offset + 8)});
+            finite = finite && std::isfinite(Reader(data, offset).f64()) &&
+                     std::isfinite(Reader(data, offset + 8).f64());
+        }
+        boundary["all_components_finite"] = finite;
+    }
+    const auto source_flags = Reader(data, 64).u32();
+    const auto upper = Reader(data, 316).f64(), lower = Reader(data, 324).f64();
+    // The ordered native comparison also clears both bits for equal endpoints,
+    // including equal infinities. An unordered (NaN) comparison preserves them.
+    const bool clear_depths = lower >= upper;
+    const auto flags = clear_depths ? source_flags & ~0xc00u : source_flags;
+    const bool lower_enabled = (flags & 0x400) != 0, upper_enabled = (flags & 0x800) != 0;
+    const double selected_lower = lower_enabled ? lower : -4503599627370496.,
+                 selected_upper = upper_enabled ? upper : 4503599627370495.;
+    Json depths = {{"source_flags", source_flags},
+                   {"flags_layout_offset", 64},
+                   {"flags_source_offset", upgraded ? 56 : 64},
+                   {"flags_after_depth_validation", flags},
+                   {"depth_flags_cleared", clear_depths},
+                   {"lower_enabled", lower_enabled},
+                   {"upper_enabled", upper_enabled},
+                   {"source_lower", source_number(data, 324)},
+                   {"source_upper", source_number(data, 316)},
+                   {"lower_layout_offset", 324},
+                   {"upper_layout_offset", 316},
+                   {"lower_source_offset", upgraded ? 300 : 324},
+                   {"upper_source_offset", upgraded ? 292 : 316}};
+    if (std::isfinite(selected_lower) && std::isfinite(selected_upper))
+        depths["local_interval"] = {
+            {"status", "computed"}, {"lower", selected_lower}, {"upper", selected_upper}};
+    else
+        depths["local_interval"] = {{"status", "not_evaluated"},
+                                    {"reason", "nonfinite_enabled_depth"}};
+    Json out = {{"profile", "bimbase_2025_reference_clip_input"},
+                {"scope", "local_boundary_and_depth_after_base_load"},
+                {"status", accepted && !complete ? "invalid" : "decoded"},
+                {"boundary", std::move(boundary)},
+                {"depths", std::move(depths)},
+                {"world_clip_volume", "not_evaluated"}};
+    if (accepted && !complete)
+        out["error"] = "truncated accepted reference clipping boundary";
+    return out;
+}
 Json reference_transform(const Bytes &base) {
     Json out = {{"profile", "bimbase_2025_reference_base_input"},
                 {"scope", "after_base_matrix_load_before_linkages"},
@@ -172,8 +255,9 @@ Json native_reference_input(const Bytes &source) {
         const auto base_size = 4 + std::uint64_t(Reader(data, 12).u32()) * 2;
         require(base_size >= 372, "truncated current reference base");
         const auto entries = Reader(data, 370).u16();
-        require(372u + 16u * entries <= base_size, "truncated current reference entries");
         out["entry_count"] = entries;
+        out["clipping"] = reference_clipping(data, layout.upgraded);
+        require(out["clipping"]["status"] == "decoded", "truncated current reference entries");
         out["transform"] = reference_transform(data);
         out["transform"]["source_matrix_offset"] = layout.upgraded ? 212 : 220;
         out["transform"]["source_scale_offset"] = layout.upgraded ? 284 : 292;
