@@ -48,31 +48,19 @@ static Json native_record_input_child(const Json &n, const Bytes &base) {
                                 {"descendant_count_source_offset", count_offset},
                                 {"descendant_count_source_bytes", 4}};
     } else if (type == 13) {
-        // All addresses include the four-byte physical record prefix. The
-        // legacy discriminator is tested in this order before upgrading fields.
-        bool legacy = Reader(base, 160).u32() == 0;
-        if (legacy)
-            legacy = Reader(base, 342).u16() == 0;
-        if (legacy)
-            legacy = Reader(base, 344).u16() == 0;
-        std::uint16_t entries = 0;
-        if (legacy) {
-            entries = Reader(base, 346).u16();
-            legacy = entries <= 2500;
-        }
+        const auto layout = native_reference_layout(base);
+        const bool legacy = layout.upgraded;
         const auto base_words = Reader(base, 12).u32();
-        if (legacy)
-            legacy = base_words == 172u + 8u * entries;
         Json conversion = {
             {"kind", "type_13_legacy_layout_upgrade"},
             {"applied", legacy},
             {"output_element_flags", flags},
             {"output_base_word_count", base_words + (legacy ? 12u : 0u)},
             {"output_record_word_count", Reader(base, 8).u32() + (legacy ? 12u : 0u)},
-            {"payload_reconstruction", "not_evaluated"}};
+            {"payload_reconstruction", legacy ? "base_reconstructed" : "not_required"}};
         if (legacy) {
-            require(base.size() >= 348u + 16u * entries, "truncated type 13 legacy entries");
-            conversion["legacy_entry_count"] = entries;
+            conversion["legacy_entry_count"] = layout.entry_count;
+            conversion["upgraded_base"] = rawbytes(layout.data);
         }
         // The upgrade preserves native +0x20. In an extended-header record,
         // however, native +0x68 is one repeated u16 from old native +0x3c,

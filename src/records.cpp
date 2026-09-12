@@ -317,6 +317,8 @@ Json parse_native(const Bytes &b) {
         if (type == 47 && attr - pos >= 38 && r.at<std::uint32_t>(pos + 16) == 20 &&
             (r.at<std::uint16_t>(pos + 36) == 0x56df || r.at<std::uint16_t>(pos + 36) == 0x5704))
             out.back()["application_record"] = native_application_record(slice(b, pos, attr - pos));
+        if (type == 13)
+            out.back()["reference_input"] = native_reference_input(slice(b, pos, end - pos));
         if (type == 62) {
             try {
                 out.back()["block_transform"] = native_block_transform(slice(b, pos, attr - pos));

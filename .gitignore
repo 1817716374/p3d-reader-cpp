@@ -43,6 +43,7 @@
 !/tests/native_attribute_lookup.cpp
 !/tests/native_dependency.cpp
 !/tests/native_reference_path.cpp
+!/tests/native_reference_input.cpp
 !/tests/native_application.cpp
 !/tests/mesh_normals.cpp
 !/tests/mesh_tessellation.cpp

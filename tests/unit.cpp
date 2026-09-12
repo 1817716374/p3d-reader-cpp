@@ -45,6 +45,7 @@ unsigned native_list_input_tests();
 unsigned native_id_tests();
 unsigned native_dependency_tests();
 unsigned native_reference_path_tests();
+unsigned native_reference_input_tests();
 unsigned native_application_tests();
 unsigned mesh_normal_tests();
 unsigned mesh_tessellation_tests();
@@ -2703,6 +2704,7 @@ int main() {
         checks += native_id_tests();
         checks += native_dependency_tests();
         checks += native_reference_path_tests();
+        checks += native_reference_input_tests();
         checks += native_application_tests();
         checks += mesh_normal_tests();
         checks += mesh_tessellation_tests();

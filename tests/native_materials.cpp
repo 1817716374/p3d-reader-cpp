@@ -864,9 +864,10 @@ unsigned native_material_tests() {
                   conversion["output_record_word_count"] == 184 + 8 * entries &&
                   conversion["descendant_count_source_offset"] == 36 &&
                   conversion["descendant_count_source_bytes"] == 4 &&
-                  conversion["payload_reconstruction"] == "not_evaluated",
+                  conversion["payload_reconstruction"] == "base_reconstructed" &&
+                  conversion["upgraded_base"]["bytes"] == 372 + 16 * entries,
               "type 13 legacy upgrade preserves the ordinary descendant count and records "
-              "the twelve-word header growth independently of payload reconstruction");
+              "the twelve-word header growth with a reconstructed base payload");
     }
     auto extended_13 = legacy_13(0xa0, 0);
     put(extended_13, 64, 1, 2);

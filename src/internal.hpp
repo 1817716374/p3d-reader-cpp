@@ -160,6 +160,14 @@ inline Bytes bytesof(const Json &v) {
 }
 Json xml_tree(const std::string &);
 Json native_block_transform(const Bytes &);
+struct NativeReferenceLayout {
+    Bytes data;
+    bool upgraded = false;
+    std::uint16_t entry_count = 0;
+};
+// Accept exactly the declared base or the complete prefixed record.
+NativeReferenceLayout native_reference_layout(const Bytes &);
+Json native_reference_input(const Bytes &);
 struct NativeOrthogonalFactors {
     std::array<Point3, 3> columns, rotation{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
     bool converged = false;
