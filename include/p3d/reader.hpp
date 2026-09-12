@@ -381,6 +381,7 @@ class Document {
     explicit Document(const std::filesystem::path &, Options = {});
     const std::vector<Stream> &streams() const;
     const Json &index() const;
+    const Json &file_header() const;
     const Json &models() const;
     const Json &objects() const;
     const Json &native_records() const;

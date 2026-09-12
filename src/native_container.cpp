@@ -180,6 +180,11 @@ Json native_input_containers(const std::vector<Stream> &streams, const Json &ind
 }
 
 Json Document::native_input_containers() const {
-    return p3d::native_input_containers(streams(), index(), native_records());
+    auto result = p3d::native_input_containers(streams(), index(), native_records());
+    for (auto &container : result)
+        if (container["kind"] == "P3D-SSYS")
+            container["system_id_assignments"] = native_system_id_assignments(
+                container["list_preparation"], native_records(), file_header());
+    return result;
 }
 } // namespace p3d

@@ -383,7 +383,7 @@ struct Document::Impl {
     Json index = Json::object(), model_ids = Json::object(), schema_ids = Json::object(),
          objects = Json::array(), native = Json::array(), graphics = Json::array(),
          bindings = Json::array(), relations = Json::array(), materials, schemas, models,
-         colors = Json::array(), layers;
+         colors = Json::array(), layers, file_header;
     Options options;
 };
 Document::Document(const std::filesystem::path &path, Options opt)
@@ -396,7 +396,7 @@ Document::Document(const std::filesystem::path &path, Options opt)
     require(it != d.streams.end(), "missing P3DSIndexes");
     Reader ir(*it->raw, 32);
     auto n = ir.u32(), c = ir.u32();
-    lz(ir.take(c), n, opt.max_stream_bytes);
+    d.file_header = native_file_header(*it->raw, lz(ir.take(c), n, opt.max_stream_bytes));
     ir.skip(12);
     n = ir.u32();
     c = ir.u32();
@@ -577,6 +577,7 @@ const std::vector<Stream> &Document::streams() const {
         return impl_->member;                                                                      \
     }
 ACCESSOR(index, index)
+ACCESSOR(file_header, file_header)
 ACCESSOR(models, models)
 ACCESSOR(layer_tables, layers)
 ACCESSOR(objects, objects)

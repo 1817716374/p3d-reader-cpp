@@ -63,6 +63,7 @@ int main(int argc, char **argv) {
         };
         if (!dump.empty())
             write(dump, {{"index", d.index()},
+                         {"file_header", d.file_header()},
                          {"objects", d.objects()},
                          {"native_records", d.native_records()},
                          {"graphics_records", d.graphics_records()},

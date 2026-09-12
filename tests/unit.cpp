@@ -22,6 +22,7 @@ unsigned native_material_tests();
 unsigned block_transform_tests();
 unsigned native_input_tests();
 unsigned native_list_input_tests();
+unsigned native_id_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2653,6 +2654,7 @@ int main() {
         checks += block_transform_tests();
         checks += native_input_tests();
         checks += native_list_input_tests();
+        checks += native_id_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();
