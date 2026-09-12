@@ -159,6 +159,7 @@ inline Bytes bytesof(const Json &v) {
     return unbase64(v.at("base64").get<std::string>());
 }
 Json xml_tree(const std::string &);
+Json native_block_transform(const Bytes &);
 Json command_fields(unsigned, const Bytes &);
 Json decode_attribute(unsigned, unsigned, const Bytes &, unsigned index = 0);
 Json decode_material_assignment(unsigned index, const Bytes &);

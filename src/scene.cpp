@@ -309,6 +309,10 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                             {"status", candidates.size() == 1 ? "resolved"
                                        : candidates.empty()   ? "missing"
                                                               : "ambiguous"}};
+                const auto &transform = n.at("block_transform");
+                ref["input_transform"] = transform;
+                if (transform.at("status") == "resolved")
+                    ref["matrix"] = transform.at("matrix");
                 if (candidates.size() != 1) {
                     meta["unknown"].push_back(
                         {{"native_type", 62},
@@ -323,16 +327,10 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                 require(std::find(ancestors.begin(), ancestors.end(), ix) == ancestors.end(),
                         "cyclic block reference");
                 ancestors.push_back(ix);
-                auto b = bytesof(n["data"]);
-                Reader r(b, 164);
-                auto m = identity();
-                for (unsigned i = 0; i < 3; ++i)
-                    for (unsigned j = 0; j < 3; ++j)
-                        m[i][j] = r.f64();
-                for (unsigned i = 0; i < 3; ++i)
-                    m[i][3] = r.f64();
+                require(transform.at("status") == "resolved",
+                        transform.value("error", "invalid block transform"));
+                auto m = transform.at("matrix").get<Matrix4>();
                 auto world = multiply(parent, m);
-                ref["matrix"] = m;
                 ref["definition_key"] = blocks[ix]["key"];
                 meta["block_references"].push_back(ref);
                 chain.push_back(ref);
@@ -380,16 +378,13 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                 try {
                     auto name = block_name(*child);
                     auto candidates = block_lookup[name];
-                    auto raw = bytesof(child->at("data"));
-                    Reader reader(raw, 164);
-                    auto matrix = identity();
-                    for (unsigned i = 0; i < 3; ++i)
-                        for (unsigned j = 0; j < 3; ++j)
-                            matrix[i][j] = reader.f64();
-                    for (unsigned i = 0; i < 3; ++i)
-                        matrix[i][3] = reader.f64();
+                    const auto &transform = child->at("block_transform");
+                    require(transform.at("status") == "resolved",
+                            transform.value("error", "invalid block transform"));
+                    auto matrix = transform.at("matrix").get<Matrix4>();
                     entry["block_reference"] = {{"name", name},
                                                 {"matrix", matrix},
+                                                {"input_transform", transform},
                                                 {"candidates", candidates},
                                                 {"status", candidates.size() == 1 ? "resolved"
                                                            : candidates.empty()   ? "missing"

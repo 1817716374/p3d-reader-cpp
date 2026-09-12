@@ -301,6 +301,13 @@ Json parse_native(const Bytes &b) {
                        {"data", rawbytes(slice(b, pos, attr - pos))},
                        {"zero_padding", pad},
                        {"base_boundary_adjustment", adjustment}});
+        if (type == 62) {
+            try {
+                out.back()["block_transform"] = native_block_transform(slice(b, pos, attr - pos));
+            } catch (const std::exception &e) {
+                out.back()["block_transform"] = {{"status", "invalid"}, {"error", e.what()}};
+            }
+        }
         if (type == 49 && r.at<std::uint32_t>(pos + 16) == 1)
             out.back()["layer_definition"] =
                 decode_native_layer(slice(b, pos, attr - pos), out.back()["links"]);

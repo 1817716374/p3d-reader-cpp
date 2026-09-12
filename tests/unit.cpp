@@ -19,6 +19,7 @@ unsigned material_numeric_tests();
 unsigned mesh_channel_tests();
 unsigned mesh_extension_tests();
 unsigned native_material_tests();
+unsigned block_transform_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2647,6 +2648,7 @@ int main() {
         checks += mesh_channel_tests();
         checks += mesh_extension_tests();
         checks += native_material_tests();
+        checks += block_transform_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();
