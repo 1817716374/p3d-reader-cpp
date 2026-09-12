@@ -160,6 +160,8 @@ inline Bytes bytesof(const Json &v) {
 }
 Json xml_tree(const std::string &);
 Json native_block_transform(const Bytes &);
+Json native_record_input_filter(const Json &, const Bytes &);
+Json native_record_input_subtree(std::size_t, const Json &, std::uint32_t);
 Json command_fields(unsigned, const Bytes &);
 Json decode_attribute(unsigned, unsigned, const Bytes &, unsigned index = 0);
 Json decode_material_assignment(unsigned index, const Bytes &);

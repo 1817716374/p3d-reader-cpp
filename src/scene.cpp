@@ -138,12 +138,14 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
     };
     std::map<std::string, std::vector<const Json *>> geometry_records, attribute_records,
         system_attributes;
-    std::map<StreamPath, std::vector<const Json *>> system_records;
+    std::map<StreamPath, std::vector<std::size_t>> system_records;
     std::vector<const Json *> live;
-    for (auto &n : doc.native_records()) {
+    const auto &native_records = doc.native_records();
+    for (std::size_t ni = 0; ni < native_records.size(); ++ni) {
+        const auto &n = native_records[ni];
         auto s = n["stream"].get<StreamPath>();
         if (std::find(s.begin(), s.end(), canonical("P3D-SSYS")) != s.end())
-            system_records[s].push_back(&n);
+            system_records[s].push_back(ni);
         if (s.size() == 4 && s[0] == canonical("P3D-SM") && s[2] == canonical("P3D-SMG") &&
             model_ids.count(s[1]))
             live.push_back(&n);
@@ -165,28 +167,55 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
     std::vector<std::vector<const Json *>> block_children;
     for (auto &pair : system_records) {
         auto &rows = pair.second;
+        std::uint32_t input_counter = 0;
         for (std::size_t i = 0; i < rows.size(); ++i) {
-            auto &n = *rows[i];
+            const auto ni = rows[i];
+            const auto &n = native_records[ni];
+            const auto b = bytesof(n["data"]);
+            if (Reader(b).u32() == 0)
+                ++input_counter;
             if (n["element_type"] != 32)
                 continue;
             try {
-                auto b = bytesof(n["data"]);
-                auto count = Reader(b, 108).u32();
-                require(count <= rows.size() - i - 1, "block child record count");
+                auto input = native_record_input_subtree(ni, native_records, input_counter);
                 auto name = block_name(n);
                 auto ix = blocks.size();
                 blocks.push_back({{"key", source_key(n)},
                                   {"name", name},
                                   {"id", n["id"]},
+                                  {"native_record_index", ni},
                                   {"source", {{"stream", n["stream"]}, {"offset", n["offset"]}}},
+                                  {"input_tree", input},
+                                  {"direct_child_source_keys", Json::array()},
                                   {"children", Json::array()}});
-                block_children.emplace_back(rows.begin() + i + 1, rows.begin() + i + 1 + count);
+                block_children.emplace_back();
+                if (input["status"] != "resolved") {
+                    if (input["status"] != "skipped")
+                        library_errors.push_back(
+                            {{"block_id", n["id"]},
+                             {"source_key", source_key(n)},
+                             {"error",
+                              input.value(
+                                  "error",
+                                  input.value("reason", std::string("block input failed")))}});
+                    continue;
+                }
+                for (const auto &index : input["member_record_indices"])
+                    blocks[ix]["direct_child_source_keys"].push_back(
+                        source_key(native_records[index.get<std::size_t>()]));
+                for (const auto &node : input["nodes"]) {
+                    const auto &child =
+                        native_records[node["native_record_index"].get<std::size_t>()];
+                    const auto &parent =
+                        native_records[node["parent_record_index"].get<std::size_t>()];
+                    block_children.back().push_back(&child);
+                    blocks[ix]["children"].push_back({{"source_key", source_key(child)},
+                                                      {"parent_source_key", source_key(parent)},
+                                                      {"id", child.at("id")},
+                                                      {"native_type", child.at("element_type")}});
+                }
                 if (!name.empty())
                     block_lookup[name].push_back(ix);
-                for (auto child : block_children.back())
-                    blocks[ix]["children"].push_back({{"source_key", source_key(*child)},
-                                                      {"id", child->at("id")},
-                                                      {"native_type", child->at("element_type")}});
             } catch (const std::exception &e) {
                 library_errors.push_back({{"block_id", n["id"]}, {"error", e.what()}});
             }

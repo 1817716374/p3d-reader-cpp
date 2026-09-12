@@ -18,6 +18,7 @@
 !/tests/mesh_extensions.cpp
 !/tests/native_materials.cpp
 !/tests/block_transform.cpp
+!/tests/native_input.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d
