@@ -11,6 +11,7 @@ target_sources(p3d_reader PRIVATE src/layers.cpp src/bspline.cpp src/bspline_tri
 target_sources(p3d_reader PRIVATE src/loft_curve.cpp src/loft_open.cpp src/loft_close.cpp src/section_loft.cpp)
 target_sources(p3d_reader PRIVATE src/material_semantics.cpp src/material_links.cpp src/material_legacy.cpp)
 target_sources(p3d_reader PRIVATE src/material_resource.cpp)
+target_sources(p3d_reader PRIVATE src/material_catalog.cpp)
 target_sources(p3d_reader PRIVATE src/mesh_channels.cpp)
 set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES COMPILE_DEFINITIONS MINIZ_NO_ZLIB_APIS)
 add_library(p3d::reader ALIAS p3d_reader)

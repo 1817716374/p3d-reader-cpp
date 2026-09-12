@@ -135,5 +135,108 @@ unsigned native_material_tests() {
     check(native_material_references(parse_native(record({}))).empty() &&
               native_material_references(Json::array()).empty(),
           "absent native material linkage creates no default reference");
+    auto catalog_record = [&](const std::vector<Bytes> &links) {
+        auto b = record(links);
+        put(b, 4, 49, 2);
+        put(b, 16, 18, 4);
+        return b;
+    };
+    auto string_payload = [&](unsigned key, const std::string &text, unsigned extra_word = 0) {
+        Bytes p;
+        append(p, key, 2);
+        append(p, extra_word, 2);
+        append(p, text.size() + 4, 4);
+        append(p, 0x0001feff, 4); // Native Latin-1 marker, not a guessed UTF-8 string.
+        p.insert(p.end(), text.begin(), text.end());
+        if (p.size() % 2)
+            p.push_back(0);
+        return p;
+    };
+    auto catalog = [&](const std::vector<Bytes> &links) {
+        return native_material_catalog_records(parse_native(catalog_record(links)));
+    };
+    auto c = catalog({linkage(string_payload(1, "stone", 0x1234), 0x56d2),
+                      linkage(string_payload(3, "$(_P3DLIB)\\stone.pal"), 0x56d2),
+                      linkage(string_payload(2, "other"), 0x56d2)});
+    check(c.size() == 1 && c[0]["catalog_name"]["value"] == "stone" &&
+              c[0]["catalog_name"]["status"] == "decoded" && c[0]["strings"][0]["key"] == 1 &&
+              c[0]["strings"][0]["unassigned_word"] == 0x1234 &&
+              c[0]["strings"][0]["role"] == "catalog_name" &&
+              c[0]["strings"][0]["suffix_hex"] == "00",
+          "catalog names match the low 16-bit key and preserve the unnamed high word and padding");
+    check(c[0]["resource_reference"]["value"] == "$(_P3DLIB)\\stone.pal" &&
+              c[0]["resource_reference"]["entry_index"] == 1 &&
+              c[0]["strings"][1]["role"] == "resource_reference" &&
+              c[0]["resource_lookup_status"] == "not_performed" &&
+              c[0]["strings"][2]["role"] == "unassigned" && c[0]["strings"][2]["text"] == "other",
+          "resource references retain source tokens without resolving paths or inventing unknown "
+          "roles");
+    auto missing = catalog({});
+    auto empty =
+        catalog({linkage(string_payload(1, ""), 0x56d2), linkage(string_payload(3, ""), 0x56d2)});
+    check(missing[0]["catalog_name"]["status"] == "missing" &&
+              missing[0]["resource_reference"]["status"] == "missing" &&
+              missing[0]["resource_reference"]["value"].is_null() &&
+              empty[0]["catalog_name"]["status"] == "decoded" &&
+              empty[0]["resource_reference"]["value"] == "",
+          "absent and explicitly empty catalog resources remain distinct");
+    c = catalog(
+        {linkage(string_payload(1, "first"), 0x56d2), linkage(string_payload(1, "second"), 0x56d2),
+         linkage(string_payload(3, ""), 0x56d2), linkage(string_payload(3, "later"), 0x56d2)});
+    check(c[0]["catalog_name"]["value"] == "first" && c[0]["resource_reference"]["value"] == "" &&
+              c[0]["strings"].size() == 4 && c[0]["strings"][1]["reader_selection"] == "shadowed" &&
+              c[0]["strings"][3]["reader_selection"] == "shadowed",
+          "catalog name and resource use independent first occurrences without dropping later "
+          "values");
+    for (unsigned key : {1, 3}) {
+        auto damaged = string_payload(key, "bad");
+        put(damaged, 4, 2000, 4);
+        c = catalog({linkage(damaged, 0x56d2), linkage(string_payload(key, "later"), 0x56d2)});
+        const auto field = key == 1 ? "catalog_name" : "resource_reference";
+        check(c[0][field]["status"] == "invalid" && c[0][field]["value"].is_null() &&
+                  c[0][field]["entry_index"] == 0 && c[0]["strings"][0].contains("decode_error") &&
+                  c[0]["strings"][1]["reader_selection"] == "shadowed" &&
+                  bytesof(c[0]["strings"][0]["payload"]) == damaged,
+              "invalid first catalog strings cannot be silently replaced with subsequent strings");
+    }
+    auto short_header = Bytes{1, 0};
+    c = catalog({linkage(short_header, 0x56d2)});
+    check(c[0]["catalog_name"]["status"] == "invalid" && c[0]["strings"][0]["key"] == 1 &&
+              c[0]["strings"][0]["unassigned_word"].is_null(),
+          "short catalog string header still identifies the selected key safely");
+    Bytes invalid_unicode;
+    append(invalid_unicode, 1, 4);
+    append(invalid_unicode, 4, 4);
+    append(invalid_unicode, 0xfeff, 2);
+    append(invalid_unicode, 0xdc00, 2);
+    c = catalog({linkage(invalid_unicode, 0x56d2)});
+    check(c[0]["catalog_name"]["status"] == "invalid" &&
+              bytesof(c[0]["strings"][0]["payload"]) == invalid_unicode,
+          "invalid native Unicode is retained without fabricating a catalog name");
+    auto nonuser = Bytes{1, 0, 0, 0};
+    c = catalog({linkage(nonuser, 0x56d2, 7), linkage(string_payload(1, "valid"), 0x56d2)});
+    check(c[0]["catalog_name"]["value"] == "valid" && c[0]["catalog_name"]["entry_index"] == 1 &&
+              c[0]["strings"][0]["reader_selection"] == "not_selected" &&
+              c[0]["strings"][0]["status"] == "invalid",
+          "non-user linkage cannot shadow a real catalog string");
+    auto native = parse_native(catalog_record({linkage(string_payload(1, "same"), 0x56d2)}));
+    native[0]["stream"] = Json::array({"root", "model-a", "native"});
+    native.push_back(native[0]);
+    native[1]["stream"] = Json::array({"root", "model-b", "native"});
+    native.push_back(native[0]);
+    native[2]["offset"] = 800;
+    c = native_material_catalog_records(native);
+    check(
+        c.size() == 3 && c[0]["record_id"] == c[1]["record_id"] &&
+            c[0]["stream"] != c[1]["stream"] && c[2]["native_record_index"] == 2 &&
+            c[2]["record_offset"] == 800 && c[0]["strings"][0]["linkage_offset"] == 36,
+        "catalog records with equal IDs and names never collapse across source records or streams");
+    auto wrong_type = catalog_record({});
+    put(wrong_type, 4, 10, 2);
+    auto wrong_subtype = catalog_record({});
+    put(wrong_subtype, 16, 17, 4);
+    check(native_material_catalog_records(parse_native(wrong_type)).empty() &&
+              native_material_catalog_records(parse_native(wrong_subtype)).empty(),
+          "only native material definition records enter the material catalog");
     return checks;
 }

@@ -183,8 +183,15 @@ Json native_material_references(const Json &native_records) {
 }
 Json read_materials(const Document &doc) {
     Json definitions = Json::array(), errors = Json::array();
+    auto catalog = native_material_catalog_records(doc.native_records());
+    std::map<std::string, std::vector<std::size_t>> catalog_indices;
     std::map<std::string, Json> names;
     auto key = [](const StreamPath &p, const Json &id) { return Json(p).dump() + ":" + id.dump(); };
+    for (std::size_t i = 0; i < catalog.size(); ++i) {
+        auto scope = catalog[i]["stream"].get<StreamPath>();
+        scope.resize(2);
+        catalog_indices[key(scope, catalog[i]["record_id"])].push_back(i);
+    }
     for (auto &n : doc.native_records()) {
         if (n["element_type"] != 49)
             continue;
@@ -233,6 +240,9 @@ Json read_materials(const Document &doc) {
                              {"record_offset", g["offset"]},
                              {"attribute_index", a["index"]},
                              {"payload", a["payload"]},
+                             {"native_catalog_candidates", catalog_indices.count(nk)
+                                                               ? Json(catalog_indices.at(nk))
+                                                               : Json::array()},
                              {"native_strings", names.count(nk) ? names[nk] : Json::array()}};
                 try {
                     auto &dec = a["decoded"];
@@ -263,6 +273,7 @@ Json read_materials(const Document &doc) {
             }
     return {
         {"definitions", definitions},
+        {"native_catalog_records", std::move(catalog)},
         {"native_element_references", native_material_references(doc.native_records())},
         {"errors", errors},
         {"assignment_rules",
