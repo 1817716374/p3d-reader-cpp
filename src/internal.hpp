@@ -171,6 +171,11 @@ struct NativeMatrixInverse {
     std::string method;
 };
 NativeMatrixInverse native_matrix_inverse(const Matrix3 &);
+struct NativeBsplineEvaluation {
+    std::vector<std::array<double, 4>> homogeneous;
+    std::vector<Point3> working_poles;
+};
+NativeBsplineEvaluation native_bspline_evaluate(const BsplineCurve &, double, unsigned);
 Json native_record_input_filter(const Json &, const Bytes &);
 Json native_record_input_subtree(std::size_t, const Json &, std::uint32_t);
 Json command_fields(unsigned, const Bytes &);

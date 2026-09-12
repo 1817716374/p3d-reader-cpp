@@ -126,6 +126,9 @@ class BsplineCurve {
     // Supports native orders 2..26 and derivative orders 0..24. Throws on
     // native knot-tolerance failure, zero control/evaluated weight or overflow.
     std::vector<Point3> native_derivatives_at(double fraction, unsigned derivative_order = 3) const;
+    // Native single-curve Frenet frame, including polygon/axis fallbacks.
+    // The report distinguishes a computed frame from a nondegenerate basis.
+    Json native_frame_at(double fraction) const;
 
   private:
     BsplineCurve() = default;

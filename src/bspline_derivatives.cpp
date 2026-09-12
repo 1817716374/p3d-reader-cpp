@@ -77,16 +77,16 @@ int native_pole_shift(const BsplineCurve &curve, const std::vector<Point3> &work
 }
 } // namespace
 
-std::vector<Point3> BsplineCurve::native_derivatives_at(double fraction,
-                                                        unsigned derivative_order) const {
-    require(order() <= 26 && derivative_order <= 24,
+NativeBsplineEvaluation native_bspline_evaluate(const BsplineCurve &curve, double fraction,
+                                                unsigned derivative_order) {
+    require(curve.order() <= 26 && derivative_order <= 24,
             "B-spline native derivatives: unsupported order");
     require(std::isfinite(fraction), "B-spline native derivatives: non-finite fraction");
-    const auto domain = knot_domain();
+    const auto domain = curve.knot_domain();
     const double width = domain[1] - domain[0];
     double u = domain[0] + width * fraction;
     finite(u);
-    if (closed()) {
+    if (curve.closed()) {
         // Avoid the native unbounded repeated-add/subtract loop. Exact positive
         // periods retain the upper endpoint; negative periods retain the lower.
         if (u < domain[0]) {
@@ -104,22 +104,22 @@ std::vector<Point3> BsplineCurve::native_derivatives_at(double fraction,
     } else
         u = std::clamp(u, domain[0], domain[1]);
 
-    auto working = poles_;
-    const double tolerance = knot_tolerance(*this, working);
-    const int pole_shift = native_pole_shift(*this, working);
-    const auto &k = knots();
+    auto working = curve.poles();
+    const double tolerance = knot_tolerance(curve, working);
+    const int pole_shift = native_pole_shift(curve, working);
+    const auto &k = curve.knots();
     const auto end = u == domain[1] ? std::lower_bound(k.begin(), k.end(), u)
                                     : std::upper_bound(k.begin(), k.end(), u);
     require(end != k.begin() && end != k.end(), "B-spline native derivatives: span");
     const auto span = std::size_t(end - k.begin() - 1);
-    const unsigned degree = order() - 1;
+    const unsigned degree = curve.order() - 1;
     require(span >= degree && span + degree < k.size(), "B-spline native derivatives: span extent");
     const auto first = span - degree;
     std::array<HPoint, 26> p{};
     std::array<double, 26> left{}, right{};
     for (unsigned i = 0; i <= degree; ++i) {
         auto index = std::int64_t(first + i) + pole_shift;
-        if (closed()) {
+        if (curve.closed()) {
             index %= std::int64_t(working.size());
             if (index < 0)
                 index += std::int64_t(working.size());
@@ -128,7 +128,7 @@ std::vector<Point3> BsplineCurve::native_derivatives_at(double fraction,
                 "B-spline native derivatives: pole index");
         const auto pole = std::size_t(index);
         p[i] = {working[pole][0], working[pole][1], working[pole][2],
-                rational() ? weights_[pole] : 1.};
+                curve.rational() ? curve.weights()[pole] : 1.};
         if (i) {
             left[i] = u - k[first + i];
             right[i] = k[first + i + degree] - u;
@@ -138,7 +138,7 @@ std::vector<Point3> BsplineCurve::native_derivatives_at(double fraction,
     }
     const bool reverse = right[1] <= left[degree];
     if (reverse) {
-        std::reverse(p.begin(), p.begin() + order());
+        std::reverse(p.begin(), p.begin() + curve.order());
         const auto old_left = left;
         for (unsigned i = 1; i <= degree; ++i)
             left[i] = right[degree + 1 - i];
@@ -150,7 +150,7 @@ std::vector<Point3> BsplineCurve::native_derivatives_at(double fraction,
         require(value >= tolerance, "B-spline native derivatives: knot tolerance failure");
         return value;
     };
-    const unsigned components = rational() ? 4 : 3;
+    const unsigned components = curve.rational() ? 4 : 3;
     for (unsigned level = 1; level <= degree; ++level)
         for (unsigned j = 0; j <= degree - level; ++j) {
             const double a = right[j + 1], b = left[j + level];
@@ -171,6 +171,22 @@ std::vector<Point3> BsplineCurve::native_derivatives_at(double fraction,
                 finite(p[j][axis]);
             }
         }
+    NativeBsplineEvaluation result;
+    result.homogeneous.resize(derivative_order + 1);
+    for (unsigned i = 0; i <= count; ++i) {
+        result.homogeneous[i] = p[i];
+        if (!curve.rational())
+            result.homogeneous[i][3] = i == 0 ? 1. : 0.;
+    }
+    result.working_poles = std::move(working);
+    return result;
+}
+
+std::vector<Point3> BsplineCurve::native_derivatives_at(double fraction,
+                                                        unsigned derivative_order) const {
+    const auto evaluation = native_bspline_evaluate(*this, fraction, derivative_order);
+    const auto &p = evaluation.homogeneous;
+    const auto count = std::min(derivative_order, order() - 1);
     std::vector<Point3> result(derivative_order + 1);
     for (unsigned i = 0; i <= count; ++i)
         std::copy_n(p[i].begin(), 3, result[i].begin());

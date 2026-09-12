@@ -37,6 +37,7 @@ unsigned material_projection_math_tests();
 unsigned material_projection_transform_tests();
 unsigned model_units_tests();
 unsigned bspline_derivative_tests();
+unsigned bspline_frame_tests();
 unsigned native_list_input_tests();
 unsigned native_id_tests();
 unsigned native_dependency_tests();
@@ -2691,6 +2692,7 @@ int main() {
         checks += material_projection_transform_tests();
         checks += model_units_tests();
         checks += bspline_derivative_tests();
+        checks += bspline_frame_tests();
         checks += native_list_input_tests();
         checks += native_id_tests();
         checks += native_dependency_tests();
