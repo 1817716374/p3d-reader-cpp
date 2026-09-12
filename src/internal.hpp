@@ -160,6 +160,17 @@ inline Bytes bytesof(const Json &v) {
 }
 Json xml_tree(const std::string &);
 Json native_block_transform(const Bytes &);
+struct NativeOrthogonalFactors {
+    std::array<Point3, 3> columns, rotation{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+    bool converged = false;
+};
+NativeOrthogonalFactors native_orthogonalize_columns(const std::array<Point3, 3> &);
+struct NativeMatrixInverse {
+    Matrix3 matrix{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+    bool inverted = false;
+    std::string method;
+};
+NativeMatrixInverse native_matrix_inverse(const Matrix3 &);
 Json native_record_input_filter(const Json &, const Bytes &);
 Json native_record_input_subtree(std::size_t, const Json &, std::uint32_t);
 Json command_fields(unsigned, const Bytes &);

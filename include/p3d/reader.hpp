@@ -42,6 +42,10 @@ struct MaterialProjectionContext {
 // Consumes an entry of version_conversion.projection_getters. This prepares
 // projection state for modes 3..7; it does not perform final point/UV mapping.
 Json prepare_material_projection(const Json &getter, const MaterialProjectionContext &context);
+// Continues preparation through native inversion, row scaling and the local
+// explicit-matrix switch. Point mapping and texture sampling remain separate.
+Json resolve_material_projection_transform(const Json &getter,
+                                           const MaterialProjectionContext &context);
 // Validated knot direction shared by curves and tensor-product surfaces.
 class BsplineDirection {
   public:

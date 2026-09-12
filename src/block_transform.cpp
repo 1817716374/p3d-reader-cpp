@@ -8,9 +8,6 @@ double squared(const Point3 &v) {
     require(std::isfinite(result), "native block matrix arithmetic overflow");
     return result;
 }
-double inner(const Point3 &a, const Point3 &b) {
-    return (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
-}
 Point3 crossed(const Point3 &a, const Point3 &b) {
     return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
@@ -23,54 +20,6 @@ double normalize(Point3 &a) {
     if (length > 0)
         scale(a, 1 / length);
     return length;
-}
-double rotate_pair(Point3 &a, Point3 &b, Point3 &u, Point3 &v) {
-    const auto aa = squared(a), bb = squared(b);
-    const auto difference = aa - bb, twice_dot = 2 * inner(a, b);
-    const auto tolerance = (aa + bb) * 1e-12;
-    double c = 1, s = 0;
-    if (!(tolerance > std::abs(twice_dot) && tolerance > std::abs(difference))) {
-        const auto radius = std::sqrt(difference * difference + twice_dot * twice_dot);
-        require(std::isfinite(radius), "native block orthogonalization overflow");
-        if (radius != 0) {
-            const auto x = difference / radius, y = twice_dot / radius;
-            if (x >= 0) {
-                c = std::sqrt((1 + x) * 0.5);
-                s = y / (c + c);
-            } else {
-                s = std::sqrt((1 - x) * 0.5);
-                if (!(y > 0))
-                    s = -s;
-                c = y / (s + s);
-            }
-        }
-    }
-    for (unsigned i = 0; i < 3; ++i) {
-        const auto ai = a[i], bi = b[i], ui = u[i], vi = v[i];
-        a[i] = bi * s + ai * c;
-        b[i] = ai * -s + bi * c;
-        u[i] = ui * c + vi * s;
-        v[i] = vi * c + ui * -s;
-    }
-    return std::abs(s);
-}
-struct Factors {
-    Columns columns, rotation{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
-    bool converged = false;
-};
-Factors orthogonalize(const Columns &m) {
-    Factors f;
-    f.columns = m;
-    for (unsigned sweep = 0; sweep < 10; ++sweep) {
-        auto error = rotate_pair(f.columns[0], f.columns[1], f.rotation[0], f.rotation[1]);
-        error += rotate_pair(f.columns[1], f.columns[2], f.rotation[1], f.rotation[2]);
-        error += rotate_pair(f.columns[0], f.columns[2], f.rotation[0], f.rotation[2]);
-        if (error <= 1e-14) {
-            f.converged = true;
-            break;
-        }
-    }
-    return f;
 }
 bool native_invertible(const Columns &m) {
     double largest = 0;
@@ -90,7 +39,7 @@ bool native_invertible(const Columns &m) {
     const auto determinant = (cofactor1 * a[0][1] + cofactor0 * a[0][0]) + cofactor2 * a[0][2];
     if (std::abs(determinant) > 1e-8)
         return true;
-    const auto f = orthogonalize(m);
+    const auto f = native_orthogonalize_columns(m);
     if (!f.converged)
         return false;
     std::array<double, 3> lengths{};
@@ -145,7 +94,7 @@ Point3 triad_first(Point3 source) {
     return first;
 }
 unsigned augment_rank(Columns &m, bool &converged) {
-    const auto f = orthogonalize(m);
+    const auto f = native_orthogonalize_columns(m);
     converged = f.converged;
     std::array<double, 3> lengths{};
     for (unsigned i = 0; i < 3; ++i)

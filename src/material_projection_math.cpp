@@ -132,4 +132,69 @@ Json prepare_material_projection(const Json &getter, const MaterialProjectionCon
                 {"layer_data_flag_bit_2", (context.layer_data_flags >> 2) & 1u}});
     return out;
 }
+Json resolve_material_projection_transform(const Json &getter,
+                                           const MaterialProjectionContext &context) {
+    Json out = {{"scope", "native_projection_transform_mapping_modes_3_to_7"},
+                {"status", "not_evaluated"},
+                {"point_mapping", "not_evaluated"},
+                {"preparation", prepare_material_projection(getter, context)}};
+    auto fail = [&](const char *reason) {
+        out["reason"] = reason;
+        return out;
+    };
+    const auto &prepared = out.at("preparation");
+    if (prepared.at("status") != "prepared")
+        return fail("projection_preparation_unavailable");
+    auto scale = prepared.at("projection_scale").get<Point3>();
+    for (auto &x : scale)
+        if (x == 0)
+            x = 1;
+    NativeMatrixInverse inverse;
+    try {
+        inverse = native_matrix_inverse(prepared.at("orientation_matrix").get<Matrix3>());
+    } catch (const std::runtime_error &) {
+        return fail("nonfinite_inverse_arithmetic");
+    }
+    auto computed = inverse.matrix;
+    for (unsigned row = 0; row < 3; ++row) {
+        const auto factor = 1 / scale[row];
+        for (auto &x : computed[row])
+            x *= factor;
+    }
+    if (!finite(computed))
+        return fail("nonfinite_scaled_transform");
+    out["computed_transform"] = {{"matrix", computed},
+                                 {"normalized_projection_scale", scale},
+                                 {"inverse_succeeded", inverse.inverted},
+                                 {"inverse_method", inverse.method}};
+    const auto &parameters = getter.at("parameters");
+    const auto flag = parameters.value("origin_uv_pro_matrix_on", Json::object());
+    if (!flag.is_object() || !flag.contains("value") || !flag.at("value").is_boolean())
+        return fail("unavailable_explicit_matrix_switch");
+    const bool explicit_matrix = flag.at("value").get<bool>();
+    auto selected = computed;
+    if (explicit_matrix) {
+        const auto matrix = getter.value("matrix", Json::object());
+        const auto storage = matrix.is_object() ? matrix.value("storage_values", Json()) : Json();
+        if (!storage.is_array() || storage.size() != 9)
+            return fail("unavailable_or_nonfinite_explicit_matrix");
+        for (unsigned i = 0; i < 9; ++i) {
+            if (!storage[i].is_number())
+                return fail("unavailable_or_nonfinite_explicit_matrix");
+            selected[i / 3][i % 3] = storage[i].get<double>();
+        }
+        if (!finite(selected))
+            return fail("unavailable_or_nonfinite_explicit_matrix");
+    }
+    out.update({{"status", "resolved"},
+                {"matrix", selected},
+                {"matrix_source", explicit_matrix ? "local_explicit_matrix" : "computed_transform"},
+                {"source_object_id", prepared.at("source_object_id")},
+                {"frame_source_object_id", prepared.at("frame_source_object_id")},
+                {"origin", prepared.at("origin")},
+                {"reference_dimensions", prepared.at("reference_dimensions")},
+                {"mapping_mode", context.mapping_mode},
+                {"layer_data_flag_bit_2", prepared.at("layer_data_flag_bit_2")}});
+    return out;
+}
 } // namespace p3d

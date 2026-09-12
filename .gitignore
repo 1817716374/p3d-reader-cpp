@@ -28,6 +28,7 @@
 !/tests/material_projection.cpp
 !/tests/material_projection_links.cpp
 !/tests/material_projection_math.cpp
+!/tests/material_projection_transform.cpp
 !/tests/block_transform.cpp
 !/tests/native_input.cpp
 !/tests/native_list_input.cpp
