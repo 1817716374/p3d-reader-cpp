@@ -24,9 +24,22 @@ unsigned native_material_tests() {
     };
     auto linkage = [&](const Bytes &p, unsigned app = 0x41, unsigned header = 0) {
         Bytes b;
-        append(b, header ? header : (0x1000 | ((p.size() + 4) / 2 - 1)), 2);
+        auto total = p.size() + 4;
+        if (!header && total > 512) {
+            unsigned shift = 0;
+            auto words = total / 2;
+            auto mantissa = words;
+            while (mantissa > 255) {
+                ++shift;
+                mantissa = (words + (std::size_t(1) << shift) - 1) >> shift;
+            }
+            header = 0x5000 | (shift << 8) | unsigned(mantissa);
+            total = (mantissa << shift) * 2;
+        }
+        append(b, header ? header : (0x1000 | (total / 2 - 1)), 2);
         append(b, app, 2);
         b.insert(b.end(), p.begin(), p.end());
+        b.resize(total);
         return b;
     };
     auto record = [&](const std::vector<Bytes> &links, std::uint64_t id = 19) {
@@ -238,5 +251,63 @@ unsigned native_material_tests() {
     check(native_material_catalog_records(parse_native(wrong_type)).empty() &&
               native_material_catalog_records(parse_native(wrong_subtype)).empty(),
           "only native material definition records enter the material catalog");
+    auto interpret = [&](const std::string &text) {
+        return catalog(
+            {linkage(string_payload(3, text), 0x56d2)})[0]["resource_reference"]["interpretation"];
+    };
+    auto project = interpret("$(_P3DPROJECT)\\stone-Palette.pal");
+    check(project["status"] == "decoded" && project["kind"] == "project_resource" &&
+              project["project_member_name"] == "stone-Palette" && project["extension"] == "pal" &&
+              project["primary_context"] == "current_resource_context" &&
+              project["secondary_context_rule"] == "palette_lookup_or_primary_context" &&
+              project["lookup_request"]["reference"] == "stone-Palette.pal" &&
+              project["lookup_request"]["search_path_setting"] == "P3d_Material" &&
+              project["lookup_request"]["failure_context"] == "primary_context" &&
+              project["lookup_status"] == "not_performed",
+          "project palette retains primary context and a separate conditional secondary resource "
+          "request");
+    project = interpret("$(_p3dproject)\\folder\\other.dir/Stone.PaL");
+    check(
+        project["status"] == "decoded" && project["project_member_name"] == "Stone" &&
+            project["extension"] == "PaL" && project["lookup_request"]["reference"] == "Stone.PaL",
+        "project comparison ignores ASCII case while lookup uses only the leaf with original case");
+    for (const auto &tail : {"model.p3d", "name", "picture.jpg", "folder\\", ""}) {
+        project = interpret(std::string("$(_P3DPROJECT)\\") + tail);
+        check(project["status"] == "decoded" && project["lookup_request"].is_null() &&
+                  project["secondary_context_rule"] == "primary_context",
+              "non-palette project resources reuse the primary context without a fabricated "
+              "palette request");
+    }
+    project = interpret("$(_P3DPROJECT)\\.pal");
+    check(project["project_member_name"] == "" && project["lookup_request"]["reference"] == ".pal",
+          "a leading extension does not become a nonempty project member name");
+    project = interpret("$(_P3DPROJECT)\\name.");
+    check(project["project_member_name"] == "name" && project["extension"] == "" &&
+              project["lookup_request"].is_null(),
+          "trailing dot is excluded from the project member name without inventing an extension");
+    for (const auto &value : {"$(_P3DPROJECT)/name.pal", "$(_P3DLIB)\\name.pal", "name.pal"})
+        check(interpret(value)["status"] == "unresolved_resource_form",
+              "other resource syntaxes do not inherit project-token context rules");
+    check(interpret("")["status"] == "rejected_empty_reference" &&
+              missing[0]["resource_reference"]["interpretation"]["status"] == "unavailable_text",
+          "explicitly empty resources are rejected and missing source text is not reinterpreted");
+    project = interpret("$(_P3DPROJECT)\\C:stone.pal");
+    check(project["status"] == "unresolved_path_syntax" && !project.contains("project_member_name"),
+          "drive and scheme syntax requires its own native path rules");
+    project = interpret(std::string("$(_P3DPROJECT)\\") + std::string(260, 'x') + ".pal");
+    check(project["status"] == "unresolved_path_component_limit",
+          "native path buffer limits prevent a fabricated member name");
+    project = interpret(std::string("$(_P3DPROJECT)\\") + std::string(512, 'x'));
+    check(project["status"] == "unresolved_conversion_limit",
+          "long catalog text does not assume the native fixed-size conversion buffer succeeded");
+    std::string with_nul = "$(_P3DPROJECT)\\first.pal";
+    with_nul.push_back('\0');
+    with_nul += "second.p3d";
+    c = catalog({linkage(string_payload(3, with_nul), 0x56d2)});
+    project = c[0]["resource_reference"]["interpretation"];
+    check(project["lookup_request"]["reference"] == "first.pal" &&
+              project["ignored_text_suffix"] == std::string("\0second.p3d", 11) &&
+              c[0]["resource_reference"]["value"] == with_nul,
+          "native resource input stops at the first NUL while the full decoded source survives");
     return checks;
 }
