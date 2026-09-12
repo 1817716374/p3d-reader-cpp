@@ -281,7 +281,9 @@ Json parse_native(const Bytes &b) {
                 }
                 links.back()["decoded"] = std::move(reference);
             }
-            if (app == 0x56d0 && p.size() >= 8) {
+            if ((h & 0x1000) && app == 0x56d0)
+                links.back()["decoded"] = native_dependency_link(p);
+            if ((h & 0x1000) && app == 0x56d0 && p.size() >= 8) {
                 Reader c(p);
                 auto a = c.u16(), bb = c.u16(), cc = c.u16(), num = c.u16();
                 if (a == 10000 && bb == 17 && cc == 512 && 8u + 8u * num <= p.size())
