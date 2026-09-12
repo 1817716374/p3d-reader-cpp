@@ -52,6 +52,17 @@ Json prepare_material_projection(const Json &getter, const MaterialProjectionCon
 Json resolve_material_projection_transform(const Json &getter,
                                            const MaterialProjectionContext &context);
 using Matrix2x3 = std::array<Point3, 2>;
+// Inputs that depend on the selected model/render context. The source layer
+// fields and U/V signs come from layer_mapping_getters, not from this context.
+struct MaterialUvTransformContext {
+    std::optional<double> mapping_unit_factor;
+    std::optional<Point2> elevation_origin;
+    std::optional<bool> geometry_projection_succeeded;
+    std::optional<double> registration_unit_factor;
+};
+// Consumes one version_conversion.layer_mapping_getters entry. Computes the
+// 2D affine transform including the selected registration unit branch.
+Json build_material_uv_transform(const Json &layer_getter, const MaterialUvTransformContext &context);
 // Explicit render inputs, not inferred from world bounds. reference_transform
 // is an affine row matrix acting on reference_point. uv_transform is the
 // registered 2D transform, before the render geometry scale is applied.

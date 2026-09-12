@@ -246,6 +246,7 @@ Json material_replicator_input(const Json &package);
 Json material_replicator_copies(const Json &map);
 Json material_layer_input(const Json &map, std::size_t child_count);
 Json material_layer_containers(const Json &maps, const Json &topology);
+Json material_layer_mapping_getters(const Json &containers, const Json &topology);
 Json material_projection_input(const Json &map);
 Json material_projection_states(const Json &maps, const Json &topology);
 Json material_projection_getter_states(const Json &local_states, const Json &topology);

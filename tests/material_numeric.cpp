@@ -37,7 +37,7 @@ unsigned material_numeric_tests() {
     check(attrs == original && p["pattern_proj_scale"]["value"] == Json::array({0, 0, -2}) &&
               p["pattern_proj_scale"]["reader_value"] == Json::array({1, 1, -2}) &&
               p["pattern_scale"]["reader_value"] == Json::array({0, -3}) &&
-              p["scale_z"]["reader_value"] == 1,
+              p["scale_z"]["reader_value"] == 0,
           "projection zero normalization is distinct from unchanged two-dimensional texture scale");
     check(
         p["pattern_offset"]["value"] == Json::array({2, 4}) &&
@@ -136,7 +136,7 @@ unsigned material_numeric_tests() {
     s = parse({{"Type", "1"}, {"Filename", "layers.pma"}}, "0", Json::array({layer, gamma, tint}));
     p = s["maps"][0]["texture_layers"]["entries"][0]["numeric_reader"]["parameters"];
     check(p["pattern_offset"]["reader_value"] == Json::array({1, 2, 3}) &&
-              p["scale_z"]["reader_value"] == 1 && p["low_value"]["reader_value"] == 4 &&
+              p["scale_z"]["reader_value"] == 0 && p["low_value"]["reader_value"] == 4 &&
               p["high_value"]["reader_value"] == 5 &&
               p["antialias_strength"]["reader_value"] == 6 &&
               p["minimum_spot"]["reader_value"] == 7,

@@ -5,10 +5,63 @@ namespace {
 Json field(const Json &value) {
     return {{"constructor_value", value}, {"value", value}, {"read_status", "not_written"}};
 }
+Json default_mapping() {
+    return {{"status", "resolved"},
+            {"parameters",
+             {{"pattern_mapping", field(0)},
+              {"pattern_scalemode", field(0)},
+              {"pattern_angle", field(0.)},
+              {"pattern_scale", field(Point2{1, 1})},
+              {"scale_z", field(1.)},
+              {"pattern_offset", field(Point3{})}}}};
+}
+void mapping_read(Json &mapping, const Json &reads) {
+    // The native 2D-to-3D assignment writes x/y and clears z before the
+    // independent scale_z read. Missing scale_z therefore preserves zero.
+    if (reads.contains("pattern_scale")) {
+        const auto &read = reads.at("pattern_scale");
+        bool missing = false;
+        if (read.contains("components"))
+            for (const auto &component : read.at("components"))
+                missing |= component.at("status") == "missing";
+        if (read.at("write_status") == "written" ||
+            (read.at("write_status") == "unresolved" && !missing)) {
+            auto &z = mapping["parameters"]["scale_z"];
+            const bool assigned = read.at("write_status") == "written";
+            z["value"] = assigned ? Json(0.) : Json();
+            z["read_status"] = assigned ? "cleared_by_xy_assignment" : "unresolved";
+            z["xy_assignment"] = read.at("write_status");
+            if (!assigned)
+                mapping["status"] = "partial";
+        }
+    }
+    for (auto it = mapping["parameters"].begin(); it != mapping["parameters"].end(); ++it) {
+        if (!reads.contains(it.key()))
+            continue;
+        const auto &read = reads.at(it.key());
+        auto &target = it.value();
+        target["source_read"] = read;
+        if (read.at("write_status") == "written") {
+            target["value"] = read.at("reader_value");
+            target["read_status"] = "written";
+        } else if (read.at("write_status") != "not_written") {
+            bool missing_component = false;
+            if (read.contains("components"))
+                for (const auto &component : read.at("components"))
+                    missing_component |= component.at("status") == "missing";
+            if (!missing_component) {
+                target["value"] = nullptr;
+                target["read_status"] = "unresolved";
+                mapping["status"] = "partial";
+            }
+        }
+    }
+}
 Json default_layer() {
     return {{"origin", "native_constructor"}, {"source_layer_child_index", nullptr},
             {"data_flags", field(0x800u)},    {"enabled", field(true)},
-            {"option_bit_1", field(false)},   {"option_bit_2", field(false)}};
+            {"option_bit_1", field(false)},   {"option_bit_2", field(false)},
+            {"mapping", default_mapping()}};
 }
 bool failed(const Json &read) {
     return read.at("status") == "missing" ||
@@ -105,6 +158,7 @@ Json material_layer_input(const Json &map, std::size_t child_count) {
         layer["origin"] = "single_provider";
         const auto &attributes = map.at("source_parameters");
         const auto &reads = map.at("numeric_reader").at("parameters");
+        mapping_read(layer["mapping"], reads);
         boolean_read(layer["enabled"], reads.at("pattern_off"));
         flag_read(layer["data_flags"], material_xml_integer(attributes, "Flags", false));
         // This later read replaces only data-flags bit 11, even after Flags.
@@ -142,6 +196,7 @@ Json material_layer_input(const Json &map, std::size_t child_count) {
             layer["origin"] = "xml_layer";
             layer["source_layer_child_index"] = index;
             const auto &sem = entry.at("semantics");
+            mapping_read(layer["mapping"], entry.at("numeric_reader").at("parameters"));
             flag_read(layer["data_flags"], sem.at("data_flags"), -1, true);
             if (sem.at("flags").at("reader_applies") == true) {
                 flag_read(layer["enabled"], sem.at("flags"), 0);
@@ -199,6 +254,18 @@ Json material_layer_containers(const Json &maps, const Json &topology) {
             out["status"] = "partial";
         containers.push_back(std::move(state));
     }
+    for (const auto &operation : topology.at("operations")) {
+        if (operation.at("operation") != "copy_first_layer_mapping")
+            continue;
+        const auto id = operation.at("object_id").get<std::size_t>();
+        const auto source = operation.at("source_object_id").get<std::size_t>();
+        auto &target_layers = containers.at(id).at("layers");
+        const auto &source_layers = containers.at(source).at("layers");
+        if (!target_layers.empty() && !source_layers.empty()) {
+            target_layers[0]["mapping"] = source_layers[0].at("mapping");
+            target_layers[0]["mapping"]["copied_from_object_id"] = source;
+        }
+    }
     for (const auto &update : topology.at("layer_flag_updates")) {
         auto &container =
             containers.at(update.at("layer_container_owner_object_id").get<std::size_t>());
@@ -209,6 +276,47 @@ Json material_layer_containers(const Json &maps, const Json &topology) {
             if (!flags["value"].is_null())
                 flags["value"] = flags["value"].get<std::uint32_t>() | mask;
         }
+    }
+    return out;
+}
+
+Json material_layer_mapping_getters(const Json &containers, const Json &topology) {
+    Json out = {{"scope", "effective_first_layer_uv_mapping_after_version_conversion"},
+                {"status", "resolved"},
+                {"entries", Json::array()}};
+    if (topology.at("status") != "resolved" ||
+        containers.at("containers").size() != topology.at("objects").size()) {
+        out["status"] = "partial";
+        out["reason"] = "layer_mapping_topology_unavailable";
+        return out;
+    }
+    for (const auto &id_value : topology.at("active_object_ids")) {
+        const auto id = id_value.get<std::size_t>();
+        const auto &object = topology.at("objects").at(id);
+        const auto owner = object.at("layer_container_owner_object_id").get<std::size_t>();
+        // Type 30 keeps its local flags and resources but the layer getter
+        // copies the linked terminal's mapping fields at every invocation.
+        const auto source = object.at("projection_frame_source_object_id").get<std::size_t>();
+        const auto &local = containers.at("containers").at(owner);
+        const auto &mapped = containers.at("containers").at(source);
+        Json entry = {{"object_id", id},
+                      {"layer_container_owner_object_id", owner},
+                      {"mapping_source_object_id", source},
+                      {"data_flags_source_object_id", owner},
+                      {"status", "not_evaluated"}};
+        if (!local.at("layer_count").is_null() && !mapped.at("layer_count").is_null() &&
+            !local.at("layers").empty() && !mapped.at("layers").empty()) {
+            entry["mapping"] = mapped.at("layers")[0].at("mapping");
+            entry["data_flags"] = local.at("layers")[0].at("data_flags");
+            entry["status"] = entry.at("mapping").at("status") == "resolved" &&
+                                      !entry.at("data_flags").at("value").is_null()
+                                  ? "resolved"
+                                  : "partial";
+        } else
+            entry["reason"] = "effective_first_layer_unavailable";
+        if (entry.at("status") != "resolved")
+            out["status"] = "partial";
+        out["entries"].push_back(std::move(entry));
     }
     return out;
 }

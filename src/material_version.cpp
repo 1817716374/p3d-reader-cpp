@@ -303,6 +303,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
                                  const Json &mode) {
     auto topology = converted_maps(input, maps, bindings, mode);
     auto layers = material_layer_containers(maps, topology);
+    auto layer_mapping_getters = material_layer_mapping_getters(layers, topology);
     auto projection = material_projection_states(maps, topology);
     auto projection_getters = material_projection_getter_states(projection, topology);
     auto parameters = converted_roots(input, mode, topology.at("status") == "resolved");
@@ -314,6 +315,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
             {"status", resolved ? "resolved" : "partial"},
             {"root_parameters", std::move(parameters)},
             {"layer_containers", std::move(layers)},
+            {"layer_mapping_getters", std::move(layer_mapping_getters)},
             {"local_projection_states", std::move(projection)},
             {"projection_getters", std::move(projection_getters)},
             {"map_topology", std::move(topology)}};

@@ -88,14 +88,10 @@ Json material_numeric_reads(const Json &a, const Json &mode, const Json &applica
                 name == "enable_antialiasing") {
                 p["reader_value"] = (p["value"] != 0) != (name == "pattern_off");
                 p["normalization"] = name == "pattern_off" ? "zero_is_enabled" : "nonzero_is_true";
-            } else if (name == "scale_z" || name == "pattern_proj_scale") {
-                if (name == "scale_z") {
-                    if (p["value"] == 0)
-                        p["reader_value"] = 1.0;
-                } else
-                    for (auto &v : p["reader_value"])
-                        if (v == 0)
-                            v = 1.0;
+            } else if (name == "pattern_proj_scale") {
+                for (auto &v : p["reader_value"])
+                    if (v == 0)
+                        v = 1.0;
                 p["normalization"] = "zero_components_to_one";
             }
         }
