@@ -4,6 +4,105 @@
 
 namespace p3d {
 namespace {
+Json catalog_string_reader(const Json &field, const Json &strings) {
+    Json out = {{"reader_profile", "bimbase_2025_catalog_string_buffer"},
+                {"buffer_utf16_units", 512},
+                {"status", "unresolved"},
+                {"value", nullptr}};
+    if (field.at("entry_index").is_null()) {
+        out.update({{"status", "missing"}, {"native_getter_return_code", 1}});
+        return out;
+    }
+    const auto payload =
+        bytesof(strings.at(field.at("entry_index").get<std::size_t>()).at("payload"));
+    if (payload.size() < 8) {
+        out["reason"] = "truncated_linkage_string_header";
+        return out;
+    }
+    const auto count = Reader(payload, 4).u32();
+    if (count > payload.size() - 8) {
+        out["reason"] = "declared_string_exceeds_linkage";
+        return out;
+    }
+    const auto source = slice(payload, 8, count);
+    unsigned code = 0;
+    std::u16string units;
+    if (!source.empty() && source.front() != 0) {
+        // Marker probing reads the copied linkage, including its suffix. The
+        // native copy has an extra zero word beyond the linkage boundary.
+        auto probe = [&](std::size_t i) { return 8 + i < payload.size() ? payload[8 + i] : 0; };
+        const unsigned first = probe(0) | (probe(1) << 8);
+        const unsigned second = probe(2) | (probe(3) << 8);
+        bool wide = false;
+        std::size_t prefix = 0;
+        if (first == 0xfdff) {
+            prefix = 2;
+            wide = true;
+        } else if (first == 0xfeff) {
+            prefix = second == 1 ? 4 : 2;
+            wide = second != 1;
+        } else if (first == 0xfffd || first == 0xfffe) {
+            code = 2;
+        }
+        out["prefix_bytes"] = prefix;
+        out["character_conversion"] = code   ? "unsupported_marker"
+                                      : wide ? "copy_utf16le_units"
+                                             : "widen_unsigned_bytes";
+        if (!code) {
+            if (prefix > source.size()) {
+                out["reason"] = "marker_exceeds_declared_string";
+                return out;
+            }
+            const auto available = (source.size() - prefix) / (wide ? 2 : 1);
+            if (wide && source.size() > prefix && available == 0) {
+                out["reason"] = "native_zero_unit_copy_boundary";
+                return out;
+            }
+            const auto copied = std::min<std::size_t>(512, available);
+            for (std::size_t i = 0; i < copied; ++i) {
+                const auto at = prefix + i * (wide ? 2 : 1);
+                units.push_back(char16_t(source[at] | (wide ? unsigned(source[at + 1]) << 8 : 0)));
+            }
+            out["copied_utf16_units"] = copied;
+            if (!units.empty() && units.back() != 0 && copied >= 511) {
+                units.back() = 0;
+                code = 1;
+            } else if (!wide && copied < available) {
+                code = 1;
+            }
+            // The UTF16 branch compares the capacity against the *copied*
+            // count. A zero at its last copied unit can therefore mask a tail
+            // beyond the fixed buffer; preserve that native distinction.
+        }
+    }
+    out["conversion_return_code"] = code;
+    out["native_getter_return_code"] = code ? 1 : 0;
+    out["status"] = code ? "failure" : "success";
+    out["output_utf16_units"] = Json::array();
+    for (auto unit : units)
+        out["output_utf16_units"].push_back(unsigned(unit));
+    try {
+        std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> codec;
+        const auto nul = units.find(u'\0');
+        if (nul != std::u16string::npos) {
+            try {
+                const auto suffix = units.substr(nul);
+                const auto text = codec.to_bytes(suffix);
+                require(codec.converted() == suffix.size(), "incomplete suffix UTF16 conversion");
+                out["ignored_text_suffix"] = text;
+            } catch (const std::exception &e) {
+                out["ignored_suffix_text_error"] = e.what();
+            }
+            units.resize(nul);
+        }
+        out["value"] = codec.to_bytes(units);
+        require(codec.converted() == units.size(), "incomplete UTF16 conversion");
+    } catch (const std::exception &e) {
+        out["value"] = nullptr;
+        out["text_error"] = e.what();
+    }
+    return out;
+}
 Json native_catalog_input_members(std::size_t ni, const Json &records,
                                   const std::map<std::size_t, std::size_t> &catalog_indices,
                                   std::uint32_t counter) {
@@ -24,22 +123,35 @@ Json catalog_resource_interpretation(const Json &field) {
                 {"scope", "source_text_if_reader_succeeds"},
                 {"status", "unavailable_text"},
                 {"lookup_status", "not_performed"}};
-    if (field.at("status") != "decoded")
+    const auto &reader = field.at("reader");
+    if (reader.at("status") == "missing" || reader.at("status") == "failure") {
+        // A failed getter takes a different branch from a successfully read,
+        // explicitly empty resource string. Source text remains unchanged.
+        out.update(
+            {{"scope", "resource_reader_failure_fallback"},
+             {"status", "decoded"},
+             {"kind", "current_context_resource"},
+             {"reader_fallback", reader.at("status") == "missing" ? "missing_resource_reference"
+                                                                  : "resource_string_read_failed"},
+             {"member_name", ""},
+             {"primary_context", "current_resource_context"},
+             {"secondary_context_initial_state", "unset"},
+             {"secondary_context_rule", "default_resource_service"},
+             {"lookup_request", nullptr}});
         return out;
+    }
+    if (reader.at("status") != "success" || !reader.at("value").is_string())
+        return out;
+    if (reader.contains("ignored_text_suffix"))
+        out["ignored_text_suffix"] = reader.at("ignored_text_suffix");
     std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> codec;
-    const auto source = field.at("value").get<std::string>();
+    const auto source = reader.at("value").get<std::string>();
     std::u16string text;
     try {
         text = codec.from_bytes(source);
         if (codec.converted() != source.size())
             return out;
     } catch (const std::range_error &) {
-        return out;
-    }
-    // The native catalog getter has a 512-unit output buffer. Do not
-    // invent conversion/truncation behavior for values beyond that buffer.
-    if (text.size() >= 512) {
-        out["status"] = "unresolved_conversion_limit";
         return out;
     }
     const auto nul = text.find(u'\0');
@@ -275,6 +387,8 @@ Json native_material_catalog_records(const Json &native_records) {
             }
             strings.push_back(std::move(item));
         }
+        name["reader"] = catalog_string_reader(name, strings);
+        resource["reader"] = catalog_string_reader(resource, strings);
         resource["interpretation"] = catalog_resource_interpretation(resource);
         out.push_back({{"stream", n.value("stream", Json())},
                        {"native_record_index", ni},

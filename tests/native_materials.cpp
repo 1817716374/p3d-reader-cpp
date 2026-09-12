@@ -289,9 +289,106 @@ unsigned native_material_tests() {
         check(interpret(value)["kind"] == "palette_resource" &&
                   interpret(value)["lookup_request"]["reference"] == value,
               "ordinary palette paths do not inherit project-token context rules");
-    check(interpret("")["status"] == "rejected_empty_reference" &&
-              missing[0]["resource_reference"]["interpretation"]["status"] == "unavailable_text",
-          "explicitly empty resources are rejected and missing source text is not reinterpreted");
+    check(interpret("")["status"] == "rejected_empty_reference",
+          "successfully read empty resources take the native rejection branch");
+    const auto &missing_resource = missing[0]["resource_reference"];
+    const auto &fallback_resource = missing_resource["interpretation"];
+    check(missing_resource["status"] == "missing" && missing_resource["value"].is_null() &&
+              fallback_resource["status"] == "decoded" &&
+              fallback_resource["reader_fallback"] == "missing_resource_reference" &&
+              fallback_resource["member_name"] == "" &&
+              fallback_resource["primary_context"] == "current_resource_context" &&
+              fallback_resource["secondary_context_initial_state"] == "unset" &&
+              fallback_resource["secondary_context_rule"] == "default_resource_service" &&
+              fallback_resource["lookup_request"].is_null(),
+          "missing resource key initializes the current-context descriptor without inventing "
+          "source text");
+    auto raw_catalog_text = [&](const Bytes &bytes, unsigned key = 3) {
+        Bytes p;
+        append(p, key, 2);
+        append(p, 0, 2);
+        append(p, bytes.size(), 4);
+        p.insert(p.end(), bytes.begin(), bytes.end());
+        if (p.size() % 2)
+            p.push_back(0);
+        return catalog({linkage(p, 0x56d2)})[0][key == 1 ? "catalog_name" : "resource_reference"];
+    };
+    auto native_wide = [&](const std::u16string &text, unsigned marker = 0xfeff) {
+        Bytes bytes;
+        append(bytes, marker, 2);
+        for (auto unit : text)
+            append(bytes, unit, 2);
+        return bytes;
+    };
+    auto buffer_text = raw_catalog_text(Bytes{'a', 0xe9}, 1);
+    check(buffer_text["status"] == "invalid" && buffer_text["reader"]["status"] == "success" &&
+              buffer_text["reader"]["value"] == u8"aé",
+          "catalog reader widens unmarked bytes independently of generic source-string decoding");
+    buffer_text = raw_catalog_text(native_wide(u"\u8140", 0xfdff), 1);
+    check(buffer_text["reader"]["value"] == u8"\u8140" &&
+              buffer_text["reader"]["character_conversion"] == "copy_utf16le_units",
+          "catalog's fixed 1200 reader copies the FDFF form as UTF16 rather than generic packed "
+          "DBCS");
+    buffer_text = raw_catalog_text(Bytes{0, 'x', 'y'});
+    check(buffer_text["reader"]["status"] == "success" && buffer_text["reader"]["value"] == "" &&
+              buffer_text["interpretation"]["status"] == "rejected_empty_reference",
+          "a zero first byte succeeds with an empty string before marker inspection");
+    buffer_text = raw_catalog_text(Bytes{0xfd, 0xff, 'a', 'b'});
+    check(buffer_text["reader"]["conversion_return_code"] == 2 &&
+              buffer_text["interpretation"]["reader_fallback"] == "resource_string_read_failed",
+          "unsupported native byte-order marker causes resource-reader fallback");
+    for (std::size_t n : {510u, 511u, 512u}) {
+        buffer_text = raw_catalog_text(native_wide(std::u16string(n, u'q')), 1);
+        check(buffer_text["reader"]["native_getter_return_code"] == (n == 510 ? 0 : 1),
+              "UTF16 catalog buffer reserves its native termination boundary at 511 units");
+    }
+    auto terminated = std::u16string(512, u'q');
+    terminated.back() = 0;
+    buffer_text = raw_catalog_text(native_wide(terminated), 1);
+    check(buffer_text["reader"]["status"] == "success" &&
+              buffer_text["reader"]["value"].get<std::string>().size() == 511,
+          "a terminator at the last copied UTF16 unit makes a full buffer succeed");
+    terminated[0] = u'Q';
+    terminated[1] = 0;
+    terminated.push_back(u'z');
+    buffer_text = raw_catalog_text(native_wide(terminated));
+    check(buffer_text["reader"]["status"] == "success" && buffer_text["reader"]["value"] == "Q" &&
+              buffer_text["interpretation"]["member_name"] == "Q",
+          "UTF16 conversion can succeed despite an ignored tail beyond its zero-ended buffer");
+    Bytes byte_tail{0xff, 0xfe, 1, 0};
+    for (auto unit : terminated)
+        byte_tail.push_back(static_cast<std::uint8_t>(unit));
+    buffer_text = raw_catalog_text(byte_tail);
+    check(buffer_text["reader"]["conversion_return_code"] == 1 &&
+              buffer_text["interpretation"]["reader_fallback"] == "resource_string_read_failed",
+          "byte-widening branch detects an unread tail even when the copied buffer ends in zero");
+    buffer_text = raw_catalog_text(native_wide(std::u16string{u'Q', 0, char16_t(0xdc00)}));
+    check(buffer_text["reader"]["value"] == "Q" &&
+              buffer_text["interpretation"]["member_name"] == "Q",
+          "invalid UTF16 after the first NUL cannot invalidate the native reader's used prefix");
+    buffer_text = raw_catalog_text(Bytes{0xff, 0xfe, 0x41});
+    check(buffer_text["reader"]["status"] == "unresolved" &&
+              buffer_text["interpretation"]["status"] == "unavailable_text",
+          "a zero-unit native copy boundary is not silently converted into reader fallback");
+    buffer_text = raw_catalog_text({});
+    check(buffer_text["reader"]["native_getter_return_code"] == 0 &&
+              buffer_text["interpretation"]["status"] == "rejected_empty_reference",
+          "a present zero-byte string succeeds empty instead of taking missing-key fallback");
+    auto short_marker_payload = string_payload(3, "");
+    put(short_marker_payload, 4, 2, 4);
+    auto short_marker = catalog({linkage(short_marker_payload, 0x56d2)})[0]["resource_reference"];
+    check(short_marker["reader"]["reason"] == "marker_exceeds_declared_string" &&
+              short_marker["interpretation"]["status"] == "unavailable_text",
+          "marker probing sees linkage suffix bytes but rejects declared-size underflow");
+    put(short_marker_payload, 4, 0xffff, 4);
+    short_marker =
+        catalog({linkage(short_marker_payload, 0x56d2),
+                 linkage(string_payload(3, "later.p3d"), 0x56d2)})[0]["resource_reference"];
+    check(short_marker["reader"]["reason"] == "declared_string_exceeds_linkage" &&
+              short_marker["reader"]["value"].is_null() &&
+              short_marker["interpretation"]["status"] == "unavailable_text",
+          "unsafe first resource read neither falls through to later links nor invents a failure "
+          "result");
     project = interpret("$(_P3DPROJECT)\\C:stone.pal");
     check(project["status"] == "unresolved_path_syntax" && !project.contains("project_member_name"),
           "drive and scheme syntax requires its own native path rules");
@@ -299,8 +396,11 @@ unsigned native_material_tests() {
     check(project["status"] == "unresolved_path_component_limit",
           "native path buffer limits prevent a fabricated member name");
     project = interpret(std::string("$(_P3DPROJECT)\\") + std::string(512, 'x'));
-    check(project["status"] == "unresolved_conversion_limit",
-          "long catalog text does not assume the native fixed-size conversion buffer succeeded");
+    check(project["status"] == "decoded" &&
+              project["reader_fallback"] == "resource_string_read_failed" &&
+              project["member_name"] == "" && project["lookup_request"].is_null(),
+          "native buffer failure uses the default resource descriptor without using truncated path "
+          "text");
     std::string with_nul = "$(_P3DPROJECT)\\first.pal";
     with_nul.push_back('\0');
     with_nul += "second.p3d";
