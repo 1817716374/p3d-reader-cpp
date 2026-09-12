@@ -78,7 +78,8 @@ Json native_mesh_routing(const Json &channels, const FaceLayout &layout, const J
                           {"weighting", "unit_triangle_normals"},
                           {"normalize_sum", true},
                           {"position_comparison", "componentwise_tolerance"},
-                          {"position_tolerance", 1e-7}};
+                          {"position_tolerance", 1e-7},
+                          {"zero_magnitude_normal", Point3{1, 0, 0}}};
     out["copied_material_count"] = groups.size();
     out["unused_source_material_count"] = materials.size() - groups.size();
     out["discarded_copied_material_count"] =
@@ -344,9 +345,15 @@ Json mesh_triangle_channels(const Json &channels,
     return {{"source", channels}, {"triangles", std::move(triangles)}};
 }
 void reverse_mesh_channel_corners(Json &channels) {
-    for (auto &triangle : channels["triangles"])
+    for (auto &triangle : channels["triangles"]) {
         for (const auto *name : {"source_corners", "color_indices", "face_uv_point_indices"})
             if (!triangle[name].is_null())
                 std::swap(triangle[name][1], triangle[name][2]);
+        if (triangle.contains("native_triangulation"))
+            for (const auto *name : {"source_corner_normals", "corner_normals"})
+                if (triangle["native_triangulation"].contains(name))
+                    std::swap(triangle["native_triangulation"][name][1],
+                              triangle["native_triangulation"][name][2]);
+    }
 }
 } // namespace p3d

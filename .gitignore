@@ -24,6 +24,7 @@
 !/tests/native_dependency.cpp
 !/tests/native_reference_path.cpp
 !/tests/native_application.cpp
+!/tests/mesh_normals.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

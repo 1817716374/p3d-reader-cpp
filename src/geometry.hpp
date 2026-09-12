@@ -12,6 +12,7 @@ Geometry reconstruct(const Json &, const Tessellation &);
 Geometry reconstruct_native(const Json &, const Tessellation &);
 void merge_geometry(Geometry &, const Geometry &, const Matrix4 &, bool text_parent = true);
 void merge_mesh_channels(Geometry &, const Geometry &, std::size_t first_face);
+void evaluate_mesh_normals(Json &, const std::vector<Point3> &, const std::vector<Triangle> &);
 Json geometry_json(const Geometry &);
 NativeScene build_native_scene(const Document &, const Tessellation &, unsigned);
 } // namespace p3d

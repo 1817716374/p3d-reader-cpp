@@ -136,6 +136,27 @@ static void transform_normals(Geometry &g, const Matrix4 &m, std::size_t start =
         normal = finite ? std::optional<Point3>(result) : std::nullopt;
     }
 }
+static void place_mesh_normals(Json &channels, const Matrix4 &matrix) {
+    if (!channels.contains("normal_evaluation") ||
+        channels["normal_evaluation"].value("status", "") != "computed")
+        return;
+    Geometry values;
+    for (const auto &triangle : channels["triangles"])
+        for (const auto &normal : triangle["native_triangulation"]["corner_normals"])
+            values.normals.push_back(normal.is_null() ? std::optional<Point3>()
+                                                     : normal.get<Point3>());
+    transform_normals(values, matrix);
+    std::size_t index = 0;
+    bool valid = true;
+    for (auto &triangle : channels["triangles"])
+        for (auto &normal : triangle["native_triangulation"]["corner_normals"]) {
+            const auto &value = values.normals.at(index++);
+            normal = value ? Json(*value) : Json();
+            valid &= value.has_value();
+        }
+    channels["normal_evaluation"]["placement_status"] =
+        valid ? "available" : "singular_or_nonfinite";
+}
 unsigned Tessellation::segments(double radius, double sweep) const {
     require(std::isfinite(radius) && std::isfinite(sweep), "nonfinite curve extent");
     radius = std::abs(radius);
@@ -553,9 +574,12 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             }
                         }
                     }
-                    if (extended)
+                    if (extended) {
                         mesh_metadata =
                             mesh_triangle_channels(d["mesh_channels"], sources, source_corners);
+                        evaluate_mesh_normals(mesh_metadata, points, faces);
+                        place_mesh_normals(mesh_metadata, matrix);
+                    }
                     append(g, world(points), faces, &uvs, &sources);
                     channels.faces = std::move(faces);
                     merge_mesh_channels(g, channels, first_face);
@@ -1097,8 +1121,11 @@ void merge_geometry(Geometry &target, const Geometry &source, const Matrix4 &m, 
         range["start"] = range["start"].get<std::size_t>() + offsets.at(channel);
         range["winding_reversed"] =
             bool(range.value("winding_reversed", false) ^ (mirror && channel == "faces"));
-        if (mirror && range.contains("mesh_channels"))
-            reverse_mesh_channel_corners(range["mesh_channels"]);
+        if (range.contains("mesh_channels")) {
+            place_mesh_normals(range["mesh_channels"], m);
+            if (mirror)
+                reverse_mesh_channel_corners(range["mesh_channels"]);
+        }
         target.primitive_ranges.push_back(range);
     }
 }

@@ -163,6 +163,10 @@ unsigned mesh_extension_tests() {
               bindings["polygons"][0]["smoothing_group"] == -7,
           "face channels bind in source nonempty polygon order");
     auto g = reconstruct(Json::array({cmd}), {});
+    check(channels(g)["normal_evaluation"]["status"] == "computed" &&
+              channels(g)["triangles"][0]["native_triangulation"]["corner_normals"][0] ==
+                  Json({0., 0., 1.}) && g.source_normals.empty() && g.normals.empty(),
+          "binary mesh reconstruction exposes derived normals independently of source pools");
     auto color_only = cmd;
     auto color_only_bytes = prefix(0, false);
     color_only_bytes.insert(color_only_bytes.end(), extra.begin(), extra.end());
