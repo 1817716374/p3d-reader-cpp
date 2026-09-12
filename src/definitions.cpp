@@ -100,13 +100,17 @@ Json material_settings(const Json &tree) {
                           layer, local, layer["reader_applicability"]);
         }
     }
+    auto initial = material_root_input(tree["attributes"], reader_profile["mode"]);
+    auto bindings = material_map_bindings(maps);
+    auto converted = material_version_conversion(initial, maps, bindings, reader_profile["mode"]);
     return {{"source_parameters", tree["attributes"]},
             {"numeric_parameters", fields(tree["attributes"])},
             {"semantics", material_parameter_semantics(tree["attributes"])},
             {"reader_profile", reader_profile},
-            {"initial_parameters", material_root_input(tree["attributes"], reader_profile["mode"])},
+            {"initial_parameters", std::move(initial)},
+            {"version_conversion", std::move(converted)},
             {"maps", maps},
-            {"map_bindings", material_map_bindings(maps)},
+            {"map_bindings", std::move(bindings)},
             {"shader_policy", "Native parameter flags and map roles; no conversion to another "
                               "renderer or color space."}};
 }

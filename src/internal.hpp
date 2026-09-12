@@ -215,6 +215,8 @@ Json native_material_attribute(const Json &member, const Json &input);
 Json decode_material_auxiliary_records(const Bytes &);
 Json material_xml_integer(const Json &, const std::string &, bool signed_value);
 Json material_root_input(const Json &, const Json &mode);
+Json material_version_conversion(const Json &input, const Json &maps, const Json &bindings,
+                                 const Json &mode);
 Json native_system_attribute_input(const std::vector<Stream> &, const Json &index,
                                    const StreamPath &system, const Json &ids);
 Json material_settings(const Json &tree);
