@@ -268,6 +268,7 @@ Json embedded_texture_records(const Json &graphics, const Json &materials);
 Json read_schemas(const Document &);
 Json read_models(const Document &);
 Json decode_model_units(const Bytes &);
+Json decode_model_coordinates(const Bytes &);
 void enrich_tree(Json &, const std::string & = "", const Json & = Json::object());
 Json leaf_fields(const Json &);
 Json text_json(const Bytes &);

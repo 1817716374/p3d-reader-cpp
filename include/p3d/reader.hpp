@@ -28,6 +28,19 @@ using Point2 = std::array<double, 2>;
 using Triangle = std::array<std::uint32_t, 3>;
 using Matrix4 = std::array<std::array<double, 4>, 4>;
 using Matrix3 = std::array<Point3, 3>;
+// The selected referenced model supplies coordinates. A known unattached
+// reference needs no model; otherwise an omitted attachment state is inferred
+// only when model_coordinates is explicitly supplied. Auxiliary conditions
+// are required only when they can affect the result.
+struct ReferenceOriginContext {
+    std::optional<Json> model_coordinates;
+    std::optional<bool> model_attached;
+    std::optional<std::uint16_t> auxiliary_origin_gate;
+    std::optional<bool> auxiliary_origin_suppressed;
+};
+// Consumes a native record's reference_input and the selected model's
+// coordinates. Returns a local correction, not a complete affine transform.
+Json reference_origin_correction(const Json &reference_input, const ReferenceOriginContext &context);
 // Native CurveVector reference frame selection, preserving direct child order
 // and nested arrays. Preference 1 favors endpoint axes; 2 uses endpoints only
 // when their tangents are not parallel; other values use the local search.

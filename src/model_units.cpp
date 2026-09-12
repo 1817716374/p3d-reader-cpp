@@ -35,6 +35,45 @@ Json factor(double value) {
 }
 } // namespace
 
+Json decode_model_coordinates(const Bytes &b) {
+    Json out = {{"scope", "native_model_header_coordinate_state"},
+                {"status", "unsupported_header"},
+                {"source_offsets_include_stream_prefix", true}};
+    if (b.size() < 500 || Reader(b, 4).u16() != 47 || Reader(b, 16).u32() != 32)
+        return out;
+    Reader r(b);
+    const auto source_flags = r.at<std::uint32_t>(72);
+    const auto source_kind = r.at<std::uint16_t>(38);
+    const unsigned kind = source_kind == 0 && (source_flags & 0x400) ? 2 : source_kind;
+    const auto flags = (source_flags & ~0x400u) | (kind == 2 ? 0x400u : 0u);
+    auto point = [&](std::size_t offset) {
+        return Json::array({numeric(r, offset), numeric(r, offset + 8), numeric(r, offset + 16)});
+    };
+    const auto primary = point(404);
+    auto effective = primary;
+    if (!(flags & 1))
+        effective[2] = 0.;
+    out.update({{"status", "decoded"},
+                {"source_flags", source_flags},
+                {"flags", flags},
+                {"flags_source_offset", 72},
+                {"model_kind",
+                 {{"source_value", source_kind},
+                  {"value", kind},
+                  {"source_offset", 38},
+                  {"name", kind == 0   ? "physical"
+                           : kind == 1 ? "sheet"
+                           : kind == 2 ? "drawing"
+                                       : "unknown"}}},
+                {"reference_origin",
+                 {{"source_value", primary},
+                  {"value", effective},
+                  {"source_offset", 404},
+                  {"z_enabled", bool(flags & 1)}}},
+                {"auxiliary_origin", {{"value", point(116)}, {"source_offset", 116}}}});
+    return out;
+}
+
 Json decode_model_units(const Bytes &b) {
     Json out = {{"scope", "native_model_header_unit_state"},
                 {"status", "unsupported_header"},

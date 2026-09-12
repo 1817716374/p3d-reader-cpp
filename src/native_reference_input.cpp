@@ -256,6 +256,10 @@ Json native_reference_input(const Bytes &source) {
         require(base_size >= 372, "truncated current reference base");
         const auto entries = Reader(data, 370).u16();
         out["entry_count"] = entries;
+        out["origin_inputs"] = {{"primary_flags", Reader(data, 60).u32()},
+                                {"secondary_flags", Reader(data, 64).u32()},
+                                {"primary_flags_source_offset", layout.upgraded ? 52 : 60},
+                                {"secondary_flags_source_offset", layout.upgraded ? 56 : 64}};
         out["clipping"] = reference_clipping(data, layout.upgraded);
         require(out["clipping"]["status"] == "decoded", "truncated current reference entries");
         out["transform"] = reference_transform(data);

@@ -334,6 +334,7 @@ Json parse_native(const Bytes &b) {
                 decode_native_layer_table(slice(b, pos, attr - pos), out.back()["links"]);
         if (type == 47 && r.at<std::uint32_t>(pos + 16) == 32) {
             out.back()["model_unit_state"] = decode_model_units(slice(b, pos, attr - pos));
+            out.back()["model_coordinate_state"] = decode_model_coordinates(slice(b, pos, attr - pos));
             Json reference = {{"encoding", "model_layer_group_reference"},
                               {"source_offset", 492},
                               {"status", "unsupported_header"}};
@@ -1063,6 +1064,16 @@ Json read_models(const Document &doc) {
             auto records = parse_native(slice(b, 4096, b.size() - 4096));
             info["layer_group_references"] = Json::array();
             info["unit_records"] = Json::array();
+            info["coordinate_records"] = Json::array();
+            for (const auto &n : records)
+                if (n.contains("model_coordinate_state")) {
+                    auto coordinates = n.at("model_coordinate_state");
+                    coordinates["stream"] = s.path;
+                    coordinates["record_offset"] = 4096 + n.at("offset").get<std::uint64_t>();
+                    info["coordinate_records"].push_back(std::move(coordinates));
+                }
+            if (info["coordinate_records"].size() == 1)
+                info["coordinates"] = info["coordinate_records"][0];
             for (const auto &n : records)
                 if (n.contains("model_unit_state")) {
                     auto units = n.at("model_unit_state");
