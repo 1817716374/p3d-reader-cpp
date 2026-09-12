@@ -120,6 +120,12 @@ class BsplineCurve {
     std::array<double, 4> homogeneous_at(double fraction) const;
     // Throws at zero evaluated weight or a non-finite Cartesian result.
     Point3 point_at(double fraction) const;
+    // Native curve derivative convention: result[0] is the point; result[k]
+    // differentiates with respect to the source knot parameter, not fraction.
+    // Open fractions clamp; closed fractions wrap (exact upper endpoint stays).
+    // Supports native orders 2..26 and derivative orders 0..24. Throws on
+    // native knot-tolerance failure, zero control/evaluated weight or overflow.
+    std::vector<Point3> native_derivatives_at(double fraction, unsigned derivative_order = 3) const;
 
   private:
     BsplineCurve() = default;
