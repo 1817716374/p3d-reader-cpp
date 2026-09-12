@@ -1,4 +1,6 @@
 #include "internal.hpp"
+#include <cmath>
+#include <cstring>
 
 unsigned native_dependency_tests() {
     using namespace p3d;
@@ -158,5 +160,83 @@ unsigned native_dependency_tests() {
     put(record, 8, 20, 4);
     rows = parse_native(record);
     check(!rows[0]["links"][0].contains("decoded"), "dependency decoder requires a user linkage");
+    // Compact selectors are normalized before being consumed by the native reader.
+    // Check their complete descriptor bytes independently of the exposed mappings.
+    for (unsigned kind = 0; kind < 4; ++kind) {
+        auto p = make(7, 1, 32);
+        put(p, 8, 0x89abcdef, 4);
+        put(p, 12, 0x01234567, 4);
+        put(p, 16, kind, 1);
+        put(p, 20, 0x1122, 2);
+        put(p, 22, 0x3344, 2);
+        put(p, 24, 0x5566778899aabbccull, 8);
+        auto x = native_dependency_link(p);
+        const auto &sel = x["entries"][0]["expanded_selector"];
+        Bytes expected(40, 0);
+        const unsigned kinds[] = {1, 6, 3, 7};
+        put(expected, 0, kinds[kind], 1);
+        put(expected, 2, 0x1122, 2);
+        put(expected, 8, 0x89abcdef01234567ull, 8);
+        if (kind == 0) {
+            put(expected, 24, 0x3344, 2);
+            put(expected, 4, 0xbbcc, 2);
+            put(expected, 6, 0x99aa, 2);
+        }
+        if (kind == 1)
+            put(expected, 4, 0x3344, 2);
+        if (kind == 1 || kind == 2)
+            put(expected, 24, 0x5566778899aabbccull, 8);
+        check(sel["status"] == "resolved" && bytesof(sel["descriptor"]) == expected,
+              "compact parameter fields map to the exact expanded descriptor without guessing slot "
+              "names");
+        check(!sel.contains("normalization"),
+              "nonzero selector parameter suppresses angle normalization");
+        for (const auto &field : sel["field_mappings"])
+            check(bytesof(field["source"]) == slice(p, 8 + field["entry_offset"].get<std::size_t>(),
+                                                    field["byte_count"].get<std::size_t>()),
+                  "compact parameter source bytes retain provenance");
+    }
+    constexpr double tau = 0x1.921fb54442d18p+2;
+    for (double source : {-0.25, tau + 0.25, -0.0, -2 * tau, 1e100}) {
+        auto p = make(7, 1, 32);
+        put(p, 16, 2, 1);
+        std::uint64_t bits;
+        std::memcpy(&bits, &source, 8);
+        put(p, 24, bits, 8);
+        const auto sel = native_dependency_link(p)["entries"][0]["expanded_selector"];
+        auto expanded = bytesof(sel["descriptor"]);
+        double value = Reader(expanded, 24).f64();
+        double expected = std::fmod(source, tau);
+        if (expected < 0)
+            expected += tau;
+        check(sel["normalization"]["kind"] == "angle_modulo_two_pi" && value == expected &&
+                  (value != 0 || std::signbit(value) == std::signbit(source)),
+              "angle projection matches modulo and retains signed zero");
+        check(bytesof(sel["field_mappings"].back()["source"]) == slice(p, 24, 8),
+              "angle normalization does not overwrite the serialized angle");
+    }
+    for (auto bits : {0x7ff0000000000000ull, 0xfff0000000000000ull, 0x7ff8123456789abcull}) {
+        auto p = make(7, 1, 32);
+        put(p, 16, 2, 1);
+        put(p, 24, bits, 8);
+        auto x = native_dependency_link(p);
+        auto sel = x["entries"][0]["expanded_selector"];
+        check(sel["status"] == "invalid" && !sel.contains("descriptor") &&
+                  Reader(bytesof(sel["field_mappings"].back()["source"])).u64() == bits,
+              "nonfinite angles do not turn into a successful null-valued JSON projection");
+        put(p, 16, 1, 1);
+        x = native_dependency_link(p);
+        sel = x["entries"][0]["expanded_selector"];
+        check(sel["status"] == "resolved" && Reader(bytesof(sel["descriptor"]), 24).u64() == bits,
+              "unmodified floating parameters preserve every bit including NaN payloads");
+    }
+    for (unsigned flags : {0u, 0x78u, 0xffffu, 0x1e01u}) {
+        auto p = make(0, 0, 8);
+        put(p, 4, flags, 2);
+        auto x = native_dependency_link(p);
+        check(x["flags"] == flags && x["write_flag_projection"]["flags"] == (flags & 0xff87u) &&
+                  x["write_flag_projection"]["cleared_bits"] == (flags & 0x78u),
+              "writer flag projection clears only confirmed bits without changing source flags");
+    }
     return checks;
 }
