@@ -148,5 +148,201 @@
     "origin": "Local static-build export macro configuration",
     "sha256": "36bc4b8f74820c36f6705d082206a4b934aaf62217db0621545afb238179f680",
     "bytes": 36
+  },
+  {
+    "file": "glu/gluos.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/gluos.h",
+    "sha256": "37603bd63b88e63fd62e96ad3929469b549fbb02ac841d06b646bcc091f4be5a",
+    "bytes": 2409,
+    "upstream_sha256": "94a43a8e04c37284cf4bfbeb88486461c808634b78ee63bbf4ee93d3e01f4f77"
+  },
+  {
+    "file": "glu/LICENSE.txt",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/LICENSE.txt",
+    "sha256": "14c1b7d39aeedd8088dba87929a6bde0c3243689fe6e91291c979dca37767dec",
+    "bytes": 1549,
+    "upstream_sha256": "8ba8d298ad1d68a6ac32dc0fd01a949e9a46d03da54019d0b847fef8fe5832ad"
+  },
+  {
+    "file": "glu/README.skia",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/README.skia",
+    "sha256": "f3a3cbe60c4126aba66a5ae482d10c1401f886af0eea6e4ae17eeca0491ae006",
+    "bytes": 1626,
+    "upstream_sha256": "f3a3cbe60c4126aba66a5ae482d10c1401f886af0eea6e4ae17eeca0491ae006"
+  },
+  {
+    "file": "glu/sk_glu.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/sk_glu.h",
+    "sha256": "ed524fb7a0ed4718589d65dd5f4b97e7ceb3822be9589e985021f7a733270d59",
+    "bytes": 6170,
+    "upstream_sha256": "ed524fb7a0ed4718589d65dd5f4b97e7ceb3822be9589e985021f7a733270d59"
+  },
+  {
+    "file": "glu/libtess/dict-list.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/dict-list.h",
+    "sha256": "e79dd225ae3ed4a90d2960ae77924124711407547262f922b739dafae2a424e7",
+    "bytes": 3902,
+    "upstream_sha256": "e8f60dc9798b359f8caf2fd0ba7985fbee6b6c33ed5c60a8c3f8324ac91fc4eb"
+  },
+  {
+    "file": "glu/libtess/dict.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/dict.c",
+    "sha256": "e9de34f3955ff0e1eb170e1e43971c0187fae771b6adc086628c505eb6fc4d67",
+    "bytes": 3551,
+    "upstream_sha256": "d493fc282c166d3154d2361ffdd6f987b6fcea3b84b685d446c9492eede5554e"
+  },
+  {
+    "file": "glu/libtess/dict.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/dict.h",
+    "sha256": "9fca72a5735ac0af259afa66e851820ae08fcee524b1147a628e2e201339d33e",
+    "bytes": 3897,
+    "upstream_sha256": "ca4b3ad96bc3d2225b7564a5aa223bc855da3489f9da716c346212ce405fc8be"
+  },
+  {
+    "file": "glu/libtess/geom.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/geom.c",
+    "sha256": "52d14a2ae96e82b413b68a36df5a85dc6c3611c494b95dbd9380fcddf33372ce",
+    "bytes": 9228,
+    "upstream_sha256": "017b387f59d07dd1343c53c6c8d6f57062e5f1688242ff27acb6ac8d878f093e"
+  },
+  {
+    "file": "glu/libtess/geom.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/geom.h",
+    "sha256": "eb5ab5eecb0c16e363e5cfefcca25c37c5ff9078d6eec639ca76de3e6a4e12be",
+    "bytes": 3765,
+    "upstream_sha256": "31adc60f6417c6eaad2428bb9437aafb273cc92f10bf6e15d88e055d297bca42"
+  },
+  {
+    "file": "glu/libtess/memalloc.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/memalloc.c",
+    "sha256": "058a4ba322059dfbfb9f4f9609996d3d0c7e3ff9729ef06e7eadfe8571803a60",
+    "bytes": 2301,
+    "upstream_sha256": "8aee95bd9fb6b6b7a942eca3de687821ef1ab20224776e7f5dcfa9cf83573ee4"
+  },
+  {
+    "file": "glu/libtess/memalloc.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/memalloc.h",
+    "sha256": "f63763a02fc1cabbf5c393698541a4dc0791f909e50e44fc8db8d38f2e476a0f",
+    "bytes": 2389,
+    "upstream_sha256": "9af67d82ac8a213123942c270fad665ce6bd7da1c4ed7baea12c805065589d8c"
+  },
+  {
+    "file": "glu/libtess/mesh.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/mesh.c",
+    "sha256": "2d21a4fa734255b4a752a404991ac48338d6736a9f4c6332d6887b3d1ab1432e",
+    "bytes": 22561,
+    "upstream_sha256": "b870bdb7f2942d2f5d775e6b9b77794bf1c1aba1b8d3b42f1e460442bc536533"
+  },
+  {
+    "file": "glu/libtess/mesh.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/mesh.h",
+    "sha256": "f26f2c06e9843ecdc78c62bd8174da1ae95d1cc31615f51c7686a0fff62574ac",
+    "bytes": 12381,
+    "upstream_sha256": "6da93842b9ef485eff0ad10ebf15827536c6676bc180ba21a522258c3b83c388"
+  },
+  {
+    "file": "glu/libtess/normal.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/normal.c",
+    "sha256": "3b1e5ac195ecdb64f4fccb82098806b5e7ae295af97196d835e4459774bff798",
+    "bytes": 8155,
+    "upstream_sha256": "9d8486a29380d7f3db01b675577fdd03bc7ec78f46611437eedb575dcce02220"
+  },
+  {
+    "file": "glu/libtess/normal.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/normal.h",
+    "sha256": "c664fc2d30c752ad8e2d56c33b48fbd2338112f893f65cbb625fcb419cfc981a",
+    "bytes": 2222,
+    "upstream_sha256": "3c5e3cabeae9fbbb312ffa017900660195a2b04f8f4f0a2e78694f660504dad0"
+  },
+  {
+    "file": "glu/libtess/priorityq-heap.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/priorityq-heap.c",
+    "sha256": "8e68d1e34fec8a5ffb1813941b3717d7aaeece6ab5bc436108c73968e2d2a3c9",
+    "bytes": 6841,
+    "upstream_sha256": "0a40162c9d8993c29277b408451f9e8493f58911e3f64902fb5e8c7e86d50b98"
+  },
+  {
+    "file": "glu/libtess/priorityq-heap.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/priorityq-heap.h",
+    "sha256": "b90e1c0ac421258c72aee6f41bb2e5bb1b95d5aaf9cbfc62e2da6a676f1726de",
+    "bytes": 4491,
+    "upstream_sha256": "825efa7e51b03d1c5d4600d710f660446b56858b1e674548141087c6f523980e"
+  },
+  {
+    "file": "glu/libtess/priorityq-sort.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/priorityq-sort.h",
+    "sha256": "7af8b6a619c26a4711361f273e044430efd52835b0ba8ca44ec180488b490e38",
+    "bytes": 4562,
+    "upstream_sha256": "fc5502a67488373fe79ffb017921b77de1ec10e04dfe994e5b643f21181ed107"
+  },
+  {
+    "file": "glu/libtess/priorityq.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/priorityq.c",
+    "sha256": "e91d883955f3ec762afc7139adc8f7b2fefbd44279a316824b75d60aef717670",
+    "bytes": 7530,
+    "upstream_sha256": "33479c83ec0229c12836caa770f3744d420e4bd91b896898529ed38ac0fdee8c"
+  },
+  {
+    "file": "glu/libtess/priorityq.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/priorityq.h",
+    "sha256": "523a36f9a20b31d44cd6a265ae374fe3bb53909ac0b9b3c855063580378d19da",
+    "bytes": 4557,
+    "upstream_sha256": "cba089aa1064767b25109ca415d243bdd5b8765197af172d4d346566700ca071"
+  },
+  {
+    "file": "glu/libtess/render.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/render.c",
+    "sha256": "d63fb00f8e90de7f5e1da43644f1e961dbd71e782d825dfd176691265c01f9f4",
+    "bytes": 16168,
+    "upstream_sha256": "79d82ef673aecabc170d0c5dd0edce164481d4f50ab4297c2d3400f9885cea89"
+  },
+  {
+    "file": "glu/libtess/render.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/render.h",
+    "sha256": "55ff55320addaa8c420e2dfdc59a3d1ba09e2db679cb73ab57af952c5c6d502a",
+    "bytes": 2554,
+    "upstream_sha256": "acec2abce439bffef1e9fecd0cf0bbe28172a1bbde9fe8d78ec63013e998880f"
+  },
+  {
+    "file": "glu/libtess/sweep.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/sweep.c",
+    "sha256": "9bd21b98e1a7fdbb6c9df1fc12d67a7094f16bcea78d4805f61c57a44cc75701",
+    "bytes": 48782,
+    "upstream_sha256": "d84d9d55bd97bef9082e97ce929948e33d433235a7edc13ba7e79a21ad467c39"
+  },
+  {
+    "file": "glu/libtess/sweep.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/sweep.h",
+    "sha256": "fedd30d7dee83fba3a0494005b4f1f231ddf1492fd097058eb68ca70b3f698d6",
+    "bytes": 3752,
+    "upstream_sha256": "6704f20ae6ca819de69b02479e5e8e87c7c4ca9b36f56d810b112ba7ed3b99dd"
+  },
+  {
+    "file": "glu/libtess/tess.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/tess.c",
+    "sha256": "d34149894e6344b27ff9276640b674086391f7edc524e727f5093cd68617184e",
+    "bytes": 18076,
+    "upstream_sha256": "9971d2e04e1bdf579c6ddfbb69e539413709328780a867abf89bc4703cb95444"
+  },
+  {
+    "file": "glu/libtess/tess.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/tess.h",
+    "sha256": "dd45f3d2c570d3657d863e1431fc7e1f52eaa2f14812ea2044b86b6537414ee5",
+    "bytes": 6807,
+    "upstream_sha256": "450fe32ae030a001188728932a22bcc291b749bb6cbdb51e1c3f64f7d57662a0"
+  },
+  {
+    "file": "glu/libtess/tessmono.c",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/tessmono.c",
+    "sha256": "6f54db3faf6d215e3608da5d78eb0348707e62f42c0e752a4a1b991852ce2a6e",
+    "bytes": 7620,
+    "upstream_sha256": "aa7f3f896f6d9f51f1f0eb6945e71d06f2b21367c7dc1b3aed77700057e021eb"
+  },
+  {
+    "file": "glu/libtess/tessmono.h",
+    "url": "https://chromium.googlesource.com/external/skia/third_party/glu/+/82532b9046be34a2ca93b650c5808a0827ecff16/libtess/tessmono.h",
+    "sha256": "991b73d89c6d0a3f7eba136791687907c0163fc98b01cc584be863423aa9b446",
+    "bytes": 3558,
+    "upstream_sha256": "f88da482f7bbc6f936782d75709c21c2a7c786c829088d00e05299f4105a9c78"
   }
 ]

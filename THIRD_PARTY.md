@@ -8,6 +8,7 @@
 | LZ4 | 1.10.0 | P3D 流和属性解压 | [许可证](third_party/lz4/LICENSE) |
 | pugixml | 1.15 | 材质、模式及关系 XML | [许可证](third_party/pugixml/LICENSE.md) |
 | mapbox/earcut.hpp | 2.2.4 | 多边形及带孔多边形三角化 | [许可证](third_party/mapbox/LICENSE) |
+| SGI GLU / Chromium 快照 | `82532b9046be34a2ca93b650c5808a0827ecff16` | 原生网格消费路径的多边形三角化 | [SGI FreeB 2.0](third_party/glu/LICENSE.txt)、[Google BSD](third_party/glu/LICENSE.GOOGLE) |
 | miniz | 3.1.0，仅链接 tinfl | zlib 属性载荷解压 | [许可证](third_party/miniz/LICENSE) |
 | Bentley BGFB 模式 | 模式快照，来源见 `src/data.cpp` | BGFB 结构解码 | [Apache-2.0](third_party/BGFB_LICENSE.txt) |
 | GDAL DGN 默认颜色表 | v3.10.0 | 默认索引颜色 | [MIT 与原版权声明](third_party/GDAL_PALETTE_LICENSE.txt) |

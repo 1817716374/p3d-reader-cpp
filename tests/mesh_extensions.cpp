@@ -163,6 +163,9 @@ unsigned mesh_extension_tests() {
               bindings["polygons"][0]["smoothing_group"] == -7,
           "face channels bind in source nonempty polygon order");
     auto g = reconstruct(Json::array({cmd}), {});
+    auto native_triangles = triangulate_native_mesh(cmd["decoded"]);
+    check(native_triangles["status"] == "triangulated" && native_triangles["triangles"].size() == 2,
+          "decoded binary extension routes into independent native tessellation");
     check(channels(g)["normal_evaluation"]["status"] == "computed" &&
               channels(g)["triangles"][0]["native_triangulation"]["corner_normals"][0] ==
                   Json({0., 0., 1.}) && g.source_normals.empty() && g.normals.empty(),

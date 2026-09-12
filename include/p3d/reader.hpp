@@ -416,6 +416,9 @@ Json parse_dex(const Bytes &, std::size_t &offset, bool enrich = true);
 Json parse_native(const Bytes &);
 Json parse_graphics(const Bytes &);
 Json parse_commands(const Bytes &);
+// Alternate native mesh consumer. Input is an opcode-25 decoded command.
+// The limit bounds per-call generated/output corner storage, not a file constraint.
+Json triangulate_native_mesh(const Json &decoded, std::size_t max_output_corners = 3000000);
 std::string base64(const Bytes &);
 Bytes unbase64(const std::string &);
 Json element_context(const Json &graph, std::uint64_t model_id, std::uint64_t element_id);
