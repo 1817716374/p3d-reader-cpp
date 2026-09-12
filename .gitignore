@@ -26,6 +26,7 @@
 !/tests/native_application.cpp
 !/tests/mesh_normals.cpp
 !/tests/mesh_tessellation.cpp
+!/tests/mesh_buffers.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d

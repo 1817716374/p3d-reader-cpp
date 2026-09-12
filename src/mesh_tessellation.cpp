@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "geometry.hpp"
 #include "glu/sk_glu.h"
 #include <deque>
 
@@ -88,7 +88,7 @@ Json triangulate_native_mesh(const Json &decoded, std::size_t max_output_corners
                 {"tessellator", "sgi_glu"},
                 {"winding_rule", "odd"},
                 {"tolerance", 1e-6},
-                {"scope", "triangle_corners_before_position_uv_registry_and_normal_export"},
+                {"scope", "local_indexed_mesh_with_source_corners"},
                 {"triangles", Json::array()}};
     try {
         const auto &channels = decoded.at("mesh_channels");
@@ -96,6 +96,8 @@ Json triangulate_native_mesh(const Json &decoded, std::size_t max_output_corners
         require(routing.at("status") == "mapped" &&
                     routing.at("source_polygon_layout_matches") == true,
                 "native mesh input routing is unavailable");
+        const auto mode = routing.at("normal_mode").get<std::string>();
+        require(mode == "smoothing_groups" || mode == "flat_triangles", "native mesh normal mode");
         auto points = decoded.at("points").get<std::vector<Point3>>();
         const auto &uvs = channels.at("face_uv_points");
         std::size_t uv_index = 0, corner_count = 0;
@@ -134,6 +136,7 @@ Json triangulate_native_mesh(const Json &decoded, std::size_t max_output_corners
                 triangles.push_back(std::move(triangle));
             }
         }
+        out["buffers"] = assemble_native_mesh_buffers(triangles, mode == "smoothing_groups");
         out["triangles"] = std::move(triangles);
         out["status"] = "triangulated";
     } catch (const std::exception &e) {

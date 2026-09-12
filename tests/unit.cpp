@@ -28,6 +28,7 @@ unsigned native_reference_path_tests();
 unsigned native_application_tests();
 unsigned mesh_normal_tests();
 unsigned mesh_tessellation_tests();
+unsigned mesh_buffer_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2665,6 +2666,7 @@ int main() {
         checks += native_application_tests();
         checks += mesh_normal_tests();
         checks += mesh_tessellation_tests();
+        checks += mesh_buffer_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();

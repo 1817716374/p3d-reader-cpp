@@ -20,6 +20,7 @@ unsigned mesh_tessellation_tests() {
                      {{"face_uv_points", uv},
                       {"native_triangulation",
                        {{"status", "mapped"},
+                        {"normal_mode", "smoothing_groups"},
                         {"source_polygon_layout_matches", true},
                         {"polygons", Json::array({{{"source_polygon", 0},
                                                    {"material_id", UINT64_MAX},
@@ -67,6 +68,31 @@ unsigned mesh_tessellation_tests() {
                       "combine callback generates coordinates and zero UV, not weighted UV");
             }
     check(generated == 2, "intersection appears in each output triangle that uses it");
+    for (const auto &mesh : {result, crossed}) {
+        const auto &buffers = mesh.at("buffers");
+        check(buffers.at("faces").size() == mesh.at("triangles").size() &&
+                  buffers.at("points").size() == buffers.at("normals").size() &&
+                  buffers.at("points").size() == buffers.at("uvs").size(),
+              "GLU output is assembled into aligned indexed buffers");
+        for (std::size_t i = 0; i < mesh.at("triangles").size(); ++i) {
+            const auto &triangle = mesh.at("triangles")[i];
+            check(buffers.at("face_material_ids")[i] == triangle.at("material_id"),
+                  "indexed faces retain GLU callback order and per-face materials");
+            for (unsigned j = 0; j < 3; ++j) {
+                auto id = buffers.at("faces")[i][j].get<std::size_t>();
+                const auto &corner = triangle.at("corners")[j];
+                check(buffers.at("uvs")[id] == corner.at("uv") &&
+                          buffers.at("points")[id] == corner.at("point"),
+                      "indexed buffer corner follows the actual GLU original or generated vertex");
+            }
+        }
+    }
+    auto flat_crossing = crossing;
+    flat_crossing["mesh_channels"]["native_triangulation"]["normal_mode"] = "flat_triangles";
+    auto flat_crossed = triangulate_native_mesh(flat_crossing);
+    check(flat_crossed["status"] == "triangulated" &&
+              flat_crossed["buffers"]["vertex_key"] == "float32_position_normal_uv",
+          "normal routing selects the flat postprocessing branch after GLU");
     auto hole = input({{0, 0, 0},
                        {4, 0, 0},
                        {4, 4, 0},
@@ -82,12 +108,17 @@ unsigned mesh_tessellation_tests() {
     check(holed["status"] == "triangulated" && area(holed) == 12,
           "bridged contour preserves the inner odd-winding hole");
     auto limited = triangulate_native_mesh(source, 3);
-    check(limited["status"] == "invalid" && limited["triangles"].empty(),
+    check(limited["status"] == "invalid" && limited["triangles"].empty() &&
+              !limited.contains("buffers"),
           "capacity failure does not publish partial triangles");
     auto bad = source;
     bad["polygons"][0]["point_indices"][0] = 0;
     check(triangulate_native_mesh(bad)["status"] == "invalid",
           "native point indices remain positive and bounded");
+    bad = source;
+    bad["mesh_channels"]["native_triangulation"].erase("normal_mode");
+    check(triangulate_native_mesh(bad)["status"] == "invalid",
+          "missing native normal routing is not guessed");
     bad = source;
     bad["mesh_channels"]["native_triangulation"]["status"] = "unsafe_material_copy";
     check(triangulate_native_mesh(bad)["status"] == "invalid",
@@ -96,6 +127,15 @@ unsigned mesh_tessellation_tests() {
     bad["mesh_channels"]["face_uv_points"][0][0] = 1e100;
     check(triangulate_native_mesh(bad)["status"] == "invalid",
           "unrepresentable float UV is reported");
+    auto huge = input({{1e40, 0, 0}, {1e40, 1, 0}, {1e40, 0, 1}});
+    for (const auto *mode : {"flat_triangles", "smoothing_groups"}) {
+        huge["mesh_channels"]["native_triangulation"]["normal_mode"] = mode;
+        const auto failed = triangulate_native_mesh(huge);
+        check(failed["status"] == "invalid" && failed["triangles"].empty() &&
+                  !failed.contains("buffers") &&
+                  failed["error"] == "native mesh float export overflow",
+              "export failure after successful GLU does not publish partial results");
+    }
     std::vector<std::future<Json>> futures;
     for (unsigned i = 0; i < 12; ++i)
         futures.push_back(

@@ -166,9 +166,14 @@ unsigned mesh_extension_tests() {
     auto native_triangles = triangulate_native_mesh(cmd["decoded"]);
     check(native_triangles["status"] == "triangulated" && native_triangles["triangles"].size() == 2,
           "decoded binary extension routes into independent native tessellation");
+    check(native_triangles["buffers"]["faces"].size() == 2 &&
+              native_triangles["buffers"]["face_material_ids"] == c["face_material_ids"] &&
+              native_triangles["buffers"]["normal_mode"] == "smoothing_groups",
+          "binary mesh channels reach the indexed native buffer export");
     check(channels(g)["normal_evaluation"]["status"] == "computed" &&
               channels(g)["triangles"][0]["native_triangulation"]["corner_normals"][0] ==
-                  Json({0., 0., 1.}) && g.source_normals.empty() && g.normals.empty(),
+                  Json({0., 0., 1.}) &&
+              g.source_normals.empty() && g.normals.empty(),
           "binary mesh reconstruction exposes derived normals independently of source pools");
     auto color_only = cmd;
     auto color_only_bytes = prefix(0, false);
