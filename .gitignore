@@ -29,6 +29,7 @@
 !/tests/material_projection_links.cpp
 !/tests/material_projection_math.cpp
 !/tests/material_projection_transform.cpp
+!/tests/material_projection_sampling.cpp
 !/tests/model_units.cpp
 !/tests/bspline_derivatives.cpp
 !/tests/bspline_frame.cpp

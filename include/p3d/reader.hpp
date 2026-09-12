@@ -51,6 +51,26 @@ Json prepare_material_projection(const Json &getter, const MaterialProjectionCon
 // explicit-matrix switch. Point mapping and texture sampling remain separate.
 Json resolve_material_projection_transform(const Json &getter,
                                            const MaterialProjectionContext &context);
+using Matrix2x3 = std::array<Point3, 2>;
+// Explicit render inputs, not inferred from world bounds. reference_transform
+// is an affine row matrix acting on reference_point. uv_transform is the
+// registered 2D transform, before the render geometry scale is applied.
+struct MaterialProjectionRenderContext {
+    std::optional<std::int32_t> geometry_kind;
+    std::optional<Matrix4> reference_transform;
+    std::optional<Point3> reference_point;
+    std::optional<Matrix2x3> uv_transform;
+    std::optional<double> geometry_scale;
+};
+// Consumes resolve_material_projection_transform output. The supported render
+// branch requires nonzero geometry_kind; mode 6 retains native cap selection.
+Json prepare_material_projection_sampling(const Json &resolved,
+                                          const MaterialProjectionRenderContext &context);
+// Point and normal are in the render vertex coordinate system and are rounded
+// to float as in native buffers. A normal is required only for cubic/solid and
+// capped cylindrical mapping. Reuse prepared state for any number of points.
+Json sample_material_projection(const Json &prepared, const Point3 &point,
+                                const std::optional<Point3> &normal = std::nullopt);
 // Validated knot direction shared by curves and tensor-product surfaces.
 class BsplineDirection {
   public:
