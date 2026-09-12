@@ -89,12 +89,14 @@ Json material_settings(const Json &tree) {
     };
     for (std::size_t i = 0; i < maps.size(); ++i) {
         auto &map = maps[i];
+        map["replicators"]["initial_state"] = material_replicator_input(map["replicators"]);
         auto dispatch = map["reader_path"].value("provider_dispatch", Json::object());
         attach_legacy(*map_sources[i], map, dispatch,
                       map["semantics"]["additional_texture_references"]["reader_applicability"]);
         if (map["reader_path"].contains("provider_dispatch"))
             map["reader_path"]["provider_dispatch"] = dispatch;
         for (auto &layer : map["texture_layers"]["entries"]) {
+            layer["replicators"]["initial_state"] = material_replicator_input(layer["replicators"]);
             auto &local = layer["semantics"]["reader_path"];
             attach_legacy((*map_sources[i])["children"][layer["child_index"].get<std::size_t>()],
                           layer, local, layer["reader_applicability"]);

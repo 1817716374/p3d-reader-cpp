@@ -206,6 +206,8 @@ Json converted_maps(const Json &input, const Json &maps, const Json &bindings, c
             objects[id]["matrix_axes_status"] = "not_written_by_constructor_or_copy";
             objects[id]["local_layers"] = {{"origin", "native_layer_copy"},
                                            {"source_object_id", source}};
+            objects[id]["local_layers"]["replicator_copies"] = material_replicator_copies(
+                maps.at(objects[source].at("source_map_index").get<std::size_t>()));
             out["operations"].push_back(
                 {{"operation", "copy_map_state"}, {"object_id", id}, {"source_object_id", source}});
             objects[source]["active"] = false;

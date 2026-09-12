@@ -224,6 +224,8 @@ Json material_parameter_semantics(const Json &attributes);
 Json material_map_semantics(const Json &attributes);
 Json material_layer_semantics(const Json &attributes);
 Json material_replicator_nodes(const Json &owner);
+Json material_replicator_input(const Json &package);
+Json material_replicator_copies(const Json &map);
 Json material_reader_paths(const Json &tree, Json &maps);
 Json material_legacy_parameters(const Json &owner, const Json &dispatch);
 Json material_resource_reference(const Json &source);
