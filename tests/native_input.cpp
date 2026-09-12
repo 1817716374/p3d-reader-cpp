@@ -242,5 +242,60 @@ unsigned native_input_tests() {
     check(contexts[1]["stop"]["reason"] == "ambiguous_block_stream" &&
               contexts[1]["input_order"].empty(),
           "duplicate physical streams within one container do not select an arbitrary first match");
+    auto bootstrap = record(46, 0);
+    put(bootstrap, 16, 8, 4);
+    // Roots preceding the bootstrap are ignored as entire subtrees. Each later
+    // block continues the list state, rather than requiring another bootstrap.
+    first = record(10, 0, 1);
+    child = record(49, 0);
+    first.insert(first.end(), child.begin(), child.end());
+    first.insert(first.end(), bootstrap.begin(), bootstrap.end());
+    nested = record(10, 0x80, 2);
+    child = record(49, 8);
+    nested.insert(nested.end(), child.begin(), child.end());
+    child = record(49, 0);
+    nested.insert(nested.end(), child.begin(), child.end());
+    streams = {stream("a", 4, 2, first), stream("b", 3, 3, nested)};
+    idx = {{"P3D-SSYS", "sys"}, {"$1", "a"}, {"$2", "b"}};
+    rows = Json::array();
+    for (const auto &s : streams) {
+        auto part = parse_native(*s.decoded);
+        for (auto &n : part) {
+            n["stream"] = s.path;
+            rows.push_back(n);
+        }
+    }
+    const auto source_rows = rows;
+    auto prepared = evaluate()["list_preparation"];
+    check(prepared["status"] == "resolved" && prepared["system_bootstrap_found"] == true &&
+              prepared["bootstrap_root_record_index"] == 2 && prepared["roots"].size() == 2 &&
+              prepared["skipped_roots"].size() == 1 &&
+              prepared["skipped_roots"][0]["native_record_index"] == 0,
+          "empty system lists skip earlier whole subtrees and preserve bootstrap across blocks");
+    const auto &last = prepared["roots"][1]["headers"];
+    check(last.size() == 2 && last[0]["output_element_flags"] == 0x40 &&
+              last[1]["output_element_flags"] == 0x80 &&
+              last[0]["descendant_count_update"]["output_value"] == 1 &&
+              last[1]["native_record_index"] == 5 && rows == source_rows,
+          "list preparation recounts accepted descendants and normalizes child flags without "
+          "modifying source");
+    put(bootstrap, 16, 7, 4);
+    rows[2] = parse_native(bootstrap)[0];
+    rows[2]["stream"] = streams[0].path;
+    rows[2]["offset"] = source_rows[2]["offset"];
+    prepared = evaluate()["list_preparation"];
+    check(prepared["roots"].empty() && prepared["skipped_roots"].size() == 3 &&
+              prepared["system_bootstrap_found"] == false,
+          "a wrong bootstrap subtype never admits later tables into an empty system list");
+    idx.erase("P3D-SSYS");
+    idx["P3D-SMC"] = "sys";
+    check(evaluate()["list_preparation"]["roots"].size() == 3 &&
+              evaluate()["list_preparation"]["system_bootstrap_required"] == false,
+          "model containers do not inherit the system bootstrap requirement");
+    streams[0].compression_offset = 8;
+    prepared = evaluate()["list_preparation"];
+    check(prepared["status"] == "partial" && prepared["roots"].empty() &&
+              prepared["stop_reason"] == "unresolved_record_input",
+          "unknown earlier input prevents assuming a list state for later blocks");
     return checks;
 }

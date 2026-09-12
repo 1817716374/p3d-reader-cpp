@@ -173,6 +173,7 @@ Json native_input_containers(const std::vector<Stream> &streams, const Json &ind
                 break;
             }
         }
+        result["list_preparation"] = native_list_input_preparation(result, records);
         out.push_back(std::move(result));
     }
     return out;
