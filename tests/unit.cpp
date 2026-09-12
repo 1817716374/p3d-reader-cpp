@@ -21,6 +21,7 @@ unsigned mesh_extension_tests();
 unsigned native_material_tests();
 unsigned block_transform_tests();
 unsigned native_input_tests();
+unsigned native_attribute_input_tests();
 unsigned native_list_input_tests();
 unsigned native_id_tests();
 unsigned native_dependency_tests();
@@ -2659,6 +2660,7 @@ int main() {
         checks += native_material_tests();
         checks += block_transform_tests();
         checks += native_input_tests();
+        checks += native_attribute_input_tests();
         checks += native_list_input_tests();
         checks += native_id_tests();
         checks += native_dependency_tests();

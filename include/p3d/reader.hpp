@@ -385,7 +385,7 @@ class Document {
     const Json &models() const;
     const Json &objects() const;
     const Json &native_records() const;
-    // Conditional block input and record trees, initial SSYS IDs/material table;
+    // Conditional block input and trees, initial SSYS IDs, attributes/material table;
     // does not instantiate host runtime objects or evaluate later host events.
     Json native_input_containers() const;
     const Json &graphics_records() const;

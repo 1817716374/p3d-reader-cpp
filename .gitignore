@@ -21,6 +21,7 @@
 !/tests/native_input.cpp
 !/tests/native_list_input.cpp
 !/tests/native_ids.cpp
+!/tests/native_attribute_input.cpp
 !/tests/native_dependency.cpp
 !/tests/native_reference_path.cpp
 !/tests/native_application.cpp

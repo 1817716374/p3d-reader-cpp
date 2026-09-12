@@ -188,6 +188,9 @@ Json Document::native_input_containers() const {
             container["initial_material_table"] =
                 native_system_material_table(container["list_preparation"], native_records(),
                                              container["system_id_assignments"]);
+            container["initial_attribute_input"] = native_system_attribute_input(
+                streams(), index(), container["container"].get<StreamPath>(),
+                container["system_id_assignments"]);
         }
     return result;
 }
