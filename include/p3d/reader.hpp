@@ -41,6 +41,20 @@ struct ReferenceOriginContext {
 // Consumes a native record's reference_input and the selected model's
 // coordinates. Returns a local correction, not a complete affine transform.
 Json reference_origin_correction(const Json &reference_input, const ReferenceOriginContext &context);
+// Explicit native query context. The chain query forces Z scaling; a local
+// query that disables it needs the referenced model's Z scaling state.
+struct ReferenceAffineContext {
+    ReferenceOriginContext origin;
+    bool force_z_scale = true;
+    std::optional<bool> model_z_scale_enabled;
+    std::optional<std::uint32_t> provider_id;
+    std::optional<bool> provider_scale_available;
+    std::optional<double> provider_y_scale;
+};
+Json reference_affine_transform(const Json &reference_input, const ReferenceAffineContext &context);
+// Entries must be computed reference_affine_transform results in native
+// current-to-host traversal order. Target selection is not inferred here.
+Json compose_reference_chain_transforms(const std::vector<Json> &transforms);
 // Native CurveVector reference frame selection, preserving direct child order
 // and nested arrays. Preference 1 favors endpoint axes; 2 uses endpoints only
 // when their tangents are not parallel; other values use the local search.

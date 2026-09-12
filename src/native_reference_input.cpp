@@ -265,6 +265,17 @@ Json native_reference_input(const Bytes &source) {
         out["transform"] = reference_transform(data);
         out["transform"]["source_matrix_offset"] = layout.upgraded ? 212 : 220;
         out["transform"]["source_scale_offset"] = layout.upgraded ? 284 : 292;
+        auto point_input = [&](std::size_t offset, std::size_t source_offset) {
+            return Json{
+                {"value", Json::array({source_number(data, offset), source_number(data, offset + 8),
+                                       source_number(data, offset + 16)})},
+                {"source_offset", source_offset}};
+        };
+        out["affine_inputs"] = {
+            {"scope", "after_base_point_load_before_linkages"},
+            {"source_offsets_include_stream_prefix", true},
+            {"reference_point", point_input(172, layout.upgraded ? 164 : 172)},
+            {"translation_point", point_input(196, layout.upgraded ? 188 : 196)}};
         out["status"] = "decoded";
         out["remaining_reference_semantics"] = "not_evaluated";
     } catch (const std::exception &e) {
