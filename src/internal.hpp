@@ -190,6 +190,7 @@ Json build_graph_records(const Json &, const Json &, const Json &, const std::se
                          const std::set<std::string> &);
 Json build_scene(const Document &, unsigned);
 Json read_materials(const Document &);
+Json native_material_references(const Json &native_records);
 Json material_settings(const Json &tree);
 Json material_parameter_semantics(const Json &attributes);
 Json material_map_semantics(const Json &attributes);

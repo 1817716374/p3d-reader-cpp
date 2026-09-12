@@ -245,6 +245,7 @@ Json parse_native(const Bytes &b) {
         }
         r.p = attr;
         Json links = Json::array(), children = Json::array();
+        bool material_reference_seen = false;
         std::size_t pad = 0;
         while (r.p + 4 <= end) {
             if (std::all_of(b.begin() + r.p, b.begin() + end, [](auto c) { return c == 0; })) {
@@ -259,6 +260,27 @@ Json parse_native(const Bytes &b) {
             auto p = r.take(n - 4);
             links.push_back(
                 {{"app", app}, {"header", h}, {"offset", off}, {"payload", rawbytes(p)}});
+            if ((h & 0x1000) && app == 0x41 && p.size() >= 4 && Reader(p).u32() == 0x1000e) {
+                Json reference = {
+                    {"encoding", "native_element_material_reference"},
+                    {"key", 0x1000e},
+                    {"reader_selection", material_reference_seen ? "shadowed" : "first_match"},
+                    {"material_id", nullptr},
+                    {"material_id_offset", 8},
+                    {"status", "invalid"}};
+                // Selection precedes payload validation in the native getter. Keep a
+                // malformed first match visible instead of substituting a later ID.
+                material_reference_seen = true;
+                if (p.size() >= 12) {
+                    reference["material_id"] = Reader(p, 4).u64();
+                    reference["status"] = p.size() == 12 ? "decoded" : "partial";
+                    reference["unassigned_suffix_hex"] = hex(slice(p, 12, p.size() - 12));
+                } else {
+                    reference["decode_error"] =
+                        "native element material reference requires 12 payload bytes";
+                }
+                links.back()["decoded"] = std::move(reference);
+            }
             if (app == 0x56d0 && p.size() >= 8) {
                 Reader c(p);
                 auto a = c.u16(), bb = c.u16(), cc = c.u16(), num = c.u16();

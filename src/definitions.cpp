@@ -160,6 +160,27 @@ Json material_texture_references(const Json &tree, const Json &settings) {
     }
     return out;
 }
+Json native_material_references(const Json &native_records) {
+    Json references = Json::array();
+    for (std::size_t ni = 0; ni < native_records.size(); ++ni) {
+        const auto &n = native_records[ni];
+        const auto &links = n.at("links");
+        for (std::size_t li = 0; li < links.size(); ++li) {
+            const auto &link = links[li];
+            if (!link.contains("decoded") || link["decoded"].value("encoding", std::string()) !=
+                                                 "native_element_material_reference")
+                continue;
+            references.push_back({{"stream", n.value("stream", Json())},
+                                  {"native_record_index", ni},
+                                  {"record_id", n.at("id")},
+                                  {"record_offset", n.at("offset")},
+                                  {"linkage_index", li},
+                                  {"linkage_offset", link.at("offset")},
+                                  {"reference", link["decoded"]}});
+        }
+    }
+    return references;
+}
 Json read_materials(const Document &doc) {
     Json definitions = Json::array(), errors = Json::array();
     std::map<std::string, Json> names;
@@ -242,6 +263,7 @@ Json read_materials(const Document &doc) {
             }
     return {
         {"definitions", definitions},
+        {"native_element_references", native_material_references(doc.native_records())},
         {"errors", errors},
         {"assignment_rules",
          {{"applies_to", "native_graphics_rebuild"},
