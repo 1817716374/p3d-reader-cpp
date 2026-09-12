@@ -20,6 +20,7 @@
 !/tests/material_catalog_registration.cpp
 !/tests/material_auxiliary.cpp
 !/tests/material_xml_integer.cpp
+!/tests/material_root.cpp
 !/tests/block_transform.cpp
 !/tests/native_input.cpp
 !/tests/native_list_input.cpp

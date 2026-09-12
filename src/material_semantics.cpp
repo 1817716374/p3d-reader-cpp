@@ -507,6 +507,7 @@ Json material_procedure_nodes(const Json &owner) {
             {"evaluation_status", "not_evaluated"},
             {"value_policy", "explicit_source_values_without_constructor_defaults"}};
 }
+#include "material_root.inc"
 Json material_parameter_semantics(const Json &a) {
     auto flags = number(a, "Flags", true);
     Json parameters = Json::object();

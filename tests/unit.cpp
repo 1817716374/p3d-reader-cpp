@@ -26,6 +26,7 @@ unsigned native_attribute_lookup_tests();
 unsigned material_catalog_registration_tests();
 unsigned material_auxiliary_tests();
 unsigned material_xml_integer_tests();
+unsigned material_root_tests();
 unsigned native_list_input_tests();
 unsigned native_id_tests();
 unsigned native_dependency_tests();
@@ -2669,6 +2670,7 @@ int main() {
         checks += material_catalog_registration_tests();
         checks += material_auxiliary_tests();
         checks += material_xml_integer_tests();
+        checks += material_root_tests();
         checks += native_list_input_tests();
         checks += native_id_tests();
         checks += native_dependency_tests();

@@ -104,6 +104,7 @@ Json material_settings(const Json &tree) {
             {"numeric_parameters", fields(tree["attributes"])},
             {"semantics", material_parameter_semantics(tree["attributes"])},
             {"reader_profile", reader_profile},
+            {"initial_parameters", material_root_input(tree["attributes"], reader_profile["mode"])},
             {"maps", maps},
             {"map_bindings", material_map_bindings(maps)},
             {"shader_policy", "Native parameter flags and map roles; no conversion to another "
