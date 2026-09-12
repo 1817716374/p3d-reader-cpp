@@ -197,6 +197,7 @@ Json native_material_references(const Json &native_records);
 Json native_block_header(const Bytes &);
 Json native_file_header(const Bytes &index_stream, const Bytes &header_payload);
 Json native_dependency_link(const Bytes &payload);
+Json native_reference_path(const Bytes &base, const Json &links);
 Json native_system_id_assignments(const Json &list, const Json &records, const Json &file_header);
 Json native_list_record_header(const Json &, const Json &conversion, bool child,
                               bool compound, std::uint32_t descendants, bool system);

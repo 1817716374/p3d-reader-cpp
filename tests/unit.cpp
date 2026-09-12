@@ -24,6 +24,7 @@ unsigned native_input_tests();
 unsigned native_list_input_tests();
 unsigned native_id_tests();
 unsigned native_dependency_tests();
+unsigned native_reference_path_tests();
 static unsigned checks = 0;
 static void check(bool value, const char *message) {
     ++checks;
@@ -2657,6 +2658,7 @@ int main() {
         checks += native_list_input_tests();
         checks += native_id_tests();
         checks += native_dependency_tests();
+        checks += native_reference_path_tests();
         guided_open_tests();
         guided_cap_tests();
         guided_endpoint_tests();
