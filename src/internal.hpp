@@ -206,6 +206,7 @@ Json native_list_input_preparation(const Json &container, const Json &records);
 Json native_input_containers(const std::vector<Stream> &, const Json &index, const Json &records);
 Json native_material_catalog_records(const Json &native_records);
 Json native_material_catalog_tables(const Json &native_records, Json &catalog_records);
+Json native_system_material_table(const Json &list, const Json &records, const Json &ids);
 Json material_settings(const Json &tree);
 Json material_parameter_semantics(const Json &attributes);
 Json material_map_semantics(const Json &attributes);

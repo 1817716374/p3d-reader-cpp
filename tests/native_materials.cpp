@@ -896,5 +896,129 @@ unsigned native_material_tests() {
     check(!name_nonuser[0]["links"][0].contains("decoded") &&
               name_nonuser[0]["links"][1]["decoded"]["reader_selection"] == "first_match",
           "non-user linkage app bytes do not consume the native name selection");
+    // Exercise selection through the actual block, tree, list and ID readers.
+    // Physical stream order intentionally disagrees with logical block order.
+    auto system_block = [&](const char *name, const std::vector<Bytes> &parts,
+                            unsigned capacity = 1, unsigned flags = 0) {
+        Bytes decoded, raw(16), control(16);
+        for (const auto &part : parts)
+            decoded.insert(decoded.end(), part.begin(), part.end());
+        put(control, 0, capacity, 4);
+        put(control, 4, flags, 4);
+        for (std::size_t i = 0; i < 16; ++i)
+            raw[i] = control[i] ^ (i ? raw[i - 1] : 0x26);
+        raw.push_back(0);
+        return Stream{{"root", "system", name},
+                      std::make_shared<Bytes>(raw),
+                      std::make_shared<Bytes>(decoded),
+                      24};
+    };
+    auto bootstrap = table_record(0, 0, 8);
+    put(bootstrap, 4, 46, 2);
+    put(bootstrap, 20, 99, 8);
+    auto deleted_member = child_record();
+    put(deleted_member, 6, 0x88, 2);
+    auto deleted_table = table_record(0, 0x48);
+    std::vector<Stream> blocks{
+        system_block("b",
+                     {table_record(4), child_record(), table_record(1, 0xc0), child_record(),
+                      deleted_member, table_record(0)},
+                     1, 1),
+        system_block("a", {table_record(0), bootstrap, table_record(1, 0x40, 19), table_record(0),
+                           deleted_table})};
+    Json aliases = {{"P3D-SSYS", "system"}, {"$1", "a"}, {"$2", "b"}};
+    Json initial_header = {
+        {"status", "resolved"},
+        {"initial_probe", {{"action", "read_header_payload"}, {"id_counter", 100}}}};
+    auto select = [&]() {
+        Json rows = Json::array();
+        for (const auto &block : blocks)
+            for (auto n : parse_native(*block.decoded)) {
+                n["stream"] = block.path;
+                rows.push_back(std::move(n));
+            }
+        const auto container = native_input_containers(blocks, aliases, rows).at(0);
+        const auto &list = container.at("list_preparation");
+        const auto ids = native_system_id_assignments(list, rows, initial_header);
+        return Json{{"selection", native_system_material_table(list, rows, ids)},
+                    {"container", container},
+                    {"rows", rows},
+                    {"ids", ids}};
+    };
+    auto selected = select();
+    auto chosen = selected["selection"]["table"];
+    check(selected["selection"]["status"] == "selected" && chosen["native_record_index"] == 0 &&
+              chosen["root_input_index"] == 2 && chosen["block_number"] == 2,
+          "initial table is the first accepted system root, not prebootstrap, nested or deleted "
+          "tables");
+    check(chosen["source_id"] == 77 && chosen["assigned_id"] != 77 &&
+              chosen["assigned_id"] == selected["ids"]["roots"][2]["records"][0]["assigned_id"],
+          "selected table identity follows duplicate-ID registration instead of source-ID merging");
+    check(chosen["members"].size() == 3 && chosen["members"][0]["native_record_index"] == 1 &&
+              chosen["members"][1]["native_record_index"] == 2 &&
+              chosen["members"][2]["native_record_index"] == 5,
+          "native read-next skips the flagged terminal child and accepts the following record "
+          "before its parent checks the counter; nested descendants stay nested");
+    check(chosen["members"][0]["input_occurrence_index"] ==
+              selected["ids"]["roots"][2]["records"][1]["input_occurrence_index"],
+          "table member identity retains the exact input occurrence");
+    auto before = selected;
+    auto repeated = select();
+    check(repeated == before, "table selection is deterministic and does not mutate input records");
+    aliases.erase("$2");
+    check(select()["selection"]["status"] == "absent",
+          "a missing logical block alias cannot select a physically present later table");
+    aliases["$2"] = "b";
+    blocks[0] = system_block("b", {table_record(0)}, 0, 1);
+    check(select()["selection"]["status"] == "absent",
+          "zero-capacity block does not create a table");
+    blocks[0] = system_block("b", {table_record(0), child_record()}, 1, 1);
+    chosen = select()["selection"]["table"];
+    check(chosen["members"].empty(),
+          "an empty selected table does not adopt adjacent catalog records");
+    blocks[0] = system_block("b", {table_record(1, 0x60), child_record()}, 1, 1);
+    check(select()["selection"]["table"]["members"].size() == 1,
+          "extended selected tables use prepared child ownership");
+    aliases["$2"] = "a";
+    aliases["$3"] = "b";
+    chosen = select()["selection"]["table"];
+    check(chosen["block_number"] == 2 && chosen["native_record_index"] == 2 &&
+              chosen["root_input_index"] == 2,
+          "repeated physical block aliases preserve occurrences and existing bootstrap state");
+    aliases["$2"] = "b";
+    aliases.erase("$3");
+    blocks[1].compression_offset = 8;
+    check(select()["selection"]["status"] == "unresolved",
+          "unknown earlier block layout cannot be treated as absence or skipped to choose a later "
+          "table");
+    blocks[1].compression_offset = 24;
+    initial_header["initial_probe"]["action"] = "initialize_blank_header";
+    check(select()["selection"]["status"] == "unresolved",
+          "blank-header probing does not imply the ordinary fresh-file material table");
+    initial_header["initial_probe"]["action"] = "read_header_payload";
+    auto partial = selected["container"]["list_preparation"];
+    partial["status"] = "partial";
+    check(native_system_material_table(partial, selected["rows"], selected["ids"])["status"] ==
+              "unresolved",
+          "partial list preparation cannot publish a complete initial table");
+    partial = selected["container"]["list_preparation"];
+    partial["system_bootstrap_required"] = false;
+    check(native_system_material_table(partial, selected["rows"], selected["ids"])["reason"] ==
+              "system_container_required",
+          "ordinary model lists are not system material tables");
+    auto wrong_ids = selected["ids"];
+    wrong_ids["roots"][2]["records"][0]["native_record_index"] = 1;
+    auto rejected = native_system_material_table(selected["container"]["list_preparation"],
+                                                 selected["rows"], wrong_ids);
+    check(rejected["status"] == "unresolved" && rejected["table"].is_null(),
+          "inconsistent assignment provenance does not publish a partial selected table");
+    auto zero_id_table = table_record(0);
+    put(zero_id_table, 20, 0, 8);
+    blocks = {system_block("a", {bootstrap, zero_id_table}, 1, 1)};
+    initial_header["initial_probe"]["id_counter"] = std::numeric_limits<std::uint64_t>::max();
+    chosen = select()["selection"]["table"];
+    check(chosen["native_record_index"] == 1 && chosen["assigned_id"] == 0,
+          "an unindexed zero ID after counter wrap still belongs to the root list and can be "
+          "selected");
     return checks;
 }

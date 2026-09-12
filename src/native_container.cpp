@@ -182,9 +182,13 @@ Json native_input_containers(const std::vector<Stream> &streams, const Json &ind
 Json Document::native_input_containers() const {
     auto result = p3d::native_input_containers(streams(), index(), native_records());
     for (auto &container : result)
-        if (container["kind"] == "P3D-SSYS")
+        if (container["kind"] == "P3D-SSYS") {
             container["system_id_assignments"] = native_system_id_assignments(
                 container["list_preparation"], native_records(), file_header());
+            container["initial_material_table"] =
+                native_system_material_table(container["list_preparation"], native_records(),
+                                             container["system_id_assignments"]);
+        }
     return result;
 }
 } // namespace p3d
