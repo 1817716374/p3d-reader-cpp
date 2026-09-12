@@ -59,7 +59,16 @@ struct MaterialUvTransformContext {
     std::optional<Point2> elevation_origin;
     std::optional<bool> geometry_projection_succeeded;
     std::optional<double> registration_unit_factor;
+    std::optional<Json> mapping_model_units;
+    std::optional<double> mapping_reference_scale;
+    std::optional<Json> registration_model_units;
 };
+// Resolves the unit branch from one selected model's units. Nonzero scale modes
+// except ElevationDrape require the actual reference-chain scale (including a
+// known value of 1 for an unscaled context); missing context is not guessed.
+Json material_uv_mapping_unit_factor(const Json &units, std::int32_t mapping_mode,
+                                    std::int32_t scale_mode,
+                                    const std::optional<double> &reference_scale = std::nullopt);
 // Consumes one version_conversion.layer_mapping_getters entry. Computes the
 // 2D affine transform including the selected registration unit branch.
 Json build_material_uv_transform(const Json &layer_getter, const MaterialUvTransformContext &context);

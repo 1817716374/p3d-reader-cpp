@@ -183,5 +183,52 @@ unsigned material_uv_transform_tests() {
         check(build_material_uv_transform(bad, context).at("status") == "not_evaluated",
               "unavailable mapping field does not get a guessed default");
     }
+    Bytes unit_header(500, 0);
+    auto put = [&](std::size_t at, auto value) {
+        std::memcpy(unit_header.data() + at, &value, sizeof value);
+    };
+    put(4, std::uint16_t(47));
+    put(16, std::uint32_t(32));
+    for (const auto at : {68u, 76u, 80u})
+        put(at, std::uint32_t(17));
+    put(228, 1.);
+    for (const auto at : {84u, 100u, 236u})
+        put(at, 1000.);
+    for (const auto at : {92u, 108u, 244u})
+        put(at, 1.);
+    context = MaterialUvTransformContext{};
+    context.mapping_model_units = decode_model_units(unit_header);
+    context.mapping_reference_scale = 2.;
+    context.geometry_projection_succeeded = true;
+    put(228, 3.);
+    context.registration_model_units = decode_model_units(unit_header);
+    layer = first(parse({{"pattern_mapping", "3"},
+                         {"pattern_scalemode", "3"},
+                         {"pattern_scale.x", "2"},
+                         {"pattern_scale.y", "4"}}));
+    result = build_material_uv_transform(layer, context);
+    matrix = result.at("matrix").get<Matrix2x3>();
+    check(std::abs(matrix[0][0] - .00075) < 1e-17 && std::abs(matrix[1][1] + .000375) < 1e-17 &&
+              result.at("mapping_unit_resolution").at("value") == 2000.,
+          "selected mapping and registration models supply distinct unit factors");
+    context.registration_model_units.reset();
+    check(build_material_uv_transform(layer, context).at("reason") ==
+              "missing_or_nonfinite_registration_unit_factor",
+          "mapping model is not silently reused as the registration model");
+    context.geometry_projection_succeeded = false;
+    context.mapping_reference_scale.reset();
+    check(build_material_uv_transform(layer, context).at("status") == "not_evaluated",
+          "selected model units do not replace missing reference context");
+    context.mapping_unit_factor = 10.;
+    check(build_material_uv_transform(layer, context).at("matrix") ==
+              Matrix2x3{{{.05, 0, 0}, {0, -.025, 0}}},
+          "explicit resolved factor takes precedence over optional model derivation");
+    context = MaterialUvTransformContext{};
+    context.elevation_origin = Point2{};
+    layer = first(
+        parse({{"pattern_mapping", "1"}, {"pattern_scale.x", "2"}, {"pattern_scale.y", "4"}}));
+    check(build_material_uv_transform(layer, context).at("matrix") ==
+              Matrix2x3{{{.5, 0, 0}, {0, -.25, 1}}},
+          "relative elevation mapping gets the native unit factor one without a model");
     return checks;
 }

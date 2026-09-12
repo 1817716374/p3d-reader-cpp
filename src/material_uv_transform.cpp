@@ -45,9 +45,20 @@ Json build_material_uv_transform(const Json &layer, const MaterialUvTransformCon
             mode == 1 || (uses_units && (std::abs(scale[0]) > 1e-10 || std::abs(scale[1]) > 1e-10));
         double unit = 1;
         if (needs_units) {
-            if (!context.mapping_unit_factor || !std::isfinite(*context.mapping_unit_factor))
+            if (context.mapping_unit_factor) {
+                if (!std::isfinite(*context.mapping_unit_factor))
+                    return fail("missing_or_nonfinite_mapping_unit_factor");
+                unit = *context.mapping_unit_factor;
+            } else if (context.mapping_model_units || scale_mode == 0) {
+                const auto resolved = material_uv_mapping_unit_factor(
+                    context.mapping_model_units.value_or(Json()), mode, scale_mode,
+                    context.mapping_reference_scale);
+                out["mapping_unit_resolution"] = resolved;
+                if (resolved.at("status") != "computed")
+                    return fail("mapping_model_unit_resolution_unavailable");
+                unit = resolved.at("value").get<double>();
+            } else
                 return fail("missing_or_nonfinite_mapping_unit_factor");
-            unit = *context.mapping_unit_factor;
         }
         for (unsigned i = 0; i < 2; ++i)
             if (std::abs(scale[i]) > 1e-10)
@@ -72,12 +83,21 @@ Json build_material_uv_transform(const Json &layer, const MaterialUvTransformCon
             if (!context.geometry_projection_succeeded)
                 return fail("missing_uv_registration_branch");
             if (*context.geometry_projection_succeeded) {
-                if (!context.registration_unit_factor ||
-                    !std::isfinite(*context.registration_unit_factor))
+                auto registration = context.registration_unit_factor;
+                if (!registration && context.registration_model_units) {
+                    const auto &units = *context.registration_model_units;
+                    if (units.at("status") != "decoded")
+                        return fail("selected_registration_model_units_unavailable");
+                    const auto &factor = units.at("factors").at("material_projection_unit_factor");
+                    if (factor.at("status") != "computed" || !factor.at("value").is_number())
+                        return fail("registration_model_unit_arithmetic_unavailable");
+                    registration = factor.at("value").get<double>();
+                }
+                if (!registration || !std::isfinite(*registration))
                     return fail("missing_or_nonfinite_registration_unit_factor");
                 for (auto &row : matrix) {
-                    row[0] *= *context.registration_unit_factor;
-                    row[1] *= *context.registration_unit_factor;
+                    row[0] *= *registration;
+                    row[1] *= *registration;
                 }
                 registered = true;
             }
