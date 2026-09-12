@@ -331,6 +331,7 @@ Json parse_native(const Bytes &b) {
             out.back()["layer_table"] =
                 decode_native_layer_table(slice(b, pos, attr - pos), out.back()["links"]);
         if (type == 47 && r.at<std::uint32_t>(pos + 16) == 32) {
+            out.back()["model_unit_state"] = decode_model_units(slice(b, pos, attr - pos));
             Json reference = {{"encoding", "model_layer_group_reference"},
                               {"source_offset", 492},
                               {"status", "unsupported_header"}};
@@ -1051,28 +1052,45 @@ Json read_models(const Document &doc) {
             !ids.count(s.path[1]))
             continue;
         const auto &b = *s.decoded;
-        Reader r(b);
         Json info = {{"physical_storage", s.path[1]}};
-        if (b.size() > 0x1104) {
-            r.p = 0x10e4;
-            auto fields = r.doubles(4);
-            info["unit_fields_at_10e4"] = fields;
-            double f = fields[1];
-            if (f == 1 || f == 1000)
-                info["length_scale_to_meters_inferred"] = 1 / f;
-            info["unit_interpretation"] = "inferred from model header and engineering dimensions; "
-                                          "verify against original application";
-            info["coordinate_context"] = {
-                {"storage", "source_float64"},
-                {"unit_status", "inferred"},
-                {"scale_to_meters", info.value("length_scale_to_meters_inferred", Json())},
-                {"crs", nullptr},
-                {"georeferencing_status", "unresolved"},
-                {"source_header_offset", 0x10e4}};
-        }
+        info["coordinate_context"] = {{"storage", "source_float64"},
+                                       {"unit_status", "missing_model_unit_record"},
+                                       {"scale_to_meters", nullptr}, {"crs", nullptr},
+                                       {"georeferencing_status", "unresolved"}};
         try {
             auto records = parse_native(slice(b, 4096, b.size() - 4096));
             info["layer_group_references"] = Json::array();
+            info["unit_records"] = Json::array();
+            for (const auto &n : records)
+                if (n.contains("model_unit_state")) {
+                    auto units = n.at("model_unit_state");
+                    units["stream"] = s.path;
+                    units["record_offset"] = 4096 + n.at("offset").get<std::uint64_t>();
+                    info["unit_records"].push_back(std::move(units));
+                }
+            if (info["unit_records"].size() == 1) {
+                info["units"] = info["unit_records"][0];
+                const auto &units = info.at("units");
+                auto &context = info["coordinate_context"];
+                context["unit_status"] = "unsupported_model_unit_record";
+                if (units.at("status") == "decoded") {
+                    if (units.at("record_offset") == 4096)
+                        info["unit_fields_at_10e4"] =
+                            Json::array({units.at("data_units_per_storage_unit").at("value"),
+                                         units.at("storage_unit").at("numerator"),
+                                         units.at("storage_unit").at("denominator"),
+                                         units.at("unassigned_adjacent_value").at("value")});
+                    const auto &meters = units.at("factors").at("meters_per_data_unit");
+                    context["unit_status"] = "unusable_native_unit_factor";
+                    if (meters.at("status") == "computed" && meters.at("positive") == true) {
+                        info["length_scale_to_meters"] = meters.at("value");
+                        context["unit_status"] = "decoded_native_unit_factor";
+                        context["scale_to_meters"] = meters.at("value");
+                    }
+                    context["source_record_offset"] = units.at("record_offset");
+                }
+            } else if (info["unit_records"].size() > 1)
+                info["coordinate_context"]["unit_status"] = "ambiguous_model_unit_records";
             for (const auto &n : records)
                 if (n.contains("model_layer_group_reference")) {
                     auto reference = n["model_layer_group_reference"];

@@ -685,7 +685,7 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         {"relationship_nodes", std::move(related)},
         {"errors", errors},
         {"library_errors", library_errors},
-        {"coordinate_units", "source-native; geometry scale must be verified per file"},
+        {"coordinate_units", "source-native; per-model conversions are in model_info.coordinate_context"},
 
         {"schema_definitions", std::move(schemas)},
         {"native_block_definitions", blocks},
