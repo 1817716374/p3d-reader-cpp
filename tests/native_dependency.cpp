@@ -238,5 +238,46 @@ unsigned native_dependency_tests() {
                   x["write_flag_projection"]["cleared_bits"] == (flags & 0x78u),
               "writer flag projection clears only confirmed bits without changing source flags");
     }
+    // The same local ID has different fallback rules depending on which native
+    // entry point emitted it. Preserve both references rather than merging them.
+    for (unsigned format : {0u, 1u, 8u}) {
+        const auto stride = format == 0 ? 8u : 16u;
+        auto p = make(format, 1, 8 + stride);
+        put(p, format == 8 ? 16 : 8, UINT64_MAX, 8);
+        auto x = native_dependency_link(p);
+        const auto ref = x["entries"][0]["references"][0];
+        check(ref["lookup_profile"] == "owner_system_file" && !ref.contains("target_lookup"),
+              "ordinary IDs including maximum are not rejected by the cross-owner sentinel rule");
+    }
+    for (unsigned format : {2u, 3u, 4u, 5u, 7u}) {
+        const unsigned sizes[] = {8, 16, 40, 48, 16, 24, 0, 24, 16};
+        auto p = make(format, 1, 8 + sizes[format]);
+        const auto entry = native_dependency_link(p)["entries"][0];
+        check(entry["references"].size() == 2 &&
+                  entry["references"][0]["lookup_profile"] == "owner_system_file" &&
+                  entry["references"][1]["lookup_profile"] == "owner_system" &&
+                  entry["references"][0]["element_id"] == entry["references"][1]["element_id"],
+              "target through zero and local owner dependency retain distinct native fallback "
+              "profiles");
+    }
+    for (unsigned format : {4u, 5u}) {
+        const auto stride = format == 4 ? 16u : 24u;
+        for (auto pair :
+             {std::pair<std::uint64_t, std::uint64_t>{41, 42}, {UINT64_MAX, 0}, {41, UINT64_MAX}}) {
+            auto p = make(format, 1, 8 + stride);
+            put(p, 8, pair.first, 8);
+            put(p, stride, pair.second, 8);
+            const auto refs = native_dependency_link(p)["entries"][0]["references"];
+            check(refs[0]["lookup_profile"] ==
+                          (pair.second ? "reference_path_owner_system" : "owner_system_file") &&
+                      refs[0]["target_lookup"] ==
+                          (pair.first == UINT64_MAX || pair.second == UINT64_MAX
+                               ? "skipped_maximum_id"
+                               : "requires_runtime_state") &&
+                      refs[1]["element_id"] == pair.second &&
+                      refs[1]["lookup_profile"] == "owner_system",
+                  "maximum target or owner reference rejects only the paired target lookup");
+        }
+    }
     return checks;
 }

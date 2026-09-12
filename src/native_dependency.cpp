@@ -126,14 +126,22 @@ Json native_dependency_link(const Bytes &payload) {
                 const auto offset = 8 + i * stride;
                 Json entry = {{"entry_index", i}, {"payload_offset", offset}};
                 Json references = Json::array();
-                auto current = [&](std::uint64_t element) {
-                    references.push_back({{"element_id", element}, {"lookup", "current_owner"}});
+                auto current = [&](std::uint64_t element, bool file_fallback = false) {
+                    references.push_back(
+                        {{"element_id", element},
+                         {"lookup", "current_owner"},
+                         {"lookup_profile", file_fallback ? "owner_system_file" : "owner_system"}});
                 };
                 auto through = [&](std::uint64_t element, std::uint64_t reference) {
                     references.push_back(
                         {{"element_id", element},
                          {"owner_reference_id", reference},
-                         {"lookup", reference ? "referenced_owner" : "current_owner"}});
+                         {"lookup", reference ? "referenced_owner" : "current_owner"},
+                         {"lookup_profile",
+                          reference ? "reference_path_owner_system" : "owner_system_file"},
+                         {"target_lookup", element == UINT64_MAX || reference == UINT64_MAX
+                                               ? "skipped_maximum_id"
+                                               : "requires_runtime_state"}});
                 };
                 if (format == 0 || format == 1) {
                     const auto element = id(offset);
@@ -141,7 +149,7 @@ Json native_dependency_link(const Bytes &payload) {
                     if (reverse_path)
                         entry["lookup"] = "reverse_owner_path";
                     else
-                        current(element);
+                        current(element, true);
                 } else if (format == 4 || format == 5) {
                     const auto element = id(offset),
                                reference = id(offset + (format == 4 ? 8 : 16));
@@ -150,10 +158,10 @@ Json native_dependency_link(const Bytes &payload) {
                 } else if (format == 8) {
                     const auto model = take(offset, 4).i32();
                     const auto element = id(offset + 8);
-                    references.push_back(
-                        {{"element_id", element},
-                         {"model_index", model},
-                         {"lookup", model == -1 ? "system_owner" : "model_index"}});
+                    references.push_back({{"element_id", element},
+                                          {"model_index", model},
+                                          {"lookup", model == -1 ? "system_owner" : "model_index"},
+                                          {"lookup_profile", "owner_system_file"}});
                 } else if (format == 2 || format == 3) {
                     const auto kind = take(offset, 1).u8();
                     entry["selector_code"] = kind;
