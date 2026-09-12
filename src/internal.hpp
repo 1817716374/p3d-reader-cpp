@@ -232,6 +232,7 @@ Json material_layer_input(const Json &map, std::size_t child_count);
 Json material_layer_containers(const Json &maps, const Json &topology);
 Json material_projection_input(const Json &map);
 Json material_projection_states(const Json &maps, const Json &topology);
+Json material_projection_getter_states(const Json &local_states, const Json &topology);
 Json material_reader_paths(const Json &tree, Json &maps);
 Json material_legacy_parameters(const Json &owner, const Json &dispatch);
 Json material_resource_reference(const Json &source);

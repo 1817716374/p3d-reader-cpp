@@ -271,6 +271,10 @@ Json converted_maps(const Json &input, const Json &maps, const Json &bindings, c
         const bool dangling = terminals[id] == objects.size();
         const auto current = dangling ? id : terminals[id];
         const auto owner = entry.first == 30 ? id : current;
+        objects[id]["projection_frame_source_object_id"] = current;
+        objects[id]["projection_frame_resolution"] = dangling        ? "dangling_uses_local"
+                                                     : current == id ? "local"
+                                                                     : "linked";
         objects[id]["layer_container_owner_object_id"] = owner;
         objects[id]["layer_container_resolution"] = dangling      ? "dangling_uses_local"
                                                     : owner == id ? "local"
@@ -300,6 +304,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
     auto topology = converted_maps(input, maps, bindings, mode);
     auto layers = material_layer_containers(maps, topology);
     auto projection = material_projection_states(maps, topology);
+    auto projection_getters = material_projection_getter_states(projection, topology);
     auto parameters = converted_roots(input, mode, topology.at("status") == "resolved");
     const bool resolved =
         topology.at("status") == "resolved" && parameters.at("status") == "resolved";
@@ -310,6 +315,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
             {"root_parameters", std::move(parameters)},
             {"layer_containers", std::move(layers)},
             {"local_projection_states", std::move(projection)},
+            {"projection_getters", std::move(projection_getters)},
             {"map_topology", std::move(topology)}};
 }
 } // namespace p3d

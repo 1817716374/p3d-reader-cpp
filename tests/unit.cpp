@@ -32,6 +32,7 @@ unsigned material_version_tests();
 unsigned material_replicator_tests();
 unsigned material_layers_tests();
 unsigned material_projection_tests();
+unsigned material_projection_link_tests();
 unsigned native_list_input_tests();
 unsigned native_id_tests();
 unsigned native_dependency_tests();
@@ -2681,6 +2682,7 @@ int main() {
         checks += material_replicator_tests();
         checks += material_layers_tests();
         checks += material_projection_tests();
+        checks += material_projection_link_tests();
         checks += native_list_input_tests();
         checks += native_id_tests();
         checks += native_dependency_tests();

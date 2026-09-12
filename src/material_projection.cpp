@@ -179,4 +179,51 @@ Json material_projection_states(const Json &maps, const Json &topology) {
     }
     return out;
 }
+Json material_projection_getter_states(const Json &local_states, const Json &topology) {
+    Json out = {{"scope", "map_projection_getters_after_version_conversion"},
+                {"status", "resolved"},
+                {"entries", Json::array()},
+                {"coordinate_evaluation", "not_evaluated"}};
+    if (topology.at("status") != "resolved" || local_states.contains("reason")) {
+        out["status"] = "partial";
+        out["reason"] = topology.at("status") != "resolved" ? "unresolved_map_topology"
+                                                            : "unavailable_local_projection_states";
+        return out;
+    }
+    const auto &states = local_states.at("objects");
+    for (const auto &id_value : topology.at("active_object_ids")) {
+        const auto id = id_value.get<std::size_t>();
+        const auto &object = topology.at("objects").at(id);
+        const auto source = object.at("projection_frame_source_object_id").get<std::size_t>();
+        const auto &local = states.at(id), &frame = states.at(source);
+        Json entry = {{"object_id", id},
+                      {"native_type_key", object.at("native_type_key")},
+                      {"status", "resolved"},
+                      {"frame_source_object_id", source},
+                      {"frame_resolution", object.at("projection_frame_resolution")},
+                      {"parameters", Json::object()},
+                      {"matrix", local.at("matrix")}};
+        for (const auto key :
+             {"pattern_proj_offset", "pattern_proj_angles", "pattern_proj_scale"}) {
+            entry["parameters"][key] = frame.at("parameters").at(key);
+            entry["parameters"][key]["source_object_id"] = source;
+        }
+        // These getters address the caller directly. They do not use the
+        // linked frame getter or a type-30 layer-container mapping copy.
+        for (const auto key : {"origin_uv_pro_matrix_on", "linked_option"}) {
+            entry["parameters"][key] = local.at("parameters").at(key);
+            entry["parameters"][key]["source_object_id"] = id;
+        }
+        entry["matrix"]["source_object_id"] = id;
+        for (const auto &parameter : entry.at("parameters"))
+            if (parameter.at("value").is_null())
+                entry["status"] = "partial";
+        if (entry.at("matrix").at("status") != "decoded")
+            entry["status"] = "partial";
+        if (entry.at("status") != "resolved")
+            out["status"] = "partial";
+        out["entries"].push_back(std::move(entry));
+    }
+    return out;
+}
 } // namespace p3d
