@@ -201,7 +201,7 @@ Json converted_maps(const Json &input, const Json &maps, const Json &bindings, c
             objects[id]["enabled"] = objects[source].at("enabled");
             objects[id]["copied_settings_from_object_id"] = source;
             objects[id]["settings_copy_scope"] =
-                "link_enabled_weight_projection_frame_matrix_enable";
+                "link_enabled_weight_projection_frame_linked_option";
             // The map copy does not copy the explicit matrix axes.
             objects[id]["matrix_axes_status"] = "not_written_by_constructor_or_copy";
             objects[id]["local_layers"] = {{"origin", "native_layer_copy"},
@@ -299,6 +299,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
                                  const Json &mode) {
     auto topology = converted_maps(input, maps, bindings, mode);
     auto layers = material_layer_containers(maps, topology);
+    auto projection = material_projection_states(maps, topology);
     auto parameters = converted_roots(input, mode, topology.at("status") == "resolved");
     const bool resolved =
         topology.at("status") == "resolved" && parameters.at("status") == "resolved";
@@ -308,6 +309,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
             {"status", resolved ? "resolved" : "partial"},
             {"root_parameters", std::move(parameters)},
             {"layer_containers", std::move(layers)},
+            {"local_projection_states", std::move(projection)},
             {"map_topology", std::move(topology)}};
 }
 } // namespace p3d
