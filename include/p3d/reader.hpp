@@ -27,6 +27,21 @@ using Point3 = std::array<double, 3>;
 using Point2 = std::array<double, 2>;
 using Triangle = std::array<std::uint32_t, 3>;
 using Matrix4 = std::array<std::array<double, 4>, 4>;
+using Matrix3 = std::array<Point3, 3>;
+// Inputs to the native projection preparation step. Geometry context is
+// explicit; missing context is never replaced with guessed bounds or axes.
+struct MaterialProjectionContext {
+    std::int32_t mapping_mode = 0;
+    std::int32_t scale_mode = 0;
+    std::uint32_t layer_data_flags = 0;
+    std::optional<Point3> reference_point;
+    std::optional<Point3> reference_dimensions;
+    std::optional<Matrix3> reference_matrix;
+    std::optional<double> absolute_unit_factor;
+};
+// Consumes an entry of version_conversion.projection_getters. This prepares
+// projection state for modes 3..7; it does not perform final point/UV mapping.
+Json prepare_material_projection(const Json &getter, const MaterialProjectionContext &context);
 // Validated knot direction shared by curves and tensor-product surfaces.
 class BsplineDirection {
   public:
@@ -388,7 +403,8 @@ struct MaterialCatalogOptions {
     std::optional<MaterialCatalogContext> current_context;
     // Called only when the source reference cannot determine the descriptor.
     // Arguments are the input member identity and its parsed catalog source fields.
-    std::function<std::optional<MaterialCatalogResource>(const Json &, const Json &)> resolve_resource;
+    std::function<std::optional<MaterialCatalogResource>(const Json &, const Json &)>
+        resolve_resource;
     // UTF-8 strings. Default: native CRT C-locale equality (ASCII case conversion).
     // Supply the relevant host-locale equality when reproducing another locale.
     std::function<bool(const std::string &, const std::string &)> case_equal;
