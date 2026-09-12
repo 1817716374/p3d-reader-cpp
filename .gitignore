@@ -23,6 +23,7 @@
 !/tests/native_ids.cpp
 !/tests/native_dependency.cpp
 !/tests/native_reference_path.cpp
+!/tests/native_application.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
 *.p3d
