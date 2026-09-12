@@ -32,6 +32,7 @@
 !/tests/model_units.cpp
 !/tests/bspline_derivatives.cpp
 !/tests/bspline_frame.cpp
+!/tests/native_curve_frame.cpp
 !/tests/block_transform.cpp
 !/tests/native_input.cpp
 !/tests/native_list_input.cpp

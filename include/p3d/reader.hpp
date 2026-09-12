@@ -28,6 +28,11 @@ using Point2 = std::array<double, 2>;
 using Triangle = std::array<std::uint32_t, 3>;
 using Matrix4 = std::array<std::array<double, 4>, 4>;
 using Matrix3 = std::array<Point3, 3>;
+// Native CurveVector reference frame selection, preserving direct child order
+// and nested arrays. Preference 1 favors endpoint axes; 2 uses endpoints only
+// when their tangents are not parallel; other values use the local search.
+// Reports computed/native_failure/not_evaluated; only computed has a frame.
+Json native_curve_frame(const Json &curve_vector, int search_preference = 0);
 // Inputs to the native projection preparation step. Geometry context is
 // explicit; missing context is never replaced with guessed bounds or axes.
 struct MaterialProjectionContext {
