@@ -286,8 +286,9 @@ unsigned native_material_tests() {
               project["lookup_request"].is_null(),
           "trailing dot is excluded from the project member name without inventing an extension");
     for (const auto &value : {"$(_P3DPROJECT)/name.pal", "name.pal"})
-        check(interpret(value)["status"] == "unresolved_resource_form",
-              "other resource syntaxes do not inherit project-token context rules");
+        check(interpret(value)["kind"] == "palette_resource" &&
+                  interpret(value)["lookup_request"]["reference"] == value,
+              "ordinary palette paths do not inherit project-token context rules");
     check(interpret("")["status"] == "rejected_empty_reference" &&
               missing[0]["resource_reference"]["interpretation"]["status"] == "unavailable_text",
           "explicitly empty resources are rejected and missing source text is not reinterpreted");
@@ -385,5 +386,62 @@ unsigned native_material_tests() {
               bytesof(c[0]["strings"][0]["payload"]) == chinese_payload,
           "library and member Unicode text are decoded from native UTF16 without losing source "
           "bytes");
+    auto ordinary = interpret("../folder.with.dot/Stone.PaL");
+    check(ordinary["status"] == "decoded" && ordinary["kind"] == "palette_resource" &&
+              ordinary["member_name"] == "Stone" && ordinary["extension"] == "PaL" &&
+              ordinary["lookup_request"]["reference"] == "../folder.with.dot/Stone.PaL" &&
+              ordinary["lookup_request"]["search_path_setting"] == "P3d_Material" &&
+              ordinary["primary_context"].is_null() && ordinary["lookup_status"] == "not_performed",
+          "ordinary palettes preserve the full resource path and leave conditional primary context "
+          "unevaluated");
+    check(ordinary["matching_resource_member"]["status"] == "not_evaluated" &&
+              ordinary["matching_resource_member"]["source_string_key"] == 3 &&
+              ordinary["matching_resource_member"]["member_name"] == "Stone" &&
+              ordinary["matching_resource_member"]["comparison"] ==
+                  "native_case_insensitive_locale_dependent",
+          "palette membership compares resource member names rather than display names or catalog "
+          "name key one");
+    check(ordinary["context_cases"] ==
+              Json::array({{{"lookup", "failure"},
+                            {"matching_resource_member", nullptr},
+                            {"primary_context", "current_resource_context"},
+                            {"secondary_context", "current_resource_context"}},
+                           {{"lookup", "success"},
+                            {"matching_resource_member", true},
+                            {"primary_context", "current_resource_context"},
+                            {"secondary_context", "resolved_palette_resource"}},
+                           {{"lookup", "success"},
+                            {"matching_resource_member", false},
+                            {"primary_context", "resolved_palette_resource"},
+                            {"secondary_context", "resolved_palette_resource"}}}),
+          "ordinary palette context choice preserves all native lookup and membership branches");
+    for (const auto &value : {"scene.p3d", "folder/Scene.P3D", "name"}) {
+        ordinary = interpret(value);
+        check(ordinary["status"] == "decoded" && ordinary["kind"] == "current_context_resource" &&
+                  ordinary["primary_context"] == "current_resource_context" &&
+                  ordinary["secondary_context_rule"] == "primary_context" &&
+                  ordinary["lookup_request"].is_null(),
+              "ordinary p3d and extensionless references use current contexts without fabricating "
+              "an external file "
+              "request");
+    }
+    for (const auto &value : {".jpg", "picture.jpg", "name.pal.extra"}) {
+        ordinary = interpret(value);
+        check(ordinary["status"] == "rejected_extension" && !ordinary.contains("lookup_request"),
+              "ordinary nonempty extensions require the native pal or p3d branch");
+    }
+    for (const auto &value : {".", "folder/"}) {
+        ordinary = interpret(value);
+        check(ordinary["status"] == "decoded" && ordinary["member_name"] == "" &&
+                  ordinary["secondary_context_rule"] == "primary_context",
+              "an empty extension takes the native current-context branch before extension "
+              "rejection");
+    }
+    ordinary = interpret(".pal");
+    check(ordinary["kind"] == "palette_resource" && ordinary["primary_context"].is_null() &&
+              ordinary["lookup_request"]["reference"] == ".pal" &&
+              ordinary["matching_resource_member"]["member_name"] == "",
+          "ordinary pal with an empty member still uses palette membership selection because its "
+          "extension is nonempty");
     return checks;
 }

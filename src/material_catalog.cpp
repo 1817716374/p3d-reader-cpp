@@ -115,33 +115,71 @@ Json catalog_resource_interpretation(const Json &field) {
     bool project = text.size() >= prefix.size();
     for (std::size_t i = 0; project && i < prefix.size(); ++i)
         project = ascii_lower(text[i]) == ascii_lower(prefix[i]);
-    if (!project) {
-        out["status"] = "unresolved_resource_form";
-        return out;
-    }
-    out["kind"] = "project_resource";
-    // The native path splitter also handles schemes and drive syntax. These
-    // require separate rules; a project token does not justify guessing them.
+    out["kind"] = project ? "project_resource" : "path_resource";
+    // The native path splitter also handles schemes and drive syntax. Keep
+    // their still-unconfirmed rules separate from ordinary path components.
     if (text.find(u':') != std::u16string::npos) {
         out["status"] = "unresolved_path_syntax";
         return out;
     }
     const auto separator = text.find_last_of(u"/\\");
-    const auto leaf = text.substr(separator + 1);
+    const auto leaf = separator == std::u16string::npos ? text : text.substr(separator + 1);
     const auto dot = leaf.find_last_of(u'.');
     const auto stem = dot == std::u16string::npos ? leaf : leaf.substr(0, dot);
     const auto ext_with_dot = dot == std::u16string::npos ? std::u16string() : leaf.substr(dot);
     // P3DDC's splitter supplies 260-unit buffers for each path component.
     // Out-of-range cases have no portable definite split in this view.
-    if (separator + 1 >= 260 || stem.size() >= 260 || ext_with_dot.size() >= 260) {
+    if ((separator != std::u16string::npos && separator + 1 >= 260) || stem.size() >= 260 ||
+        ext_with_dot.size() >= 260) {
         out["status"] = "unresolved_path_component_limit";
         return out;
     }
     const auto extension = ext_with_dot.empty() ? std::u16string() : ext_with_dot.substr(1);
     const bool palette = extension.size() == 3 && ascii_lower(extension[0]) == u'p' &&
                          ascii_lower(extension[1]) == u'a' && ascii_lower(extension[2]) == u'l';
+    if (!project && !extension.empty()) {
+        out["member_name"] = codec.to_bytes(stem);
+        out["extension"] = codec.to_bytes(extension);
+        if (palette) {
+            out.update(
+                {{"status", "decoded"},
+                 {"kind", "palette_resource"},
+                 {"primary_context", nullptr},
+                 {"primary_context_rule", "palette_if_loaded_and_no_matching_resource_member"},
+                 {"secondary_context_rule", "palette_lookup_or_current_context"},
+                 {"matching_resource_member",
+                  {{"status", "not_evaluated"},
+                   {"source_string_key", 3},
+                   {"member_name", codec.to_bytes(stem)},
+                   {"comparison", "native_case_insensitive_locale_dependent"}}},
+                 {"lookup_request",
+                  {{"reference", codec.to_bytes(text)}, {"search_path_setting", "P3d_Material"}}},
+                 {"context_cases",
+                  Json::array({{{"lookup", "failure"},
+                                {"matching_resource_member", nullptr},
+                                {"primary_context", "current_resource_context"},
+                                {"secondary_context", "current_resource_context"}},
+                               {{"lookup", "success"},
+                                {"matching_resource_member", true},
+                                {"primary_context", "current_resource_context"},
+                                {"secondary_context", "resolved_palette_resource"}},
+                               {{"lookup", "success"},
+                                {"matching_resource_member", false},
+                                {"primary_context", "resolved_palette_resource"},
+                                {"secondary_context", "resolved_palette_resource"}}})}});
+            return out;
+        }
+        const bool document = extension.size() == 3 && ascii_lower(extension[0]) == u'p' &&
+                              extension[1] == u'3' && ascii_lower(extension[2]) == u'd';
+        if (!document) {
+            out["status"] = "rejected_extension";
+            return out;
+        }
+    }
+    if (!project)
+        out["kind"] = "current_context_resource";
+    out[project ? "project_member_name" : "member_name"] = codec.to_bytes(stem);
     out.update({{"status", "decoded"},
-                {"project_member_name", codec.to_bytes(stem)},
                 {"extension", codec.to_bytes(extension)},
                 {"primary_context", "current_resource_context"},
                 {"secondary_context_rule",
