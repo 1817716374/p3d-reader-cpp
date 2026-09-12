@@ -5,17 +5,121 @@
 namespace p3d {
 namespace {
 Json native_catalog_input_filter(const Json &record, const Bytes &base) {
+    const auto prefix = Reader(base).u32();
     const auto words = Reader(base, 8).u32();
     const bool skip_flag = (record.at("element_flags").get<unsigned>() & 8) != 0;
     const bool zero_type = record.at("element_type") == 0;
-    const bool invalid_words = words < 16 || words > 65535;
+    // The physical reader checks the upper word limit before inspecting the
+    // prefix. Only prefix-zero records increment its descendant counter; the
+    // element reader applies its remaining filters after that increment.
+    const bool read_error = words > 65535;
+    const bool skipped = prefix != 0 || skip_flag || zero_type || words < 16;
     return {{"reader_profile", "bimbase_2025_native_record_input"},
-            {"status", skip_flag || zero_type || invalid_words ? "skipped" : "accepted"},
-            {"reason", skip_flag       ? Json("flag_0008")
-                       : zero_type     ? Json("zero_element_type")
-                       : invalid_words ? Json("record_word_count_out_of_range")
-                                       : Json()},
+            {"status", read_error ? "read_error"
+                       : skipped  ? "skipped"
+                                  : "accepted"},
+            {"reason", read_error    ? Json("record_word_count_exceeds_limit")
+                       : prefix != 0 ? Json("nonzero_prefix")
+                       : skip_flag   ? Json("flag_0008")
+                       : zero_type   ? Json("zero_element_type")
+                       : words < 16  ? Json("record_word_count_below_minimum")
+                                     : Json()},
+            {"source_prefix_word", prefix},
+            {"descendant_counter_effect", read_error ? "not_reached"
+                                          : prefix   ? "not_incremented"
+                                                     : "incremented"},
+            {"native_error_code", read_error ? Json(0x12005) : Json()},
             {"record_word_count", words}};
+}
+Json native_catalog_input_members(std::size_t ni, const Json &records,
+                                  const std::map<std::size_t, std::size_t> &catalog_indices,
+                                  std::uint32_t counter) {
+    Json out = {
+        {"scope", "table_input_if_reached"},        {"status", "invalid"},
+        {"member_record_indices", Json::array()},   {"members", Json::array()},
+        {"consumed_record_indices", Json::array()}, {"skipped_record_indices", Json::array()}};
+    const auto &table = records[ni];
+    const auto stream = table.value("stream", Json());
+    auto compound = [](const Json &n) {
+        auto type = n.at("element_type").get<unsigned>();
+        return (type >= 10 && type <= 32) ||
+               ((type < 33 || type > 63) && (n.at("element_flags").get<unsigned>() & 0x40));
+    };
+    auto count = [](const Json &n, const Bytes &b) {
+        return Reader(b, (n.at("element_flags").get<unsigned>() & 0x20) ? 108 : 36).u32();
+    };
+    try {
+        const auto base = bytesof(table.at("data"));
+        const auto filter = native_catalog_input_filter(table, base);
+        if (filter["status"] != "accepted") {
+            out["status"] = filter["status"];
+            out["reason"] = filter["reason"];
+            out["native_error_code"] = filter["native_error_code"];
+            return out;
+        }
+        out["start_counter"] = counter;
+        const auto target = std::uint32_t(counter + count(table, base));
+        out["target_counter"] = target;
+        std::vector<std::uint32_t> ends;
+        if (counter < target)
+            ends.push_back(target);
+        std::size_t j = ni + 1;
+        auto next_offset =
+            table.at("offset").get<std::uint64_t>() + table.at("length").get<std::uint64_t>();
+        Json members = Json::array(), indices = Json::array();
+        while (!ends.empty()) {
+            require(j < records.size(), "material input ends before requested child");
+            const auto &n = records[j];
+            require(n.value("stream", Json()) == stream && n.at("offset") == next_offset,
+                    "material input child crosses stream or record boundary");
+            const auto b = bytesof(n.at("data"));
+            const auto input = native_catalog_input_filter(n, b);
+            out["consumed_record_indices"].push_back(j);
+            if (input["status"] == "read_error") {
+                out["status"] = "read_error";
+                out["error_record_index"] = j;
+                out["native_error_code"] = input["native_error_code"];
+                return out;
+            }
+            if (input["descendant_counter_effect"] == "incremented")
+                ++counter;
+            next_offset += n.at("length").get<std::uint64_t>();
+            const auto current = j++;
+            if (input["status"] == "skipped") {
+                out["skipped_record_indices"].push_back(current);
+                // This skip is inside read-next-child. Its parent does not test
+                // the counter again until an accepted complete child returns.
+                continue;
+            }
+            const auto type = n.at("element_type").get<unsigned>();
+            if (type == 13 || type == 24 || type == 62) {
+                out["status"] = "unsupported_record_conversion";
+                out["error_record_index"] = current;
+                return out;
+            }
+            if (ends.size() == 1) {
+                const auto ci = catalog_indices.find(current);
+                indices.push_back(current);
+                members.push_back({{"native_record_index", current},
+                                   {"catalog_record_index",
+                                    ci == catalog_indices.end() ? Json() : Json(ci->second)}});
+            }
+            if (compound(n)) {
+                const auto child_end = std::uint32_t(counter + count(n, b));
+                if (counter < child_end)
+                    ends.push_back(child_end);
+            }
+            while (!ends.empty() && counter >= ends.back())
+                ends.pop_back();
+        }
+        out["member_record_indices"] = std::move(indices);
+        out["members"] = std::move(members);
+        out["end_counter"] = counter;
+        out["status"] = "resolved";
+    } catch (const std::exception &e) {
+        out["error"] = e.what();
+    }
+    return out;
 }
 Json catalog_resource_interpretation(const Json &field) {
     Json out = {{"reader_profile", "bimbase_2025_material_catalog_resource"},
@@ -302,11 +406,25 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
     auto count_offset = [](const Json &record) -> std::size_t {
         return (record.at("element_flags").get<unsigned>() & 0x20) ? 108 : 36;
     };
+    // Count each relevant block once, not its entire prefix for every table.
+    // A fresh native block reader starts with an unsigned zero counter.
+    std::map<Json, std::uint32_t> stream_counters;
+    for (const auto &n : native_records)
+        if (n.at("element_type") == 10) {
+            const auto base = bytesof(n.at("data"));
+            if (base.size() >= 20 && Reader(base, 16).u32() == 18)
+                stream_counters.emplace(n.value("stream", Json()), 0);
+        }
     for (std::size_t ni = 0; ni < native_records.size(); ++ni) {
         const auto &n = native_records[ni];
-        if (n.at("element_type") != 10)
+        const auto stream_counter = stream_counters.find(n.value("stream", Json()));
+        if (stream_counter == stream_counters.end())
             continue;
         const auto base = bytesof(n.at("data"));
+        if (Reader(base).u32() == 0)
+            ++stream_counter->second;
+        if (n.at("element_type") != 10)
+            continue;
         if (base.size() < 20 || Reader(base, 16).u32() != 18)
             continue;
         Json table = {{"native_record_index", ni},
@@ -314,6 +432,9 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
                       {"record_id", n.at("id")},
                       {"record_offset", n.at("offset")},
                       {"initial_load_filter", native_catalog_input_filter(n, base)},
+                      {"initial_load_members",
+                       native_catalog_input_members(ni, native_records, catalog_indices,
+                                                    stream_counter->second)},
                       {"membership_status", "invalid"},
                       {"runtime_selection", "not_evaluated"},
                       {"member_record_indices", Json::array()},
@@ -346,6 +467,8 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
                 require(child.value("stream", Json()) == table["stream"] &&
                             child.at("offset") == next_offset,
                         "material table descendants cross stream or record boundary");
+                require(Reader(bytesof(child.at("data"))).u32() == 0,
+                        "nonzero-prefix record cannot define a counted source member span");
                 // The input reader reconstructs the parent chain from counts and
                 // sets 0x80 itself. Its absence in stored bytes is not a boundary.
                 if (!(child.at("element_flags").get<unsigned>() & 0x80))

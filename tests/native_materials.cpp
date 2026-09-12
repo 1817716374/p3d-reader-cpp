@@ -604,9 +604,11 @@ unsigned native_material_tests() {
         auto result = native_material_catalog_records(parse_native(b));
         const auto &filter = result[0]["initial_load_filter"];
         check(result.size() == 1 && filter["record_word_count"] == words &&
-                  filter["status"] == (words <= 65535 ? "accepted" : "skipped") &&
+                  filter["status"] == (words <= 65535 ? "accepted" : "read_error") &&
                   (words <= 65535 ? filter["reason"].is_null()
-                                  : filter["reason"] == "record_word_count_out_of_range"),
+                                  : filter["reason"] == "record_word_count_exceeds_limit") &&
+                  (words <= 65535 ? filter["native_error_code"].is_null()
+                                  : filter["native_error_code"] == 0x12005),
               "native input accepts 16 through 65535 words but retained oversized records are not "
               "load candidates");
     }
@@ -615,5 +617,117 @@ unsigned native_material_tests() {
               membership["tables"][0]["initial_load_filter"]["record_word_count"] == 20 &&
               membership["tables"][0]["runtime_selection"] == "not_evaluated",
           "passing the input filter is distinct from runtime table selection");
+    auto input_members = [&](const std::vector<Bytes> &records) {
+        return inspect_tables(native_rows(records))["tables"][0]["initial_load_members"];
+    };
+    auto input = input_members(
+        {table_record(4), child_record(), table_record(1, 0xc0), child_record(), child_record()});
+    check(input["status"] == "resolved" && input["start_counter"] == 1 &&
+              input["target_counter"] == 5 && input["end_counter"] == 5 &&
+              input["member_record_indices"] == Json::array({1, 2, 4}) &&
+              input["members"][0]["catalog_record_index"] == 0 &&
+              input["members"][1]["catalog_record_index"].is_null(),
+          "initial table input keeps direct children and waits for complete nested children");
+    input = input_members({table_record(1), skipped_child, child_record(), child_record()});
+    check(input["status"] == "resolved" && input["target_counter"] == 2 &&
+              input["end_counter"] == 3 && input["member_record_indices"] == Json::array({2}) &&
+              input["consumed_record_indices"] == Json::array({1, 2}) &&
+              input["skipped_record_indices"] == Json::array({1}),
+          "a skipped final child increments the counter but read-next-child still obtains the "
+          "following accepted record before its parent tests completion");
+    input = input_members({table_record(2), skipped_child, child_record()});
+    check(input["status"] == "resolved" && input["end_counter"] == 3 &&
+              input["member_record_indices"] == Json::array({2}),
+          "a counted skip can consume part of the declared span without creating a member");
+    auto prefixed = child_record();
+    put(prefixed, 0, 9, 4);
+    membership = inspect_tables(native_rows({table_record(1), prefixed, child_record()}));
+    input = membership["tables"][0]["initial_load_members"];
+    check(input["status"] == "resolved" && input["end_counter"] == 2 &&
+              input["member_record_indices"] == Json::array({2}) &&
+              input["skipped_record_indices"] == Json::array({1}) &&
+              membership["catalog"][0]["initial_load_filter"]["source_prefix_word"] == 9 &&
+              membership["catalog"][0]["initial_load_filter"]["reason"] == "nonzero_prefix" &&
+              membership["catalog"][0]["initial_load_filter"]["descendant_counter_effect"] ==
+                  "not_incremented" &&
+              membership["tables"][0]["membership_status"] == "invalid" &&
+              membership["catalog"][0]["table_memberships"].empty(),
+          "nonzero source prefixes skip physical records without counting or inventing raw "
+          "span ownership, while conditional input members remain reconstructible");
+    input = input_members({prefixed, skipped_child, table_record(1), child_record()});
+    check(input["status"] == "resolved" && input["start_counter"] == 2 &&
+              input["end_counter"] == 3 && input["member_record_indices"] == Json::array({3}),
+          "the per-block counter includes previous element-reader skips but excludes prefix skips");
+    auto zero_type = other;
+    put(zero_type, 4, 0, 2);
+    input = input_members({table_record(1), zero_type, child_record()});
+    check(input["status"] == "resolved" && input["end_counter"] == 3 &&
+              input["skipped_record_indices"] == Json::array({1}) &&
+              input["member_record_indices"] == Json::array({2}),
+          "zero-type records are counted element-reader skips");
+    auto skipped_compound = table_record(100, 0x48, 19);
+    input = input_members({table_record(2), skipped_compound, child_record()});
+    check(input["status"] == "resolved" && input["member_record_indices"] == Json::array({2}),
+          "a skipped compound header does not consume its declared descendants recursively");
+    input = input_members({table_record(2), table_record(1, 0xc0, 19), skipped_child,
+                           child_record(), child_record()});
+    check(input["status"] == "resolved" && input["end_counter"] == 4 &&
+              input["member_record_indices"] == Json::array({1}) &&
+              input["consumed_record_indices"] == Json::array({1, 2, 3}),
+          "nested read-next-child may finish beyond both stored counts before the outer table "
+          "returns, without promoting the nested accepted record");
+    input = input_members({table_record(2), child_record(), skipped_child});
+    check(input["status"] == "invalid" && input["members"].empty() &&
+              input["member_record_indices"].empty() && input.contains("error") &&
+              input["consumed_record_indices"] == Json::array({1, 2}),
+          "missing accepted child after a skip invalidates the whole input table without partial "
+          "published members");
+    auto oversized = catalog_record({});
+    oversized.resize(4 + 65536 * 2);
+    put(oversized, 8, 65536, 4);
+    put(oversized, 0, 1, 4);
+    put(oversized, 6, 8, 2);
+    membership = inspect_tables(native_rows({table_record(2), child_record(), oversized}));
+    input = membership["tables"][0]["initial_load_members"];
+    check(input["status"] == "read_error" && input["native_error_code"] == 0x12005 &&
+              input["error_record_index"] == 2 && input["members"].empty() &&
+              membership["catalog"][1]["initial_load_filter"]["status"] == "read_error" &&
+              membership["catalog"][1]["initial_load_filter"]["descendant_counter_effect"] ==
+                  "not_reached",
+          "oversize read errors take precedence over both prefix and flag skips and discard the "
+          "partial table result");
+    for (unsigned type : {13u, 24u, 62u}) {
+        auto conversion = other;
+        put(conversion, 4, type, 2);
+        input = input_members({table_record(2), child_record(), conversion});
+        check(input["status"] == "unsupported_record_conversion" &&
+                  input["error_record_index"] == 2 && input["members"].empty(),
+              "native conversion branches are reported explicitly instead of guessing their "
+              "output topology");
+    }
+    input = input_members({table_record(UINT32_MAX), child_record()});
+    check(input["status"] == "resolved" && input["start_counter"] == 1 &&
+              input["target_counter"] == 0 && input["end_counter"] == 1 &&
+              input["members"].empty() && input["consumed_record_indices"].empty(),
+          "the native unsigned target addition wraps before the initial comparison");
+    input = input_members({table_record(1, 0x48), child_record()});
+    check(input["status"] == "skipped" && input["reason"] == "flag_0008" &&
+              input["members"].empty() && input["consumed_record_indices"].empty(),
+          "a skipped table does not enter its child reader");
+    auto separated = native_rows({child_record(), table_record(1), child_record()});
+    separated[0]["stream"] = Json::array({"another", "block"});
+    input = inspect_tables(separated)["tables"][0]["initial_load_members"];
+    check(input["status"] == "resolved" && input["start_counter"] == 1 && input["end_counter"] == 2,
+          "other input blocks do not contribute to the table counter");
+    for (bool different_stream : {false, true}) {
+        auto bad = native_rows({table_record(1), child_record()});
+        if (different_stream)
+            bad[1]["stream"] = Json::array({"another", "block"});
+        else
+            bad[1]["offset"] = bad[1]["offset"].get<std::size_t>() + 4;
+        input = inspect_tables(bad)["tables"][0]["initial_load_members"];
+        check(input["status"] == "invalid" && input["members"].empty(),
+              "conditional input refuses gaps and does not fetch children from another stream");
+    }
     return checks;
 }
