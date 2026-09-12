@@ -113,6 +113,19 @@ unsigned mesh_extension_tests() {
     color_only["body"] = rawbytes(color_only_bytes);
     color_only["decoded"] = command_fields(25, color_only_bytes);
     auto color_geometry = reconstruct(Json::array({color_only}), {});
+    auto shared_indices_bytes = prefix();
+    // Third index array begins after the header, point indices and empty normals.
+    shared_indices_bytes[52] = 5;
+    shared_indices_bytes.insert(shared_indices_bytes.end(), extra.begin(), extra.end());
+    auto shared_indices = cmd;
+    shared_indices["body"] = rawbytes(shared_indices_bytes);
+    shared_indices["decoded"] = command_fields(25, shared_indices_bytes);
+    auto shared_indices_geo = reconstruct(Json::array({shared_indices}), {});
+    check(shared_indices_geo.faces == g.faces && shared_indices_geo.unknown.size() == 1 &&
+              !shared_indices_geo.face_uv_indices[0] && shared_indices_geo.face_uv_indices[1] &&
+              channels(shared_indices_geo)["triangles"][0]["color_indices"] == Json({4, 1, 2}) &&
+              channels(shared_indices_geo)["source"]["bindings"]["color_status"] == "mapped",
+          "shared parameter indices can fail UV lookup while remaining valid color references");
     check(!color_only["decoded"].contains("field_decode_error") &&
               color_only["decoded"]["param_index_usage"] == "color" &&
               color_only["decoded"]["index_arrays"][2] == d["index_arrays"][2],

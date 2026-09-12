@@ -524,30 +524,31 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                  {std::pair<const char *, std::vector<std::optional<Triangle>> *>(
                                       "normal_indices", &channels.face_normal_indices),
                                   {"uv_indices", &channels.face_uv_indices}}) {
-                                if (poly[channel.first].empty() ||
-                                    (channel.second == &channels.face_uv_indices &&
-                                     channels.uvs.empty()))
+                                const auto pool_size = channel.second == &channels.face_uv_indices
+                                                           ? channels.uvs.size()
+                                                           : channels.normals.size();
+                                if (poly[channel.first].empty() || !pool_size)
                                     channel.second->push_back(std::nullopt);
                                 else {
                                     Triangle indices;
-                                    for (unsigned j = 0; j < 3; ++j)
-                                        indices[j] = static_cast<std::uint32_t>(
-                                            std::llabs(
-                                                poly[channel.first][tri[j]].get<std::int64_t>()) -
-                                            1);
-                                    channel.second->push_back(indices);
+                                    bool valid = true;
+                                    for (unsigned j = 0; j < 3; ++j) {
+                                        const auto index = std::llabs(
+                                            poly[channel.first][tri[j]].get<std::int64_t>());
+                                        if (!index || std::uint64_t(index) > pool_size)
+                                            valid = false;
+                                        indices[j] = static_cast<std::uint32_t>(index - 1);
+                                    }
+                                    channel.second->push_back(
+                                        valid ? std::optional<Triangle>(indices) : std::nullopt);
                                 }
                             }
-                            if (poly["uv_indices"].empty() || channels.uvs.empty())
+                            if (!channels.face_uv_indices.back())
                                 uvs.push_back(std::nullopt);
                             else {
                                 std::array<Point2, 3> uv;
                                 for (unsigned j = 0; j < 3; ++j)
-                                    uv[j] = d["uvs"]
-                                                .at(std::llabs(poly["uv_indices"][tri[j]]
-                                                                   .get<std::int64_t>()) -
-                                                    1)
-                                                .get<Point2>();
+                                    uv[j] = channels.uvs.at((*channels.face_uv_indices.back())[j]);
                                 uvs.push_back(uv);
                             }
                         }
@@ -558,6 +559,16 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     append(g, world(points), faces, &uvs, &sources);
                     channels.faces = std::move(faces);
                     merge_mesh_channels(g, channels, first_face);
+                    if (d.contains("index_bindings"))
+                        for (const auto *name : {"normal_indices", "uv_indices"}) {
+                            const auto &binding = d["index_bindings"][name];
+                            if (binding["status"] == "invalid_indices")
+                                g.unknown.push_back({{"opcode", 25},
+                                                     {"offset", cmd["offset"]},
+                                                     {"reason", "mesh index binding unavailable"},
+                                                     {"channel", name},
+                                                     {"details", binding}});
+                        }
                     if (d["trailing_channels_status"] == "opaque")
                         g.unknown.push_back({{"opcode", 25},
                                              {"offset", cmd["offset"]},

@@ -92,6 +92,56 @@ unsigned mesh_channel_tests() {
                   "triangulation preserves corner channels");
         }
     auto no_indices = mesh({1, 2, 3, 0}, {}, {}, points, normals, uvs);
+    const std::vector<std::int32_t> two_faces = {1, 2, 3, 0, 1, 3, 4, 0};
+    auto bad_normal =
+        mesh(two_faces, {9, 2, 1, 0, 3, 1, 3, 0}, {1, 2, 3, 0, 5, 3, 4, 0}, points, normals, uvs);
+    auto partial_normal = reconstruct(Json::array({bad_normal}), {});
+    check(!bad_normal["decoded"].contains("field_decode_error") &&
+              bad_normal["decoded"]["index_bindings"]["normal_indices"]
+                        ["unavailable_read_positions"] == Json({0}) &&
+              bad_normal["decoded"]["polygons"][0]["normal_indices"][0] == 9,
+          "invalid optional normal index retains its exact source position and value");
+    check(partial_normal.faces.size() == 2 && partial_normal.unknown.size() == 1 &&
+              !partial_normal.face_normal_indices[0] && partial_normal.face_normal_indices[1] &&
+              partial_normal.face_uv_indices[0] && partial_normal.face_uv_indices[1] &&
+              partial_normal.source_normals == normals,
+          "bad normal reference does not discard topology, UVs, pool values or another face");
+    auto bad_uv =
+        mesh(two_faces, {2, 2, 1, 0, 3, 1, 3, 0}, {1, 2, 3, 0, 99, 3, 4, 0}, points, normals, uvs);
+    auto partial_uv = reconstruct(Json::array({bad_uv}), {});
+    check(partial_uv.faces.size() == 2 && partial_uv.unknown.size() == 1 &&
+              partial_uv.face_uv_indices[0] && !partial_uv.face_uv_indices[1] &&
+              partial_uv.face_uvs[0] && !partial_uv.face_uvs[1] &&
+              partial_uv.face_normal_indices[0] && partial_uv.face_normal_indices[1] &&
+              partial_uv.uvs == uvs &&
+              bad_uv["decoded"]["index_bindings"]["uv_indices"]["unavailable_read_positions"] ==
+                  Json({4}),
+          "bad UV reference disables only affected triangle UV and preserves normals");
+    auto absent_normal_pool = mesh(two_faces, {2, 2, 1, 0, 3, 1, 3, 0}, {}, points, {}, {});
+    auto absent_normal_geo = reconstruct(Json::array({absent_normal_pool}), {});
+    check(absent_normal_pool["decoded"]["index_bindings"]["normal_indices"]["status"] ==
+                  "pool_absent" &&
+              absent_normal_geo.unknown.empty() && absent_normal_geo.faces.size() == 2 &&
+              absent_normal_geo.source_normals.empty() &&
+              !absent_normal_geo.face_normal_indices[0] &&
+              !absent_normal_geo.face_normal_indices[1],
+          "indices with no normal pool are preserved without accessing a missing pool");
+    auto extreme = mesh(two_faces, {INT32_MIN, 1, 2, 0, INT32_MAX, 1, 2, 0},
+                        {INT32_MAX, 1, 2, 0, INT32_MIN, 1, 2, 0}, points, normals, uvs);
+    auto extreme_geo = reconstruct(Json::array({extreme}), {});
+    check(extreme_geo.faces.size() == 2 && extreme_geo.unknown.size() == 2 &&
+              !extreme_geo.face_normal_indices[0] && !extreme_geo.face_uv_indices[1] &&
+              extreme["decoded"]["index_arrays"][1][0] == INT32_MIN &&
+              extreme["decoded"]["index_bindings"]["uv_indices"]["unavailable_read_positions"] ==
+                  Json({0, 4}),
+          "signed int32 extremes are diagnosed without overflow or geometry loss");
+    auto invalid_points = mesh({99, 2, 3, 0}, {}, {}, points, normals, uvs);
+    auto invalid_count = mesh({1, 2, 3, 0}, {1, 2}, {}, points, normals, uvs);
+    auto invalid_separator = mesh({1, 2, 3, 0}, {1, 0, 3, 0}, {}, points, normals, uvs);
+    check(invalid_points["decoded"].contains("field_decode_error") &&
+              invalid_count["decoded"].contains("field_decode_error") &&
+              invalid_separator["decoded"].contains("field_decode_error"),
+          "unsafe point topology and inconsistent index layout remain rejected");
     auto missing = reconstruct(Json::array({no_indices}), {});
     check(missing.normals.size() == normals.size() && missing.uvs == uvs &&
               !missing.face_normal_indices[0] && !missing.face_uv_indices[0] &&
@@ -114,6 +164,14 @@ unsigned mesh_channel_tests() {
     m[1] = {0, 3, 0, -7};
     m[2] = {0, 0, 4, 5};
     Geometry placed;
+    Geometry placed_partial;
+    auto reflection = identity();
+    reflection[0][0] = -1;
+    merge_geometry(placed_partial, partial_uv, reflection);
+    check(placed_partial.faces.size() == 2 && placed_partial.face_uv_indices[0] &&
+              !placed_partial.face_uv_indices[1] && placed_partial.unknown == partial_uv.unknown &&
+              *placed_partial.face_uv_indices[0] == Triangle{0, 2, 1},
+          "partial optional channel and source diagnostics survive a mirrored instance");
     merge_geometry(placed, g, m);
     check(placed.source_normals == normals && near(*placed.normals[0], {.5, .5, 1}),
           "inverse-transpose handles shear and unequal scales without normalizing");

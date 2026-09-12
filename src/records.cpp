@@ -453,18 +453,27 @@ Json decode_polyface(const Bytes &b) {
     auto normals = points(3), uv = points(2);
     auto extra = r.take(r.left());
     std::array<std::size_t, 3> sizes = {p.size(), normals.size(), uv.size()};
+    Json index_bindings = Json::object();
     for (unsigned j = 0; j < 3; ++j) {
         auto &a = arrays[j];
         require(a.empty() || a.size() == arrays[0].size(), "polyface corner count");
+        Json unavailable = Json::array();
         for (std::size_t i = 0; i < a.size(); ++i) {
-            // The command reader also uses parameter indices for FloatRgb.
-            // An absent UV pool disables UV lookup; it does not invalidate
-            // the independently consumed color index pointer.
-            if (j != 2 || !uv.empty())
-                require(std::llabs(a[i].get<std::int64_t>()) <= static_cast<long long>(sizes[j]),
-                        "polyface index range");
+            const bool in_range =
+                std::llabs(a[i].get<std::int64_t>()) <= static_cast<long long>(sizes[j]);
+            if (!j)
+                require(in_range, "polyface index range");
+            else if (sizes[j] && !in_range)
+                unavailable.push_back(i);
             require((a[i] == 0) == (arrays[0][i] == 0), "polyface separators");
         }
+        if (j)
+            index_bindings[j == 1 ? "normal_indices" : "uv_indices"] = {
+                {"status", a.empty()             ? "no_indices"
+                           : !sizes[j]           ? "pool_absent"
+                           : unavailable.empty() ? "mapped"
+                                                 : "invalid_indices"},
+                {"unavailable_read_positions", std::move(unavailable)}};
     }
     const bool fixed = flags > 1;
     if (fixed)
@@ -516,6 +525,7 @@ Json decode_polyface(const Bytes &b) {
             {"reported_point_index_count", reported},
             {"point_index_count_matches_header", reported == arrays[0].size()},
             {"index_arrays", std::move(arrays)},
+            {"index_bindings", std::move(index_bindings)},
             {"param_index_usage", param_usage},
             {"points", std::move(p)},
             {"normals", std::move(normals)},
