@@ -54,10 +54,7 @@ Json material_replicator_input(const Json &package) {
         if (read.at("status") == "decoded") {
             value["value"] = field.kind == 'b' ? Json(read.at("value") != 0) : read.at("value");
             value["read_status"] = "written";
-        } else if (read.at("status") == "missing" ||
-                   (field.kind != 'd' &&
-                    read.value("conversion", Json::object()).value("status", Json()) ==
-                        "no_integer_assignment")) {
+        } else if (material_xml_numeric_failed(read)) {
             value["value"] = initial;
             value["read_status"] = "not_written";
         }

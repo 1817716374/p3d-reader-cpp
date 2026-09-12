@@ -10,41 +10,24 @@ Json number(const Json &a, const std::string &key, bool integer = false,
             bool signed_integer = false) {
     if (integer)
         return material_xml_integer(a, key, signed_integer);
-    Json out = {{"source_keys", Json::array({key})}, {"status", "missing"}, {"value", nullptr}};
-    if (!a.contains(key))
-        return out;
-    out["status"] = "invalid";
-    if (!a[key].is_string())
-        return out;
-    const auto s = a[key].get<std::string>();
-    {
-        std::istringstream input(s);
-        input.imbue(std::locale::classic());
-        double value;
-        if (!(input >> value) || !std::isfinite(value))
-            return out;
-        input >> std::ws;
-        if (!input.eof())
-            return out;
-        out["value"] = value;
-    }
-    out["status"] = "decoded";
-    return out;
+    return material_xml_float(a, key);
 }
 Json vector(const Json &a, const std::string &prefix, const char *axes) {
     Json components = Json::array(), keys = Json::array(), values = Json::array();
-    bool invalid = false;
+    bool invalid = false, unresolved = false;
     unsigned present = 0;
     for (const char *axis = axes; *axis; ++axis) {
         auto key = prefix + "." + *axis;
         auto c = number(a, key);
         present += a.contains(key);
         invalid |= c["status"] == "invalid";
+        unresolved |= c["status"] == "unresolved";
         keys.push_back(key);
         values.push_back(c["value"]);
         components.push_back(std::move(c));
     }
     const char *status = invalid                    ? "invalid"
+                         : unresolved               ? "unresolved"
                          : present == values.size() ? "decoded"
                          : present                  ? "partial"
                                                     : "missing";

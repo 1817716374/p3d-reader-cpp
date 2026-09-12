@@ -79,8 +79,9 @@ unsigned material_semantics_tests() {
     check(s["flags"]["unassigned_bits"].get<std::uint32_t>() == (UINT32_MAX & ~0x2003fcu),
           "unknown flag bits retained including highest bit");
     a["finish"] = "inf";
-    check(material_parameter_semantics(a)["parameters"]["roughness_factor"]["status"] == "invalid",
-          "nonfinite source coefficient not treated as valid");
+    check(material_parameter_semantics(
+              a)["parameters"]["roughness_factor"]["value"]["floating_point"] == "infinity",
+          "nonfinite source coefficient retains a tagged value instead of JSON null");
 
     Json map = {{"Type", "1"},
                 {"Filename", "relative/纹理.jpg"},
@@ -154,8 +155,8 @@ unsigned material_semantics_tests() {
               m["projection"]["source_rows"][1]["status"] == "partial",
           "missing matrix entry not synthesized");
     map["pattern_scale.x"] = "4junk";
-    check(material_map_semantics(map)["uv_scale"]["status"] == "invalid",
-          "invalid scale component");
+    check(material_map_semantics(map)["uv_scale"]["value"][0] == 4,
+          "scale component accepts the native floating prefix");
     Json tree = {
         {"tag", "Material"},
         {"attributes", original},
@@ -400,9 +401,9 @@ unsigned material_semantics_tests() {
     layer["layer_color.r"] = ".2";
     layer["layer_color.g"] = "NaN";
     ls = material_layer_semantics(layer);
-    check(ls["parameters"]["layer_color"]["status"] == "invalid" &&
+    check(ls["parameters"]["layer_color"]["status"] == "partial" &&
               ls["parameters"]["layer_color"]["value"].is_null(),
-          "tint rejects nonfinite components and preserves incomplete color");
+          "tint preserves incomplete color independently of nonfinite component decoding");
     layer["LayerType"] = "layer GROUP_START \tmy group  ";
     ls = material_layer_semantics(layer);
     check(ls["type"]["argument"] == "my group" && ls["type"]["argument_role"] == "group_name" &&
@@ -572,9 +573,10 @@ unsigned material_semantics_tests() {
     first = material_procedure_nodes(procedure_owner(
         {{"M634", "54"}, {"M81", "2.5"}, {"M82.R", "1"}, {"M82.G", "NaN"}}))["entries"][0];
     check(first["parameters"]["M81"]["value"] == 2.5 &&
-              first["parameters"]["M82"]["status"] == "invalid" &&
+              first["parameters"]["M82"]["status"] == "partial" &&
+              first["parameters"]["M82"]["components"][1]["value"]["floating_point"] == "nan" &&
               !first["parameters"].contains("M24"),
-          "procedure type controls color grouping and finite source validation");
+          "procedure color retains nonfinite components while reporting the missing blue value");
     for (const auto &id : {"0", "71", "4294967295", "-1", "4294967296", "invalid"}) {
         first =
             material_procedure_nodes(procedure_owner({{"M634", id}, {"M1", "3"}}))["entries"][0];

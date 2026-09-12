@@ -96,14 +96,13 @@ unsigned material_projection_tests() {
     input.erase("pattern_proj_offset.y");
     state = settings(input)["maps"][0]["initial_projection_state"];
     check(state["parameters"]["pattern_proj_offset"]["value"] == Json::array({0., 0., 0.}),
-          "known missing frame component proves no assignment even if another conversion is "
-          "uncertain");
+          "missing frame component prevents assignment despite another accepted numeric prefix");
     input["pattern_proj_offset.y"] = "3";
     input["origin_uv_pro_matrix_xa.x"] = "2suffix";
     state = settings(input)["maps"][0]["initial_projection_state"];
-    check(state["parameters"]["pattern_proj_offset"]["value"].is_null() &&
-              state["matrix"]["axes"]["xa"]["state"] == "unresolved_read",
-          "unconfirmed floating lexical conversion is not mistaken for a failed getter");
+    check(state["parameters"]["pattern_proj_offset"]["value"] == Json::array({2., 3., 30.}) &&
+              state["matrix"]["axes"]["xa"]["value"] == Json::array({2., 2., 3.}),
+          "accepted floating prefixes assign both local frame and matrix axis");
     input = a;
     input["origin_uv_pro_matrix_on"] = "1";
     s = settings(input, 3, {{"displacement_distance", "1"}});

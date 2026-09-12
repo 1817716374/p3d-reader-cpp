@@ -75,12 +75,10 @@ Json material_numeric_reads(const Json &a, const Json &mode, const Json &applica
             gate = reader_applicability(type.is_null() ? "unresolved" : "skipped",
                                         "requires_bump_map_type");
         p["reader_applicability"] = gate;
-        p["write_status"] = gate["status"] == "read"
-                                ? p["status"] == "decoded" ? "written"
-                                  : p["status"] == "missing" || p["status"] == "partial" ||
-                                            (field.kind == 'i' && p["status"] == "invalid")
-                                      ? "not_written"
-                                      : "unresolved"
+        p["write_status"] = gate["status"] == "read"      ? p["status"] == "decoded" ? "written"
+                                                            : material_xml_numeric_failed(p)
+                                                                ? "not_written"
+                                                                : "unresolved"
                             : gate["status"] == "skipped" ? "not_written"
                                                           : "unresolved";
         if (p["write_status"] == "written") {
@@ -107,10 +105,10 @@ Json material_numeric_reads(const Json &a, const Json &mode, const Json &applica
         auto &xy = params["pattern_offset"], &z = params["offset_z"];
         z["depends_on"] = "pattern_offset";
         if (xy["write_status"] == "written") {
-            if (z["status"] == "missing") {
+            if (material_xml_numeric_failed(z)) {
                 z["reader_value"] = 0.0;
                 z["write_status"] = "written";
-                z["normalization"] = "missing_z_after_xy_uses_zero";
+                z["normalization"] = "failed_z_after_xy_uses_zero";
             }
             if (z["write_status"] == "written") {
                 xy["reader_value"].push_back(z["reader_value"]);

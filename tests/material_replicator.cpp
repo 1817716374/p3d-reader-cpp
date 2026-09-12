@@ -57,11 +57,10 @@ unsigned material_replicator_tests() {
     a["M548"] = "+";
     a["M550"] = "2suffix";
     r = package(Json::array({node("M541", a)}));
-    check(r["status"] == "partial" && r["parameters"]["M554"]["value"] == 40000u &&
-              r["parameters"]["M548"]["value"] == false &&
-              r["parameters"]["M550"]["value"].is_null() &&
+    check(r["status"] == "resolved" && r["parameters"]["M554"]["value"] == 40000u &&
+              r["parameters"]["M548"]["value"] == false && r["parameters"]["M550"]["value"] == 2. &&
               r["parameters"]["M550"]["constructor_value"] == 2000.,
-          "failed integers preserve defaults while unconfirmed floating syntax stays unresolved");
+          "failed integers preserve defaults while valid floating prefixes assign their values");
     r = package(source, "skipped");
     check(r["object_state"] == "absent" && r["parameters"].empty(),
           "unread packages cannot instantiate a replicator from source nodes");
@@ -98,7 +97,7 @@ unsigned material_replicator_tests() {
     s = material_settings(root);
     check(s["version_conversion"]["map_topology"]["status"] == "resolved" &&
               s["version_conversion"]["map_topology"]["objects"][1]["local_layers"]
-               ["replicator_copies"]["status"] == "partial",
-          "known object topology does not turn uncertain copied parameter values into defaults");
+               ["replicator_copies"]["entries"][0]["state"]["parameters"]["M550"]["value"] == 2000.,
+          "failed floating assignment preserves the constructor value through layer copy");
     return checks;
 }

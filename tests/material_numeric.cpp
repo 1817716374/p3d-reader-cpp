@@ -65,9 +65,9 @@ unsigned material_numeric_tests() {
     attrs["pattern_offset.y"] = "4";
     attrs["offset_z"] = "bad";
     p = parse(attrs)["maps"][0]["numeric_reader"]["parameters"];
-    check(p["pattern_offset"]["reader_value"].is_null() &&
-              p["pattern_offset"]["write_status"] == "unresolved",
-          "unconfirmed numeric conversion is not fabricated as a definite offset write");
+    check(p["pattern_offset"]["reader_value"] == Json::array({2, 4, 0}) &&
+              p["pattern_offset"]["write_status"] == "written",
+          "failed Z getter leaves its zero temporary and complete XY still writes XYZ");
     p = parse({{"Type", "1"}})["maps"][0]["numeric_reader"]["parameters"];
     check(p["scale_z"]["reader_value"].is_null() && p["scale_z"]["write_status"] == "not_written" &&
               p["pattern_proj_scale"]["reader_value"].is_null(),
@@ -166,8 +166,8 @@ unsigned material_numeric_tests() {
                {"origin_uv_pro_matrix_xa.y", "0"},
                {"origin_uv_pro_matrix_xa.z", "0"}})["maps"][0]["numeric_reader"]["parameters"];
     check(p["origin_uv_pro_matrix_on"]["reader_value"] == false &&
-              p["origin_uv_pro_matrix_xa"]["write_status"] == "unresolved" &&
-              p["origin_uv_pro_matrix_xa"]["reader_value"].is_null(),
-          "stored nonfinite matrix component is not fabricated even when projection is disabled");
+              p["origin_uv_pro_matrix_xa"]["write_status"] == "written" &&
+              p["origin_uv_pro_matrix_xa"]["reader_value"][0]["ieee754_hex"] == "ffffffffffffffff",
+          "stored negative NaN matrix component is assigned even when projection is disabled");
     return checks;
 }

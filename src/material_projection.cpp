@@ -23,6 +23,7 @@ Json projection_constructor() {
              {{"status", "not_initialized_by_constructor"},
               {"axes", axes},
               {"storage_axis_order", {"xa", "ya", "za"}},
+              {"all_components_finite", nullptr},
               {"storage_values", nullptr}}}};
 }
 bool missing_component(const Json &read) {
@@ -97,6 +98,12 @@ Json material_projection_input(const Json &map) {
         }
     }
     matrix["storage_values"] = matrix["status"] == "decoded" ? storage : Json();
+    if (matrix["status"] == "decoded") {
+        bool finite = true;
+        for (const auto &v : storage)
+            finite &= v.is_number();
+        matrix["all_components_finite"] = finite;
+    }
     // +0x88 is a separate linked option; origin_uv_pro_matrix_on is +0xd8.
     // The native copy includes the former and leaves the latter at false.
     if (branch == "single_provider" && type != 1) {

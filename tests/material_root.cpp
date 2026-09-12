@@ -59,12 +59,13 @@ unsigned material_root_tests() {
     a["color.r"] = "1suffix";
     r = material_root_input(a, 9);
     check(r["parameters"]["color"]["read_status"] == "not_written",
-          "a missing color component proves no assignment even if another component is uncertain");
+          "a missing color component prevents assignment even when a numeric prefix is accepted");
     a["color.b"] = "1";
     r = material_root_input(a, 9);
-    check(r["status"] == "partial" && r["parameters"]["color"]["value"].is_null() &&
+    check(r["status"] == "resolved" &&
+              r["parameters"]["color"]["value"] == Json::array({1., .3, 1.}) &&
               r["parameters"]["color"]["constructor_value"] == Json::array({1., 1., 1.}),
-          "unconfirmed floating lexical conversion does not fabricate a constructor fallback");
+          "complete native floating prefixes assign color without changing constructor provenance");
     a = {{"translucent_color.r", "2"},   {"translucent_color.g", "3"},
          {"translucent_color.b", "4"},   {"anisotropy.r", "5"},
          {"anisotropy.g", "6"},          {"anisotropy.b", "7"},

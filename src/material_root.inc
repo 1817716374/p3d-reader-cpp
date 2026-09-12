@@ -80,12 +80,7 @@ Json material_root_input(const Json &attributes, const Json &mode) {
             auto read = field.kind == 'c' ? vector(attributes, key, "rgb")
                                           : number(attributes, key, integer, integer);
             value["source_read"] = read;
-            bool missing_component = false;
-            if (field.kind == 'c')
-                for (const auto &component : read.at("components"))
-                    missing_component |= component.at("status") == "missing";
-            if (read["status"] == "missing" || missing_component ||
-                (integer && read["status"] == "invalid")) {
+            if (material_xml_numeric_failed(read)) {
                 value["value"] = initial;
                 value["read_status"] = "not_written";
             } else if (read["status"] == "decoded") {

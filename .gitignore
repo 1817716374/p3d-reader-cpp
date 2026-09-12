@@ -20,6 +20,7 @@
 !/tests/material_catalog_registration.cpp
 !/tests/material_auxiliary.cpp
 !/tests/material_xml_integer.cpp
+!/tests/material_xml_float.cpp
 !/tests/material_root.cpp
 !/tests/material_version.cpp
 !/tests/material_replicator.cpp

@@ -139,9 +139,9 @@ unsigned material_version_tests() {
               "type 30 retains local layers with a separate pre-v8 linked mapping copy");
     }
     c = convert({{"finish", "uncertain"}}, Json::array(), 5);
-    check(c["status"] == "partial" &&
+    check(c["status"] == "resolved" &&
               c["root_parameters"]["parameters"]["refraction_roughness"]["value"] == .05,
-          "uncertain input propagates only along executed parameter copies");
+          "failed floating input retains the constructor value through parameter copies");
     c = convert({{"Flags", 123}}, Json::array({{{"Type", "1"}}}), 2);
     check(c["status"] == "partial" &&
               c["map_topology"]["reason"] == "unknown_flags_for_legacy_map_creation" &&
@@ -149,9 +149,8 @@ unsigned material_version_tests() {
               c["map_topology"]["active_object_ids"].empty(),
           "unknown branch flags retain a confirmed prefix without a fabricated final table");
     c = convert({{"displacement_distance", "1suffix"}}, Json::array({{{"Type", "2"}}}), 3);
-    check(c["status"] == "partial" &&
-              c["map_topology"]["reason"] == "unknown_displacement_distance",
-          "unconfirmed floating conversion cannot select the displacement migration branch");
+    check(c["status"] == "resolved" && active(c, 15)["origin"] == "version_constructor",
+          "accepted nonzero floating prefix selects the native displacement migration branch");
     const auto s = settings({{"reflect", ".25"}}, Json::array(), 6);
     check(
         s["initial_parameters"]["parameters"]["reflect_fresnel"]["value"] == .05 &&
