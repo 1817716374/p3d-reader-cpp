@@ -4,6 +4,19 @@
 
 namespace p3d {
 namespace {
+Json native_catalog_input_filter(const Json &record, const Bytes &base) {
+    const auto words = Reader(base, 8).u32();
+    const bool skip_flag = (record.at("element_flags").get<unsigned>() & 8) != 0;
+    const bool zero_type = record.at("element_type") == 0;
+    const bool invalid_words = words < 16 || words > 65535;
+    return {{"reader_profile", "bimbase_2025_native_record_input"},
+            {"status", skip_flag || zero_type || invalid_words ? "skipped" : "accepted"},
+            {"reason", skip_flag       ? Json("flag_0008")
+                       : zero_type     ? Json("zero_element_type")
+                       : invalid_words ? Json("record_word_count_out_of_range")
+                                       : Json()},
+            {"record_word_count", words}};
+}
 Json catalog_resource_interpretation(const Json &field) {
     Json out = {{"reader_profile", "bimbase_2025_material_catalog_resource"},
                 {"scope", "source_text_if_reader_succeeds"},
@@ -265,6 +278,7 @@ Json native_material_catalog_records(const Json &native_records) {
                        {"native_record_index", ni},
                        {"record_id", n.at("id")},
                        {"record_offset", n.at("offset")},
+                       {"initial_load_filter", native_catalog_input_filter(n, base)},
                        {"strings", std::move(strings)},
                        {"catalog_name", std::move(name)},
                        {"resource_reference", std::move(resource)},
@@ -299,9 +313,11 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
                       {"stream", n.value("stream", Json())},
                       {"record_id", n.at("id")},
                       {"record_offset", n.at("offset")},
+                      {"initial_load_filter", native_catalog_input_filter(n, base)},
                       {"membership_status", "invalid"},
                       {"runtime_selection", "not_evaluated"},
                       {"member_record_indices", Json::array()},
+                      {"unflagged_descendant_record_indices", Json::array()},
                       {"members", Json::array()}};
         try {
             const auto offset = count_offset(n);
@@ -322,7 +338,7 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
             // The count covers all descendants. A nested compound record consumes
             // its own span; its children are not direct members of this table.
             std::vector<std::size_t> parent_ends{end};
-            Json members = Json::array(), indices = Json::array();
+            Json members = Json::array(), indices = Json::array(), unflagged = Json::array();
             auto next_offset =
                 n.at("offset").get<std::uint64_t>() + n.at("length").get<std::uint64_t>();
             for (std::size_t j = ni + 1; j < end; ++j) {
@@ -330,8 +346,10 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
                 require(child.value("stream", Json()) == table["stream"] &&
                             child.at("offset") == next_offset,
                         "material table descendants cross stream or record boundary");
-                require(child.at("element_flags").get<unsigned>() & 0x80,
-                        "material table descendant lacks child flag");
+                // The input reader reconstructs the parent chain from counts and
+                // sets 0x80 itself. Its absence in stored bytes is not a boundary.
+                if (!(child.at("element_flags").get<unsigned>() & 0x80))
+                    unflagged.push_back(j);
                 while (!parent_ends.empty() && parent_ends.back() == j)
                     parent_ends.pop_back();
                 require(!parent_ends.empty(), "material table parent span");
@@ -355,6 +373,7 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
             }
             table["member_record_indices"] = std::move(indices);
             table["members"] = std::move(members);
+            table["unflagged_descendant_record_indices"] = std::move(unflagged);
             table["membership_status"] = "resolved";
             // Publish associations only after the entire source span is valid.
             for (std::size_t mi = 0; mi < table["members"].size(); ++mi) {

@@ -541,14 +541,24 @@ unsigned native_material_tests() {
               "membership");
     }
     auto valid = native_rows({table_record(2), child_record(), child_record()});
-    for (unsigned damage = 0; damage != 7; ++damage) {
+    auto unflagged_child = child_record();
+    put(unflagged_child, 6, 0, 2);
+    auto unflagged_rows = native_rows({table_record(2), unflagged_child, unflagged_child});
+    membership = inspect_tables(unflagged_rows);
+    check(membership["tables"][0]["membership_status"] == "resolved" &&
+              membership["tables"][0]["member_record_indices"] == Json::array({1, 2}) &&
+              membership["tables"][0]["unflagged_descendant_record_indices"] ==
+                  Json::array({1, 2}) &&
+              unflagged_rows[1]["element_flags"] == 0 &&
+              membership["catalog"][1]["table_memberships"][0]["member_index"] == 1,
+          "native input reconstructs child flags from counts without modifying source flags or "
+          "losing membership");
+    for (unsigned damage : {0u, 1u, 3u, 4u, 5u, 6u}) {
         auto bad = valid;
         if (damage == 0)
             bad[2]["stream"] = Json::array({"other"});
         if (damage == 1)
             bad[2]["offset"] = bad[2]["offset"].get<std::size_t>() + 2;
-        if (damage == 2)
-            bad[2]["element_flags"] = 0;
         if (damage == 3)
             bad = native_rows({table_record(UINT32_MAX), child_record()});
         if (damage == 4) {
@@ -577,5 +587,33 @@ unsigned native_material_tests() {
               "invalid table spans publish no partial membership and retain independent catalog "
               "records");
     }
+    auto skipped_child = child_record();
+    put(skipped_child, 6, 0x88, 2);
+    membership = inspect_tables(native_rows({table_record(1, 0x48), skipped_child}));
+    check(membership["tables"][0]["initial_load_filter"]["status"] == "skipped" &&
+              membership["tables"][0]["initial_load_filter"]["reason"] == "flag_0008" &&
+              membership["catalog"][0]["initial_load_filter"]["status"] == "skipped" &&
+              membership["catalog"][0]["catalog_name"]["value"] == "same" &&
+              membership["catalog"][0]["table_memberships"].size() == 1,
+          "input-skipped catalog records and tables still retain all source content and stored "
+          "relationships");
+    for (std::uint32_t words : {16u, 65535u, 65536u}) {
+        auto b = catalog_record({});
+        b.resize(4 + std::size_t(words) * 2);
+        put(b, 8, words, 4);
+        auto result = native_material_catalog_records(parse_native(b));
+        const auto &filter = result[0]["initial_load_filter"];
+        check(result.size() == 1 && filter["record_word_count"] == words &&
+                  filter["status"] == (words <= 65535 ? "accepted" : "skipped") &&
+                  (words <= 65535 ? filter["reason"].is_null()
+                                  : filter["reason"] == "record_word_count_out_of_range"),
+              "native input accepts 16 through 65535 words but retained oversized records are not "
+              "load candidates");
+    }
+    membership = inspect_tables(native_rows({table_record(0)}));
+    check(membership["tables"][0]["initial_load_filter"]["status"] == "accepted" &&
+              membership["tables"][0]["initial_load_filter"]["record_word_count"] == 20 &&
+              membership["tables"][0]["runtime_selection"] == "not_evaluated",
+          "passing the input filter is distinct from runtime table selection");
     return checks;
 }
