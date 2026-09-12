@@ -191,6 +191,10 @@ Json Document::native_input_containers() const {
             container["initial_attribute_input"] = native_system_attribute_input(
                 streams(), index(), container["container"].get<StreamPath>(),
                 container["system_id_assignments"]);
+            if (container["initial_material_table"]["status"] == "selected")
+                for (auto &member : container["initial_material_table"]["table"]["members"])
+                    member["material_attribute"] =
+                        native_material_attribute(member, container["initial_attribute_input"]);
         }
     return result;
 }

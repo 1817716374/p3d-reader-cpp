@@ -9,7 +9,7 @@ Json native_system_attribute_input(const std::vector<Stream> &streams, const Jso
                 {"blocks", Json::array()},
                 {"attachments", Json::array()},
                 {"attribute_order", "source_read_order"},
-                {"runtime_attribute_sort", "not_evaluated"}};
+                {"runtime_attribute_sort", "initial_collection_lookup"}};
     if (ids.value("status", Json()) != "resolved") {
         out["reason"] = "complete_system_id_assignments_required";
         return out;
@@ -192,12 +192,14 @@ Json native_system_attribute_input(const std::vector<Stream> &streams, const Jso
                             attached.emplace(id, attachment);
                             record["action"] = "attach";
                             record["attachment_index"] = attachment;
+                            auto lookup = native_attribute_lookup(attributes);
                             out["attachments"].push_back({{"target", object->second},
                                                           {"stream", s.path},
                                                           {"block_number", number},
                                                           {"record_ordinal", ordinal},
                                                           {"offset", offset},
                                                           {"attributes", std::move(attributes)},
+                                                          {"lookup", std::move(lookup)},
                                                           {"trailer_bit_0", (trailer & 1) != 0}});
                         }
                     } catch (const std::exception &e) {
