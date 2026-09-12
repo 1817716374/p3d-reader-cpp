@@ -212,6 +212,7 @@ Json native_material_catalog_tables(const Json &native_records, Json &catalog_re
 Json native_system_material_table(const Json &list, const Json &records, const Json &ids);
 Json native_attribute_lookup(const Json &attributes);
 Json native_material_attribute(const Json &member, const Json &input);
+Json decode_material_auxiliary_records(const Bytes &);
 Json native_system_attribute_input(const std::vector<Stream> &, const Json &index,
                                    const StreamPath &system, const Json &ids);
 Json material_settings(const Json &tree);

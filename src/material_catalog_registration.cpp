@@ -209,6 +209,24 @@ Json Document::native_material_catalog(const MaterialCatalogOptions &options) co
             attribute["stream"] = attachment.at("stream");
             attribute["record_offset"] = attachment.at("offset");
             entry["source_attribute"] = std::move(attribute);
+            // Inputs to the later material reader, using this exact initial
+            // collection. Registration alone does not execute that reader.
+            entry["supplementary_attributes"] = Json::array();
+            for (const auto key : {20091u, 22906u}) {
+                Json extra = {{"group", 0}, {"key", key}, {"index", 0}, {"status", "absent"}};
+                for (const auto &lookup : attachment.at("lookup").at("keys")) {
+                    if (lookup.at("group") != 0 || lookup.at("key") != key ||
+                        lookup.at("index") != 0)
+                        continue;
+                    const auto ordinal = lookup.at("selected_source_ordinal").get<std::size_t>();
+                    extra["status"] = "selected";
+                    extra["source_attribute"] = attachment.at("attributes").at(ordinal);
+                    extra["source_attribute"]["stream"] = attachment.at("stream");
+                    extra["source_attribute"]["record_offset"] = attachment.at("offset");
+                    break;
+                }
+                entry["supplementary_attributes"].push_back(std::move(extra));
+            }
         }
         out.push_back(std::move(result));
     }

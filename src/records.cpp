@@ -830,6 +830,16 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     const bool stored = result["codec"] == "stored";
     result["encoding"] = stored ? "uncompressed_binary" : "compressed_binary";
     result["data"] = rawbytes(decoded);
+    if (group == 0 && key == 22906) {
+        result["encoding"] = "material_auxiliary_records";
+        result["native_input"] = decode_material_auxiliary_records(decoded);
+        return result;
+    }
+    if (group == 0 && key == 20091) {
+        result["encoding"] = "material_auxiliary_buffer";
+        result["content_semantics"] = "unresolved";
+        return result;
+    }
     if (key == 2006) {
         const auto &raw = decoded;
         require(raw.size() >= 2 && raw.size() % 2 == 0, "UTF16 string attribute width");
