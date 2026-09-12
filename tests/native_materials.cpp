@@ -285,7 +285,7 @@ unsigned native_material_tests() {
     check(project["project_member_name"] == "name" && project["extension"] == "" &&
               project["lookup_request"].is_null(),
           "trailing dot is excluded from the project member name without inventing an extension");
-    for (const auto &value : {"$(_P3DPROJECT)/name.pal", "$(_P3DLIB)\\name.pal", "name.pal"})
+    for (const auto &value : {"$(_P3DPROJECT)/name.pal", "name.pal"})
         check(interpret(value)["status"] == "unresolved_resource_form",
               "other resource syntaxes do not inherit project-token context rules");
     check(interpret("")["status"] == "rejected_empty_reference" &&
@@ -309,5 +309,81 @@ unsigned native_material_tests() {
               project["ignored_text_suffix"] == std::string("\0second.p3d", 11) &&
               c[0]["resource_reference"]["value"] == with_nul,
           "native resource input stops at the first NUL while the full decoded source survives");
+    auto lib = interpret("$(_P3DLIB)|shared.p3d|folder/Stone-Palette.pal");
+    check(lib["status"] == "decoded" && lib["kind"] == "library_resource" &&
+              lib["library_reference"] == "shared.p3d" &&
+              lib["member_source"] == "folder/Stone-Palette.pal" &&
+              lib["member_name"] == "Stone-Palette" &&
+              lib["primary_context"] == "current_resource_context" &&
+              lib["secondary_context_rule"] == "library_resource_service" &&
+              lib["lookup_request"]["reference"] == "shared.p3d" &&
+              lib["lookup_request"]["search_path_setting"] == "P3d_Material" &&
+              !lib["lookup_request"].contains("failure_context") &&
+              lib["lookup_status"] == "not_performed",
+          "library resource separates the library lookup from the member name without a guessed "
+          "failure fallback");
+    lib = interpret("$(_P3DLIB)|outer.p3d|$(_P3DLIB)|inner.p3d|dir/name.pal");
+    check(lib["status"] == "decoded" && lib["library_reference"] == "outer.p3d" &&
+              lib["discarded_nested_library_reference"] == "inner.p3d" &&
+              lib["member_path"] == "dir/name.pal" && lib["member_name"] == "name" &&
+              lib["lookup_request"]["reference"] == "outer.p3d",
+          "one nested library wrapper is removed without substituting its library for the outer "
+          "lookup");
+    lib = interpret("$(_P3DLIB)|outer|$(_P3DLIB)|middle|$(_P3DLIB)|inner|name.pal");
+    check(lib["member_path"] == "$(_P3DLIB)|inner|name.pal" &&
+              lib["member_name"] == "$(_P3DLIB)|inner|name" &&
+              lib["discarded_nested_library_reference"] == "middle",
+          "native nested library removal is one level rather than recursive expansion");
+    lib = interpret("$(_P3DLIB)");
+    check(lib["status"] == "decoded" && lib["library_reference"] == "" &&
+              lib["member_name"] == "" && lib["lookup_request"]["reference"] == "",
+          "the bare library marker has explicit empty outputs and is distinct from an empty source "
+          "reference");
+    lib = interpret("$(_p3dlIb)|Some.P3D|Name.PAL");
+    check(lib["status"] == "decoded" && lib["member_name"] == "Name" &&
+              lib["library_reference"] == "Some.P3D",
+          "unambiguous ASCII case variants retain the library spelling");
+    check(interpret("$(_p3dlib)|lib|name")["status"] == "unresolved_prefix_locale" &&
+              interpret("$(_P3DLIB)|lib|$(_p3dlib)|inner|name")["status"] ==
+                  "unresolved_prefix_locale",
+          "native locale-dependent I comparison is not silently replaced by C-locale lowercase "
+          "matching");
+    lib = interpret("$(_P3DLIB)extra|lib|name.pal");
+    check(lib["prefix_suffix"] == "extra" && lib["member_name"] == "name" &&
+              lib["library_reference"] == "lib",
+          "native prefix checking does not discard or reject text before the first pipe");
+    lib = interpret("$(_P3DLIB)||lib|name.pal");
+    check(lib["library_reference"] == "|lib" && lib["member_name"] == "name",
+          "the second native separator search skips the immediately adjacent pipe");
+    lib = interpret("$(_P3DLIB)|lib|name|tail.pal");
+    check(lib["member_path"] == "name|tail.pal" && lib["member_name"] == "name|tail",
+          "later pipes remain part of the member source instead of arbitrary token splitting");
+    lib = interpret("$(_P3DLIB)|lib|");
+    check(lib["status"] == "decoded" && lib["member_name"] == "",
+          "empty library member is preserved");
+    for (const auto &value : {"$(_P3DLIB)\\name.pal", "$(_P3DLIB)|only", "$(_P3DLIB)||name",
+                              "$(_P3DLIB)|lib|$(_P3DLIB)"})
+        check(interpret(value)["status"] == "unresolved_library_syntax",
+              "incomplete library separators are diagnosed without emulating native unsigned-index "
+              "wraparound");
+    check(interpret("$(_P3DLIB)|C:\\library.p3d|name.pal")["lookup_request"]["reference"] ==
+                  "C:\\library.p3d" &&
+              interpret("$(_P3DLIB)|lib|C:\\name.pal")["status"] == "unresolved_path_syntax",
+          "opaque library resource paths are preserved while unconfirmed member drive syntax stays "
+          "unresolved");
+    std::u16string chinese = u"$(_P3DLIB)|共享库.p3d|目录\\石材.pal";
+    Bytes chinese_payload;
+    append(chinese_payload, 3, 4);
+    append(chinese_payload, 2 + chinese.size() * 2, 4);
+    append(chinese_payload, 0xfeff, 2);
+    for (auto unit : chinese)
+        append(chinese_payload, unit, 2);
+    c = catalog({linkage(chinese_payload, 0x56d2)});
+    lib = c[0]["resource_reference"]["interpretation"];
+    check(lib["status"] == "decoded" && lib["library_reference"] == "共享库.p3d" &&
+              lib["member_name"] == "石材" &&
+              bytesof(c[0]["strings"][0]["payload"]) == chinese_payload,
+          "library and member Unicode text are decoded from native UTF16 without losing source "
+          "bytes");
     return checks;
 }

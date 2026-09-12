@@ -37,6 +37,80 @@ Json catalog_resource_interpretation(const Json &field) {
         return out;
     }
     auto ascii_lower = [](char16_t c) { return c >= u'A' && c <= u'Z' ? char16_t(c + 32) : c; };
+    auto starts = [&](const std::u16string &s, const std::u16string &prefix) {
+        if (s.size() < prefix.size())
+            return false;
+        for (std::size_t i = 0; i < prefix.size(); ++i)
+            if (ascii_lower(s[i]) != ascii_lower(prefix[i]))
+                return false;
+        return true;
+    };
+    const std::u16string library_prefix = u"$(_P3DLIB)";
+    if (starts(text, library_prefix)) {
+        out["kind"] = "library_resource";
+        // Unlike PROJECT, LIB contains I: lowercase i versus uppercase I
+        // depends on the native CRT locale. Do not silently assume the C locale.
+        if (text[7] != u'I') {
+            out["status"] = "unresolved_prefix_locale";
+            return out;
+        }
+        std::u16string library, member;
+        if (text.size() != library_prefix.size()) {
+            const auto first = text.find(u'|');
+            // The native search starts two units after the first separator,
+            // so adjacent separators are not ordinary empty-field splitting.
+            const auto second = first == std::u16string::npos ? first : text.find(u'|', first + 2);
+            if (first == std::u16string::npos || second == std::u16string::npos) {
+                out["status"] = "unresolved_library_syntax";
+                return out;
+            }
+            out["prefix_suffix"] =
+                codec.to_bytes(text.substr(library_prefix.size(), first - library_prefix.size()));
+            library = text.substr(first + 1, second - first - 1);
+            member = text.substr(second + 1);
+        }
+        out["library_reference"] = codec.to_bytes(library);
+        out["member_source"] = codec.to_bytes(member);
+        if (starts(member, library_prefix)) {
+            if (member[7] != u'I') {
+                out["status"] = "unresolved_prefix_locale";
+                return out;
+            }
+            const auto first = member.find(u'|');
+            const auto second =
+                first == std::u16string::npos ? first : member.find(u'|', first + 2);
+            if (first == std::u16string::npos || second == std::u16string::npos) {
+                out["status"] = "unresolved_library_syntax";
+                return out;
+            }
+            out["discarded_nested_library_reference"] =
+                codec.to_bytes(member.substr(first + 1, second - first - 1));
+            member = member.substr(second + 1);
+        }
+        out["member_path"] = codec.to_bytes(member);
+        if (member.find(u':') != std::u16string::npos) {
+            out["status"] = "unresolved_path_syntax";
+            return out;
+        }
+        const auto separator = member.find_last_of(u"/\\");
+        const auto leaf = separator == std::u16string::npos ? member : member.substr(separator + 1);
+        const auto dot = leaf.find_last_of(u'.');
+        const auto stem = dot == std::u16string::npos ? leaf : leaf.substr(0, dot);
+        const auto ext_size = dot == std::u16string::npos ? 0 : leaf.size() - dot;
+        if ((separator != std::u16string::npos && separator + 1 >= 260) || stem.size() >= 260 ||
+            ext_size >= 260) {
+            out["status"] = "unresolved_path_component_limit";
+            return out;
+        }
+        out.update(
+            {{"status", "decoded"},
+             {"member_name", codec.to_bytes(stem)},
+             {"primary_context", "current_resource_context"},
+             {"secondary_context_rule", "library_resource_service"},
+             {"lookup_request",
+              {{"reference", codec.to_bytes(library)}, {"search_path_setting", "P3d_Material"}}}});
+        return out;
+    }
     const std::u16string prefix = u"$(_P3DPROJECT)\\";
     bool project = text.size() >= prefix.size();
     for (std::size_t i = 0; project && i < prefix.size(); ++i)
