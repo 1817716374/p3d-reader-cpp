@@ -160,15 +160,15 @@ Json material_texture_references(const Json &tree, const Json &settings) {
     }
     return out;
 }
-Json native_material_references(const Json &native_records) {
+static Json collect_native_material_references(const Json &native_records, const char *encoding) {
     Json references = Json::array();
     for (std::size_t ni = 0; ni < native_records.size(); ++ni) {
         const auto &n = native_records[ni];
         const auto &links = n.at("links");
         for (std::size_t li = 0; li < links.size(); ++li) {
             const auto &link = links[li];
-            if (!link.contains("decoded") || link["decoded"].value("encoding", std::string()) !=
-                                                 "native_element_material_reference")
+            if (!link.contains("decoded") ||
+                link["decoded"].value("encoding", std::string()) != encoding)
                 continue;
             references.push_back({{"stream", n.value("stream", Json())},
                                   {"native_record_index", ni},
@@ -180,6 +180,9 @@ Json native_material_references(const Json &native_records) {
         }
     }
     return references;
+}
+Json native_material_references(const Json &records) {
+    return collect_native_material_references(records, "native_element_material_reference");
 }
 Json read_materials(const Document &doc) {
     Json definitions = Json::array(), errors = Json::array();
@@ -277,6 +280,9 @@ Json read_materials(const Document &doc) {
         {"native_catalog_records", std::move(catalog)},
         {"native_catalog_tables", std::move(catalog_tables)},
         {"native_element_references", native_material_references(doc.native_records())},
+        {"native_element_name_references",
+         collect_native_material_references(doc.native_records(),
+                                            "native_element_material_name_reference")},
         {"errors", errors},
         {"assignment_rules",
          {{"applies_to", "native_graphics_rebuild"},

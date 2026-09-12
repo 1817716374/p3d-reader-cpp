@@ -12,6 +12,7 @@ target_sources(p3d_reader PRIVATE src/loft_curve.cpp src/loft_open.cpp src/loft_
 target_sources(p3d_reader PRIVATE src/material_semantics.cpp src/material_links.cpp src/material_legacy.cpp)
 target_sources(p3d_reader PRIVATE src/material_resource.cpp)
 target_sources(p3d_reader PRIVATE src/material_catalog.cpp)
+target_sources(p3d_reader PRIVATE src/material_name.cpp)
 target_sources(p3d_reader PRIVATE src/block_transform.cpp)
 target_sources(p3d_reader PRIVATE src/native_input.cpp)
 target_sources(p3d_reader PRIVATE src/native_container.cpp)

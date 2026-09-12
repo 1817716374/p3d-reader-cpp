@@ -823,5 +823,78 @@ unsigned native_material_tests() {
         check(input["status"] == "invalid" && input["members"].empty(),
               "conditional input refuses gaps and does not fetch children from another stream");
     }
+    auto name_payload = [&](const Bytes &name, std::uint16_t declared) {
+        Bytes p;
+        append(p, declared, 2);
+        p.insert(p.end(), name.begin(), name.end());
+        p.push_back(0);
+        if (p.size() % 2)
+            p.push_back(0);
+        return p;
+    };
+    const Bytes ascii{'S', 't', 'e', 'e', 'l'};
+    auto named = decode_native_material_name(name_payload(ascii, 5));
+    check(named["status"] == "decoded" && named["material_name"] == "Steel" &&
+              named["name_offset"] == 6 && named["terminator_offset"] == 11 &&
+              named["declared_length_matches"] == true,
+          "legacy name linkage decodes byte count and ANSI C string");
+    for (auto length : {0u, 2u, 65535u}) {
+        auto value = decode_native_material_name(name_payload(ascii, std::uint16_t(length)));
+        check(value["material_name"] == "Steel" && value["declared_length_matches"] == false &&
+                  value["actual_byte_length"] == 5,
+              "native name getter ignores an inconsistent declared byte count");
+    }
+    auto tail = name_payload(ascii, 5);
+    tail.insert(tail.end(), {0x81, 0xfe, 1, 2});
+    auto with_tail = decode_native_material_name(tail);
+    check(with_tail["material_name"] == "Steel" &&
+              bytesof(with_tail["ignored_suffix"]) == Bytes({0x81, 0xfe, 1, 2}),
+          "bytes after first NUL remain an ignored suffix, not part of the name");
+    for (const auto &bytes : {Bytes{}, Bytes{0}, Bytes{0, 0}, Bytes{2, 0, 'A', 'B'}})
+        check(decode_native_material_name(bytes)["status"] == "invalid",
+              "short or unterminated material name cannot read beyond its linkage");
+    auto empty_name = decode_native_material_name(name_payload({}, 0));
+    check(empty_name["status"] == "decoded" && empty_name["material_name"] == "" &&
+              empty_name["lookup_request"]["empty_name_matches"] == false,
+          "empty name is a stored value but matches no catalog entry");
+    const auto ansi = name_payload({0xe9}, 1);
+    auto needs_decoder = decode_native_material_name(ansi);
+    check(needs_decoder["status"] == "requires_ansi_decoder" &&
+              needs_decoder["material_name"].is_null() &&
+              bytesof(needs_decoder["name_bytes"]) == Bytes({0xe9}),
+          "high ANSI bytes are not guessed as UTF8 or GBK");
+    unsigned decoder_calls = 0;
+    auto decoded = decode_native_material_name(ansi, [&](const Bytes &bytes) {
+        ++decoder_calls;
+        check(bytes == Bytes({0xe9}), "caller receives only the NUL-excluded name bytes");
+        return std::string(u8"é");
+    });
+    check(decoder_calls == 1 && decoded["status"] == "decoded" && decoded["material_name"] == u8"é",
+          "caller-selected ANSI decoding yields usable Unicode without a global locale");
+    auto failing = decode_native_material_name(ansi, [](const Bytes &) -> std::string {
+        throw std::runtime_error("code page unavailable");
+    });
+    check(failing["status"] == "invalid" && failing["material_name"].is_null() &&
+              failing["decode_error"] == "code page unavailable",
+          "decoder failure retains source bytes and no fabricated name");
+    check(decode_native_material_name(
+              ansi, [](const Bytes &) { return std::string(1, char(0xff)); })["status"] ==
+              "invalid",
+          "caller decoder must return valid UTF8");
+    Bytes long_name(70, 'Q');
+    check(decode_native_material_name(name_payload(long_name, 70))["actual_byte_length"] == 70,
+          "writer's 29-byte truncation is not invented as a reader format limit");
+    auto name_link = linkage(name_payload(ascii, 5), 0x4f5a);
+    auto names =
+        parse_native(record({linkage(Bytes{0, 0}, 0x4f5a), name_link, linkage(payload(27))}));
+    check(names[0]["links"][0]["decoded"]["status"] == "invalid" &&
+              names[0]["links"][0]["decoded"]["reader_selection"] == "first_match" &&
+              names[0]["links"][1]["decoded"]["reader_selection"] == "shadowed" &&
+              names[0]["links"][2]["decoded"]["reader_selection"] == "first_match",
+          "name and numeric references have independent first-match selection before validation");
+    auto name_nonuser = parse_native(record({linkage(Bytes{0, 0, 0, 0}, 0x4f5a, 1), name_link}));
+    check(!name_nonuser[0]["links"][0].contains("decoded") &&
+              name_nonuser[0]["links"][1]["decoded"]["reader_selection"] == "first_match",
+          "non-user linkage app bytes do not consume the native name selection");
     return checks;
 }

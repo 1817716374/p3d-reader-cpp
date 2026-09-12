@@ -414,6 +414,10 @@ Json decode_binary_field(const std::string &name, const Bytes &, const std::stri
                          const Json &root_fields = Json::object());
 Json parse_dex(const Bytes &, std::size_t &offset, bool enrich = true);
 Json parse_native(const Bytes &);
+// Payload of a user linkage with app 0x4F5A, excluding its four-byte header.
+// A supplied decoder converts the NUL-excluded ANSI bytes to UTF-8.
+Json decode_native_material_name(
+    const Bytes &payload, const std::function<std::string(const Bytes &)> &ansi_decoder = {});
 Json parse_graphics(const Bytes &);
 Json parse_commands(const Bytes &);
 // Alternate native mesh consumer. Input is an opcode-25 decoded command.

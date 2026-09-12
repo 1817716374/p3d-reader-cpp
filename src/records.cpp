@@ -246,6 +246,7 @@ Json parse_native(const Bytes &b) {
         r.p = attr;
         Json links = Json::array(), children = Json::array();
         bool material_reference_seen = false;
+        bool material_name_seen = false;
         std::size_t pad = 0;
         while (r.p + 4 <= end) {
             if (std::all_of(b.begin() + r.p, b.begin() + end, [](auto c) { return c == 0; })) {
@@ -260,6 +261,12 @@ Json parse_native(const Bytes &b) {
             auto p = r.take(n - 4);
             links.push_back(
                 {{"app", app}, {"header", h}, {"offset", off}, {"payload", rawbytes(p)}});
+            if ((h & 0x1000) && app == 0x4f5a) {
+                auto reference = decode_native_material_name(p);
+                reference["reader_selection"] = material_name_seen ? "shadowed" : "first_match";
+                material_name_seen = true;
+                links.back()["decoded"] = std::move(reference);
+            }
             if ((h & 0x1000) && app == 0x41 && p.size() >= 4 && Reader(p).u32() == 0x1000e) {
                 Json reference = {
                     {"encoding", "native_element_material_reference"},
@@ -305,11 +312,10 @@ Json parse_native(const Bytes &b) {
                        {"base_boundary_adjustment", adjustment}});
         if (type == 47 && attr - pos >= 38 && r.at<std::uint32_t>(pos + 16) == 20 &&
             r.at<std::uint16_t>(pos + 36) == 0x56e6)
-            out.back()["owner_reference_path"] = native_reference_path(
-                slice(b, pos, attr - pos), out.back()["links"]);
+            out.back()["owner_reference_path"] =
+                native_reference_path(slice(b, pos, attr - pos), out.back()["links"]);
         if (type == 47 && attr - pos >= 38 && r.at<std::uint32_t>(pos + 16) == 20 &&
-            (r.at<std::uint16_t>(pos + 36) == 0x56df ||
-             r.at<std::uint16_t>(pos + 36) == 0x5704))
+            (r.at<std::uint16_t>(pos + 36) == 0x56df || r.at<std::uint16_t>(pos + 36) == 0x5704))
             out.back()["application_record"] = native_application_record(slice(b, pos, attr - pos));
         if (type == 62) {
             try {
