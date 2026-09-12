@@ -384,6 +384,8 @@ class Document {
     const Json &models() const;
     const Json &objects() const;
     const Json &native_records() const;
+    // Conditional block input order and record trees; does not register runtime objects.
+    Json native_input_containers() const;
     const Json &graphics_records() const;
     const Json &bindings() const;
     const Json &relationships() const;
