@@ -457,8 +457,12 @@ Json decode_polyface(const Bytes &b) {
         auto &a = arrays[j];
         require(a.empty() || a.size() == arrays[0].size(), "polyface corner count");
         for (std::size_t i = 0; i < a.size(); ++i) {
-            require(std::llabs(a[i].get<std::int64_t>()) <= static_cast<long long>(sizes[j]),
-                    "polyface index range");
+            // The command reader also uses parameter indices for FloatRgb.
+            // An absent UV pool disables UV lookup; it does not invalidate
+            // the independently consumed color index pointer.
+            if (j != 2 || !uv.empty())
+                require(std::llabs(a[i].get<std::int64_t>()) <= static_cast<long long>(sizes[j]),
+                        "polyface index range");
             require((a[i] == 0) == (arrays[0][i] == 0), "polyface separators");
         }
     }
@@ -497,6 +501,11 @@ Json decode_polyface(const Bytes &b) {
             }
     }
     auto channels = decode_mesh_channels(extra, arrays, polygons, flags);
+    const bool color_target = !channels["float_colors"].empty();
+    const char *param_usage = arrays[2].empty() ? "no_indices"
+                              : !uv.empty()     ? (color_target ? "uv_and_color" : "uv")
+                              : color_target    ? "color"
+                                                : "unused";
     const auto channel_status = channels["status"] == "decoded"
                                     ? (extra == Bytes(24) ? "six empty channels" : "decoded")
                                     : "opaque";
@@ -507,6 +516,7 @@ Json decode_polyface(const Bytes &b) {
             {"reported_point_index_count", reported},
             {"point_index_count_matches_header", reported == arrays[0].size()},
             {"index_arrays", std::move(arrays)},
+            {"param_index_usage", param_usage},
             {"points", std::move(p)},
             {"normals", std::move(normals)},
             {"uvs", std::move(uv)},

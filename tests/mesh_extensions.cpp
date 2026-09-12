@@ -10,7 +10,7 @@ template <class T> void array(Bytes &b, const std::vector<T> &values) {
     for (auto value : values)
         put(b, value);
 }
-Bytes prefix(std::uint32_t width = 0) {
+Bytes prefix(std::uint32_t width = 0, bool with_uv = true) {
     Bytes b;
     put(b, width);
     const std::vector<std::int32_t> points =
@@ -28,10 +28,11 @@ Bytes prefix(std::uint32_t width = 0) {
             put(b, x);
     put(b, std::uint32_t(0));
     const std::vector<Point2> uv = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-    put(b, std::uint32_t(uv.size()));
-    for (auto p : uv)
-        for (double x : p)
-            put(b, x);
+    put(b, std::uint32_t(with_uv ? uv.size() : 0));
+    if (with_uv)
+        for (auto p : uv)
+            for (double x : p)
+                put(b, x);
     return b;
 }
 Json command(const Bytes &extra, std::uint32_t width = 0) {
@@ -106,6 +107,50 @@ unsigned mesh_extension_tests() {
               bindings["polygons"][0]["smoothing_group"] == -7,
           "face channels bind in source nonempty polygon order");
     auto g = reconstruct(Json::array({cmd}), {});
+    auto color_only = cmd;
+    auto color_only_bytes = prefix(0, false);
+    color_only_bytes.insert(color_only_bytes.end(), extra.begin(), extra.end());
+    color_only["body"] = rawbytes(color_only_bytes);
+    color_only["decoded"] = command_fields(25, color_only_bytes);
+    auto color_geometry = reconstruct(Json::array({color_only}), {});
+    check(!color_only["decoded"].contains("field_decode_error") &&
+              color_only["decoded"]["param_index_usage"] == "color" &&
+              color_only["decoded"]["index_arrays"][2] == d["index_arrays"][2],
+          "parameter indices for colors survive an absent UV pool");
+    check(color_geometry.unknown.empty() && color_geometry.faces == g.faces &&
+              color_geometry.vertices == g.vertices && color_geometry.uvs.empty() &&
+              color_geometry.face_uv_indices.size() == 2 && !color_geometry.face_uv_indices[0] &&
+              !color_geometry.face_uv_indices[1] && !color_geometry.face_uvs[0] &&
+              !color_geometry.face_uvs[1],
+          "color-only mesh preserves geometry without inventing UV values or indices");
+    check(channels(color_geometry)["triangles"][1]["color_indices"] == Json({3, 2, 1}) &&
+              channels(color_geometry)["triangles"][1]["face_uv_point_indices"] == Json({3, 4, 5}),
+          "color and additional face UV stay independent of the absent primary UV pool");
+    auto unused_bytes = prefix(0, false);
+    unused_bytes.resize(unused_bytes.size() + 24);
+    auto unused = color_only;
+    unused["body"] = rawbytes(unused_bytes);
+    unused["decoded"] = command_fields(25, unused_bytes);
+    auto unused_geo = reconstruct(Json::array({unused}), {});
+    check(unused["decoded"]["param_index_usage"] == "unused" && unused_geo.unknown.empty() &&
+              unused_geo.faces == g.faces &&
+              unused["decoded"]["polygons"][0]["uv_indices"] == Json({1, 2, 3}),
+          "unused parameter indices remain in source records without invalid empty-pool lookups");
+    auto invalid_colors = slice(extra, 0, 4 + 12);
+    invalid_colors[0] = 1;
+    invalid_colors.insert(invalid_colors.end(), extra.begin() + ends[0], extra.end());
+    auto invalid_color_bytes = prefix(0, false);
+    invalid_color_bytes.insert(invalid_color_bytes.end(), invalid_colors.begin(),
+                               invalid_colors.end());
+    auto invalid_color = color_only;
+    invalid_color["body"] = rawbytes(invalid_color_bytes);
+    invalid_color["decoded"] = command_fields(25, invalid_color_bytes);
+    auto invalid_color_geo = reconstruct(Json::array({invalid_color}), {});
+    check(invalid_color_geo.faces == g.faces && invalid_color_geo.unknown.size() == 1 &&
+              channels(invalid_color_geo)["source"]["bindings"]["color_status"] ==
+                  "invalid_reader_indices" &&
+              channels(invalid_color_geo)["triangles"][0]["color_indices"].is_null(),
+          "out-of-range color lookup reports channel failure without dropping the mesh");
     check(g.unknown.empty() && g.faces.size() == 2 && channels(g)["source"] == c,
           "geometry carries all nonempty mesh channels");
     auto triangles = channels(g)["triangles"];
@@ -181,6 +226,12 @@ unsigned mesh_extension_tests() {
     mirror[0][0] = -1;
     Geometry placed, twice;
     merge_geometry(placed, g, mirror);
+    Geometry placed_colors;
+    merge_geometry(placed_colors, color_geometry, mirror);
+    check(placed_colors.faces == placed.faces && placed_colors.uvs.empty() &&
+              !placed_colors.face_uv_indices[0] &&
+              channels(placed_colors)["triangles"][1]["color_indices"] == Json({3, 1, 2}),
+          "color-only corner mapping survives mirrored instance placement");
     auto mapped = channels(placed);
     check(mapped["source"] == c && mapped["triangles"][0]["source_corners"] == Json({0, 2, 1}) &&
               mapped["triangles"][1]["color_indices"] == Json({3, 1, 2}) &&

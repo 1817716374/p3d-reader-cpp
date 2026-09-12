@@ -524,7 +524,9 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                  {std::pair<const char *, std::vector<std::optional<Triangle>> *>(
                                       "normal_indices", &channels.face_normal_indices),
                                   {"uv_indices", &channels.face_uv_indices}}) {
-                                if (poly[channel.first].empty())
+                                if (poly[channel.first].empty() ||
+                                    (channel.second == &channels.face_uv_indices &&
+                                     channels.uvs.empty()))
                                     channel.second->push_back(std::nullopt);
                                 else {
                                     Triangle indices;
@@ -536,7 +538,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                     channel.second->push_back(indices);
                                 }
                             }
-                            if (poly["uv_indices"].empty())
+                            if (poly["uv_indices"].empty() || channels.uvs.empty())
                                 uvs.push_back(std::nullopt);
                             else {
                                 std::array<Point2, 3> uv;
