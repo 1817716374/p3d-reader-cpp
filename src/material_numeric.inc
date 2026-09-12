@@ -77,7 +77,8 @@ Json material_numeric_reads(const Json &a, const Json &mode, const Json &applica
         p["reader_applicability"] = gate;
         p["write_status"] = gate["status"] == "read"
                                 ? p["status"] == "decoded" ? "written"
-                                  : p["status"] == "missing" || p["status"] == "partial"
+                                  : p["status"] == "missing" || p["status"] == "partial" ||
+                                            (field.kind == 'i' && p["status"] == "invalid")
                                       ? "not_written"
                                       : "unresolved"
                             : gate["status"] == "skipped" ? "not_written"

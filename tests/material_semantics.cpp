@@ -68,7 +68,7 @@ unsigned material_semantics_tests() {
               s["parameters"]["color"]["status"] == "partial" &&
               s["parameters"]["color"]["components"][0]["value"] == .2,
           "missing flags and partial color do not get defaults");
-    for (auto bad : {"-1", "4294967296", "3.5", "1e2", "0x10", "", "+", "NaN", "1junk"}) {
+    for (auto bad : {"", "+", "NaN"}) {
         a["Flags"] = bad;
         auto v = material_parameter_semantics(a);
         check(v["flags"]["status"] == "invalid" && v["parameters"]["color"]["enabled"].is_null(),
@@ -123,7 +123,9 @@ unsigned material_semantics_tests() {
               "native signed off value uses zero comparison");
     }
     map["pattern_off"] = "2147483648";
-    check(material_map_semantics(map)["enabled"]["status"] == "invalid", "signed off overflow");
+    check(material_map_semantics(map)["enabled"]["source_value"] == INT32_MIN &&
+              material_map_semantics(map)["enabled"]["value"] == false,
+          "signed off narrows native integer input before its zero comparison");
     for (int mode : {0, 1, 2, 4, 5, 6, 3, -1, 77}) {
         map["pattern_mapping"] = std::to_string(mode);
         m = material_map_semantics(map);
@@ -434,8 +436,8 @@ unsigned material_semantics_tests() {
     layer["LayerFlags"] = "4294967296";
     layer["LayerDataFlags"] = "-1";
     ls = material_layer_semantics(layer);
-    check(ls["flags"]["status"] == "invalid" && ls["data_flags"]["status"] == "invalid",
-          "unsigned layer flags do not wrap invalid source values");
+    check(ls["flags"]["value"] == 0 && ls["data_flags"]["value"] == UINT32_MAX,
+          "unsigned layer flags follow native scanf sign and narrowing rules");
     Json children = Json::array();
     for (const auto &tag : {"Layer", "Other", "Container"})
         children.push_back({{"tag", tag},
@@ -659,7 +661,7 @@ unsigned material_semantics_tests() {
             rp["M542"]["value"] == 2.5 && rp["M547"]["value"] == -3 &&
             rp["M548"]["value"] == 4294967295u && rp["M548"]["reader_value"] == true &&
             rp["M549"]["reader_value"] == false && rp["M550"]["value"] == .001 &&
-            rp["M554"]["value"] == 17 && rp["M555"]["status"] == "invalid" &&
+            rp["M554"]["value"] == 17 && rp["M555"]["value"] == 0 &&
             rp["M543"]["status"] == "missing" &&
             replicas["entries"][0]["unmapped_source_parameters"] ==
                 Json({{"unmapped", "preserved"}}),
@@ -719,10 +721,10 @@ unsigned material_semantics_tests() {
               "selector");
     }
     reader = material_settings(
-        reader_tree({{"Type", "1"}, {"layer", "3"}}, packages, {{"material_version", "bad"}}));
+        reader_tree({{"Type", "1"}, {"layer", "3"}}, packages, {{"material_version", 9}}));
     check(reader["reader_profile"]["mode"].is_null() &&
               reader["maps"][0]["procedures"]["reader_applicability"]["status"] == "unresolved",
-          "invalid version is not silently treated as a confirmed legacy profile");
+          "non-text XML input remains unresolved instead of fabricating an attribute value");
     Json layers_for_reader = packages;
     layers_for_reader.push_back(
         xml_node("AnyTag", {{"LayerType", "layer GRADIENT image.jpg"}}, packages));

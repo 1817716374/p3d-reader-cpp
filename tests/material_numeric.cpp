@@ -107,7 +107,7 @@ unsigned material_numeric_tests() {
                   p["origin_uv_pro_matrix_za"]["write_status"] == "unresolved",
               "invalid native legacy table entry is not promoted to an invented attribute name");
     }
-    p = parse(attrs, "bad")["maps"][0]["numeric_reader"]["parameters"];
+    p = parse(attrs, Json(9))["maps"][0]["numeric_reader"]["parameters"];
     check(p["scale_z"]["source_key_status"] == "unresolved_reader_mode" &&
               p["scale_z"]["reader_value"].is_null() &&
               p["pattern_offset"]["status"] == "decoded" &&

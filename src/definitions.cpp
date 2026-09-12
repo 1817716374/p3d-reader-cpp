@@ -255,7 +255,8 @@ Json read_materials(const Document &doc) {
                                 encoding == "uncompressed_utf16_xml",
                             "material XML envelope");
                     auto &tree = dec["tree"];
-                    require(tree["tag"] == "Material", "material XML root");
+                    // The native attribute reader requires an XML root, but
+                    // does not require its element name to be "Material".
                     auto settings = material_settings(tree);
                     auto textures = material_texture_references(tree, settings);
                     item.update({{"version", dec["version"]},

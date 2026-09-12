@@ -8,6 +8,8 @@ namespace {
 // texture providers can supply further values; those are not file defaults.
 Json number(const Json &a, const std::string &key, bool integer = false,
             bool signed_integer = false) {
+    if (integer)
+        return material_xml_integer(a, key, signed_integer);
     Json out = {{"source_keys", Json::array({key})}, {"status", "missing"}, {"value", nullptr}};
     if (!a.contains(key))
         return out;
@@ -15,27 +17,7 @@ Json number(const Json &a, const std::string &key, bool integer = false,
     if (!a[key].is_string())
         return out;
     const auto s = a[key].get<std::string>();
-    if (integer) {
-        auto start = s.find_first_not_of(" \t\r\n"), end = s.find_last_not_of(" \t\r\n");
-        if (start == std::string::npos)
-            return out;
-        bool negative = signed_integer && s[start] == '-';
-        if (s[start] == '+' || negative)
-            ++start;
-        if (start > end)
-            return out;
-        std::uint64_t value = 0;
-        for (auto i = start; i <= end; ++i) {
-            if (s[i] < '0' || s[i] > '9')
-                return out;
-            value = value * 10 + unsigned(s[i] - '0');
-            if (value >
-                (signed_integer ? std::uint64_t(INT32_MAX) + unsigned(negative) : UINT32_MAX))
-                return out;
-        }
-        out["value"] = signed_integer ? Json(negative ? -std::int64_t(value) : std::int64_t(value))
-                                      : Json(value);
-    } else {
+    {
         std::istringstream input(s);
         input.imbue(std::locale::classic());
         double value;
@@ -352,13 +334,16 @@ Json material_replicator_nodes(const Json &owner) {
 }
 Json material_reader_paths(const Json &tree, Json &maps) {
     auto version = number(tree["attributes"], "material_version", true, true);
-    const Json mode = version["status"] == "missing" ? Json(0) : version["value"];
+    const Json mode = version["status"] == "missing" || version["status"] == "invalid"
+                          ? Json(0)
+                          : version["value"];
     Json profile = {{"scope", "native_material_xml_file_reader"},
                     {"version", version},
                     {"mode", mode},
                     {"mode_source", version["status"] == "missing"   ? "missing_uses_zero"
                                     : version["status"] == "decoded" ? "source_attribute"
-                                                                     : "invalid_source"},
+                                    : version["status"] == "invalid" ? "failed_read_uses_zero"
+                                                                     : "unresolved_source"},
                     {"provider_type_source_key", mode.is_null() ? Json()
                                                  : mode == 0    ? Json("layer_state")
                                                                 : Json("layer")}};
@@ -376,11 +361,12 @@ Json material_reader_paths(const Json &tree, Json &maps) {
         auto extras = layers;
         const auto &type = map["semantics"]["type"];
         if (!map["native_table_member"].get<bool>() || type["status"] == "missing" ||
-            type["value"] == 0) {
+            type["status"] == "invalid" || type["value"] == 0) {
             reader["status"] = "identified";
             reader["branch"] = "skipped";
             const auto reason = !map["native_table_member"].get<bool>() ? "outside_native_table"
                                 : type["status"] == "missing"           ? "missing_map_type"
+                                : type["status"] == "invalid"           ? "failed_map_type_read"
                                                                         : "zero_map_type";
             layers = packages = extras = reader_applicability("skipped", reason);
         } else if (type["status"] == "decoded" && path["status"] != "invalid") {
@@ -411,9 +397,11 @@ Json material_reader_paths(const Json &tree, Json &maps) {
                     provider = number(a, mode == 0 ? "layer_state" : "layer", true);
                     provider["reader_value"] = provider["value"];
                     provider["normalization"] = "source_value";
-                    if (provider["status"] == "missing") {
+                    if (provider["status"] == "missing" || provider["status"] == "invalid") {
                         provider["reader_value"] = 1;
-                        provider["normalization"] = "native_constructor_type";
+                        provider["normalization"] = provider["status"] == "missing"
+                                                        ? "native_constructor_type"
+                                                        : "failed_read_keeps_constructor_type";
                     } else if (provider["value"] == 6) {
                         provider["reader_value"] = 4;
                         provider["normalization"] = "six_to_four";
