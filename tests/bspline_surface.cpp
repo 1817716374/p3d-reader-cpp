@@ -366,7 +366,8 @@ unsigned bspline_surface_tests() {
     auto bad_decoded = decode_bgfb(FlatSurface(invalid).bytes)["geometry"];
     check(bad_decoded["_spline"]["status"] == "invalid" && bad_decoded["weights"] == Json({1}),
           "invalid surface semantics retain the original decoded arrays");
-    Bytes packet(32);
+    Bytes packet(28);
+    packet[4] = 5;
     torus["holeOrigin"] = 1;
     const Json trim_line = {{"_type", "AkimaCurve"},
                             {"points", {.8, .8, 0,  .2, .8, 0,  .2, .2, 0,  .8, .2, 0,  .8, .8,
@@ -383,13 +384,21 @@ unsigned bspline_surface_tests() {
     const auto bgfb = FlatSurface(torus).bytes;
     append<std::uint64_t>(packet, bgfb.size());
     packet.insert(packet.end(), bgfb.begin(), bgfb.end());
+    auto finish_packet = [](Bytes &p) {
+        p.push_back(3);
+        append<std::uint32_t>(p, 0);
+        append<double>(p, 1);
+        append<double>(p, 0);
+        append<double>(p, 0);
+        append<std::uint32_t>(p, 7);
+    };
+    finish_packet(packet);
     auto component_for = [](const Bytes &packet) {
         Bytes body(142);
         body[0] = 1;
         body[134] = 1;
-        append<std::uint32_t>(body, unsigned(packet.size()));
+        append<std::uint64_t>(body, packet.size());
         body.insert(body.end(), packet.begin(), packet.end());
-        append<std::int32_t>(body, 7);
         body.push_back(3);
         append<std::uint32_t>(body, 0);
         append<std::uint64_t>(body, 0);
@@ -452,10 +461,12 @@ unsigned bspline_surface_tests() {
                            {"type", 1},
                            {"curves", Json::array({{{"geometry", interpolation}}})}};
     const auto interpolation_fb = FlatSurface(torus).bytes;
-    Bytes interpolation_packet(32);
+    Bytes interpolation_packet(28);
+    interpolation_packet[4] = 5;
     append<std::uint64_t>(interpolation_packet, interpolation_fb.size());
     interpolation_packet.insert(interpolation_packet.end(), interpolation_fb.begin(),
                                 interpolation_fb.end());
+    finish_packet(interpolation_packet);
     const auto ic = complex_blob("ParaCmptInstance", component_for(interpolation_packet));
     const auto &ip = ic["instances"][0]["geometry_packets"][0];
     const auto isurface = BsplineSurface::from_bgfb(ip["geometry"]["geometry"]);

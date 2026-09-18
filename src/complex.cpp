@@ -278,63 +278,6 @@ Json decode_inline_material(const Bytes &b) {
                   "The encoding label is a library identifier, not a serialized version byte.";
     return out;
 }
-static Json instance_body(const Bytes &b) {
-    Reader r(b);
-    require(b.size() >= 155 && r.u32() == 1, "component instance body");
-    r.p = 33;
-    Json matrix = Json::array();
-    for (int i = 0; i < 3; ++i)
-        matrix.push_back(r.doubles(4));
-    auto flag = r.u8();
-    auto word = r.u32();
-    auto n = r.u64();
-    require(n <= b.size() / 8, "component geometry count");
-    r.p = 142;
-    Json geo = Json::array();
-    for (std::uint64_t i = 0; i < n; ++i) {
-        auto data = r.take(r.u32());
-        auto index = r.i32();
-        Json packet = {{"unassigned_index", index}, {"raw_base64", base64(data)}};
-        try {
-            Reader p(data);
-            auto head = hex(p.take(32));
-            auto size = p.u64();
-            auto g = p.take(size);
-            packet.update(
-                {{"header_hex", head},
-                 {"geometry_bytes", size},
-                 {"geometry", decode_bgfb(g)},
-                 {"suffix_hex", hex(p.take(p.left()))},
-                 {"note", "Packet display/header and suffix semantics remain unassigned."}});
-        } catch (const std::exception &e) {
-            packet["decode_error"] = e.what();
-        }
-        geo.push_back(packet);
-    }
-    auto off = r.p;
-    auto ver = r.u8();
-    auto size = r.u32();
-    require(ver == 3 && r.left() == std::uint64_t(size) + 8, "component footer");
-    auto matraw = r.take(size);
-    Json mat = nullptr;
-    if (size) {
-        mat = {{"raw_base64", base64(matraw)}};
-        try {
-            mat.update(decode_inline_material(matraw));
-        } catch (const std::exception &e) {
-            mat["decode_error"] = e.what();
-        }
-    }
-    return {{"version", 1},
-            {"header_hex", hex(slice(b, 0, 33))},
-            {"transform_3x4_rows", matrix},
-            {"unassigned_flag", flag},
-            {"unassigned_uint32", word},
-            {"geometry_packets", geo},
-            {"inline_material", mat},
-            {"footer_version", ver},
-            {"footer_hex", hex(slice(b, off, b.size() - off))}};
-}
 static std::uint32_t be32(Reader &r) {
     auto b = r.take(4);
     return (unsigned(b[0]) << 24) | (unsigned(b[1]) << 16) | (unsigned(b[2]) << 8) | b[3];
@@ -345,7 +288,7 @@ Json boolean_record(const Bytes &b) {
     Reader p(payload);
     Json operands = Json::array();
     while (p.left())
-        operands.push_back(instance_body(p.take(be32(p))));
+        operands.push_back(decode_graphics_bytes(p.take(be32(p))));
     std::function<Json(const Bytes &, unsigned)> tree = [&](const Bytes &b, unsigned depth) {
         require(depth <= 80, "boolean tree depth");
         Reader t(b);
@@ -494,7 +437,7 @@ Json complex_blob(const std::string &name, const Bytes &b) {
             r,
             [&]() {
                 auto oid = reference();
-                auto body = instance_body(r.take(r.u32()));
+                auto body = decode_graphics_bytes(r.take(r.u32()));
                 body["object_id"] = oid;
                 return body;
             },
@@ -505,8 +448,8 @@ Json complex_blob(const std::string &name, const Bytes &b) {
             {"instances", instances},
             {"footer_hex", hex(r.take(r.left()))},
             {"note",
-             "Reference list, 3x4 transforms and geometry packets decoded. Display/header/footer "
-             "semantics remain unassigned; caches are not added again to the visible scene."}};
+             "Reference list and serialized graphics entries retain their source order. "
+             "Cached payloads are not added again to the visible scene."}};
     } else
         throw std::runtime_error("unsupported complex field");
     r.finish();

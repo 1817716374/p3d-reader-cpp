@@ -7,6 +7,7 @@
 #include <lz4/lz4.h>
 using namespace p3d;
 unsigned bspline_surface_tests();
+unsigned graphics_bytes_tests();
 unsigned bspline_trim_tests();
 unsigned bspline_mesh_tests();
 unsigned loft_caps_tests();
@@ -243,16 +244,22 @@ static void bspline_tests() {
     check(invalid_decoded["weights"] == Json({1}) &&
               invalid_decoded["_spline"]["status"] == "invalid",
           "malformed semantic arrays remain decoded with an explicit diagnostic");
-    Bytes packet(32);
+    Bytes packet(28);
+    packet[4] = 4;
     auto bgfb = encode(circle_source);
     put<std::uint64_t>(packet, bgfb.size());
     packet.insert(packet.end(), bgfb.begin(), bgfb.end());
+    packet.push_back(3);
+    put<std::uint32_t>(packet, 0);
+    put<double>(packet, 1);
+    put<double>(packet, 0);
+    put<double>(packet, 0);
+    put<std::int32_t>(packet, -7);
     Bytes body(142);
     body[0] = 1;
     body[134] = 1;
-    put<std::uint32_t>(body, unsigned(packet.size()));
+    put<std::uint64_t>(body, packet.size());
     body.insert(body.end(), packet.begin(), packet.end());
-    put<std::int32_t>(body, -7);
     body.push_back(3);
     put<std::uint32_t>(body, 0);
     put<std::uint64_t>(body, 0);
@@ -424,15 +431,21 @@ static void bgfb_native_tests() {
     std::memcpy(bad.data() + loft.vtable + 4, &crossing, 2);
     rejects([&] { decode_bgfb(bad); }, "relative field must fit wholly inside its table");
 
-    Bytes packet(32);
+    Bytes packet(28);
+    packet[4] = 6;
     put<std::uint64_t>(packet, uncapped.bytes.size());
     packet.insert(packet.end(), uncapped.bytes.begin(), uncapped.bytes.end());
+    packet.push_back(3);
+    put<std::uint32_t>(packet, 0);
+    put<double>(packet, 1);
+    put<double>(packet, 0);
+    put<double>(packet, 0);
+    put<std::int32_t>(packet, 7);
     Bytes body(142);
     body[0] = 1;
     body[134] = 1;
-    put<std::uint32_t>(body, unsigned(packet.size()));
+    put<std::uint64_t>(body, packet.size());
     body.insert(body.end(), packet.begin(), packet.end());
-    put<std::int32_t>(body, 7);
     body.push_back(3);
     put<std::uint32_t>(body, 0);
     put<std::uint64_t>(body, 0);
@@ -2675,6 +2688,7 @@ int main() {
         bgfb_native_tests();
         bspline_tests();
         checks += bspline_surface_tests();
+        checks += graphics_bytes_tests();
         checks += bspline_trim_tests();
         checks += bspline_mesh_tests();
         checks += loft_caps_tests();

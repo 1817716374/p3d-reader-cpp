@@ -764,6 +764,11 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     auto reference_extension = decode_reference_extension(group, key, b, index);
     if (!reference_extension.is_null())
         return reference_extension;
+    if (group == 106 && key == 10001 && index == 0) {
+        auto out = decode_graphics_bytes(b);
+        out["role"] = "view_link_boundary_geometry";
+        return out;
+    }
     if (group == 2 && key == 10001) {
         auto name = utf16(b);
         Json(name).dump();

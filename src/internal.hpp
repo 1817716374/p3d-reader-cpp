@@ -211,6 +211,7 @@ Json mesh_triangle_channels(const Json &, const std::vector<std::optional<std::u
 void reverse_mesh_channel_corners(Json &);
 Json decode_bgfb(const Bytes &);
 Json decode_inline_material(const Bytes &);
+Json decode_graphics_bytes(const Bytes &);
 Json parse_relationships(const Bytes &);
 Json build_object_graph(const Document &);
 Json build_graph_records(const Json &, const Json &, const Json &, const std::set<std::uint64_t> &,

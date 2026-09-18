@@ -59,6 +59,7 @@
 !/tests/mesh_buffers.cpp
 !/tests/electrical_wire.hpp
 !/tests/README.md
+!/tests/graphics_bytes.cpp
 *.p3d
 *.P3D
 *.BAK*
