@@ -49,6 +49,7 @@ unsigned native_reference_input_tests();
 unsigned reference_origin_tests();
 unsigned reference_affine_tests();
 unsigned reference_target_tests();
+unsigned reference_file_tests();
 unsigned native_model_directory_tests();
 unsigned reference_extension_tests();
 unsigned native_application_tests();
@@ -2713,6 +2714,7 @@ int main() {
         checks += reference_origin_tests();
         checks += reference_affine_tests();
         checks += reference_target_tests();
+        checks += reference_file_tests();
         checks += native_model_directory_tests();
         checks += reference_extension_tests();
         checks += native_application_tests();

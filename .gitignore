@@ -47,6 +47,7 @@
 !/tests/reference_origin.cpp
 !/tests/reference_affine.cpp
 !/tests/reference_target.cpp
+!/tests/reference_file.cpp
 !/tests/native_model_directory.cpp
 !/tests/reference_extension.cpp
 !/tests/native_application.cpp

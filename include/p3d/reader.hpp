@@ -22,6 +22,29 @@ Json lookup_native_model_directory(const Json &directory, const std::u16string &
 // requires the full selected host chain; later runtime changes are excluded.
 Json initial_reference_file_query_gate(const std::vector<Json> &reference_targets,
                                        bool complete_host_chain);
+// The two native strings of an already selected file's default specification.
+// An empty string is known empty, not an unavailable file context.
+struct NativeFileReference {
+    std::u16string stored_reference;
+    std::u16string lookup_reference;
+};
+struct ReferenceFileQueryContext {
+    std::optional<NativeFileReference> host_file;
+    std::optional<NativeFileReference> current_file;
+    bool host_file_known_absent = false;
+    bool current_file_known_absent = false;
+    // Used only when the persisted key-48 string is empty. Supply the value
+    // after host preparation; absence does not mean an empty value.
+    std::optional<std::u16string> inherited_search_context;
+    std::vector<Json> host_reference_targets;
+    bool complete_host_chain = false;
+    NativeModelNameEqual equal;
+};
+// Consumes a type-13 native record. Covers the initial default-service file
+// query up to native host/current-file reuse or external-search handoff.
+// It neither opens files nor selects host contexts or loads target models.
+Json initial_reference_file_query(const Json &reference_record,
+                                  const ReferenceFileQueryContext &context);
 struct Options {
     unsigned threads = 1;
     std::size_t max_stream_bytes = 256u * 1024 * 1024;

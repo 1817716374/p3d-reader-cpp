@@ -63,26 +63,11 @@ Json texture_path_parts(const Json &source) {
             return out;
         if (path.find(u'\0') != std::u16string::npos)
             return out;
-        auto colon = path.find(u':'), slash = path.find_first_of(u"/\\");
-        out["logical_prefix"] = "";
-        if (colon != std::u16string::npos && colon > 1 &&
-            path.find(u':', colon + 1) == std::u16string::npos &&
-            (slash == std::u16string::npos || colon < slash)) {
-            out["logical_prefix"] = codec.to_bytes(path.substr(0, colon));
-            path.erase(0, colon + 1);
-        }
-        if (path.size() > 1 && path[1] == u':')
-            path.erase(0, 2);
-        slash = path.find_last_of(u"/\\");
-        auto basename = slash == std::u16string::npos ? path : path.substr(slash + 1);
-        const auto dot = basename.find_last_of(u'.');
-        auto stem = basename.substr(0, dot);
-        auto ext = dot == std::u16string::npos ? std::u16string() : basename.substr(dot);
-        const bool overflow = (slash != std::u16string::npos && slash + 1 >= 260) ||
-                              stem.size() >= 260 || ext.size() >= 260;
-        out["status"] = overflow ? "native_buffer_limit_clears_parts" : "decoded";
-        out["stem"] = overflow ? "" : codec.to_bytes(stem);
-        out["extension"] = overflow || ext.empty() ? "" : codec.to_bytes(ext.substr(1));
+        const auto parts = native_path_parts(path);
+        out["logical_prefix"] = codec.to_bytes(parts.logical_prefix);
+        out["status"] = parts.buffer_limit ? "native_buffer_limit_clears_parts" : "decoded";
+        out["stem"] = codec.to_bytes(parts.stem);
+        out["extension"] = parts.extension.empty() ? "" : codec.to_bytes(parts.extension.substr(1));
     } catch (const std::range_error &) {
         // Invalid UTF-8 does not select a different reader by accident.
     }

@@ -273,6 +273,11 @@ Json material_reader_paths(const Json &tree, Json &maps);
 Json material_legacy_parameters(const Json &owner, const Json &dispatch);
 Json material_resource_reference(const Json &source);
 Json native_file_resource_reference(const Json &primary, const Json &alternate);
+struct NativePathParts {
+    std::u16string logical_prefix, stem, extension;
+    bool buffer_limit = false;
+};
+NativePathParts native_path_parts(std::u16string path);
 Json material_texture_references(const Json &tree, const Json &settings);
 Json material_procedure_nodes(const Json &owner);
 Json material_map_bindings(const Json &maps);
