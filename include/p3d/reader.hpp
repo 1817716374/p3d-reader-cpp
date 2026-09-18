@@ -538,6 +538,9 @@ class SectionLoft {
     // Native per-face surfaces, including linear-V cleanup, followed by cap
     // construction from those surfaces. Does not modify sides() or source().
     LoftNativeFaces native_faces(unsigned max_cap_control_points = 100000) const;
+    // Native cap coordinate-frame/range rules; does not test trim containment
+    // or planarity. Uses numerical rational-Bezier extrema, not sampled bounds.
+    Json native_cap_uv(bool top, double u, double v, unsigned max_control_points = 100000) const;
     // Caps first, then sides in source loop/primitive order. A failed requested
     // cap invalidates the entire enumeration. These are not material part IDs.
     LoftFaceIndexSet face_indices(unsigned max_cap_control_points = 100000) const;

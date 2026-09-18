@@ -306,6 +306,152 @@ unsigned loft_caps_tests() {
         std::async(std::launch::async, [&] { return weighted_loft.native_faces(); });
     check(native_future.get().caps.top == weighted.caps.top,
           "native face reconstruction is concurrent");
+    const auto top_uv = loft.native_cap_uv(true, .5, .5);
+    const auto bottom_uv = loft.native_cap_uv(false, .5, .5);
+    check(top_uv["status"] == "computed" && bottom_uv["status"] == "computed" &&
+              near(top_uv["point"].get<Point3>(), {1, 1, 3}) &&
+              near(bottom_uv["point"].get<Point3>(), {1, 1, 0}),
+          "native cap UV centers use bottom and top local ranges");
+    const auto hole_uv = SectionLoft::from_bgfb(source(2)).native_cap_uv(true, .5, .5);
+    check(hole_uv["status"] == "computed" && near(hole_uv["point"].get<Point3>(), {1, 1, 3}) &&
+              hole_uv["containment"] == "not_evaluated",
+          "native cap UV does not reject a point in a parity hole");
+    const auto origin_uv = loft.native_cap_uv(true, 0, 0);
+    const auto outside_uv = loft.native_cap_uv(true, 2, -1);
+    auto extrapolated = origin_uv["point"].get<Point3>();
+    const auto du = top_uv["u_direction"].get<Point3>(), dv = top_uv["v_direction"].get<Point3>();
+    for (unsigned k = 0; k < 3; ++k)
+        extrapolated[k] += 2 * du[k] - dv[k];
+    check(outside_uv["status"] == "computed" &&
+              near(outside_uv["point"].get<Point3>(), extrapolated),
+          "native cap UV extrapolates without clamping");
+    auto rectangle = source();
+    std::function<void(Json &)> stretch = [&](Json &j) {
+        if (j.is_object()) {
+            if (j.value("_type", std::string()) == "BsplineCurve")
+                for (std::size_t i = 1; i < j["poles"].size(); i += 3)
+                    j["poles"][i] = j["poles"][i].get<double>() * 2;
+            for (auto &child : j)
+                if (child.is_structured())
+                    stretch(child);
+        } else if (j.is_array())
+            for (auto &child : j)
+                if (child.is_structured())
+                    stretch(child);
+    };
+    stretch(rectangle);
+    const auto rectangle_uv = SectionLoft::from_bgfb(rectangle).native_cap_uv(true, .5, .5);
+    check(rectangle_uv["status"] == "computed" &&
+              near(rectangle_uv["point"].get<Point3>(), {1, 2, 3}),
+          "native rectangular cap maps U and V with separate range extents");
+    const auto rect_frame = rectangle_uv["local_to_world"].get<Matrix4>();
+    double normal_length2 = 0;
+    for (unsigned k = 0; k < 3; ++k)
+        normal_length2 += rect_frame[k][2] * rect_frame[k][2];
+    check(std::abs(normal_length2 - 8) < 1e-10,
+          "native cap frame normal scale is the geometric mean of XY extents");
+    auto placed = source();
+    std::function<void(Json &)> place = [&](Json &j) {
+        if (j.is_object()) {
+            if (j.value("_type", std::string()) == "BsplineCurve")
+                for (std::size_t i = 0; i < j["poles"].size(); i += 3) {
+                    const double x = j["poles"][i], y = j["poles"][i + 1], z = j["poles"][i + 2];
+                    j["poles"][i] = 10 + z;
+                    j["poles"][i + 1] = 20 + .6 * x - .8 * y;
+                    j["poles"][i + 2] = 30 + .8 * x + .6 * y;
+                }
+            for (auto &child : j)
+                if (child.is_structured())
+                    place(child);
+        } else if (j.is_array())
+            for (auto &child : j)
+                if (child.is_structured())
+                    place(child);
+    };
+    place(placed);
+    const auto placed_uv = SectionLoft::from_bgfb(placed).native_cap_uv(true, .5, .5);
+    check(placed_uv["status"] == "computed" &&
+              near(placed_uv["point"].get<Point3>(), {13, 19.8, 31.4}),
+          "cap UV uses the native inverse frame for rotated and translated source geometry");
+    const auto nonplanar_uv = SectionLoft::from_bgfb(nonplanar).native_cap_uv(false, .5, .5);
+    check(nonplanar_uv["status"] == "computed" && nonplanar_uv["planarity"] == "not_evaluated",
+          "native cap UV frame query does not reject a nonplanar cap region");
+    // An independent degree-two power-basis extremum oracle. It projects the
+    // original section, not the implementation's elevated Bezier controls.
+    for (bool rational_cap : {false, true}) {
+        auto curved_uv_source = source();
+        for (const auto name : {"section0", "section1"}) {
+            const double z = std::string(name) == "section0" ? 0 : 3;
+            auto &c = curved_uv_source[name]["curves"][0]["geometry"];
+            const double w = rational_cap ? 2 : 1;
+            c["order"] = 3;
+            c["weights"] = rational_cap ? Json{1, w, 1} : Json(nullptr);
+            c["poles"] = {0, 0, z, w, -2 * w, z * w, 2, 0, z};
+        }
+        const auto query = SectionLoft::from_bgfb(curved_uv_source).native_cap_uv(true, .3, .7);
+        check(query["status"] == "computed", "curved cap UV extrema query complete");
+        const auto frame = query["frame_query"]["frame"].get<Matrix4>();
+        Point3 low{1e100, 1e100, 1e100}, high{-1e100, -1e100, -1e100};
+        for (const auto &entry : curved_uv_source["section1"]["curves"]) {
+            const auto &c = entry["geometry"];
+            const auto count = c["poles"].size() / 3;
+            std::array<std::array<double, 4>, 3> h{};
+            for (std::size_t i = 0; i < count; ++i) {
+                const double w = c["weights"].is_array() ? c["weights"][i].get<double>() : 1;
+                h[i][3] = w;
+                for (unsigned axis = 0; axis < 3; ++axis)
+                    for (unsigned k = 0; k < 3; ++k)
+                        h[i][axis] += frame[k][axis] *
+                                      (c["poles"][3 * i + k].get<double>() - frame[k][3] * w);
+            }
+            std::array<double, 4> a{}, b{}, c0 = h[0];
+            for (unsigned axis = 0; axis < 4; ++axis) {
+                a[axis] = count == 3 ? h[0][axis] - 2 * h[1][axis] + h[2][axis] : 0;
+                b[axis] = (count == 3 ? 2 : 1) * (h[1][axis] - h[0][axis]);
+            }
+            std::vector<double> candidates{0, 1};
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                const double aa = a[axis] * b[3] - b[axis] * a[3];
+                const double bb = 2 * (a[axis] * c0[3] - c0[axis] * a[3]);
+                const double cc = b[axis] * c0[3] - c0[axis] * b[3];
+                if (std::abs(aa) < 1e-13) {
+                    if (std::abs(bb) > 1e-13)
+                        candidates.push_back(-cc / bb);
+                } else if (bb * bb - 4 * aa * cc >= 0) {
+                    const auto d = std::sqrt(bb * bb - 4 * aa * cc);
+                    candidates.push_back((-bb + d) / (2 * aa));
+                    candidates.push_back((-bb - d) / (2 * aa));
+                }
+            }
+            for (double t : candidates)
+                if (t >= 0 && t <= 1) {
+                    const double w = (a[3] * t + b[3]) * t + c0[3];
+                    for (unsigned axis = 0; axis < 3; ++axis) {
+                        const double x = ((a[axis] * t + b[axis]) * t + c0[axis]) / w;
+                        low[axis] = std::min(low[axis], x);
+                        high[axis] = std::max(high[axis], x);
+                    }
+                }
+        }
+        check(near(query["local_range_before_normalization"][0].get<Point3>(), low) &&
+                  near(query["local_range_before_normalization"][1].get<Point3>(), high),
+              "native cap range uses actual rational extrema rather than the control hull");
+    }
+    check(SectionLoft::from_bgfb(no_caps).native_cap_uv(true, .5, .5)["status"] == "native_failure",
+          "UV query cannot create a cap absent from the source");
+    check(loft.native_cap_uv(true, .5, .5, 1)["status"] == "not_evaluated",
+          "UV query preserves native cap construction budget failure");
+    invalid = false;
+    try {
+        loft.native_cap_uv(true, std::numeric_limits<double>::infinity(), 0);
+    } catch (const std::exception &) {
+        invalid = true;
+    }
+    check(invalid, "nonfinite UV input rejected");
+    auto uv_future =
+        std::async(std::launch::async, [&] { return loft.native_cap_uv(true, .5, .5); });
+    check(uv_future.get() == top_uv && loft.source() == input,
+          "cap UV queries are concurrent and leave source data unchanged");
     auto future = std::async(std::launch::async, [&] { return loft.cap_regions(); });
     check(future.get().bottom == caps.bottom && loft.source() == input &&
               loft.cap_regions().report == caps.report,
