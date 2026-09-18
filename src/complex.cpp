@@ -333,6 +333,142 @@ static Json bfa_property(const Bytes &payload, Json &record) {
     out["resolution_status"] = "requires_component_context";
     return out;
 }
+static std::int32_t bfa_enum_code(std::uint64_t wire) {
+    const auto low = std::uint32_t(wire);
+    return std::int32_t(low < 0x80000000u ? std::int64_t(low) : std::int64_t(low) - 0x100000000LL);
+}
+static Json bfa_component_extension(const Bytes &payload, std::size_t start, bool extended) {
+    Json candidates = Json::array();
+    for (bool points_stored : {false, true}) {
+        if (points_stored && !extended)
+            continue; // Driven points were introduced after the extra context field.
+        try {
+            Reader r(payload);
+            r.p = start;
+            auto text = [&](bool ansi) {
+                const auto offset = r.p + 19;
+                const auto bytes = r.take(r.u32());
+                auto value = component_text(bytes, ansi);
+                const auto end = std::find(bytes.begin(), bytes.end(), std::uint8_t(0));
+                value["native_value"] = component_text(Bytes(bytes.begin(), end), ansi);
+                value["body_offset"] = offset;
+                return value;
+            };
+            Json names = Json::array();
+            std::map<std::uint64_t, std::size_t> name_indices;
+            while (r.left() && (!points_stored || payload[r.p] != '+')) {
+                const auto offset = r.p + 19;
+                const auto key = r.u64();
+                auto value = text(false);
+                name_indices[key] = names.size();
+                names.push_back({{"body_offset", offset},
+                                 {"offset_key", key},
+                                 {"display_name", std::move(value)}});
+            }
+            if (points_stored)
+                require(r.u8() == '+', "BFA display-name map terminator");
+            Json selected_names = Json::array();
+            for (const auto &entry : name_indices)
+                selected_names.push_back(entry.second);
+            Json candidate = {{"has_driven_point_section", points_stored},
+                              {"offset_to_display_name_map",
+                               {{"entries", std::move(names)},
+                                {"selected_entry_indices", std::move(selected_names)},
+                                {"duplicate_key_rule", "last_entry_wins"}}}};
+            if (points_stored) {
+                Json points = Json::array();
+                while (r.left()) {
+                    const auto offset = r.p + 19;
+                    auto name = text(true);
+                    auto description = text(true);
+                    const auto snap_wire = r.u64();
+                    const auto snap_code = bfa_enum_code(snap_wire);
+                    Json snap_flags = Json::array();
+                    static const std::map<std::uint32_t, std::string> snap_names = {
+                        {1u, "Nearest"},
+                        {1u << 2, "MidPoint"},
+                        {1u << 3, "Center"},
+                        {1u << 4, "EndPoint"},
+                        {1u << 6, "Intersection"},
+                        {1u << 7, "Tangency"},
+                        {1u << 8, "TangentPoint"},
+                        {1u << 9, "Perpendicular"},
+                        {1u << 10, "PerpendicularPoint"},
+                        {1u << 11, "Parallel"},
+                        {1u << 12, "Multi3"},
+                        {1u << 14, "Multi1"},
+                        {1u << 15, "Multi2"},
+                        {1u << 16, "GeometricCenter"},
+                        {1u << 17, "Quadrant"},
+                        {1u << 18, "Extension"},
+                        {1u << 19, "ApparentIntersection"},
+                        {1u << 20, "Insertion"},
+                        {1u << 21, "Node"},
+                        {1u << 22, "enGetBaseCurve"},
+                        {1u << 23, "enDivide"}};
+                    std::uint32_t known_snap_bits = 0;
+                    for (const auto &flag : snap_names) {
+                        known_snap_bits |= flag.first;
+                        if (snap_code != -1 && (std::uint32_t(snap_code) & flag.first))
+                            snap_flags.push_back(flag.second);
+                    }
+                    Json formulas = Json::array();
+                    std::map<std::int32_t, std::size_t> formula_indices;
+                    while (r.left() && payload[r.p] != '@') {
+                        const auto formula_offset = r.p + 19;
+                        const auto wire = r.u64();
+                        const auto code = bfa_enum_code(wire);
+                        auto formula = text(true);
+                        static const std::map<std::int32_t, std::string> coordinates = {
+                            {0, "invalid"}, {1, "x"}, {2, "y"}, {3, "z"}, {4, "all"}};
+                        formula_indices[code] = formulas.size();
+                        formulas.push_back(
+                            {{"body_offset", formula_offset},
+                             {"coordinate_wire_uint64", wire},
+                             {"coordinate_type_code", code},
+                             {"coordinate_type",
+                              coordinates.count(code) ? Json(coordinates.at(code)) : Json(nullptr)},
+                             {"formula", std::move(formula)}});
+                    }
+                    const bool terminated = r.left() != 0;
+                    if (terminated)
+                        r.u8();
+                    Json selected = Json::array();
+                    for (const auto &entry : formula_indices)
+                        selected.push_back(entry.second);
+                    points.push_back(
+                        {{"body_offset", offset},
+                         {"name", std::move(name)},
+                         {"description", std::move(description)},
+                         {"snap_mode_wire_uint64", snap_wire},
+                         {"snap_mode_code", snap_code},
+                         {"snap_mode_flags", std::move(snap_flags)},
+                         {"snap_mode_status", snap_code == -1  ? "invalid"
+                                              : snap_code == 0 ? "none"
+                                                               : "flags"},
+                         {"unknown_snap_mode_bits",
+                          snap_code == -1 ? Json(nullptr)
+                                          : Json(std::uint32_t(snap_code) & ~known_snap_bits)},
+                         {"formulas", std::move(formulas)},
+                         {"selected_formula_indices", std::move(selected)},
+                         {"duplicate_coordinate_rule", "last_entry_wins"},
+                         {"native_is_valid", formula_indices.size() == 3 && snap_code != -1},
+                         {"terminator_stored", terminated},
+                         {"formula_status", "not_evaluated"}});
+                }
+                candidate["driven_points"] = std::move(points);
+            }
+            candidate["consumed_body_bytes"] = r.p + 19;
+            candidates.push_back(std::move(candidate));
+        } catch (const std::exception &) {
+            // A malformed candidate retains its complete raw extension in the caller.
+        }
+    }
+    return {{"layout_status", candidates.empty()       ? "malformed_or_unsupported"
+                              : candidates.size() == 1 ? "unique_candidate"
+                                                       : "requires_version_context"},
+            {"layout_candidates", std::move(candidates)}};
+}
 static Json bfa_component(const Bytes &payload, Json &record) {
     Reader r(payload);
     Json out, names = Json::array(), texts = Json::array();
@@ -361,6 +497,7 @@ static Json bfa_component(const Bytes &payload, Json &record) {
             {{"body_offset", offset}, {"bytes", bytes.size()}, {"base64", base64(bytes)}});
     }
     out["unassigned_int32"] = r.i32();
+    out["next_property_id"] = out["unassigned_int32"]; // Compatibility alias retains the old field.
     Json candidates = Json::array();
     // The native reader gets its version from the containing component context.
     // Without it, keep both compatible layouts instead of guessing from ID bits.
@@ -370,8 +507,14 @@ static Json bfa_component(const Bytes &payload, Json &record) {
             c.p = r.p;
             Json candidate = {{"has_context_uint64", extended},
                               {"property_id_maps", Json::array()}};
-            if (extended)
-                candidate["unassigned_context_uint64"] = c.u64();
+            if (extended) {
+                const auto tree_id = c.i64();
+                candidate["unassigned_context_uint64"] = std::uint64_t(tree_id);
+                candidate["related_tree_reference"] = {{"tree_id", tree_id},
+                                                       {"kind", "BPTree"},
+                                                       {"scope", "active_project"},
+                                                       {"resolution_status", "not_performed"}};
+            }
             for (unsigned map_index = 0; map_index < 2; ++map_index) {
                 Json entries = Json::array();
                 std::map<std::uint64_t, std::size_t> selected;
@@ -402,8 +545,16 @@ static Json bfa_component(const Bytes &payload, Json &record) {
                      {"terminator_stored", terminated}});
             }
             candidate["consumed_body_bytes"] = c.p + 19;
-            if (c.left())
-                candidate["unassigned_suffix_hex"] = hex(c.take(c.left()));
+            if (c.left()) {
+                auto extension = bfa_component_extension(payload, c.p, extended);
+                extension["source_bytes"] = rawbytes(Bytes(payload.begin() + c.p, payload.end()));
+                if (extension["layout_status"] == "unique_candidate")
+                    candidate["consumed_body_bytes"] = payload.size() + 19;
+                else
+                    candidate["unassigned_suffix_hex"] =
+                        hex(Bytes(payload.begin() + c.p, payload.end()));
+                candidate["extension"] = std::move(extension);
+            }
             candidates.push_back(std::move(candidate));
         } catch (const std::exception &) {
             // A rejected layout never consumes bytes from another candidate or node.

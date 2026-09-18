@@ -534,5 +534,145 @@ unsigned bfa_tests() {
         auto cjob = std::async(std::launch::async, [&] { return decode_component(cb); });
         check(cjob.get() == component, "component mapping decode is reentrant");
     }
+    {
+        auto decode_extension = [&](const Bytes &tail, bool extended = true) {
+            Bytes mapping{'+', '+'};
+            mapping.insert(mapping.end(), tail.begin(), tail.end());
+            return decode_component(component_body(mapping, extended));
+        };
+        auto extension_of = [](const Json &tree) -> const Json & {
+            return tree["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                       ["extension"];
+        };
+        Bytes names;
+        for (const auto key : {7ULL, 7ULL, 0xfedcba9876543210ULL}) {
+            put(names, key);
+            str(names, Bytes{'N', 0, 'x'});
+        }
+        const auto legacy = decode_extension(names, false);
+        const auto &legacy_extension = extension_of(legacy);
+        check(legacy_extension["layout_status"] == "unique_candidate" &&
+                  legacy_extension["layout_candidates"][0]["has_driven_point_section"] == false &&
+                  !legacy_extension["layout_candidates"][0].contains("driven_points"),
+              "older display-name map terminates at payload end without invented driven points");
+        const auto &name_map =
+            legacy_extension["layout_candidates"][0]["offset_to_display_name_map"];
+        check(name_map["entries"].size() == 3 &&
+                  name_map["selected_entry_indices"] == Json({1, 2}) &&
+                  name_map["entries"][0]["display_name"]["text"] == std::string("N\0x", 3) &&
+                  name_map["entries"][1]["display_name"]["native_value"]["text"] == "N",
+              "display names retain source bytes, native NUL prefix and last unsigned-key "
+              "assignment");
+        Bytes points = names;
+        points.push_back('+');
+        auto add_point = [&](std::uint64_t snap, const std::vector<std::uint64_t> &codes,
+                             bool terminator) {
+            str(points, Bytes{'P'});
+            str(points, Bytes{'D', 0, 'x'});
+            put(points, snap);
+            for (const auto code : codes) {
+                put(points, code);
+                str(points, Bytes{'x', '+', '@', 0, 'y'});
+            }
+            if (terminator)
+                points.push_back('@');
+        };
+        add_point(1u | 4u | (1u << 25), {1, 0x100000001ULL, 2, 4}, true);
+        add_point(0xffffffffffffffffULL, {std::uint64_t(-7), 5}, false);
+        const auto tree = decode_extension(points);
+        const auto &extension = extension_of(tree);
+        check(tree["records"][0]["component_definition"]["next_property_id"] == -3 &&
+                  tree["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                      ["related_tree_reference"]["tree_id"] == 0x1122334455667788LL &&
+                  tree["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                      ["related_tree_reference"]["scope"] == "active_project" &&
+                  !legacy["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                       .contains("related_tree_reference"),
+              "property ID allocator and optional related tree retain their native signed scopes");
+        Bytes absent_tree_body = component_body(Bytes{'+', '+'}, true);
+        std::fill(absent_tree_body.end() - 10, absent_tree_body.end() - 2, std::uint8_t(0xff));
+        const auto absent_tree = decode_component(absent_tree_body);
+        check(absent_tree["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                         ["related_tree_reference"]["tree_id"] == -1 &&
+                  absent_tree["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                             ["unassigned_context_uint64"] == std::uint64_t(-1),
+              "signed related-tree sentinel preserves the original unsigned compatibility bits");
+        check(extension["layout_status"] == "unique_candidate" &&
+                  extension["layout_candidates"][0]["has_driven_point_section"] == true &&
+                  !tree["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                       .contains("unassigned_suffix_hex"),
+              "driven-point extension consumes its complete source layout");
+        const auto &decoded_points = extension["layout_candidates"][0]["driven_points"];
+        check(decoded_points.size() == 2 && decoded_points[0]["name"]["text"] == "P" &&
+                  decoded_points[0]["description"]["native_value"]["text"] == "D" &&
+                  decoded_points[1]["name"]["text"] == "P",
+              "driven-point array preserves duplicate names and independent source order");
+        check(decoded_points[0]["selected_formula_indices"] == Json({1, 2, 3}) &&
+                  decoded_points[0]["formulas"].size() == 4 &&
+                  decoded_points[0]["formulas"][1]["coordinate_wire_uint64"] == 0x100000001ULL &&
+                  decoded_points[0]["formulas"][1]["coordinate_type_code"] == 1 &&
+                  decoded_points[0]["formulas"][3]["coordinate_type"] == "all" &&
+                  decoded_points[0]["formulas"][1]["formula"]["native_value"]["text"] == "x+@",
+              "formula keys use native low signed DWORD and bounded strings preserve marker bytes");
+        check(decoded_points[0]["native_is_valid"] == true &&
+                  decoded_points[0]["formula_status"] == "not_evaluated" &&
+                  decoded_points[0]["snap_mode_flags"] == Json({"Nearest", "MidPoint"}) &&
+                  decoded_points[0]["unknown_snap_mode_bits"] == (1u << 25),
+              "native validity checks map size and snap sentinel without demanding XYZ or "
+              "evaluating formulas");
+        check(decoded_points[1]["native_is_valid"] == false &&
+                  decoded_points[1]["snap_mode_code"] == -1 &&
+                  decoded_points[1]["snap_mode_status"] == "invalid" &&
+                  decoded_points[1]["snap_mode_flags"].empty() &&
+                  decoded_points[1]["selected_formula_indices"] == Json({0, 1}) &&
+                  decoded_points[1]["formulas"][0]["coordinate_type_code"] == -7 &&
+                  decoded_points[1]["formulas"][1]["coordinate_type"].is_null() &&
+                  decoded_points[1]["terminator_stored"] == false,
+              "unknown coordinate values and native end-of-body termination remain represented");
+        const auto empty_points = decode_extension(Bytes{'+'});
+        check(extension_of(empty_points)["layout_candidates"][0]["driven_points"].empty(),
+              "explicit extension separator preserves an empty driven-point array");
+        Bytes plus_key;
+        put<std::uint64_t>(plus_key, 43);
+        str(plus_key, Bytes{'K'});
+        const auto plus_name = decode_extension(plus_key);
+        check(
+            extension_of(plus_name)["layout_status"] == "unique_candidate" &&
+                extension_of(plus_name)["layout_candidates"][0]["has_driven_point_section"] ==
+                    false &&
+                extension_of(plus_name)["layout_candidates"][0]["offset_to_display_name_map"]
+                                       ["entries"][0]["offset_key"] == 43,
+            "a plus byte within an older offset key is not unconditionally treated as a separator");
+        Bytes dual;
+        put<std::uint64_t>(dual, 43);
+        put<std::uint32_t>(dual, 256);
+        dual.resize(17, 0);
+        put<std::uint64_t>(dual, 1);
+        put<std::uint32_t>(dual, 239);
+        dual.resize(268, 'x');
+        const auto dual_tree = decode_extension(dual);
+        check(extension_of(dual_tree)["layout_status"] == "requires_version_context" &&
+                  extension_of(dual_tree)["layout_candidates"].size() == 2 &&
+                  dual_tree["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                           ["unassigned_suffix_hex"] == hex(dual),
+              "ambiguous display-name and driven-point layouts retain both alternatives and source "
+              "bytes");
+        Bytes malformed = points;
+        malformed.pop_back();
+        const auto bad = decode_extension(malformed);
+        check(extension_of(bad)["layout_status"] == "malformed_or_unsupported" &&
+                  bad["records"][2]["placed_instance_ids"] == Json({31}) &&
+                  bad["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                     ["unassigned_suffix_hex"] == hex(malformed),
+              "truncated formula retains the complete undecoded extension and following records");
+        for (std::size_t cut = names.size() + 1; cut < points.size(); ++cut) {
+            const auto truncated = decode_extension(Bytes(points.begin(), points.begin() + cut));
+            check(truncated["records"].size() == 3 &&
+                      truncated["records"][2]["placed_instance_ids"] == Json({31}),
+                  "every driven-point truncation remains inside its bounded definition");
+        }
+        auto job = std::async(std::launch::async, [&] { return decode_extension(points); });
+        check(job.get() == tree, "component extensions decode concurrently without shared state");
+    }
     return checks;
 }
