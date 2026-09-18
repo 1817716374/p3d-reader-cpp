@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "blob_internal.hpp"
 #include <cstring>
 #include <future>
 namespace {
@@ -197,5 +197,121 @@ unsigned graphics_bytes_tests() {
     auto f = std::async(std::launch::async, [&] { return decode_graphics_bytes(data); });
     check(f.get() == j && data == graphics({e, entry()}, true, mat),
           "decoder is reentrant and preserves source");
+
+    // The enclosing instance list has a variable-length typed suffix of its own.
+    auto component = [](const Bytes &tail) {
+        Bytes b(15); // null parent and no instances
+        b.insert(b.end(), tail.begin(), tail.end());
+        return b;
+    };
+    auto text = [](Bytes &b, const Bytes &v) {
+        put<std::uint32_t>(b, v.size());
+        b.insert(b.end(), v.begin(), v.end());
+    };
+    Bytes tail;
+    text(tail, Bytes{'M', 'a', 't', 0, 'X'});
+    text(tail, Bytes{0xc4, 0xe3});
+    text(tail, Bytes{0, 1, 2});
+    tail.push_back(9);
+    put<std::uint32_t>(tail, 7);
+    auto value = [&](std::uint64_t key, unsigned type, const Bytes &data) {
+        put(tail, key);
+        tail.push_back(std::uint8_t(type));
+        text(tail, data);
+    };
+    Bytes v;
+    put<std::int64_t>(v, -9000000000000000000LL);
+    value(123, 1, v);
+    v.clear();
+    put(v, 1.25);
+    value(124, 2, v);
+    value(125, 3, Bytes{1});
+    value(126, 4, Bytes{'a', 0, 'b'});
+    value(127, 5, Bytes{0, 0xff});
+    value(128, 6, {});
+    value(129, 31, Bytes{7, 8});
+    put<std::uint32_t>(tail, 2);
+    put<std::uint64_t>(tail, 0xf123456789abcdefULL);
+    put<std::uint64_t>(tail, 3);
+    put<std::uint32_t>(tail, 1);
+    put<std::uint64_t>(tail, 44);
+    const auto cf = complex_blob("ParaCmptInstance", component(tail));
+    const auto &ft = cf["footer"];
+    check(cf["footer_hex"] == hex(tail) && ft["source_offset"] == 15,
+          "variable component footer retains all source bytes");
+    check(ft["material_name_reference"]["text"] == std::string("Mat\0X", 5) &&
+              ft["material_name_reference"]["lookup_name"] == "Mat",
+          "material lookup uses terminated name within declared field");
+    check(ft["material_name_reference"]["comparison"] == "case_sensitive_utf16_code_units" &&
+              ft["material_name_reference"]["applies_to"] == "all_rebuilt_graphics_entries",
+          "container material override has separate native scope and comparison");
+    check(ft["remark"]["text"].is_null() && ft["remark"]["status"] == "requires_text_decoder" &&
+              ft["remark"]["encoding"] == "not_established",
+          "remark text encoding is not guessed from a narrow string");
+    check(ft["hollow_byte"] == 9 && ft["hollow"].is_null() &&
+              ft["hollow_status"] == "invalid_boolean" && ft["values"].size() == 7,
+          "noncanonical hollow flag is preserved without inventing a boolean");
+    check(ft["values"][0]["value"] == -9000000000000000000LL && ft["values"][1]["value"] == 1.25 &&
+              ft["values"][2]["value"] == true,
+          "typed integral floating and boolean values decoded");
+    check(ft["values"][3]["value"]["text"] == std::string("a\0b", 3) &&
+              ft["values"][4]["kind"] == "binary" && ft["values"][5]["value"].is_null(),
+          "string binary and null values distinguished");
+    check(ft["values"][6]["kind"] == "unassigned" && ft["values"][6]["key"] == 129,
+          "unknown bounded value preserves key and payload");
+    check(ft["unassigned_id_sets"][0] == Json({0xf123456789abcdefULL, 3}) &&
+              ft["unassigned_id_sets"][1] == Json({44}),
+          "trailing sets keep full 64-bit values and source order");
+    auto extended = tail;
+    extended.push_back(0x9a);
+    check(complex_blob("ParaCmptInstance",
+                       component(extended))["footer"]["unassigned_suffix_hex"] == "9a",
+          "future component suffix retained");
+    auto empty = complex_blob("ParaCmptInstance", component(Bytes(25)));
+    check(empty["footer"]["material_name_reference"]["lookup_name"] == "" &&
+              empty["footer"]["values"].empty(),
+          "empty 25-byte form is an instance of general layout");
+    check(empty["footer"]["hollow"] == false &&
+              ft["attached_data_block"] == rawbytes(Bytes{0, 1, 2}),
+          "solid default flag and independent attached block decoded");
+    auto semantic_tail = tail;
+    semantic_tail[4 + 5 + 4 + 2 + 4 + 3] = 1;
+    semantic_tail[4 + 5 + 4] = 'A';
+    semantic_tail[4 + 5 + 4 + 1] = 0;
+    const auto semantic = complex_blob("ParaCmptInstance", component(semantic_tail))["footer"];
+    check(semantic["hollow"] == true && semantic["hollow_status"] == "decoded" &&
+              semantic["remark"]["text"] == std::string("A\0", 2) &&
+              semantic["remark"]["native_value"]["text"] == "A",
+          "hollow flag and terminated native remark keep full source bytes");
+    check(ft["value_key_semantics"] == "component_property_id" &&
+              ft["values"][0]["property_id"] == 123,
+          "value identifiers are generic component property IDs");
+    auto bad_footer = [&](const Bytes &b) {
+        bool threw = false;
+        try {
+            complex_blob("ParaCmptInstance", component(b));
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        check(threw, "truncated component suffix rejected");
+    };
+    for (auto n : {0u, 3u, 8u, 14u, 21u, 25u})
+        bad_footer(slice(tail, 0, n));
+    auto invalid = tail;
+    invalid[3] = 0x80;
+    bad_footer(invalid);
+    invalid = tail;
+    // First value has 8+1+4 framing after the three fields, flag and count.
+    const std::size_t first_value = 4 + 5 + 4 + 2 + 4 + 3 + 1 + 4;
+    std::fill(invalid.begin() + first_value, invalid.begin() + first_value + 8, 0xff);
+    const auto signed_id = complex_blob("ParaCmptInstance", component(invalid))["footer"];
+    check(signed_id["values"][0]["property_id"] == -1 &&
+              signed_id["values"][0]["key"] == std::numeric_limits<std::uint64_t>::max(),
+          "signed component property identifier preserves complete source bits");
+    invalid[first_value + 8] = 6; // Bounded eight-byte payload is invalid for null.
+    auto bad_value = complex_blob("ParaCmptInstance", component(invalid))["footer"];
+    check(bad_value["values"][0].contains("decode_error") &&
+              bad_value["unassigned_id_sets"] == ft["unassigned_id_sets"],
+          "bad bounded typed value does not lose following sets");
     return checks;
 }

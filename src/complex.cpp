@@ -379,6 +379,114 @@ static Json vector_mesh(Reader &r) {
     }
     return {{"version", v}, {"vertices", vertices}, {"faces", faces}};
 }
+// This unversioned suffix follows the complete component-instance list.
+// Material and property text use Windows ANSI; remarks have no confirmed code page.
+static Json component_text(const Bytes &b, bool ansi = true) {
+    Json out = {{"encoding", ansi ? "windows_ansi" : "not_established"},
+                {"source_bytes", rawbytes(b)},
+                {"text", nullptr},
+                {"status", ansi ? "requires_ansi_decoder" : "requires_text_decoder"}};
+    if (std::all_of(b.begin(), b.end(), [](auto c) { return c < 128; })) {
+        out["text"] = std::string(b.begin(), b.end());
+        out["status"] = "ascii_subset";
+    }
+    return out;
+}
+static Json component_footer(Reader &r) {
+    const auto start = r.p;
+    auto material_bytes = r.take(r.u32());
+    Json material = component_text(material_bytes);
+    const auto end = std::find(material_bytes.begin(), material_bytes.end(), std::uint8_t(0));
+    const Bytes lookup_bytes(material_bytes.begin(), end);
+    const auto lookup = component_text(lookup_bytes);
+    material["lookup_name"] = lookup["text"];
+    material["lookup_name_bytes"] = rawbytes(lookup_bytes);
+    material["lookup_status"] = "not_performed";
+    material["comparison"] = "case_sensitive_utf16_code_units";
+    material["catalog_context"] = "active_project_material_list";
+    material["applies_to"] = "all_rebuilt_graphics_entries";
+    material["on_lookup_miss"] = "preserve_entry_materials";
+    auto remark_bytes = r.take(r.u32());
+    auto remark = component_text(remark_bytes, false);
+    const auto remark_end = std::find(remark_bytes.begin(), remark_bytes.end(), std::uint8_t(0));
+    const Bytes remark_prefix(remark_bytes.begin(), remark_end);
+    remark["native_value"] = component_text(remark_prefix, false);
+    const auto binary = r.take(r.u32());
+    const auto flag = r.u8();
+    const auto count = r.count('I', 13);
+    Json values = Json::array();
+    for (std::uint64_t i = 0; i < count; ++i) {
+        const auto offset = r.p;
+        const auto property_id = r.i64();
+        const auto type = r.u8();
+        const auto data = r.take(r.u32());
+        Reader v(data);
+        Json item = {
+            {"source_offset", offset},        {"key", static_cast<std::uint64_t>(property_id)},
+            {"property_id", property_id},     {"type_code", type},
+            {"source_bytes", rawbytes(data)}, {"kind", "unassigned"}};
+        try {
+            switch (type) {
+            case 1:
+                item["kind"] = "int64";
+                item["value"] = v.i64();
+                break;
+            case 2:
+                item["kind"] = "double";
+                item["value"] = v.f64();
+                break;
+            case 3: {
+                item["kind"] = "boolean";
+                auto b = v.u8();
+                item["boolean_value"] = b;
+                item["value"] = b != 0;
+                break;
+            }
+            case 4:
+                item["kind"] = "string";
+                item["value"] = component_text(v.take(v.left()));
+                break;
+            case 5:
+                item["kind"] = "binary";
+                v.skip(v.left());
+                break;
+            case 6:
+                item["kind"] = "null";
+                item["value"] = nullptr;
+                break;
+            default:
+                v.skip(v.left());
+                break;
+            }
+            v.finish();
+        } catch (const std::exception &e) {
+            item["decode_error"] = e.what();
+        }
+        values.push_back(std::move(item));
+    }
+    auto ids = [&]() {
+        const auto n = r.count('I', 8);
+        Json result = Json::array();
+        for (std::uint64_t i = 0; i < n; ++i)
+            result.push_back(r.u64());
+        return result;
+    };
+    auto first = ids(), second = ids();
+    Json out = {{"source_offset", start},
+                {"material_name_reference", std::move(material)},
+                {"remark", std::move(remark)},
+                {"attached_data_block", rawbytes(binary)},
+                {"hollow_byte", flag},
+                {"hollow", flag <= 1 ? Json(flag != 0) : Json(nullptr)},
+                {"hollow_status", flag <= 1 ? "decoded" : "invalid_boolean"},
+                {"values", std::move(values)},
+                {"unassigned_id_sets", Json::array({std::move(first), std::move(second)})},
+                {"value_key_semantics", "component_property_id"},
+                {"material_application_status", "not_evaluated"}};
+    if (r.left())
+        out["unassigned_suffix_hex"] = hex(r.take(r.left()));
+    return out;
+}
 Json complex_blob(const std::string &name, const Bytes &b) {
     Reader r(b);
     Json out;
@@ -442,14 +550,14 @@ Json complex_blob(const std::string &name, const Bytes &b) {
                 return body;
             },
             15, 'I');
-        require(r.left() == 25, "component list footer");
-        out = {
-            {"parent_id", parent},
-            {"instances", instances},
-            {"footer_hex", hex(r.take(r.left()))},
-            {"note",
-             "Reference list and serialized graphics entries retain their source order. "
-             "Cached payloads are not added again to the visible scene."}};
+        const auto footer_start = r.p;
+        auto footer = component_footer(r);
+        out = {{"parent_id", parent},
+               {"instances", instances},
+               {"footer", std::move(footer)},
+               {"footer_hex", hex(slice(b, footer_start, b.size() - footer_start))},
+               {"note", "Reference list and serialized graphics entries retain their source order. "
+                        "Cached payloads are not added again to the visible scene."}};
     } else
         throw std::runtime_error("unsupported complex field");
     r.finish();
