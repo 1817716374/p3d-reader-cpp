@@ -85,6 +85,30 @@ Json decode_property(const Bytes &body) {
     record(b, "@#$", 18, type_body(18, {}, {31}));
     return complex_blob("BfaTree", b);
 }
+Bytes component_body(const Bytes &mapping, bool extended = false) {
+    Bytes b;
+    ref(b, 40);
+    put<std::uint64_t>(b, 0);
+    str(b, Bytes{'C', 0, 'x'});
+    str(b, Bytes{'D'});
+    str(b, Bytes{0, 0xff, '+'});
+    str(b, {});
+    put<std::int32_t>(b, -3);
+    if (extended)
+        put<std::uint64_t>(b, 0x1122334455667788ULL);
+    b.insert(b.end(), mapping.begin(), mapping.end());
+    return b;
+}
+Json decode_component(const Bytes &body, bool duplicate_property = false) {
+    Bytes b;
+    record(b, "~$^", 40, body, {23});
+    const auto property = property_body(true, 4, {});
+    record(b, "!_#", 23, property);
+    if (duplicate_property)
+        record(b, "!_#", 23, property);
+    record(b, "@#$", 18, type_body(18, {}, {31}));
+    return complex_blob("BfaTree", b);
+}
 } // namespace
 unsigned bfa_tests() {
     using namespace p3d;
@@ -417,5 +441,98 @@ unsigned bfa_tests() {
     check(ambiguous["type_property_bindings"][0]["target_status"] == "ambiguous_id" &&
               !ambiguous["type_property_bindings"][0].contains("type_record_index"),
           "duplicate graph identity does not silently resolve by traversal order");
+    {
+        const auto empty_component = decode_component(component_body(Bytes{'+'}));
+        const auto &empty_definition = empty_component["records"][0]["component_definition"];
+        check(empty_definition["mapping_layout_status"] == "unique_candidate" &&
+                  empty_definition["mapping_layout_candidates"][0]["has_context_uint64"] == false &&
+                  empty_definition["mapping_layout_candidates"][0]["property_id_maps"][1]
+                                  ["terminator_stored"] == false &&
+                  empty_component["component_property_bindings"].empty(),
+              "legacy empty property ID maps terminate at their bounded component body");
+        check(empty_definition["unassigned_binary_fields"][0]["base64"] ==
+                      base64(Bytes{0, 0xff, '+'}) &&
+                  empty_definition["name_fields"][0]["native_value"]["text"] == "C" &&
+                  empty_definition["unassigned_int32"] == -3,
+              "component prefix retains bounded binary fields and full text before native NUL "
+              "handling");
+        Bytes mapping;
+        for (const auto pair : {std::make_pair(23ULL, 5LL), std::make_pair(23ULL, -42LL),
+                                std::make_pair(placed_id, 88LL), std::make_pair(18ULL, 9LL)}) {
+            ref(mapping, pair.first);
+            put<std::int64_t>(mapping, pair.second);
+        }
+        mapping.push_back('+');
+        ref(mapping, 23);
+        put<std::int64_t>(mapping, -17);
+        const auto cb = component_body(mapping);
+        const auto component = decode_component(cb);
+        const auto &layout =
+            component["records"][0]["component_definition"]["mapping_layout_candidates"][0];
+        const auto &maps = layout["property_id_maps"];
+        check(maps[0]["selected_entry_indices"] == Json({3, 1, 2}) &&
+                  maps[0]["entries"].size() == 4 && maps[0]["entries"][0]["property_id"] == 5 &&
+                  maps[0]["entries"][1]["property_id"] == -42 &&
+                  maps[0]["entries"][1]["property_id_bits"] == std::uint64_t(-42) &&
+                  maps[0]["duplicate_key_rule"] == "last_entry_wins",
+              "component mapping uses native last assignment and unsigned node-key ordering");
+        const auto &cpb = component["component_property_bindings"];
+        check(cpb.size() == 4 && cpb[1]["target_status"] == "matched_property_record" &&
+                  cpb[1]["component_definition_id"] == 40 &&
+                  cpb[1]["component_record_index"] == 0 && cpb[1]["property_record_index"] == 1 &&
+                  cpb[1]["property_id"] == -42 && cpb[1]["mapping_source"]["entry_index"] == 1 &&
+                  cpb[3]["property_id"] == -17 && cpb[3]["mapping_source"]["map_index"] == 1 &&
+                  maps[0]["driven_storage_kind"] == 1 && maps[1]["driven_storage_kind"] == 2,
+              "SDK IDs bind through each distinct source map without conflating graph node IDs");
+        check(cpb[0]["target_status"] == "unexpected_node_kind" &&
+                  cpb[2]["target_status"] == "not_in_this_tree" &&
+                  component["records"][0]["children"] == Json({23}) &&
+                  component["external_child_ids"].empty(),
+              "ID mapping does not invent tree edges or match a type node as an attribute");
+        const auto duplicate_component = decode_component(cb, true);
+        check(duplicate_component["component_property_bindings"][1]["target_status"] ==
+                      "ambiguous_id" &&
+                  !duplicate_component["component_property_bindings"][1].contains(
+                      "property_record_index"),
+              "duplicate property nodes leave mapping target unresolved");
+        mapping.push_back('+');
+        mapping.insert(mapping.end(), {0x91, 0x82});
+        const auto newer = decode_component(component_body(mapping, true));
+        const auto &new_definition = newer["records"][0]["component_definition"];
+        const auto &new_layout = new_definition["mapping_layout_candidates"][0];
+        check(new_definition["mapping_layout_status"] == "unique_candidate" &&
+                  new_layout["has_context_uint64"] == true &&
+                  new_layout["unassigned_context_uint64"] == 0x1122334455667788ULL &&
+                  new_layout["unassigned_suffix_hex"] == "9182" &&
+                  newer["component_property_bindings"].size() == 4,
+              "extended component prefix and unparsed tail remain separate from native ID maps");
+        Bytes ambiguous_mapping{'+'};
+        ref(ambiguous_mapping, 0x00002b2b00000007ULL);
+        put<std::int64_t>(ambiguous_mapping, 23);
+        ambiguous_mapping.push_back('+');
+        const auto ambiguous_component = decode_component(component_body(ambiguous_mapping));
+        check(ambiguous_component["records"][0]["component_definition"]["mapping_layout_status"] ==
+                      "requires_version_context" &&
+                  ambiguous_component["records"][0]["component_definition"]
+                                     ["mapping_layout_candidates"]
+                                         .size() == 2 &&
+                  ambiguous_component["component_property_bindings"].empty(),
+              "two plausible component layouts retain both candidates without fabricated bindings");
+        const auto invalid_component = decode_component(component_body(Bytes{0xff}));
+        check(invalid_component["records"][0]["component_definition"]["mapping_layout_status"] ==
+                      "malformed_or_unsupported" &&
+                  invalid_component["component_property_bindings"].empty() &&
+                  invalid_component["records"][2]["placed_instance_ids"] == Json({31}),
+              "invalid component maps do not affect the following graph records");
+        for (std::size_t cut = 19; cut < cb.size(); ++cut) {
+            const auto cut_result = decode_component(Bytes(cb.begin(), cb.begin() + cut));
+            check(cut_result["records"][0]["body_base64"] ==
+                          base64(Bytes(cb.begin(), cb.begin() + cut)) &&
+                      cut_result["records"][2]["placed_instance_ids"] == Json({31}),
+                  "truncated component definitions preserve source bytes and subsequent nodes");
+        }
+        auto cjob = std::async(std::launch::async, [&] { return decode_component(cb); });
+        check(cjob.get() == component, "component mapping decode is reentrant");
+    }
     return checks;
 }

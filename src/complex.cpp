@@ -333,6 +333,89 @@ static Json bfa_property(const Bytes &payload, Json &record) {
     out["resolution_status"] = "requires_component_context";
     return out;
 }
+static Json bfa_component(const Bytes &payload, Json &record) {
+    Reader r(payload);
+    Json out, names = Json::array(), texts = Json::array();
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto bytes = r.take(r.u32());
+        auto text = component_text(bytes, false);
+        const auto end = std::find(bytes.begin(), bytes.end(), std::uint8_t(0));
+        text["native_value"] = component_text(Bytes(bytes.begin(), end), false);
+        texts.push_back(std::move(text));
+        try {
+            names.push_back(gb18030(bytes));
+        } catch (const std::exception &e) {
+            names.push_back(nullptr);
+            record["names_decode_error"] = e.what();
+        }
+    }
+    record["names"] = std::move(names);
+    record["names_encoding"] = "legacy_gb18030_display";
+    record["suffix_hex"] = hex(Bytes(payload.begin() + r.p, payload.end()));
+    out["name_fields"] = std::move(texts);
+    out["unassigned_binary_fields"] = Json::array();
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto offset = r.p + 19;
+        const auto bytes = r.take(r.u32());
+        out["unassigned_binary_fields"].push_back(
+            {{"body_offset", offset}, {"bytes", bytes.size()}, {"base64", base64(bytes)}});
+    }
+    out["unassigned_int32"] = r.i32();
+    Json candidates = Json::array();
+    // The native reader gets its version from the containing component context.
+    // Without it, keep both compatible layouts instead of guessing from ID bits.
+    for (bool extended : {false, true}) {
+        try {
+            Reader c(payload);
+            c.p = r.p;
+            Json candidate = {{"has_context_uint64", extended},
+                              {"property_id_maps", Json::array()}};
+            if (extended)
+                candidate["unassigned_context_uint64"] = c.u64();
+            for (unsigned map_index = 0; map_index < 2; ++map_index) {
+                Json entries = Json::array();
+                std::map<std::uint64_t, std::size_t> selected;
+                while (c.left() && payload[c.p] != '+') {
+                    const auto offset = c.p + 19;
+                    require(hex(c.take(3)) == "7c2340", "BFA property ID map reference");
+                    const auto id = c.u64();
+                    const auto property_id = c.i64();
+                    selected[id] = entries.size();
+                    entries.push_back({{"body_offset", offset},
+                                       {"property_definition_id", id},
+                                       {"property_id", property_id},
+                                       {"property_id_bits", std::uint64_t(property_id)}});
+                }
+                const bool terminated = c.left() != 0;
+                require(terminated || (map_index == 1 && !extended),
+                        "BFA property ID map terminator");
+                if (terminated)
+                    c.u8();
+                Json indices = Json::array();
+                for (const auto &entry : selected)
+                    indices.push_back(entry.second);
+                candidate["property_id_maps"].push_back(
+                    {{"driven_storage_kind", map_index + 1},
+                     {"entries", std::move(entries)},
+                     {"selected_entry_indices", std::move(indices)},
+                     {"duplicate_key_rule", "last_entry_wins"},
+                     {"terminator_stored", terminated}});
+            }
+            candidate["consumed_body_bytes"] = c.p + 19;
+            if (c.left())
+                candidate["unassigned_suffix_hex"] = hex(c.take(c.left()));
+            candidates.push_back(std::move(candidate));
+        } catch (const std::exception &) {
+            // A rejected layout never consumes bytes from another candidate or node.
+        }
+    }
+    out["mapping_layout_status"] = candidates.empty()       ? "malformed_or_unsupported"
+                                   : candidates.size() == 1 ? "unique_candidate"
+                                                            : "requires_version_context";
+    out["mapping_layout_candidates"] = std::move(candidates);
+    out["reference_scope"] = "component_project";
+    return out;
+}
 static Json bfa(const Bytes &b) {
     static const std::map<std::string, std::string> kinds = {{"~$^", "component_definition"},
                                                              {"@#$", "component_type"},
@@ -377,6 +460,16 @@ static Json bfa(const Bytes &b) {
             item["payload_hex"] = hex(payload);
             try {
                 item["property_definition"] = bfa_property(payload, item);
+                item["payload_status"] = "structure_decoded";
+            } catch (const std::exception &e) {
+                item["payload_status"] = "malformed_or_unsupported";
+                item["decode_error"] = e.what();
+            }
+        } else if (tag == "~$^") {
+            const auto payload = br.take(br.left());
+            item["payload_hex"] = hex(payload);
+            try {
+                item["component_definition"] = bfa_component(payload, item);
                 item["payload_status"] = "structure_decoded";
             } catch (const std::exception &e) {
                 item["payload_status"] = "malformed_or_unsupported";
@@ -478,9 +571,45 @@ static Json bfa(const Bytes &b) {
             bindings.push_back(std::move(binding));
         }
     }
+    Json property_ids = Json::array();
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        const auto &node = records[i];
+        if (!node.contains("component_definition"))
+            continue;
+        const auto &definition = node["component_definition"];
+        if (definition["mapping_layout_status"] != "unique_candidate")
+            continue;
+        const auto &maps = definition["mapping_layout_candidates"][0]["property_id_maps"];
+        for (std::size_t m = 0; m < maps.size(); ++m)
+            for (const auto &selected : maps[m]["selected_entry_indices"]) {
+                const auto index = selected.get<std::size_t>();
+                const auto &entry = maps[m]["entries"][index];
+                const auto id = entry["property_definition_id"].get<std::uint64_t>();
+                Json binding = {{"component_record_index", i},
+                                {"component_definition_id", node["id"]},
+                                {"mapping_source",
+                                 {{"layout_index", 0}, {"map_index", m}, {"entry_index", index}}},
+                                {"property_definition_id", id},
+                                {"property_id", entry["property_id"]},
+                                {"scope", "this_bfa_tree"}};
+                const auto found = local_nodes.find(id);
+                if (found == local_nodes.end())
+                    binding["target_status"] = "not_in_this_tree";
+                else if (found->second.size() != 1)
+                    binding["target_status"] = "ambiguous_id";
+                else if (records[found->second.front()]["node_kind"] != "property_definition")
+                    binding["target_status"] = "unexpected_node_kind";
+                else {
+                    binding["target_status"] = "matched_property_record";
+                    binding["property_record_index"] = found->second.front();
+                }
+                property_ids.push_back(std::move(binding));
+            }
+    }
     return {{"records", records},
             {"external_child_ids", external},
             {"type_property_bindings", std::move(bindings)},
+            {"component_property_bindings", std::move(property_ids)},
             {"note", "Node kinds and component-type placed-instance references are identified. "
                      "The placed-instance IDs are not definition-tree child IDs. Other node "
                      "suffixes and some header semantics remain unassigned. Driven references "
