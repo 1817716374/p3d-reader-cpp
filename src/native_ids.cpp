@@ -63,6 +63,7 @@ static Json initial_id_assignments(const Json &list, const Json &records, std::u
             // The entire subtree is assigned IDs before any of its nodes is
             // registered. A later descendant may raise the counter used by a
             // duplicate at the root. Do not combine these into one pass.
+            std::map<std::size_t, std::size_t> root_occurrences;
             for (const auto &header : root.at("headers")) {
                 require(header.at("status") == "resolved", "unresolved list header preparation");
                 const auto ni = header.at("native_record_index").get<std::size_t>();
@@ -72,10 +73,21 @@ static Json initial_id_assignments(const Json &list, const Json &records, std::u
                     prepared = ++counter;
                 else
                     counter = std::max(counter, prepared);
+                Json parent_occurrence;
+                if (!header.at("parent_record_index").is_null()) {
+                    const auto parent = header.at("parent_record_index").get<std::size_t>();
+                    require(root_occurrences.count(parent) != 0,
+                            "parent must precede child in input subtree");
+                    parent_occurrence = root_occurrences.at(parent);
+                }
+                require(root_occurrences.emplace(ni, occurrence).second,
+                        "ambiguous source occurrence within input subtree");
                 result["records"].push_back(
                     {{"native_record_index", ni},
                      {"input_occurrence_index", occurrence++},
                      {"parent_record_index", header.at("parent_record_index")},
+                     {"parent_input_occurrence_index", parent_occurrence},
+                     {"prepared_element_flags", header.value("output_element_flags", Json())},
                      {"source_id", source},
                      {"prepared_id", prepared}});
             }

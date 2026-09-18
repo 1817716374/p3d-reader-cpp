@@ -145,5 +145,152 @@ unsigned native_reference_path_tests() {
     check(
         !rows[0].contains("owner_reference_path"),
         "other application signatures sharing the record type are not mislabeled as broken paths");
+    Json sources = Json::array({{{"id", 10}, {"element_type", 62}},
+                                {{"id", 11}, {"element_type", 62}},
+                                {{"id", 12}, {"element_type", 19}, {"element_flags", 0}},
+                                {{"id", 20}, {"element_type", 19}}});
+    auto path_record = [&](std::uint64_t id, unsigned format,
+                           std::initializer_list<std::uint64_t> ids) {
+        auto bytes = payload(format, unsigned(ids.size()));
+        std::size_t i = 0;
+        for (auto target : ids)
+            put(bytes, (format == 6 ? 24 : 8) + 8 * i++, target, 8);
+        sources.push_back(
+            {{"id", id},
+             {"element_type", 47},
+             {"owner_reference_path", native_reference_path(base, Json::array({link(bytes)}))}});
+    };
+    path_record(30, 0, {12, 20});
+    path_record(31, 6, {12, 20});
+    path_record(32, 6, {12});
+    path_record(33, 0, {});
+    path_record(34, 0, {33});
+    path_record(35, 0, {30, 20});
+    path_record(36, 0, {36});
+    path_record(37, 0, {999});
+    sources.push_back({{"id", 38}, {"element_type", 13}});
+    path_record(39, 6, {38});
+    sources.push_back({{"id", 40}, {"element_type", 47}});
+    path_record(41, 0, {40});
+    path_record(42, 0, {20, 32});
+    path_record(43, 6, {40});
+    path_record(44, 0, {38});
+    path_record(45, 0, {12, 12});
+    const auto system_record = sources.size();
+    sources.push_back({{"id", 50}, {"element_type", 19}});
+    auto root = [&](std::size_t first, std::size_t count) {
+        Json headers = Json::array();
+        for (std::size_t i = first; i < first + count; ++i)
+            headers.push_back({{"status", "resolved"},
+                               {"native_record_index", i},
+                               {"parent_record_index", i == first ? Json() : Json(i - 1)},
+                               {"output_element_flags", i == first ? 0 : 0x80}});
+        return Json{
+            {"native_record_index", first}, {"block_number", first + 1}, {"headers", headers}};
+    };
+    Json owner_roots = Json::array({root(0, 3)});
+    for (std::size_t i = 3; i < system_record; ++i)
+        owner_roots.push_back(root(i, 1));
+    const StreamPath storage{"models", "A"};
+    const Json aliases = {{"P3D-SMC", "C"}, {"P3D-SMG", "G"}};
+    Json containers = Json::array({{{"kind", "P3D-SMC"},
+                                    {"container", StreamPath{"models", "A", "C"}},
+                                    {"list_preparation",
+                                     {{"status", "resolved"},
+                                      {"system_bootstrap_required", false},
+                                      {"roots", owner_roots}}}}});
+    auto owner = native_model_id_assignments(containers, sources, aliases, storage, 0);
+    const Json system_list = {{"status", "resolved"},
+                              {"system_bootstrap_required", true},
+                              {"roots", Json::array({root(system_record, 1)})}};
+    const Json file_header = {
+        {"status", "resolved"},
+        {"initial_probe", {{"action", "read_header_payload"}, {"id_counter", 0}}}};
+    const auto system = native_system_id_assignments(system_list, sources, file_header);
+    auto collect = [&](std::uint64_t id) {
+        return native_reference_path_collection(owner, system, sources, id);
+    };
+    auto collected_ids = [](const Json &q) {
+        Json ids = Json::array();
+        for (const auto &item : q.at("collected"))
+            ids.push_back(item.at("assigned_id"));
+        return ids;
+    };
+    auto q = collect(12);
+    check(q["status"] == "resolved" && collected_ids(q) == Json::array({10, 12}) &&
+              q["terminal_index"] == 1 && q["owner_scope"] == "owner",
+          "prepared child flag follows input parent chain to first non-child ancestor only");
+    check(q["collected"][1]["parent_input_occurrence_index"] == 1 &&
+              sources[2]["element_flags"] == 0,
+          "prepared parent and child state does not use saved source flag or invent hierarchy");
+    check(collected_ids(collect(30)) == Json::array({20, 10, 12}) &&
+              collected_ids(collect(31)) == Json::array({20, 10, 12}),
+          "both path encodings retain reverse source traversal and terminal ancestry");
+    q = collect(32);
+    check(q["status"] == "resolved" && q["owner_scope"].is_null() &&
+              collected_ids(q) == Json::array({10, 12}),
+          "format-six terminal append does not fabricate a collector owner");
+    q = collect(33);
+    check(q["status"] == "resolved" && q["collected"].empty() && q["terminal_index"] == -1 &&
+              q["owner_scope"] == "owner" && !q.contains("target"),
+          "empty format-zero path establishes owner while retaining empty collector");
+    check(collect(34)["owner_scope"] == "owner" && collect(34)["collected"].empty(),
+          "nested empty path propagates current owner without adding a record");
+    check(collected_ids(collect(35)) == Json::array({20, 20, 10, 12}) &&
+              collected_ids(collect(45)) == Json::array({10, 12, 10, 12}),
+          "repeated ordinary objects and ancestors remain distinct collection entries");
+    q = collect(36);
+    check(q["status"] == "not_evaluated" && q["reason"] == "cyclic_owner_reference_path" &&
+              !q.contains("target"),
+          "cyclic path fails without unbounded recursion or fake target");
+    check(collect(37)["status"] == "native_failure" && collect(37)["native_status"] == 1,
+          "missing object in two complete registries stops path expansion");
+    q = collect(44);
+    check(q["status"] == "not_evaluated" && q["unresolved_reference"]["assigned_id"] == 38,
+          "expanded type-thirteen reference requires actual attachment context");
+    check(collect(39)["status"] == "resolved" && collect(39)["target"]["assigned_id"] == 38 &&
+              collect(39)["owner_scope"].is_null(),
+          "terminal type-thirteen object is appended without triggering model expansion");
+    check(collect(41)["status"] == "native_failure" && collect(43)["status"] == "resolved",
+          "non-path application fails expanded dispatch but is legal as a terminal target");
+    q = collect(42);
+    check(q["status"] == "native_failure" && q["reason"] == "path_lookup_owner_missing" &&
+              !q["collection_complete"].get<bool>() && collected_ids(q) == Json::array({10, 12}) &&
+              !q.contains("target"),
+          "missing owner after nested terminal path stops later lookups");
+    q = collect(50);
+    check(q["status"] == "resolved" && q["target"]["lookup_scope"] == "system" &&
+              q["owner_scope"] == "owner",
+          "system lookup does not replace the caller owner context");
+    check(native_reference_path_collection(owner, Json(), sources, 12)["status"] == "resolved" &&
+              native_reference_path_collection(owner, Json(), sources, 50)["status"] ==
+                  "not_evaluated",
+          "unknown system registry matters only after an owner miss");
+    auto partial = owner;
+    partial["status"] = "partial";
+    check(native_reference_path_collection(partial, system, sources, 50)["status"] ==
+              "not_evaluated",
+          "partial owner registry cannot justify system fallback");
+    auto unknown_flags = owner;
+    unknown_flags["roots"][0]["records"][2]["prepared_element_flags"] = nullptr;
+    check(native_reference_path_collection(unknown_flags, system, sources, 12)["status"] ==
+              "not_evaluated",
+          "unknown prepared child state is not replaced by serialized flags");
+    auto aliased = aliases;
+    aliased["P3D-SMG"] = "C";
+    const auto duplicated = native_model_id_assignments(containers, sources, aliased, storage, 0);
+    for (const auto &entry : duplicated.at("registry")) {
+        if (entry.at("input_list_index") != 1 || entry.at("native_record_index") != 2)
+            continue;
+        q = native_reference_path_collection(duplicated, system, sources,
+                                             entry.at("id").get<std::uint64_t>());
+        check(q["status"] == "resolved" && q["collected"].size() == 2 &&
+                  q["collected"][0]["input_list_index"] == 1 &&
+                  q["collected"][0]["input_occurrence_index"] == system_record &&
+                  q["collected"][1]["input_occurrence_index"] == system_record + 2,
+              "repeated source container resolves ancestors within its own input occurrence");
+    }
+    check(Json::parse(q.dump()) == q,
+          "collected identity and source ancestry survive JSON roundtrip");
     return checks;
 }

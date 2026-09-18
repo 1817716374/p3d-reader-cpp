@@ -538,6 +538,11 @@ class Document {
     // Shares the explicit counter restrictions above. Does not apply runtime
     // deletion filters, expand owner paths, or scan unrelated models.
     Json native_model_object_lookup(const StreamPath &model_storage,
+                                      std::uint64_t initial_id_counter, std::uint64_t id) const;
+    // Expand owner-reference paths in the fresh input graph, before runtime
+    // callbacks. Retains parent occurrence identity and prepared child flags.
+    // Type-13 model attachment/loading is not inferred from source IDs.
+    Json native_model_reference_path(const StreamPath &model_storage,
                                      std::uint64_t initial_id_counter, std::uint64_t id) const;
     // Conditional initial SMC/SMCA then SMG/SMGA input into a fresh model.
     // Preserves collection state and uses the registry available at each step.
