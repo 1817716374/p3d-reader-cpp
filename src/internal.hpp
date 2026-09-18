@@ -235,6 +235,7 @@ Json native_material_catalog_registration(const Json &selection, const Json &sou
 Json native_material_catalog_tables(const Json &native_records, Json &catalog_records);
 Json native_system_material_table(const Json &list, const Json &records, const Json &ids);
 Json native_attribute_lookup(const Json &attributes);
+Json decode_reference_extension(unsigned group, unsigned key, const Bytes &, unsigned index);
 Json native_material_attribute(const Json &member, const Json &input);
 Json decode_material_auxiliary_records(const Bytes &);
 Json material_xml_integer(const Json &, const std::string &, bool signed_value);

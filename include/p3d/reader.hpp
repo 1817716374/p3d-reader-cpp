@@ -55,6 +55,9 @@ Json reference_affine_transform(const Json &reference_input, const ReferenceAffi
 // Entries must be computed reference_affine_transform results in native
 // current-to-host traversal order. Target selection is not inferred here.
 Json compose_reference_chain_transforms(const std::vector<Json> &transforms);
+// Initial reference extension state from one complete, already selected
+// persisted attribute collection. Does not merge runtime edits or locate targets.
+Json reference_extension_input(const Json &attributes);
 // Native CurveVector reference frame selection, preserving direct child order
 // and nested arrays. Preference 1 favors endpoint axes; 2 uses endpoints only
 // when their tangents are not parallel; other values use the local search.

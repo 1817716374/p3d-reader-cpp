@@ -758,6 +758,9 @@ static Bytes decompress_attribute(const Bytes &b, Json &metadata) {
     return out;
 }
 Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index) {
+    auto reference_extension = decode_reference_extension(group, key, b, index);
+    if (!reference_extension.is_null())
+        return reference_extension;
     if (group == 2 && key == 10001) {
         auto name = utf16(b);
         Json(name).dump();
@@ -933,6 +936,11 @@ Json parse_graphics(const Bytes &b) {
                     {"flags", flags},
                     {"attributes", std::move(attrs)},
                     {"trailer", r.u32()}};
+        for (const auto &a : rec["attributes"])
+            if (a["key"] == 20081 && (a["group"] == 0 || a["group"] == 20117)) {
+                rec["reference_extension_input"] = reference_extension_input(rec["attributes"]);
+                break;
+            }
         for (auto &a : rec["attributes"])
             if (a["group"] == 303 && a["key"] == 23223) {
                 try {
