@@ -313,5 +313,61 @@ unsigned graphics_bytes_tests() {
     check(bad_value["values"][0].contains("decode_error") &&
               bad_value["unassigned_id_sets"] == ft["unassigned_id_sets"],
           "bad bounded typed value does not lose following sets");
+    check(ft["stored_value_selection"]["selected_entry_indices"] == Json({0, 1, 2, 3, 4, 5, 6}) &&
+              ft["stored_value_selection"]["duplicate_key_rule"] == "first_entry_wins" &&
+              ft["stored_value_selection"]["index_order"] == "source_order" &&
+              ft["stored_value_selection"]["scope"] == "component_data_footer" &&
+              ft["stored_value_selection"]["fallback_to_type_values"] == false,
+          "component data getter selects source-first values within its own stored footer");
+    check(ft["stored_value_selection"]["missing_key_action"] == "leave_destination_unchanged" &&
+              empty["footer"]["stored_value_selection"]["selected_entry_indices"].empty(),
+          "missing stored values do not invent a type fallback or a new output value");
+    check(ft["values"][3]["value"]["native_value"]["text"] == "a" &&
+              ft["values"][3]["value"]["text"] == std::string("a\0b", 3) &&
+              ft["values"][3]["native_read_action"] == "set_value",
+          "stored string getter uses a bounded NUL prefix while retaining every source byte");
+    check(ft["values"][5]["native_read_action"] == "leave_destination_unchanged" &&
+              ft["values"][6]["native_read_action"] == "leave_destination_unchanged" &&
+              bad_value["values"][0]["native_read_action"] == "leave_destination_unchanged",
+          "null and unknown getter branches do not overwrite the caller value or emulate invalid "
+          "reads");
+    Bytes duplicate_tail(13, 0); // Three empty fields and the hollow byte.
+    put<std::uint32_t>(duplicate_tail, 10);
+    auto duplicate_value = [&](std::int64_t id, unsigned kind, const Bytes &bytes) {
+        put(duplicate_tail, id);
+        duplicate_tail.push_back(std::uint8_t(kind));
+        text(duplicate_tail, bytes);
+    };
+    Bytes integer;
+    put<std::int64_t>(integer, 73);
+    duplicate_value(3, 6, {});
+    duplicate_value(-1, 4, Bytes{'a', 0, 'b'});
+    duplicate_value(0, 31, Bytes{0xaa});
+    duplicate_value(7, 1, Bytes{0xbb});
+    duplicate_value(3, 1, integer);
+    duplicate_value(-1, 1, integer);
+    duplicate_value(0, 1, integer);
+    duplicate_value(7, 1, integer);
+    duplicate_value(9, 1, integer);
+    duplicate_value(9, 6, {});
+    put<std::uint32_t>(duplicate_tail, 0);
+    put<std::uint32_t>(duplicate_tail, 0);
+    const auto duplicate_footer =
+        complex_blob("ParaCmptInstance", component(duplicate_tail))["footer"];
+    check(
+        duplicate_footer["stored_value_selection"]["selected_entry_indices"] ==
+                Json({0, 1, 2, 3, 8}) &&
+            duplicate_footer["values"].size() == 10 &&
+            duplicate_footer["values"][1]["property_id"] == -1 &&
+            duplicate_footer["values"][8]["value"] == 73,
+        "duplicate selection preserves source ordering and signed ID bit identity without sorting");
+    check(duplicate_footer["values"][0]["native_read_action"] == "leave_destination_unchanged" &&
+              duplicate_footer["values"][2]["native_read_action"] ==
+                  "leave_destination_unchanged" &&
+              duplicate_footer["values"][3]["native_read_action"] ==
+                  "not_evaluated_malformed_payload" &&
+              duplicate_footer["values"][4]["value"] == 73 &&
+              duplicate_footer["values"][7]["value"] == 73,
+          "null unknown and truncated first matches prevent substituting later same-ID values");
     return checks;
 }

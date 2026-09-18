@@ -1071,11 +1071,15 @@ static Json component_footer(Reader &r) {
     const auto flag = r.u8();
     const auto count = r.count('I', 13);
     Json values = Json::array();
+    Json selected_values = Json::array();
+    std::set<std::int64_t> selected_ids;
     for (std::uint64_t i = 0; i < count; ++i) {
         const auto offset = r.p;
         const auto property_id = r.i64();
         const auto type = r.u8();
         const auto data = r.take(r.u32());
+        if (selected_ids.insert(property_id).second)
+            selected_values.push_back(i);
         Reader v(data);
         Json item = {
             {"source_offset", offset},        {"key", static_cast<std::uint64_t>(property_id)},
@@ -1098,10 +1102,13 @@ static Json component_footer(Reader &r) {
                 item["value"] = b != 0;
                 break;
             }
-            case 4:
+            case 4: {
                 item["kind"] = "string";
                 item["value"] = component_text(v.take(v.left()));
+                const auto end = std::find(data.begin(), data.end(), std::uint8_t(0));
+                item["value"]["native_value"] = component_text(Bytes(data.begin(), end));
                 break;
+            }
             case 5:
                 item["kind"] = "binary";
                 v.skip(v.left());
@@ -1118,6 +1125,12 @@ static Json component_footer(Reader &r) {
         } catch (const std::exception &e) {
             item["decode_error"] = e.what();
         }
+        // The native getter stops at the first key match, including a null,
+        // unknown or malformed value. It does not search for a later valid one.
+        item["native_read_action"] = type < 1 || type > 5 ? "leave_destination_unchanged"
+                                     : item.contains("decode_error")
+                                         ? "not_evaluated_malformed_payload"
+                                         : "set_value";
         values.push_back(std::move(item));
     }
     auto ids = [&]() {
@@ -1136,6 +1149,13 @@ static Json component_footer(Reader &r) {
                 {"hollow", flag <= 1 ? Json(flag != 0) : Json(nullptr)},
                 {"hollow_status", flag <= 1 ? "decoded" : "invalid_boolean"},
                 {"values", std::move(values)},
+                {"stored_value_selection",
+                 {{"scope", "component_data_footer"},
+                  {"duplicate_key_rule", "first_entry_wins"},
+                  {"index_order", "source_order"},
+                  {"selected_entry_indices", std::move(selected_values)},
+                  {"missing_key_action", "leave_destination_unchanged"},
+                  {"fallback_to_type_values", false}}},
                 {"unassigned_id_sets", Json::array({std::move(first), std::move(second)})},
                 {"value_key_semantics", "component_property_id"},
                 {"material_application_status", "not_evaluated"}};
