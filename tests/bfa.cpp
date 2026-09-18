@@ -807,6 +807,157 @@ unsigned bfa_tests() {
                 !zero["driven_reference_bindings"][0].contains("property_record_index") &&
                 zero["driven_reference_bindings"][3]["target_status"] == "matched_property_record",
             "native target ignores zero while input enumeration retains the serialized zero entry");
+        const auto resolved = resolve_bfa_driven_references(graph, 90, {40, true});
+        check(resolved["status"] == "resolved" &&
+                  resolved["target"]["status"] == "handle_constructed" &&
+                  resolved["target"]["object_id"] == 40 &&
+                  resolved["target"]["property_id"] == 101 &&
+                  resolved["target"]["handle_kind_code"] == 10 &&
+                  resolved["target"]["property_validation"] == "not_performed",
+              "target conversion resolves its parent component and constructs the native property "
+              "handle");
+        check(resolved["inputs_status"] == "native_early_return" &&
+                  resolved["input_handle_source_indices"] == Json({0, 1}) &&
+                  resolved["inputs"][0]["property_id"] == 101 &&
+                  resolved["inputs"][1]["property_id"] == 101 &&
+                  resolved["input_stop_index"] == 2 &&
+                  resolved["inputs"][2]["lookup_environment_id"] == 0xffffffffffffffffULL &&
+                  resolved["inputs"][3]["status"] == "not_visited_after_native_return" &&
+                  resolved["inputs"].size() == 8,
+              "native input conversion preserves duplicate prefix handles and returns before later "
+              "inputs on missing owner");
+        const auto partial = resolve_bfa_driven_references(graph, 90, {40, false});
+        check(partial["target"]["status"] == "handle_constructed" &&
+                  partial["inputs_status"] == "unresolved" && partial["input_stop_index"] == 0 &&
+                  partial["inputs"][1]["status"] == "not_evaluated_after_unresolved",
+              "partial registry can resolve a known parent but cannot infer a globally parentless "
+              "editing environment");
+        auto selected = graph;
+        selected["records"][5]["driven"]["inputs"] = Json::array(
+            {graph["records"][5]["driven"]["inputs"][0], graph["records"][5]["driven"]["inputs"][5],
+             graph["records"][5]["driven"]["inputs"][6]});
+        const auto mixed = resolve_bfa_driven_references(selected, 90, {40, true});
+        check(mixed["inputs_status"] == "complete" &&
+                  mixed["input_handle_source_indices"] == Json({0, 1, 2}) &&
+                  mixed["inputs"][1]["property_id"] == 0 &&
+                  mixed["inputs"][1]["lookup_trace"].size() == 2 &&
+                  mixed["inputs"][1]["lookup_trace"][1]["matched"] == false &&
+                  mixed["inputs"][2]["object_id"] == 31 && mixed["inputs"][2]["property_id"] == -17,
+              "input miss runs second-map inverse lookup and preserves a zero result; non-root "
+              "explicit object pairs pass through");
+        const auto family_two =
+            resolve_bfa_driven_references(make_graph(2, 41, false), 90, {40, true});
+        const auto target_miss =
+            resolve_bfa_driven_references(make_graph(2, 42, false), 90, {40, true});
+        check(family_two["target"]["property_id"] == 101 &&
+                  target_miss["target"]["status"] == "default_handle" &&
+                  target_miss["target"]["lookup_trace"].size() == 1,
+              "target conversion first uses the ordinary forward map for both stored families and "
+              "does not fall back on minus one");
+        auto zero_forward = selected;
+        auto &zero_maps = zero_forward["records"][0]["component_definition"]
+                                      ["mapping_layout_candidates"][0]["property_id_maps"];
+        zero_maps[0]["entries"][0]["property_id"] = 0;
+        for (const auto pair :
+             {std::make_pair(77, 41), std::make_pair(88, 41), std::make_pair(88, 99)})
+            zero_maps[1]["entries"].push_back(
+                {{"property_definition_id", pair.first}, {"property_id", pair.second}});
+        const auto different = resolve_bfa_driven_references(zero_forward, 90, {40, true});
+        check(different["target"]["property_id"] == 77 &&
+                  different["target"]["lookup_trace"].size() == 2 &&
+                  different["target"]["lookup_trace"][1]["direction"] == "property_to_definition" &&
+                  different["inputs"][0]["property_id"] == 0 &&
+                  different["inputs"][0]["lookup_trace"].size() == 1,
+              "target zero invokes inverse lookup after map overrides while input zero is retained "
+              "without fallback");
+        auto minus_one = selected;
+        minus_one["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                 ["property_id_maps"][0]["entries"][0]["property_id"] = -1;
+        const auto sentinel = resolve_bfa_driven_references(minus_one, 90, {40, true});
+        check(sentinel["target"]["status"] == "default_handle" &&
+                  sentinel["target"]["lookup_trace"][0]["matched"] == true &&
+                  sentinel["inputs"][0]["property_id"] == 0,
+              "a stored minus-one value follows the same native sentinel branch as a missing "
+              "forward key");
+        auto wrong_owner = selected;
+        wrong_owner["records"][0]["children"] = Json({90, 42, 31, 18});
+        wrong_owner["records"][3]["children"] = Json({41});
+        const auto redirected = resolve_bfa_driven_references(wrong_owner, 90, {40, true});
+        check(redirected["target"]["lookup_environment_id"] == 31 &&
+                  redirected["target"]["object_id"] == 40 &&
+                  redirected["target"]["property_id"] == 41 &&
+                  redirected["inputs_status"] == "native_early_return" &&
+                  redirected["inputs"][0]["reason"] == "environment_is_not_component",
+              "target primitive branch retains the original pair while input requires a component "
+              "environment and aborts");
+        const auto explicit_pair = resolve_bfa_driven_references(explicit_target, 90, {40, true});
+        check(explicit_pair["target"]["object_id"] == 31 &&
+                  explicit_pair["target"]["property_id"] == -7 &&
+                  explicit_pair["target"]["property_id_bits"] == std::uint64_t(-7),
+              "explicit primitive target preserves the signed SDK property bit pattern");
+        const auto changed_editing = resolve_bfa_driven_references(selected, 90, {31, true});
+        check(changed_editing["target"]["property_id"] == 101 &&
+                  changed_editing["inputs"][0]["object_id"] == 31 &&
+                  changed_editing["inputs"][0]["property_id"] == 41,
+              "input environment predicate tests parentlessness rather than assuming the current "
+              "editing ID is a component root");
+        const auto missing_editing = resolve_bfa_driven_references(selected, 90, {999, true});
+        const auto unknown_editing = resolve_bfa_driven_references(selected, 90, {999, false});
+        check(missing_editing["inputs"][0]["status"] == "handle_constructed" &&
+                  missing_editing["inputs"][0]["object_id"] == 999 &&
+                  unknown_editing["inputs"][0]["status"] == "unresolved",
+              "missing pair object passes through only with complete registry evidence; partial "
+              "absence is unresolved");
+        const auto no_drive = resolve_bfa_driven_references(graph, 123, {40, true});
+        const auto unknown_drive = resolve_bfa_driven_references(graph, 123, {40, false});
+        check(no_drive["status"] == "drive_unavailable" && no_drive["inputs"].empty() &&
+                  unknown_drive["status"] == "unresolved",
+              "drive absence distinguishes a complete selected registry from incomplete file "
+              "context");
+        auto versioned = graph;
+        versioned["records"][0]["component_definition"]["mapping_layout_status"] =
+            "requires_version_context";
+        check(resolve_bfa_driven_references(versioned, 90, {40, true})["target"]["status"] ==
+                  "unresolved",
+              "ambiguous component layouts cannot construct effective driver property handles");
+        auto wide = graph;
+        wide["records"][0]["id"] = 0x100000028ULL;
+        check(resolve_bfa_driven_references(wide, 90, {40, true})["reason"] ==
+                      "native_node_id_conversion_required" &&
+                  resolve_bfa_driven_references(ambiguous, 90, {40, true})["target"]["status"] ==
+                      "unresolved" &&
+                  resolve_bfa_driven_references(Json::object(), 90, {40, true})["status"] ==
+                      "invalid_input",
+              "native ID conversion, duplicate identities and malformed API inputs remain explicit "
+              "failures");
+        auto declared_missing = selected;
+        declared_missing["records"][0]["children"].push_back(999);
+        const auto placeholder = resolve_bfa_driven_references(declared_missing, 90, {999, true});
+        check(placeholder["inputs"][0]["status"] == "unresolved" &&
+                  placeholder["inputs"][0]["reason"] == "unloaded_child_placeholder",
+              "a serialized child without a supplied body cannot be treated as absent because "
+              "native loading registers placeholders");
+        auto zero_environment = make_graph(1, 0, false);
+        zero_environment["records"].erase(zero_environment["records"].end() -
+                                          1); // Remove the separate property record with ID zero.
+        zero_environment["records"][0]["id"] = 0;
+        zero_environment["records"][0]["component_definition"]["mapping_layout_candidates"][0]
+                        ["property_id_maps"][0]["entries"]
+                            .push_back({{"property_definition_id", 0}, {"property_id", 9}});
+        const auto zero_handle = resolve_bfa_driven_references(zero_environment, 90, {0, true});
+        check(zero_handle["target"]["pair_object_id"] == 0 &&
+                  zero_handle["target"]["pair_property_bits"] == 0 &&
+                  zero_handle["target"]["object_id"] == 0 &&
+                  zero_handle["target"]["property_id"] == 9 &&
+                  zero_handle["target"]["status"] == "handle_constructed",
+              "an inactive zero target slot still follows environment-zero lookup rather than "
+              "being declared unconditionally invalid");
+        auto resolve_job = std::async(std::launch::async, [&] {
+            return resolve_bfa_driven_references(graph, 90, {40, true});
+        });
+        check(resolve_job.get() == resolved && graph == make_graph(1, 41, false),
+              "contextual drive conversion is reentrant and never mutates the supplied decoded "
+              "graph");
         auto job = std::async(std::launch::async, [&] { return make_graph(1, 41, false); });
         check(job.get() == graph, "driven bindings are deterministic across concurrent decoding");
     }

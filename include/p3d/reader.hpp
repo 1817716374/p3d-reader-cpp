@@ -12,6 +12,18 @@ namespace p3d {
 using Json = nlohmann::json;
 using Bytes = std::vector<std::uint8_t>;
 using StreamPath = std::vector<std::string>;
+// Context for conversion of persisted BFA drive pairs to property handles.
+// The supplied decoded BfaTree must belong to one component project. Set
+// project_registry_complete only when its records and parent links cover the
+// entire selected registry; absence otherwise remains unresolved.
+struct BfaDrivenContext {
+    std::uint64_t currently_editing_id;
+    bool project_registry_complete = false;
+};
+// Does not evaluate formulas or verify that the constructed SDK property exists.
+Json resolve_bfa_driven_references(const Json &bfa_tree, std::uint64_t driven_id,
+                                   const BfaDrivenContext &context);
+
 // Supply the equality rule of the originating native wide-character locale.
 // Without a callback only identical UTF-16 names are treated as known equal;
 // an earlier nonidentical candidate keeps an ordered lookup unresolved.
