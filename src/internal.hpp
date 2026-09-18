@@ -224,6 +224,8 @@ Json native_dependency_link(const Bytes &payload);
 Json native_reference_path(const Bytes &base, const Json &links);
 Json native_application_record(const Bytes &base);
 Json native_system_id_assignments(const Json &list, const Json &records, const Json &file_header);
+Json native_model_id_assignments(const Json &containers, const Json &records, const Json &index,
+                                const StreamPath &model, std::uint64_t initial_counter);
 Json native_list_record_header(const Json &, const Json &conversion, bool child,
                               bool compound, std::uint32_t descendants, bool system);
 Json native_list_input_preparation(const Json &container, const Json &records);

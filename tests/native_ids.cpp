@@ -131,5 +131,87 @@ unsigned native_id_tests() {
               result["registry"][1]["block_number"] == 2 && result["registry"][1]["id"] == 11,
           "repeated source-stream input creates separate occurrences instead of invented source "
           "reuse");
+    Json model_records = Json::array({{{"id", 5}}, {{"id", 5}}, {{"id", 100}}, {{"id", 0}}});
+    auto model_root = [](std::size_t root, std::vector<std::size_t> nodes, unsigned block) {
+        Json headers = Json::array();
+        for (auto ni : nodes)
+            headers.push_back({{"status", "resolved"},
+                               {"native_record_index", ni},
+                               {"parent_record_index", ni == root ? Json() : Json(root)}});
+        return Json{{"native_record_index", root}, {"block_number", block}, {"headers", headers}};
+    };
+    auto model_container = [&](const char *kind, const char *physical, Json roots) {
+        return Json{
+            {"kind", kind},
+            {"container", StreamPath{"models", "A", physical}},
+            {"list_preparation",
+             {{"status", "resolved"}, {"system_bootstrap_required", false}, {"roots", roots}}}};
+    };
+    const auto control_list = model_container("P3D-SMC", "C", Json::array({model_root(0, {0}, 1)}));
+    const auto graphics_list = model_container(
+        "P3D-SMG", "G", Json::array({model_root(1, {1, 2}, 1), model_root(3, {3}, 2)}));
+    Json model_index = {{"P3D-SMC", "C"}, {"P3D-SMG", "G"}};
+    const StreamPath model_path{"models", "A"};
+    auto model_result = native_model_id_assignments(Json::array({graphics_list, control_list}),
+                                                    model_records, model_index, model_path, 10);
+    check(model_result["status"] == "resolved" &&
+              model_result["roots"][1]["records"][0]["assigned_id"] == 101 &&
+              model_result["roots"][2]["records"][0]["assigned_id"] == 102 &&
+              model_result["registry"].size() == 4,
+          "model control and graphics share registration while physical container order is "
+          "irrelevant");
+    check(model_result["roots"][1]["counter_before"] == 10 &&
+              model_result["roots"][1]["counter_after_subtree_preparation"] == 100 &&
+              model_result["roots"][1]["records"][0]["collisions"][0]
+                          ["existing_input_occurrence_index"] == 0,
+          "model cross-list collision occurs only after preparing the complete graphics subtree");
+    check(model_result["roots"][2]["records"][0]["input_occurrence_index"] == 3 &&
+              model_result["registry"][2]["input_list_index"] == 1 &&
+              model_result["registry"][2]["container"] == StreamPath{"models", "A", "G"},
+          "registered identities retain shared occurrence sequence and exact container origin");
+    auto aliased = model_index;
+    aliased["P3D-SMG"] = "C";
+    model_result = native_model_id_assignments(Json::array({control_list}), model_records, aliased,
+                                               model_path, 10);
+    check(model_result["registry"].size() == 2 && model_result["registry"][1]["id"] == 11 &&
+              model_result["registry"][1]["input_list_index"] == 1 &&
+              model_result["registry"][1]["kind"] == "P3D-SMG",
+          "aliased model containers are processed twice without invented source reuse");
+    auto incomplete = control_list;
+    incomplete["list_preparation"]["status"] = "partial";
+    model_result = native_model_id_assignments(Json::array({incomplete, graphics_list}),
+                                               model_records, model_index, model_path, 10);
+    check(model_result["status"] == "partial" && model_result["inputs"].size() == 1 &&
+              model_result["registry"].size() == 1,
+          "uncertain earlier model list prevents calculating later IDs with an assumed counter");
+    model_result = native_model_id_assignments(Json::array({graphics_list}), model_records,
+                                               model_index, model_path, 10);
+    check(model_result["status"] == "resolved" &&
+              model_result["inputs"][0]["status"] == "not_loaded" &&
+              model_result["roots"][0]["records"][0]["assigned_id"] == 5,
+          "missing control stream contributes no IDs before available graphics input");
+    auto foreign = control_list;
+    foreign["container"] = StreamPath{"models", "B", "C"};
+    model_result = native_model_id_assignments(Json::array({foreign, graphics_list}), model_records,
+                                               model_index, model_path, 10);
+    check(model_result["registry"].size() == 3 && model_result["registry"][0]["id"] == 5,
+          "same numeric ID from another model never enters this model registry");
+    auto missing_alias = model_index;
+    missing_alias.erase("P3D-SMC");
+    check(native_model_id_assignments(Json::array({control_list}), model_records, missing_alias,
+                                      model_path, 10)["status"] == "unresolved",
+          "missing alias is not replaced with a guessed physical name");
+    check(native_model_id_assignments(Json::array({control_list, control_list}), model_records,
+                                      model_index, model_path, 10)["status"] == "unresolved",
+          "ambiguous model input containers are not arbitrarily selected");
+    check(native_model_id_assignments(Json::array({control_list}), model_records, model_index, {},
+                                      10)["status"] == "unresolved",
+          "model registration requires explicit storage identity");
+    const auto max_counter = std::numeric_limits<std::uint64_t>::max();
+    model_result = native_model_id_assignments(Json::array({control_list}), model_records, aliased,
+                                               model_path, max_counter);
+    check(model_result["roots"][1]["records"][0]["assigned_id"] == 0 &&
+              model_result["registry"].size() == 1,
+          "cross-list duplicate counter overflow preserves the earlier registration");
     return checks;
 }
