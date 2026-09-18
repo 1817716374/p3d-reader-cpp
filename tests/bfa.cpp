@@ -674,5 +674,132 @@ unsigned bfa_tests() {
         auto job = std::async(std::launch::async, [&] { return decode_extension(points); });
         check(job.get() == tree, "component extensions decode concurrently without shared state");
     }
+    {
+        auto with_id = [](Bytes body, std::uint64_t id) {
+            Bytes header;
+            ref(header, id);
+            std::copy(header.begin(), header.end(), body.begin());
+            return body;
+        };
+        auto drive_references = [&](unsigned kind, std::uint64_t target) {
+            Bytes body;
+            ref(body, 90);
+            put<std::uint64_t>(body, 0);
+            put<std::uint32_t>(body, kind);
+            ref(body, target);
+            if (kind == 3)
+                put<std::int64_t>(body, -7);
+            for (auto id : {41, 41, 0, 18, 999})
+                ref(body, id);
+            body.push_back('[');
+            ref(body, 42);
+            body.push_back(']');
+            for (auto id : {31, 18}) {
+                ref(body, id);
+                put<std::int64_t>(body, -17);
+            }
+            body.push_back('#');
+            str(body, {});
+            body.insert(body.end(), {1, 0});
+            put<std::int32_t>(body, 0);
+            return body;
+        };
+        auto make_graph = [&](unsigned kind, std::uint64_t target, bool duplicate) {
+            Bytes mapping;
+            ref(mapping, 41);
+            put<std::int64_t>(mapping, 101);
+            mapping.push_back('+');
+            ref(mapping, 42);
+            put<std::int64_t>(mapping, 102);
+            Bytes graph;
+            record(graph, "~$^", 40, component_body(mapping), {90, 41, 42, 31, 18});
+            auto ordinary = property_body(false, 4, {});
+            ordinary.insert(ordinary.end(), {'{', '}', '-', 0, 0});
+            record(graph, "!_#", 41, with_id(ordinary, 41));
+            record(graph, "!_#", 42, with_id(property_body(true, 4, {}), 42));
+            Bytes primitive;
+            ref(primitive, 31);
+            put<std::uint64_t>(primitive, 0);
+            record(graph, "&@`", 31, primitive);
+            record(graph, "@#$", 18, type_body(18, {}, {}));
+            record(graph, "`%!", 90, drive_references(kind, target));
+            Bytes other_map;
+            ref(other_map, 41);
+            put<std::int64_t>(other_map, 201);
+            other_map.push_back('+');
+            record(graph, "~$^", 50, with_id(component_body(other_map), 50));
+            if (duplicate)
+                record(graph, "!_#", 41, with_id(ordinary, 41));
+            if (target == 0)
+                record(graph, "!_#", 0, with_id(ordinary, 0));
+            return complex_blob("BfaTree", graph);
+        };
+        const auto graph = make_graph(1, 41, false);
+        const auto &bindings = graph["driven_reference_bindings"];
+        check(bindings.size() == 9 && bindings[0]["driven_object_id"] == 90 &&
+                  bindings[0]["driven_record_index"] == 5 &&
+                  bindings[0]["reference_source"]["role"] == "target" &&
+                  bindings[0]["target_status"] == "matched_property_record" &&
+                  bindings[0]["property_record_index"] == 1,
+              "driven target node reference binds to the unique local property record");
+        check(bindings[0]["component_mapping_binding_indices"] == Json({0, 2}) &&
+                  bindings[0]["environment_selection_status"] == "not_performed" &&
+                  bindings[0]["runtime_resolution_status"] == "requires_component_context" &&
+                  !bindings[0].contains("property_id") &&
+                  graph["component_property_bindings"][0]["property_id"] == 101 &&
+                  graph["component_property_bindings"][2]["property_id"] == 201,
+              "multiple component environments remain explicit mapping candidates without guessing "
+              "an SDK ID");
+        check(bindings[1]["reference_source"]["input_index"] == 0 &&
+                  bindings[2]["reference_source"]["input_index"] == 1 &&
+                  bindings[1]["property_record_index"] == bindings[2]["property_record_index"] &&
+                  graph["records"][5]["driven"]["inputs"].size() == 8,
+              "duplicate driven inputs preserve their source positions and share the original "
+              "property record");
+        check(bindings[3]["target_status"] == "not_in_this_tree" &&
+                  bindings[4]["target_status"] == "unexpected_node_kind" &&
+                  bindings[5]["target_status"] == "not_in_this_tree" &&
+                  bindings[8]["target_status"] == "unexpected_node_kind" &&
+                  graph["external_child_ids"].empty() &&
+                  graph["records"][0]["children"] == Json({90, 41, 42, 31, 18}),
+              "driven references do not invent hierarchy edges or resolve missing and wrong-kind "
+              "targets");
+        check(bindings[6]["storage_kind"] == 2 && bindings[6]["property_record_index"] == 2 &&
+                  bindings[6]["component_mapping_binding_indices"] == Json({1}),
+              "the second driven storage family uses only the matching component property map");
+        check(bindings[7]["target_status"] == "matched_object_record" &&
+                  bindings[7]["object_record_index"] == 3 && bindings[7]["property_id"] == -17 &&
+                  bindings[7]["property_resolution_status"] == "requires_object_property_schema" &&
+                  !bindings[7].contains("property_record_index"),
+              "explicit object-property pair preserves SDK ID without mistaking it for a property "
+              "node");
+        const auto explicit_target = make_graph(3, 31, false);
+        check(explicit_target["driven_reference_bindings"][0]["target_status"] ==
+                      "matched_object_record" &&
+                  explicit_target["driven_reference_bindings"][0]["property_id"] == -7,
+              "explicit driven target and input pairs follow the same scoped object lookup");
+        const auto unmatched_family = make_graph(2, 41, false);
+        check(unmatched_family["driven_reference_bindings"][0]["target_status"] ==
+                      "matched_property_record" &&
+                  unmatched_family["driven_reference_bindings"][0]
+                                  ["component_mapping_binding_indices"]
+                                      .empty(),
+              "a property record can exist without a matching map family and is not force-mapped "
+              "through the other table");
+        const auto ambiguous = make_graph(1, 41, true);
+        check(ambiguous["driven_reference_bindings"][0]["target_status"] == "ambiguous_id" &&
+                  !ambiguous["driven_reference_bindings"][0].contains("property_record_index") &&
+                  ambiguous["driven_reference_bindings"][6]["target_status"] ==
+                      "matched_property_record",
+              "duplicate property identity blocks only affected driven bindings");
+        const auto zero = make_graph(1, 0, false);
+        check(
+            zero["driven_reference_bindings"][0]["target_status"] == "inactive_zero_target" &&
+                !zero["driven_reference_bindings"][0].contains("property_record_index") &&
+                zero["driven_reference_bindings"][3]["target_status"] == "matched_property_record",
+            "native target ignores zero while input enumeration retains the serialized zero entry");
+        auto job = std::async(std::launch::async, [&] { return make_graph(1, 41, false); });
+        check(job.get() == graph, "driven bindings are deterministic across concurrent decoding");
+    }
     return checks;
 }

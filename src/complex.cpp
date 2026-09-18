@@ -757,10 +757,74 @@ static Json bfa(const Bytes &b) {
                 property_ids.push_back(std::move(binding));
             }
     }
+    std::map<std::pair<std::uint64_t, unsigned>, std::vector<std::size_t>> property_mapping_sources;
+    for (std::size_t i = 0; i < property_ids.size(); ++i) {
+        const auto &binding = property_ids[i];
+        if (binding["target_status"] == "matched_property_record")
+            property_mapping_sources[{binding["property_definition_id"].get<std::uint64_t>(),
+                                      binding["mapping_source"]["map_index"].get<unsigned>() + 1}]
+                .push_back(i);
+    }
+    Json driven_bindings = Json::array();
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        const auto &node = records[i];
+        if (!node.contains("driven"))
+            continue;
+        auto bind = [&](const Json &reference, const char *role, std::size_t input_index) {
+            const auto kind = reference["storage_kind"].get<unsigned>();
+            const bool property = kind != 3;
+            const auto id =
+                reference[property ? "property_reference_id" : "object_id"].get<std::uint64_t>();
+            Json binding = {{"driven_record_index", i},
+                            {"driven_object_id", node["id"]},
+                            {"reference_source", {{"role", role}}},
+                            {"storage_kind", kind},
+                            {"referenced_id", id},
+                            {"scope", "this_bfa_tree"},
+                            {"runtime_resolution_status", "requires_component_context"}};
+            if (std::string(role) == "input")
+                binding["reference_source"]["input_index"] = input_index;
+            if (!property)
+                binding["property_id"] = reference["property_id"];
+            const auto found = local_nodes.find(id);
+            // Native target conversion ignores a zero property reference/object ID.
+            // Input lists, in contrast, retain every serialized entry, including zero.
+            if (std::string(role) == "target" && id == 0)
+                binding["target_status"] = "inactive_zero_target";
+            else if (found == local_nodes.end())
+                binding["target_status"] = "not_in_this_tree";
+            else if (found->second.size() != 1)
+                binding["target_status"] = "ambiguous_id";
+            else {
+                const auto index = found->second.front();
+                if (records[index]["node_kind"] != (property ? "property_definition" : "primitive"))
+                    binding["target_status"] = "unexpected_node_kind";
+                else {
+                    binding["target_status"] =
+                        property ? "matched_property_record" : "matched_object_record";
+                    binding[property ? "property_record_index" : "object_record_index"] = index;
+                    if (property) {
+                        const auto sources = property_mapping_sources.find({id, kind});
+                        binding["component_mapping_binding_indices"] =
+                            sources == property_mapping_sources.end() ? Json::array()
+                                                                      : Json(sources->second);
+                        binding["environment_selection_status"] = "not_performed";
+                    } else
+                        binding["property_resolution_status"] = "requires_object_property_schema";
+                }
+            }
+            driven_bindings.push_back(std::move(binding));
+        };
+        bind(node["driven"]["target"], "target", 0);
+        const auto &inputs = node["driven"]["inputs"];
+        for (std::size_t n = 0; n < inputs.size(); ++n)
+            bind(inputs[n], "input", n);
+    }
     return {{"records", records},
             {"external_child_ids", external},
             {"type_property_bindings", std::move(bindings)},
             {"component_property_bindings", std::move(property_ids)},
+            {"driven_reference_bindings", std::move(driven_bindings)},
             {"note", "Node kinds and component-type placed-instance references are identified. "
                      "The placed-instance IDs are not definition-tree child IDs. Other node "
                      "suffixes and some header semantics remain unassigned. Driven references "
