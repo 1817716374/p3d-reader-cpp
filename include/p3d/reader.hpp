@@ -516,6 +516,11 @@ class Document {
     // after intervening loads. Does not execute host callbacks or attach attributes.
     Json native_model_id_assignments(const StreamPath &model_storage,
                                      std::uint64_t initial_id_counter) const;
+    // Conditional initial SMC/SMCA then SMG/SMGA input into a fresh model.
+    // Preserves collection state and uses the registry available at each step.
+    // Shares the counter/context restrictions of native_model_id_assignments.
+    Json native_model_attribute_input(const StreamPath &model_storage,
+                                      std::uint64_t initial_id_counter) const;
     // Initial registration of each system table into an empty material catalog.
     // External resources are never searched automatically.
     Json native_material_catalog(const MaterialCatalogOptions & = {}) const;

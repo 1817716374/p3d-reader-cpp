@@ -248,6 +248,8 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
                                  const Json &mode);
 Json native_system_attribute_input(const std::vector<Stream> &, const Json &index,
                                    const StreamPath &system, const Json &ids);
+Json native_model_attribute_input(const std::vector<Stream> &, const Json &index,
+                                  const StreamPath &model, const Json &ids);
 Json material_settings(const Json &tree);
 Json material_parameter_semantics(const Json &attributes);
 Json material_map_semantics(const Json &attributes);

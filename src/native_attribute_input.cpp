@@ -1,25 +1,13 @@
 #include "internal.hpp"
 
 namespace p3d {
-Json native_system_attribute_input(const std::vector<Stream> &streams, const Json &index,
-                                   const StreamPath &system, const Json &ids) {
-    Json out = {{"scope", "first_system_input_with_empty_id_registry"},
-                {"reader_profile", "bimbase_2025_system_attribute_input"},
-                {"status", "unresolved"},
+static Json attribute_input(const std::vector<Stream> &streams, const Json &index,
+                            const StreamPath &path, const Json &ids, const Json &previous) {
+    Json out = {{"status", "unresolved"},
                 {"blocks", Json::array()},
-                {"attachments", Json::array()},
+                {"attachments", previous},
                 {"attribute_order", "source_read_order"},
                 {"runtime_attribute_sort", "initial_collection_lookup"}};
-    if (ids.value("status", Json()) != "resolved") {
-        out["reason"] = "complete_system_id_assignments_required";
-        return out;
-    }
-    if (system.empty() || !index.contains("P3D-SSYSA")) {
-        out["reason"] = "attribute_container_alias_unavailable";
-        return out;
-    }
-    auto path = system;
-    path.back() = index.at("P3D-SSYSA").get<std::string>();
     out["container"] = path;
     std::map<std::string, const Stream *> named;
     for (const auto &s : streams) {
@@ -60,6 +48,8 @@ Json native_system_attribute_input(const std::vector<Stream> &streams, const Jso
     for (const auto &item : ids.at("registry"))
         registry.emplace(item.at("id").get<std::uint64_t>(), item);
     std::map<std::uint64_t, std::size_t> attached;
+    for (std::size_t i = 0; i < previous.size(); ++i)
+        attached.emplace(previous[i].at("target").at("id").get<std::uint64_t>(), i);
     out["status"] = "resolved";
     for (std::uint64_t number = 1; number <= block_count; ++number) {
         const auto logical = "$" + std::to_string(number);
@@ -225,5 +215,106 @@ Json native_system_attribute_input(const std::vector<Stream> &streams, const Jso
         }
     }
     return out;
+}
+
+Json native_system_attribute_input(const std::vector<Stream> &streams, const Json &index,
+                                   const StreamPath &system, const Json &ids) {
+    Json out = {{"scope", "first_system_input_with_empty_id_registry"},
+                {"reader_profile", "bimbase_2025_system_attribute_input"},
+                {"status", "unresolved"},
+                {"blocks", Json::array()},
+                {"attachments", Json::array()},
+                {"attribute_order", "source_read_order"},
+                {"runtime_attribute_sort", "initial_collection_lookup"}};
+    if (ids.value("status", Json()) != "resolved") {
+        out["reason"] = "complete_system_id_assignments_required";
+        return out;
+    }
+    if (system.empty() || !index.contains("P3D-SSYSA")) {
+        out["reason"] = "attribute_container_alias_unavailable";
+        return out;
+    }
+    auto path = system;
+    path.back() = index.at("P3D-SSYSA").get<std::string>();
+    out.update(attribute_input(streams, index, path, ids, Json::array()));
+    return out;
+}
+
+Json native_model_attribute_input(const std::vector<Stream> &streams, const Json &index,
+                                  const StreamPath &model, const Json &ids) {
+    Json out = {{"scope", "fresh_model_control_then_graphics_attribute_input"},
+                {"status", "unresolved"},
+                {"model_storage", model},
+                {"inputs", Json::array()},
+                {"attachments", Json::array()},
+                {"runtime_callbacks", "not_evaluated"},
+                {"reference_target_resolution", "not_evaluated"}};
+    if (ids.value("status", Json()) != "resolved" ||
+        ids.value("scope", Json()) != "fresh_model_control_then_graphics_id_registration" ||
+        ids.value("model_storage", Json()) != model) {
+        out["reason"] = "complete_matching_model_id_assignments_required";
+        return out;
+    }
+    try {
+        require(!model.empty() && ids.at("inputs").size() == 2,
+                "complete_model_input_order_required");
+        out["initial_id_counter"] = ids.at("initial_id_counter");
+        out["final_id_counter"] = ids.at("final_id_counter");
+        Json registry = {{"registry", Json::array()}};
+        for (std::size_t list = 0; list < 2; ++list) {
+            const std::string kind = list ? "P3D-SMG" : "P3D-SMC";
+            const auto &input = ids.at("inputs")[list];
+            require(input.at("kind") == kind, "unexpected_model_input_order");
+            for (const auto &item : ids.at("registry"))
+                if (item.at("input_list_index") == list)
+                    registry["registry"].push_back(item);
+            Json result = {{"input_list_index", list}, {"kind", kind + "A"}};
+            if (input.at("status") == "not_loaded") {
+                result["status"] = "not_loaded";
+                result["reason"] = "record_container_not_loaded";
+                out["inputs"].push_back(std::move(result));
+                continue; // The native container-open failure precedes attributes.
+            }
+            require(input.at("status") == "resolved", "complete_model_list_required");
+            if (!index.contains(kind + "A")) {
+                result["status"] = "unresolved";
+                result["reason"] = "attribute_container_alias_unavailable";
+            } else {
+                auto path = model;
+                path.push_back(index.at(kind + "A").get<std::string>());
+                const auto first = out["attachments"].size();
+                result.update(attribute_input(streams, index, path, registry, out["attachments"]));
+                out["attachments"] = std::move(result["attachments"]);
+                result.erase("attachments");
+                result["attachment_indices"] = Json::array();
+                for (std::size_t i = first; i < out["attachments"].size(); ++i) {
+                    auto &attachment = out["attachments"][i];
+                    attachment["attribute_input_list_index"] = list;
+                    attachment["attribute_container_kind"] = kind + "A";
+                    result["attachment_indices"].push_back(i);
+                }
+            }
+            const bool uncertain =
+                result["status"] == "unresolved" || result["status"] == "partial";
+            out["inputs"].push_back(std::move(result));
+            if (uncertain) {
+                out["status"] = "partial";
+                out["reason"] = "attribute_state_incomplete";
+                return out; // Unknown earlier collection presence affects later reads.
+            }
+        }
+        out["status"] = "resolved";
+    } catch (const std::exception &e) {
+        out["status"] = "unresolved";
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json Document::native_model_attribute_input(const StreamPath &model_storage,
+                                            std::uint64_t initial_id_counter) const {
+    return p3d::native_model_attribute_input(
+        streams(), index(), model_storage,
+        native_model_id_assignments(model_storage, initial_id_counter));
 }
 } // namespace p3d
