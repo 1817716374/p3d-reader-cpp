@@ -279,6 +279,28 @@ static Json bfa_property(const Bytes &payload, Json &record) {
         }
         r.u8(); // '-'
         out["unassigned_value_maps"] = std::move(maps);
+        out["value_map_semantics"] = Json::array();
+        for (unsigned map_index = 0; map_index < 2; ++map_index) {
+            const auto &entries = out["unassigned_value_maps"][map_index];
+            // Native map insertion retains the first value for a duplicate
+            // key. Keep every source entry but index the loaded map separately.
+            std::map<std::uint64_t, std::size_t> first;
+            for (std::size_t i = 0; i < entries.size(); ++i)
+                first.emplace(entries[i]["reference_id"].get<std::uint64_t>(), i);
+            Json selected = Json::array();
+            for (const auto &entry : first)
+                selected.push_back(entry.second);
+            Json semantics = {
+                {"kind", map_index == 0 ? "placed_instance_values" : "component_type_values"},
+                {"reference_scope", "component_project"},
+                {"key_kind", map_index == 0 ? "bfa_placed_handle" : "imported_bfa_type"},
+                {"duplicate_key_rule", "first_entry_wins"},
+                {"selected_entry_indices", std::move(selected)},
+                {"selected_order", "unsigned_reference_id"}};
+            if (map_index == 1)
+                semantics["missing_key_value"] = "none";
+            out["value_map_semantics"].push_back(std::move(semantics));
+        }
         const auto width = r.left();
         require(width == 2 || width == 7 || width == 8 || width >= 13,
                 "BFA property control-field layout");
@@ -419,8 +441,46 @@ static Json bfa(const Bytes &b) {
         for (auto &c : v["children"])
             if (!ids.count(c))
                 external.insert(c.get<std::uint64_t>());
+    std::map<std::uint64_t, std::vector<std::size_t>> local_nodes;
+    for (std::size_t i = 0; i < records.size(); ++i)
+        local_nodes[records[i]["id"].get<std::uint64_t>()].push_back(i);
+    Json bindings = Json::array();
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        const auto &node = records[i];
+        if (!node.contains("property_definition"))
+            continue;
+        const auto &property = node["property_definition"];
+        if (!property.contains("value_map_semantics"))
+            continue;
+        const auto &entries = property["unassigned_value_maps"][1];
+        for (const auto &selected : property["value_map_semantics"][1]["selected_entry_indices"]) {
+            const auto entry_index = selected.get<std::size_t>();
+            const auto type_id = entries[entry_index]["reference_id"].get<std::uint64_t>();
+            Json binding = {{"property_definition_id", node["id"]},
+                            {"property_record_index", i},
+                            {"type_definition_id", type_id},
+                            {"value_source", {{"map_index", 1}, {"entry_index", entry_index}}},
+                            {"scope", "this_bfa_tree"}};
+            const auto found = local_nodes.find(type_id);
+            if (found == local_nodes.end())
+                binding["target_status"] = "not_in_this_tree";
+            else if (found->second.size() != 1)
+                binding["target_status"] = "ambiguous_id";
+            else {
+                const auto index = found->second.front();
+                if (records[index]["node_kind"] != "component_type")
+                    binding["target_status"] = "unexpected_node_kind";
+                else {
+                    binding["target_status"] = "matched_type_record";
+                    binding["type_record_index"] = index;
+                }
+            }
+            bindings.push_back(std::move(binding));
+        }
+    }
     return {{"records", records},
             {"external_child_ids", external},
+            {"type_property_bindings", std::move(bindings)},
             {"note", "Node kinds and component-type placed-instance references are identified. "
                      "The placed-instance IDs are not definition-tree child IDs. Other node "
                      "suffixes and some header semantics remain unassigned. Driven references "

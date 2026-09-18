@@ -365,5 +365,57 @@ unsigned bfa_tests() {
     }
     auto pjob = std::async(std::launch::async, [&] { return decode_property(derived); });
     check(pjob.get() == mapped, "property definitions are reentrant");
+    const auto &semantics = pd["value_map_semantics"];
+    check(semantics[0]["kind"] == "placed_instance_values" &&
+              semantics[0]["key_kind"] == "bfa_placed_handle" &&
+              semantics[1]["kind"] == "component_type_values" &&
+              semantics[1]["key_kind"] == "imported_bfa_type",
+          "property value maps retain distinct placed-instance and component-type key scopes");
+    check(semantics[0]["selected_entry_indices"] == Json({0}) &&
+              semantics[1]["selected_entry_indices"] == Json({1, 2, 0}) &&
+              semantics[0]["duplicate_key_rule"] == "first_entry_wins",
+          "native map lookup retains first duplicate and sorts unsigned 64-bit keys");
+    check(semantics[1]["missing_key_value"] == "none" &&
+              !semantics[0].contains("missing_key_value"),
+          "type-value miss has native none semantics without inventing an instance fallback");
+    Bytes extra_values;
+    for (const auto pair :
+         {std::make_pair(18ULL, 5LL), std::make_pair(18ULL, 6LL), std::make_pair(23ULL, 7LL)}) {
+        ref(extra_values, pair.first);
+        put<std::uint32_t>(extra_values, 2);
+        put<std::int64_t>(extra_values, pair.second);
+    }
+    auto bound_body = derived;
+    bound_body.insert(bound_body.begin() + controls_at - 1, extra_values.begin(),
+                      extra_values.end());
+    const auto bound = decode_property(bound_body);
+    const auto &bindings = bound["type_property_bindings"];
+    check(bindings.size() == 5 && bindings[0]["type_definition_id"] == 18 &&
+              bindings[0]["property_definition_id"] == 23 &&
+              bindings[0]["property_record_index"] == 0 &&
+              bindings[0]["target_status"] == "matched_type_record" &&
+              bindings[0]["type_record_index"] == 1,
+          "type value binds to a unique typed record in the same source BFA graph");
+    const auto &source = bindings[0]["value_source"];
+    check(source["map_index"] == 1 && source["entry_index"] == 3 &&
+              !bindings[0].contains("value") &&
+              bound["records"][0]["property_definition"]["unassigned_value_maps"][1][3]["value"]
+                   ["value"] == 5 &&
+              bound["records"][0]["property_definition"]["unassigned_value_maps"][1][4]["value"]
+                   ["value"] == 6,
+          "binding selects native first value by index while preserving later source duplicates");
+    check(bindings[1]["target_status"] == "unexpected_node_kind" &&
+              !bindings[1].contains("type_record_index") &&
+              bindings[2]["target_status"] == "not_in_this_tree" &&
+              bound["external_child_ids"].empty(),
+          "same-number property node and missing type are not invented type or tree edges");
+    Bytes duplicate_tree;
+    record(duplicate_tree, "!_#", 23, bound_body);
+    record(duplicate_tree, "@#$", 18, type_body(18, {}, {}));
+    record(duplicate_tree, "@#$", 18, type_body(18, {}, {}));
+    const auto ambiguous = complex_blob("BfaTree", duplicate_tree);
+    check(ambiguous["type_property_bindings"][0]["target_status"] == "ambiguous_id" &&
+              !ambiguous["type_property_bindings"][0].contains("type_record_index"),
+          "duplicate graph identity does not silently resolve by traversal order");
     return checks;
 }
