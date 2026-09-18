@@ -196,6 +196,52 @@ Json file_specification(const Json &links) {
     out["status"] = out["default_service_reference"]["status"];
     return out;
 }
+
+Json file_query_state(const Json &links) {
+    Json out = {{"scope", "after_persisted_links_before_runtime_changes"},
+                {"status", "decoded"},
+                {"source", "initial_zero_state"},
+                {"applied_links", Json::array()},
+                {"skipped_links", Json::array()}};
+    unsigned state = 0;
+    try {
+        for (std::size_t i = 0; i < links.size(); ++i) {
+            const auto &link = links[i];
+            if (link.at("app") != 0x56d5 || !(link.at("header").get<unsigned>() & 0x1000))
+                continue;
+            const auto bytes = bytesof(link.at("payload"));
+            require(bytes.size() >= 2, "truncated_reference_numeric_link_key");
+            if (Reader(bytes).u16() != 19)
+                continue;
+            require(bytes.size() >= 8, "truncated_reference_file_query_state_header");
+            const auto count = Reader(bytes, 4).u32();
+            if (!count) {
+                out["skipped_links"].push_back({{"linkage_index", i}, {"reason", "zero_count"}});
+                continue;
+            }
+            require(bytes.size() >= 16, "truncated_reference_file_query_state_value");
+            const auto value = Reader(bytes, 8).u64();
+            state = unsigned(value & 15);
+            out["applied_links"].push_back(
+                {{"linkage_index", i},
+                 {"source_offset", link.value("offset", Json())},
+                 {"reserved_word", Reader(bytes, 2).u16()},
+                 {"declared_count", count},
+                 {"source_value", value},
+                 {"effective_state_bits", state},
+                 {"trailing_storage", rawbytes(slice(bytes, 16, bytes.size() - 16))}});
+            out["source"] = "last_accepted_numeric_link";
+            out["selected_linkage_index"] = i;
+        }
+        out["state_pair_0"] = state & 3;
+        out["state_pair_1"] = (state >> 2) & 3;
+        out["blocks_file_query_here"] = (state & 3) == 1 && (state & 12) == 12;
+    } catch (const std::exception &e) {
+        out["status"] = "not_evaluated";
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace
 
 Json native_reference_target(const Json &input, const Json &links) {
@@ -255,6 +301,38 @@ Json native_reference_target(const Json &input, const Json &links) {
     out["file_specification"] = file_specification(links);
     if (out["file_specification"]["status"] == "not_evaluated")
         out["status"] = "partial";
+    out["file_query_state"] = file_query_state(links);
+    if (out["file_query_state"]["status"] == "not_evaluated")
+        out["status"] = "partial";
+    return out;
+}
+
+Json initial_reference_file_query_gate(const std::vector<Json> &targets, bool complete_host_chain) {
+    Json out = {{"scope", "selected_initial_reference_host_chain_before_runtime_changes"},
+                {"status", "not_evaluated"},
+                {"complete_host_chain", complete_host_chain},
+                {"examined_references", 0}};
+    try {
+        require(!targets.empty(), "current_reference_required");
+        for (std::size_t i = 0; i < targets.size(); ++i) {
+            const auto &state = targets[i].at("file_query_state");
+            out["examined_references"] = i + 1;
+            require(state.at("status") == "decoded", "reference_file_query_state_unresolved");
+            require(state.at("blocks_file_query_here").is_boolean(),
+                    "reference_file_query_boolean_required");
+            if (state.at("blocks_file_query_here").get<bool>()) {
+                out["status"] = "blocked";
+                out["blocked"] = true;
+                out["blocking_reference_index"] = i;
+                return out;
+            }
+        }
+        require(complete_host_chain, "remaining_host_reference_state_required");
+        out["status"] = "allowed";
+        out["blocked"] = false;
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
     return out;
 }
 } // namespace p3d

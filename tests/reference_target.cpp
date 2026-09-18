@@ -206,6 +206,92 @@ unsigned reference_target_tests() {
           "material wrapper keeps its separate http prefix behavior");
     check(native_file_resource_reference("a<2147483648>", "b<1>")["status"] == "not_evaluated",
           "undefined primary integer overflow is not masked by a valid alternate");
+    auto state_link = [&](std::uint64_t value, unsigned count = 1) {
+        Bytes p(16);
+        put(p, 0, 19, 2);
+        put(p, 2, 0x3456, 2);
+        put(p, 4, count, 4);
+        put(p, 8, value, 8);
+        return link(0x56d5, p);
+    };
+    auto no_state = query(0, Json::array());
+    check(no_state["file_query_state"]["source"] == "initial_zero_state" &&
+              no_state["file_query_state"]["blocks_file_query_here"] == false,
+          "absent numeric state uses initial reference zero state");
+    for (unsigned bits = 0; bits < 16; ++bits) {
+        const auto value = 0xfedcba9876543210ull | bits;
+        const auto target = query(0, Json::array({state_link(value)}));
+        const auto &state = target.at("file_query_state");
+        check(state["state_pair_0"] == (bits & 3) && state["state_pair_1"] == (bits >> 2) &&
+                  state["blocks_file_query_here"] == (bits == 13) &&
+                  state["applied_links"][0]["source_value"] == value &&
+                  state["applied_links"][0]["reserved_word"] == 0x3456,
+              "all sixteen persisted gate states retain full source value");
+    }
+    auto blocked = query(0, Json::array({state_link(13)}));
+    q = query(0, Json::array({state_link(13), state_link(0)}));
+    check(q["file_query_state"]["blocks_file_query_here"] == false &&
+              q["file_query_state"]["selected_linkage_index"] == 1 &&
+              q["file_query_state"]["applied_links"].size() == 2,
+          "later accepted numeric state replaces earlier blocked state");
+    q = query(0, Json::array({state_link(0), state_link(13), state_link(0, 0)}));
+    check(q["file_query_state"]["blocks_file_query_here"] == true &&
+              q["file_query_state"]["selected_linkage_index"] == 1 &&
+              q["file_query_state"]["skipped_links"].size() == 1,
+          "zero-count numeric link leaves preceding state unchanged");
+    auto many = state_link(13, 99);
+    auto many_bytes = bytesof(many["payload"]);
+    many_bytes.insert(many_bytes.end(), {0xaa, 0xbb});
+    many = link(0x56d5, many_bytes);
+    q = query(0, Json::array({many}));
+    check(q["file_query_state"]["blocks_file_query_here"] == true &&
+              q["file_query_state"]["applied_links"][0]["declared_count"] == 99 &&
+              bytesof(q["file_query_state"]["applied_links"][0]["trailing_storage"]) ==
+                  Bytes({0xaa, 0xbb}),
+          "native numeric gate consumes one value for every positive declared count");
+    auto non_user = state_link(13);
+    non_user["header"] = non_user["header"].get<unsigned>() & ~0x1000;
+    auto other_app = state_link(13);
+    other_app["app"] = 0x56d4;
+    Bytes other_key(2);
+    put(other_key, 0, 20, 2);
+    q = query(0, Json::array({non_user, other_app, link(0x56d5, other_key)}));
+    check(q["file_query_state"]["status"] == "decoded" &&
+              q["file_query_state"]["blocks_file_query_here"] == false &&
+              q["file_query_state"]["applied_links"].empty(),
+          "gate ignores other applications, keys, and non-user links");
+    Json unknown;
+    for (const auto size : {0u, 2u, 6u, 8u, 14u}) {
+        auto p = bytesof(state_link(13)["payload"]);
+        p.resize(size);
+        unknown = query(0, Json::array({link(0x56d5, p), state_link(0)}));
+        check(unknown["status"] == "partial" &&
+                  unknown["file_query_state"]["status"] == "not_evaluated" &&
+                  !unknown["file_query_state"].contains("blocks_file_query_here"),
+              "truncated state cannot be replaced by a guessed zero or later link");
+    }
+    q = initial_reference_file_query_gate({no_state, blocked, unknown}, false);
+    check(q["status"] == "blocked" && q["blocked"] == true && q["blocking_reference_index"] == 1 &&
+              q["examined_references"] == 2,
+          "known host block short circuits without requiring the remaining chain");
+    q = initial_reference_file_query_gate({blocked}, false);
+    check(q["status"] == "blocked" && q["blocking_reference_index"] == 0,
+          "current reference can block file query without host context");
+    q = initial_reference_file_query_gate({no_state, no_state}, true);
+    check(q["status"] == "allowed" && q["blocked"] == false && q["examined_references"] == 2,
+          "only an entirely known complete selected chain permits initial file query");
+    for (const auto &chain :
+         {std::vector<Json>{}, std::vector<Json>{no_state}, std::vector<Json>{unknown, blocked},
+          std::vector<Json>{Json::object()}}) {
+        q = initial_reference_file_query_gate(chain, false);
+        check(q["status"] == "not_evaluated" && !q.contains("blocked"),
+              "missing, incomplete, or unknown initial gate inputs stay unresolved");
+    }
+    auto invalid_gate = no_state;
+    invalid_gate["file_query_state"]["blocks_file_query_here"] = 0;
+    q = initial_reference_file_query_gate({invalid_gate}, true);
+    check(q["status"] == "not_evaluated" && !q.contains("blocked"),
+          "a non-boolean supplied gate state cannot authorize a file query");
     Bytes raw(372, 0);
     put(raw, 4, 13, 2);
     put(raw, 12, 184, 4);
@@ -229,6 +315,13 @@ unsigned reference_target_tests() {
     put(raw, file_at, file_link.at("header").get<unsigned>(), 2);
     put(raw, file_at + 2, 0x56d2, 2);
     std::copy(file_payload.begin(), file_payload.end(), raw.begin() + file_at + 4);
+    const auto numeric = state_link(13);
+    const auto numeric_payload = bytesof(numeric.at("payload"));
+    const auto numeric_at = raw.size();
+    raw.resize(numeric_at + 4 + numeric_payload.size());
+    put(raw, numeric_at, numeric.at("header").get<unsigned>(), 2);
+    put(raw, numeric_at + 2, 0x56d5, 2);
+    std::copy(numeric_payload.begin(), numeric_payload.end(), raw.begin() + numeric_at + 4);
     put(raw, 8, (raw.size() - 4) / 2, 4);
     const auto records = parse_native(raw);
     check(records.size() == 1 &&
@@ -240,6 +333,10 @@ unsigned reference_target_tests() {
               records[0]["reference_target"]["file_specification"]["strings"][0]["source_offset"] ==
                   file_at,
           "native record parsing integrates file specification with source linkage location");
+    check(records[0]["reference_target"]["file_query_state"]["blocks_file_query_here"] == true &&
+              records[0]["reference_target"]["file_query_state"]["applied_links"][0]
+                     ["source_offset"] == numeric_at,
+          "native record parsing integrates persisted file-query state and source location");
     Bytes control(32), header(0x610);
     put(header, 0x124, 0xf1234567, 4);
     put(header, 0x128, 0x1122334455667788ull, 8);

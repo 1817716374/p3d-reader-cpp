@@ -17,7 +17,11 @@ using StreamPath = std::vector<std::string>;
 // an earlier nonidentical candidate keeps an ordered lookup unresolved.
 using NativeModelNameEqual = std::function<bool(const std::u16string &, const std::u16string &)>;
 Json lookup_native_model_directory(const Json &directory, const std::u16string &name,
-                                  const NativeModelNameEqual &equal = {});
+                                   const NativeModelNameEqual &equal = {});
+// Persisted reference_target views in current-to-host order. A false result
+// requires the full selected host chain; later runtime changes are excluded.
+Json initial_reference_file_query_gate(const std::vector<Json> &reference_targets,
+                                       bool complete_host_chain);
 struct Options {
     unsigned threads = 1;
     std::size_t max_stream_bytes = 256u * 1024 * 1024;
@@ -46,7 +50,8 @@ struct ReferenceOriginContext {
 };
 // Consumes a native record's reference_input and the selected model's
 // coordinates. Returns a local correction, not a complete affine transform.
-Json reference_origin_correction(const Json &reference_input, const ReferenceOriginContext &context);
+Json reference_origin_correction(const Json &reference_input,
+                                 const ReferenceOriginContext &context);
 // Explicit native query context. The chain query forces Z scaling; a local
 // query that disables it needs the referenced model's Z scaling state.
 struct ReferenceAffineContext {
@@ -121,11 +126,12 @@ struct MaterialUvTransformContext {
 // except ElevationDrape require the actual reference-chain scale (including a
 // known value of 1 for an unscaled context); missing context is not guessed.
 Json material_uv_mapping_unit_factor(const Json &units, std::int32_t mapping_mode,
-                                    std::int32_t scale_mode,
-                                    const std::optional<double> &reference_scale = std::nullopt);
+                                     std::int32_t scale_mode,
+                                     const std::optional<double> &reference_scale = std::nullopt);
 // Consumes one version_conversion.layer_mapping_getters entry. Computes the
 // 2D affine transform including the selected registration unit branch.
-Json build_material_uv_transform(const Json &layer_getter, const MaterialUvTransformContext &context);
+Json build_material_uv_transform(const Json &layer_getter,
+                                 const MaterialUvTransformContext &context);
 // Explicit render inputs, not inferred from world bounds. reference_transform
 // is an affine row matrix acting on reference_point. uv_transform is the
 // registered 2D transform, before the render geometry scale is applied.
@@ -546,7 +552,7 @@ class Document {
     // Shares the explicit counter restrictions above. Does not apply runtime
     // deletion filters, expand owner paths, or scan unrelated models.
     Json native_model_object_lookup(const StreamPath &model_storage,
-                                      std::uint64_t initial_id_counter, std::uint64_t id) const;
+                                    std::uint64_t initial_id_counter, std::uint64_t id) const;
     // Expand owner-reference paths in the fresh input graph, before runtime
     // callbacks. Retains parent occurrence identity and prepared child flags.
     // Type-13 model attachment/loading is not inferred from source IDs.
