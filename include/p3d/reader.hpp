@@ -12,6 +12,12 @@ namespace p3d {
 using Json = nlohmann::json;
 using Bytes = std::vector<std::uint8_t>;
 using StreamPath = std::vector<std::string>;
+// Supply the equality rule of the originating native wide-character locale.
+// Without a callback only identical UTF-16 names are treated as known equal;
+// an earlier nonidentical candidate keeps an ordered lookup unresolved.
+using NativeModelNameEqual = std::function<bool(const std::u16string &, const std::u16string &)>;
+Json lookup_native_model_directory(const Json &directory, const std::u16string &name,
+                                  const NativeModelNameEqual &equal = {});
 struct Options {
     unsigned threads = 1;
     std::size_t max_stream_bytes = 256u * 1024 * 1024;
@@ -524,6 +530,8 @@ class Document {
     const Json &index() const;
     const Json &file_header() const;
     const Json &models() const;
+    // Persisted MMIx order/flags, before runtime refresh or fallback rebuilding.
+    Json native_model_directory() const;
     const Json &objects() const;
     const Json &native_records() const;
     // Conditional block input and trees, initial SSYS IDs, attributes/material table;
