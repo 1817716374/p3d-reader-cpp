@@ -32,9 +32,46 @@ unsigned reference_extension_tests() {
           "unrelated attribute keys do not become reference extensions");
     auto d = decode_attribute(0, 20081, main_payload(0xabcd1234), 0);
     check(d["scale_provider"]["id"] == 0xabcd1234u && d["scale_provider"]["enabled"] == true &&
-              d["ignored_word"]["value"] == 0xa5a5a5a5u && d["unresolved_ranges"].size() == 2,
+              d["ignored_word"]["value"] == 0xa5a5a5a5u && d["unresolved_ranges"].size() == 4,
           "provider comes from offset60 while nonzero ignored padding is accepted and unknown "
           "ranges remain explicit");
+    auto linked_payload = main_payload(0x10000);
+    put(linked_payload, 8, 0x80000000u, 4);
+    put(linked_payload, 16, 0xffffffffu, 4);
+    put(linked_payload, 24, 0x7fffffffu, 4);
+    put(linked_payload, 32, 0, 4);
+    put(linked_payload, 56, 17, 4);
+    put(linked_payload, 40, 0xfedcba9876543210ull, 8);
+    put(linked_payload, 48, 0x123456789abcdef0ull, 8);
+    put(linked_payload, 4, 0x80000001u, 4);
+    put(linked_payload, 12, 6, 4);
+    d = decode_attribute(0, 20081, linked_payload, 0);
+    check(d["indexed_resources"].size() == 5 &&
+              d["indexed_resources"][0]["index"] == std::numeric_limits<std::int32_t>::min() &&
+              d["indexed_resources"][0]["source_value"] == 0x80000000u &&
+              d["indexed_resources"][1]["index"] == -1 &&
+              d["indexed_resources"][2]["index"] == 0x7fffffff &&
+              d["indexed_resources"][3]["index"] == 0 &&
+              d["indexed_resources"][4]["source_offset"] == 56 &&
+              d["indexed_resources"][4]["index"] == 17,
+          "extension resource indices preserve signed lookup semantics and original bits");
+    check(d["indexed_resources"][0]["included_in_region_mode_query"] == true &&
+              d["indexed_resources"][1]["included_in_region_mode_query"] == false &&
+              d["indexed_resources"][0]["source_flags"] == 0x80000001u &&
+              !d["indexed_resources"][4].contains("region_slot"),
+          "four region query flags are distinct from the fifth independently referenced resource");
+    check(
+        d["object_references"][0]["id"] == 0xfedcba9876543210ull &&
+            d["object_references"][1]["id"] == 0x123456789abcdef0ull &&
+            d["object_references"][0]["owner_reference_path_indirection"] == true &&
+            d["object_references"][0]["target_resolution"] == "not_evaluated",
+        "clip object references retain exact uint64 identities without claiming resolved targets");
+    check(d["status"] == "partial" && d["remaining_semantics"].size() == 3 &&
+              d["indexed_resources"][0]["slot_role"] == "unresolved" &&
+              d["unresolved_ranges"][0] == Json({{"offset", 0}, {"size", 8}}),
+          "known reference roles do not imply complete flags, region naming, or resource context");
+    check(Json::parse(d.dump()) == d,
+          "extension identities survive JSON roundtrip above double precision");
     for (unsigned id : {0u, 65535u, 65536u, 0xffffffffu}) {
         d = decode_attribute(0, 20081, main_payload(id), 0);
         check(d["scale_provider"]["id"] == id && d["scale_provider"]["enabled"] == bool(id >> 16),
@@ -51,6 +88,22 @@ unsigned reference_extension_tests() {
               input["auxiliary_state_word"] == 0xfffffffeu &&
               input["parameter_block_loaded"] == false,
           "known empty initial collection uses constructor defaults");
+    check(input["parameter_source"] == "initial_default" &&
+              input["indexed_resources"][0]["index"] == -1 &&
+              input["indexed_resources"][4]["index"] == -1 &&
+              input["indexed_resources"][0]["included_in_region_mode_query"] == true &&
+              input["indexed_resources"][1]["included_in_region_mode_query"] == true &&
+              input["indexed_resources"][2]["included_in_region_mode_query"] == false &&
+              input["indexed_resources"][3]["source_flags"] == 6 &&
+              input["object_references"][0]["id"] == 0 && input["object_references"][1]["id"] == 0,
+          "initial resource and clip reference state follows the native constructor");
+    auto linked_input = reference_extension_input(Json::array({attr(0, 20081, 0, linked_payload)}));
+    check(linked_input["parameter_source"] == "selected_attribute" &&
+              linked_input["object_references"][0]["id"] == 0xfedcba9876543210ull &&
+              linked_input["object_references"][1]["id"] == 0x123456789abcdef0ull &&
+              linked_input["indexed_resources"][0]["index"] ==
+                  std::numeric_limits<std::int32_t>::min(),
+          "selected attribute replaces initial reference and resource defaults");
     check(reference_extension_input(Json())["status"] == "not_evaluated",
           "missing collection is not a known empty array");
     Json oversized = Json::array();
@@ -79,6 +132,11 @@ unsigned reference_extension_tests() {
             input["selections"][0]["status"] == "ignored_length" &&
             input["auxiliary_state_word"] == 0x87654321u,
         "wrong length selected entry leaves default rather than falling back to a valid duplicate");
+    check(input["parameter_source"] == "initial_default" &&
+              input["object_references"][0]["id"] == 0 &&
+              input["indexed_resources"][4]["index"] == -1,
+          "rejected selected payload cannot leak object or resource references into the initial "
+          "state");
     Json many = Json::array(
         {attr(0, 20081, 0, main_payload(0x10000)), attr(0, 20081, 0, main_payload(0x20000))});
     for (unsigned i = 0; i < 4; ++i)
