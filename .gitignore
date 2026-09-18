@@ -7,6 +7,7 @@
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp
+!/tests/loft_caps.cpp
 !/tests/akima.cpp
 !/tests/interpolation.cpp
 !/tests/spiral.cpp

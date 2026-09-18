@@ -1,0 +1,137 @@
+#include "loft_curve.hpp"
+
+namespace p3d {
+namespace {
+Json region(unsigned type, Json curves = Json::array()) {
+    return {{"_type", "CurveVector"}, {"type", type}, {"curves", std::move(curves)}};
+}
+Json variant(Json geometry) {
+    return {{"_type", "VariantGeometry"}, {"geometry", std::move(geometry)}};
+}
+loft_detail::Curve endpoint_curve(const BsplineSurface &surface, bool top, unsigned limit) {
+    const auto &u = surface.u(), &v = surface.v();
+    require(!u.closed() && !v.closed() && u.knot_domain() == std::array<double, 2>{0, 1} &&
+                v.knot_domain() == std::array<double, 2>{0, 1},
+            "loft cap requires prepared open normalized side surfaces");
+    for (unsigned i = 0; i < v.order(); ++i)
+        require(v.knots()[i] == 0 && v.knots()[v.knots().size() - 1 - i] == 1,
+                "loft cap endpoint requires a clamped side surface");
+    loft_detail::Curve curve;
+    curve.degree = u.order() - 1;
+    curve.rational = surface.rational();
+    curve.knots = u.knots();
+    require(u.pole_count() <= limit, "loft cap control budget");
+    const auto row = top ? v.pole_count() - 1 : 0;
+    for (std::size_t i = 0; i < u.pole_count(); ++i) {
+        const auto index = row * u.pole_count() + i;
+        const auto p = surface.poles()[index];
+        curve.poles.push_back({p[0], p[1], p[2], curve.rational ? surface.weights()[index] : 1});
+    }
+    curve.check(limit);
+    return curve;
+}
+bool closed(Point3 a, Point3 b) {
+    double distance2 = 0, scale2 = 1;
+    for (unsigned k = 0; k < 3; ++k) {
+        distance2 += (a[k] - b[k]) * (a[k] - b[k]);
+        scale2 += a[k] * a[k] + b[k] * b[k];
+    }
+    require(std::isfinite(distance2) && std::isfinite(scale2),
+            "loft cap closure comparison outside finite range");
+    return distance2 < scale2 * 1.0000000000000001e-20;
+}
+void reverse(loft_detail::Curve &curve) {
+    std::reverse(curve.poles.begin(), curve.poles.end());
+    std::reverse(curve.knots.begin(), curve.knots.end());
+    // Native reversal normalizes the reversed knot array. Prepared side
+    // isocurves are clamped to [0,1], so its denominator is exactly -1.
+    for (auto &k : curve.knots)
+        k = (k - 1) / -1;
+}
+} // namespace
+
+LoftCapRegions SectionLoft::cap_regions(unsigned max_control_points) const {
+    require(max_control_points > 0, "loft cap control budget must be positive");
+    LoftCapRegions out;
+    out.report = {{"status", "not_requested"},
+                  {"representation", "derived_loft_cap_regions"},
+                  {"mesh_status", "not_evaluated"},
+                  {"planarity_status", "not_evaluated"}};
+    if (!source_.at("capped").get<bool>())
+        return out;
+    out.report["status"] = "incomplete";
+    try {
+        require(!sides_.empty(), "loft cap requires side surfaces");
+        std::vector<std::vector<std::size_t>> groups;
+        for (std::size_t i = 0; i < sides_.size(); ++i) {
+            const auto &side = sides_[i];
+            if (side.loop_index == groups.size())
+                groups.emplace_back();
+            require(!groups.empty() && side.loop_index == groups.size() - 1 &&
+                        side.primitive_index == groups.back().size(),
+                    "loft cap side ordering");
+            groups.back().push_back(i);
+        }
+        std::array<Json, 2> caps{region(4), region(4)};
+        Json links = Json::array();
+        std::size_t total = 0;
+        for (std::size_t loop = 0; loop < groups.size(); ++loop) {
+            const auto &indices = groups[loop];
+            for (unsigned end = 0; end < 2; ++end) {
+                std::vector<loft_detail::Curve> curves;
+                for (auto index : indices) {
+                    auto curve =
+                        endpoint_curve(sides_[index].surface, end != 0, max_control_points);
+                    require(curve.poles.size() <= max_control_points - total,
+                            "loft cap total control budget");
+                    total += curve.poles.size();
+                    curves.push_back(std::move(curve));
+                }
+                if (!closed(loft_detail::cartesian(curves.front().poles.front()),
+                            loft_detail::cartesian(curves.back().poles.back()))) {
+                    out.report["status"] = "native_failure";
+                    out.report["reason"] = "loft cap boundary endpoints do not coincide";
+                    out.report["failed_loop"] = loop;
+                    out.report["failed_end"] = end == 0 ? "bottom" : "top";
+                    return out;
+                }
+                Json ring = region(loop ? 3 : 2);
+                for (std::size_t position = 0; position < curves.size(); ++position) {
+                    const auto original = end ? position : curves.size() - 1 - position;
+                    auto &curve = curves[original];
+                    if (end == 0)
+                        reverse(curve);
+                    ring["curves"].push_back(variant(curve.table()));
+                    const auto path =
+                        (groups.size() == 1 ? std::string()
+                                            : "/curves/" + std::to_string(loop) + "/geometry") +
+                        "/curves/" + std::to_string(position) + "/geometry";
+                    links.push_back({{"cap", end == 0 ? "bottom" : "top"},
+                                     {"region_path", path},
+                                     {"side_index", indices[original]},
+                                     {"loop_index", loop},
+                                     {"primitive_index", original},
+                                     {"surface_v", end},
+                                     {"u_reversed", end == 0}});
+                }
+                if (groups.size() == 1)
+                    caps[end] = std::move(ring);
+                else
+                    caps[end]["curves"].push_back(variant(std::move(ring)));
+            }
+        }
+        out.bottom = std::move(caps[0]);
+        out.top = std::move(caps[1]);
+        out.report["status"] = "complete";
+        out.report["loop_count"] = groups.size();
+        out.report["control_point_count"] = total;
+        out.report["boundary_curves"] = std::move(links);
+    } catch (const std::exception &e) {
+        out.bottom = nullptr;
+        out.top = nullptr;
+        out.report["status"] = "incomplete";
+        out.report["reason"] = e.what();
+    }
+    return out;
+}
+} // namespace p3d

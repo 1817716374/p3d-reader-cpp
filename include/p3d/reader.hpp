@@ -485,6 +485,10 @@ struct LoftSide {
     BsplineSurface surface;
     std::size_t loop_index = 0, primitive_index = 0;
 };
+struct LoftCapRegions {
+    Json bottom, top; // Derived CurveVector trees; null unless both caps succeed.
+    Json report;
+};
 // Explicit reconstruction of the side surfaces in a decoded P3DSectionLoft.
 // Keeps source order and source data; does not replace the active graphics cache.
 class SectionLoft {
@@ -496,6 +500,9 @@ class SectionLoft {
     const std::vector<LoftSide> &sides() const {
         return sides_;
     }
+    // Native endpoint-isocurve regions and bottom reversal, without meshing,
+    // fitting a plane, filling internal gaps, or replacing source profiles.
+    LoftCapRegions cap_regions(unsigned max_control_points = 100000) const;
     const Json &report() const {
         return report_;
     }
