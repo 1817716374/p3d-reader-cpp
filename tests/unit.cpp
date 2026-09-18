@@ -8,6 +8,7 @@
 using namespace p3d;
 unsigned bspline_surface_tests();
 unsigned bspline_trim_tests();
+unsigned bspline_mesh_tests();
 unsigned akima_tests();
 unsigned interpolation_tests();
 unsigned spiral_tests();
@@ -2673,6 +2674,7 @@ int main() {
         bspline_tests();
         checks += bspline_surface_tests();
         checks += bspline_trim_tests();
+        checks += bspline_mesh_tests();
         checks += akima_tests();
         checks += interpolation_tests();
         checks += spiral_tests();

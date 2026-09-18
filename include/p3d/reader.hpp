@@ -392,6 +392,19 @@ class TransitionSpiral {
     std::array<double, 12> transform_{};
 };
 enum class TrimLocation { Inside, Outside, BoundaryBand, Indeterminate };
+struct BsplineMeshOptions {
+    double uv_tolerance = 1e-6;
+    double max_uv_edge = 1.0 / 16;
+    unsigned max_trim_segments = 100000;
+    unsigned max_vertices = 200000;
+    unsigned max_triangles = 400000;
+};
+struct BsplineSurfaceMesh {
+    std::vector<Point3> vertices;
+    std::vector<Point2> parameters;
+    std::vector<Triangle> faces;
+    Json report;
+};
 // Derived UV polylines with source provenance and a declared approximation bound.
 // Original boundary curves remain available on BsplineSurface.
 class BsplineTrim {
@@ -455,6 +468,10 @@ class BsplineSurface {
     // Strokes source trim curves in UV coordinates. Incomplete results never
     // classify points as inside/outside. Does not build a surface mesh.
     BsplineTrim trim(double uv_tolerance, unsigned max_segments = 100000) const;
+    // Mesh the derived parity region clipped to [0,1]^2, with conforming UV
+    // edge refinement. max_uv_edge is not a bound on world-space chord error.
+    // Incomplete conversion returns no mesh; inspect report before use.
+    BsplineSurfaceMesh mesh(const BsplineMeshOptions &options = {}) const;
 
   private:
     BsplineSurface() = default;
