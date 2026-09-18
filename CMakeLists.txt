@@ -11,6 +11,7 @@ target_sources(p3d_reader PRIVATE src/layers.cpp src/bspline.cpp src/bspline_tri
 target_sources(p3d_reader PRIVATE src/bspline_mesh.cpp)
 target_sources(p3d_reader PRIVATE src/loft_curve.cpp src/loft_open.cpp src/loft_close.cpp src/section_loft.cpp)
 target_sources(p3d_reader PRIVATE src/loft_caps.cpp)
+target_sources(p3d_reader PRIVATE src/loft_native_faces.cpp)
 target_sources(p3d_reader PRIVATE src/loft_mesh.cpp)
 target_sources(p3d_reader PRIVATE src/material_semantics.cpp src/material_links.cpp src/material_legacy.cpp)
 target_sources(p3d_reader PRIVATE src/material_resource.cpp)

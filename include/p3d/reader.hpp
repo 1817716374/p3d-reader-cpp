@@ -489,6 +489,11 @@ struct LoftCapRegions {
     Json bottom, top; // Derived CurveVector trees; null unless both caps succeed.
     Json report;
 };
+struct LoftNativeFaces {
+    std::vector<LoftSide> sides;
+    LoftCapRegions caps;
+    Json report;
+};
 struct LoftFaceIndexSet {
     std::vector<std::array<std::int64_t, 3>> indices;
     Json report;
@@ -506,7 +511,8 @@ struct LoftMeshPart {
     std::optional<std::size_t> side_index;
     std::size_t first_face = 0, face_count = 0;
     // Identity within this loft solid, independent of material Entry indices.
-    std::array<std::int64_t, 3> native_face_indices{};
+    // Empty if the separate native face reconstruction cannot complete.
+    std::optional<std::array<std::int64_t, 3>> native_face_indices;
 };
 struct LoftMesh {
     std::vector<Point3> vertices;
@@ -529,6 +535,9 @@ class SectionLoft {
     // Native endpoint-isocurve regions and bottom reversal, without meshing,
     // fitting a plane, filling internal gaps, or replacing source profiles.
     LoftCapRegions cap_regions(unsigned max_control_points = 100000) const;
+    // Native per-face surfaces, including linear-V cleanup, followed by cap
+    // construction from those surfaces. Does not modify sides() or source().
+    LoftNativeFaces native_faces(unsigned max_cap_control_points = 100000) const;
     // Caps first, then sides in source loop/primitive order. A failed requested
     // cap invalidates the entire enumeration. These are not material part IDs.
     LoftFaceIndexSet face_indices(unsigned max_cap_control_points = 100000) const;

@@ -46,6 +46,30 @@ Json source(unsigned loops = 1, unsigned type = 2, double gap = 0) {
 bool near(Point3 a, Point3 b) {
     return std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 3e-12;
 }
+Json near_knots(bool rational, bool unsafe = false, unsigned type = 2, double delta = 1.5e-14) {
+    auto input = source(1, type);
+    for (auto &entry : input["section1"]["curves"])
+        for (std::size_t i = 2; i < entry["geometry"]["poles"].size(); i += 3)
+            entry["geometry"]["poles"][i] = 3000000;
+    for (auto &guide : input["guide_groups"][0]) {
+        auto &curve = guide["curves"][0]["geometry"];
+        const double x = curve["poles"][0], y = curve["poles"][1];
+        const unsigned count = unsafe ? 6 : 5;
+        Json poles = Json::array(), weights = Json::array();
+        for (unsigned row = 0; row < count; ++row) {
+            const double w = rational ? row + 1 : 1;
+            poles.push_back(x * w);
+            poles.push_back(y * w);
+            poles.push_back((3000000.0 * row / (count - 1)) * w);
+            weights.push_back(w);
+        }
+        curve["poles"] = poles;
+        curve["weights"] = rational ? weights : Json(nullptr);
+        curve["knots"] = unsafe ? Json{0, 0, .25, .25 + delta, .75, .75 + delta, 1, 1}
+                                : Json{0, 0, .5, .5 + delta, .75, 1, 1};
+    }
+    return input;
+}
 } // namespace
 unsigned loft_caps_tests() {
     unsigned checks = 0;
@@ -218,6 +242,70 @@ unsigned loft_caps_tests() {
     check(concurrent_faces.indices == loft.face_indices().indices &&
               concurrent_faces.report == loft.face_indices().report,
           "native face enumeration is concurrent and repeatable");
+    const auto plain_native = loft.native_faces();
+    check(plain_native.report["status"] == "complete" &&
+              plain_native.report["side_adjustments"].empty() &&
+              plain_native.caps.bottom == caps.bottom,
+          "ordinary native faces preserve unmodified side and cap geometry");
+    const auto narrow_loft = SectionLoft::from_bgfb(near_knots(false));
+    const auto narrow = narrow_loft.native_faces();
+    check(narrow.report["status"] == "complete" && narrow.sides.size() == 4 &&
+              narrow.sides[0].surface.v().pole_count() == 4 &&
+              narrow.sides[0].surface.v().knots() == std::vector<double>{0, 0, .5, .75, 1, 1},
+          "native relative knot compression removes the later near-coincident linear row");
+    check(narrow.sides[0].surface.poles()[4] == narrow_loft.sides()[0].surface.poles()[6] &&
+              narrow_loft.sides()[0].surface.v().pole_count() == 5,
+          "native cleaned geometry and original side remain separate");
+    const auto outside = SectionLoft::from_bgfb(near_knots(false, false, 2, 4e-14)).native_faces();
+    check(outside.report["status"] == "complete" && outside.report["side_adjustments"].empty(),
+          "knots outside the native strict relative tolerance stay distinct");
+    const auto weighted_loft = SectionLoft::from_bgfb(near_knots(true));
+    const auto weighted = weighted_loft.native_faces();
+    check(weighted.report["status"] == "complete" &&
+              weighted.sides[0].surface.weights() == std::vector<double>{1, 1, 2, 2, 3, 4, 5, 5} &&
+              weighted.report["side_adjustments"][0]["removed_source_weight_indices"] == Json{4, 6},
+          "native weight erasure has independent moving-array indices");
+    const auto &native_surface = weighted.sides[0].surface;
+    check(native_surface.poles()[4][2] == weighted_loft.sides()[0].surface.poles()[6][2] * 3 &&
+              native_surface.point_at(0, 1)[2] == 15000000 &&
+              weighted_loft.sides()[0].surface.point_at(0, 1)[2] == 3000000,
+          "native replacement constructor reweights stored poles and changes evaluated geometry");
+    const auto native_top_curve =
+        BsplineCurve::from_bgfb(weighted.caps.top["curves"][0]["geometry"]);
+    check(native_top_curve.point_at(0)[2] == 15000000,
+          "native caps come from cleaned surfaces rather than the original sides");
+    const auto unsafe_loft = SectionLoft::from_bgfb(near_knots(true, true));
+    const auto unsafe_native = unsafe_loft.native_faces();
+    check(unsafe_native.report["status"] == "incomplete" && unsafe_native.sides.empty() &&
+              unsafe_native.caps.bottom.is_null() && unsafe_loft.face_indices().indices.empty(),
+          "out-of-range native weight removal is reported without partial geometry or identities");
+    auto open_weighted = near_knots(true, false, 1);
+    auto &last = open_weighted["guide_groups"][0][4]["curves"][0]["geometry"];
+    last["weights"][4] = 6;
+    last["poles"][14] = 18000000;
+    const auto open_loft = SectionLoft::from_bgfb(open_weighted);
+    const auto open_native = open_loft.native_faces();
+    check(open_loft.cap_regions().report["status"] == "complete" &&
+              open_native.report["status"] == "native_failure" && open_native.sides.empty() &&
+              open_loft.face_indices().indices.empty(),
+          "native cleanup can invalidate closure although derived side caps close");
+    LoftMeshOptions mapping_options;
+    mapping_options.max_uv_edge = .5;
+    const auto derived_mesh = unsafe_loft.mesh(mapping_options);
+    check(derived_mesh.report["status"] == "complete" &&
+              derived_mesh.report["native_face_indices"]["status"] == "incomplete" &&
+              std::all_of(derived_mesh.parts.begin(), derived_mesh.parts.end(),
+                          [](const LoftMeshPart &part) { return !part.native_face_indices; }),
+          "derived mesh cannot claim native face indices when native reconstruction fails");
+    check(weighted_loft.source() == near_knots(true),
+          "native face extraction preserves source data");
+    const auto small_budget = weighted_loft.native_faces(1);
+    check(small_budget.report["status"] == "incomplete" && small_budget.sides.empty(),
+          "native cap budget failure clears the whole requested face set");
+    auto native_future =
+        std::async(std::launch::async, [&] { return weighted_loft.native_faces(); });
+    check(native_future.get().caps.top == weighted.caps.top,
+          "native face reconstruction is concurrent");
     auto future = std::async(std::launch::async, [&] { return loft.cap_regions(); });
     check(future.get().bottom == caps.bottom && loft.source() == input &&
               loft.cap_regions().report == caps.report,

@@ -136,18 +136,19 @@ LoftCapRegions SectionLoft::cap_regions(unsigned max_control_points) const {
 }
 
 LoftFaceIndexSet SectionLoft::face_indices(unsigned max_cap_control_points) const {
-    const auto caps = cap_regions(max_cap_control_points);
+    const auto native = native_faces(max_cap_control_points);
     LoftFaceIndexSet out;
-    out.report = {{"status", caps.report.at("status")},
+    out.report = {{"status", native.report.at("status")},
                   {"representation", "native_loft_face_indices"},
                   {"index_scope", "solid"},
-                  {"cap_status", caps.report.at("status")},
+                  {"cap_status", native.report.at("cap_status")},
                   {"material_part_mapping", "not_established"}};
     const bool capped = source_.at("capped").get<bool>();
-    if (capped && caps.report.at("status") != "complete") {
-        out.report["cap_failure"] = caps.report;
+    if (native.report.at("status") != "complete") {
+        out.report["face_geometry_failure"] = native.report;
         return out;
     }
+    out.report["side_adjustments"] = native.report.at("side_adjustments");
     // getCappedPatches retains one patch per source primitive, including its
     // linear-V knot cleanup. getFaceIndices uses one counter across all loops.
     // Do not use getBsplineSurface's joined loop surfaces as the face count.
