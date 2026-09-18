@@ -57,6 +57,116 @@ static Json tokens(const Bytes &b) {
             {"note", "Ordered typed values, including property names and declared types. Object "
                      "scopes and type-0 byte semantics remain unassigned."}};
 }
+static Json bfa_driven(const Bytes &payload) {
+    Reader r(payload);
+    auto property_reference = [&](unsigned kind) {
+        const auto offset = r.p + 19; // Relative to the complete BFA node body.
+        require(hex(r.take(3)) == "7c2340", "BFA driven property reference marker");
+        Json out = {{"body_offset", offset},
+                    {"storage_kind", kind},
+                    {"reference_scope", "component_project"},
+                    {"resolution_status", "requires_component_context"}};
+        if (kind == 3) {
+            out["kind"] = "object_property";
+            out["object_id"] = r.u64();
+            out["property_id"] = r.i64();
+        } else {
+            // The native component maps these object references to property IDs.
+            // They must not be interpreted directly as BPPropertyID values.
+            out["kind"] = "component_property_reference";
+            out["property_reference_id"] = r.u64();
+        }
+        return out;
+    };
+    const auto kind = r.u32();
+    require(kind >= 1 && kind <= 3, "BFA driven target storage kind");
+    Json out = {{"target", property_reference(kind)}, {"inputs", Json::array()}};
+    for (unsigned group = 1; group <= 3; ++group) {
+        const std::uint8_t end = group == 1 ? '[' : group == 2 ? ']' : '#';
+        while (true) {
+            require(r.left() != 0, "BFA driven input list terminator");
+            if (payload[r.p] == end) {
+                r.u8();
+                break;
+            }
+            out["inputs"].push_back(property_reference(group));
+        }
+    }
+    const auto formula_size = r.u32();
+    const auto formula_offset = r.p + 19;
+    const auto encoded = r.take(formula_size);
+    Json formula = {{"body_offset", formula_offset},
+                    {"encoded_bytes", rawbytes(encoded)},
+                    {"evaluation_status", "not_performed"},
+                    {"expression_status", "requires_native_expression_conversion"}};
+    try {
+        Reader fr(encoded);
+        Json parts = Json::array();
+        Bytes expanded;
+        std::size_t literal = 0;
+        auto flush = [&](std::size_t end) {
+            if (end == literal)
+                return;
+            const auto bytes = slice(encoded, literal, end - literal);
+            parts.push_back({{"kind", "literal"},
+                             {"encoded_offset", literal},
+                             {"value", component_text(bytes, false)}});
+            expanded.insert(expanded.end(), bytes.begin(), bytes.end());
+        };
+        while (fr.left()) {
+            const auto at = fr.p;
+            if (fr.left() >= 3 && encoded[at] == '>' && encoded[at + 1] == '<' &&
+                encoded[at + 2] == '@') {
+                flush(at);
+                fr.take(3);
+                const auto id = fr.u64();
+                parts.push_back({{"kind", "packed_reference"},
+                                 {"encoded_offset", at},
+                                 {"reference_id_bits", id}});
+                // Expand only explicitly packed references. This view is not
+                // the SDK's converted formula string or its evaluation result.
+                const auto text = std::string("><@") + std::to_string(id);
+                expanded.insert(expanded.end(), text.begin(), text.end());
+                literal = fr.p;
+            } else
+                fr.u8();
+        }
+        flush(encoded.size());
+        formula["parts"] = std::move(parts);
+        formula["reference_expanded_form"] = component_text(expanded, false);
+        formula["token_status"] = "decoded";
+    } catch (const std::exception &e) {
+        // Formula corruption cannot consume the independently bounded flags.
+        formula["token_status"] = "malformed";
+        formula["decode_error"] = e.what();
+    }
+    auto flag = [&](Json &dst, const char *name) {
+        const auto value = r.u8();
+        dst[std::string(name) + "_byte"] = value;
+        dst[name] = value <= 1 ? Json(value != 0) : Json(nullptr);
+        if (value > 1)
+            dst[std::string(name) + "_status"] = "invalid_boolean";
+    };
+    flag(formula, "valid");
+    out["formula"] = std::move(formula);
+    flag(out, "bidirectional");
+    // The native reader only reads this field for version >= 2.0. BfaTree
+    // does not carry that context; retain its physical absence, not a default.
+    out["driven_type"] = nullptr;
+    out["driven_type_code"] = nullptr;
+    out["driven_type_status"] = "not_stored";
+    if (r.left()) {
+        const auto type = r.i32();
+        out["driven_type_code"] = type;
+        out["driven_type_status"] = type >= 0 && type <= 2 ? "known_value" : "unknown_value";
+        if (type >= 0 && type <= 2)
+            out["driven_type"] = type == 0 ? "default" : type == 1 ? "geometry" : "location";
+    }
+    out["consumed_body_bytes"] = r.p + 19;
+    if (r.left())
+        out["unassigned_suffix_hex"] = hex(r.take(r.left()));
+    return out;
+}
 static Json bfa(const Bytes &b) {
     static const std::map<std::string, std::string> kinds = {{"~$^", "component_definition"},
                                                              {"@#$", "component_type"},
@@ -86,8 +196,16 @@ static Json bfa(const Bytes &b) {
                      {"unassigned_header_uint64", br.u64()},
                      {"body_base64", base64(body)}};
         if (tag == "`%!") {
-            item["unassigned_suffix_hex"] = hex(br.take(br.left()));
-            item["payload_status"] = "not_decoded";
+            const auto payload = br.take(br.left());
+            item["payload_hex"] = hex(payload);
+            try {
+                item["driven"] = bfa_driven(payload);
+                item["payload_status"] = "structure_decoded";
+            } catch (const std::exception &e) {
+                item["unassigned_suffix_hex"] = hex(payload);
+                item["payload_status"] = "malformed_or_unsupported";
+                item["decode_error"] = e.what();
+            }
         } else if (tag == "&@`") {
             if (br.left())
                 try {
@@ -153,7 +271,8 @@ static Json bfa(const Bytes &b) {
             {"external_child_ids", external},
             {"note", "Node kinds and component-type placed-instance references are identified. "
                      "The placed-instance IDs are not definition-tree child IDs. Other node "
-                     "suffixes, driven payloads and some header semantics remain unassigned."}};
+                     "suffixes and some header semantics remain unassigned. Driven references "
+                     "require component context; formula conversion and evaluation are separate."}};
 }
 static Json cached(const Bytes &b) {
     Reader r(b);
