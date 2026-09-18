@@ -1,5 +1,6 @@
 #include "blob_internal.hpp"
 namespace p3d {
+static Json component_text(const Bytes &b, bool ansi = true);
 static Json list(Reader &r, std::function<Json()> f, std::size_t min = 1, char fmt = 'Q') {
     auto n = r.count(fmt, min);
     Json out = Json::array();
@@ -57,6 +58,11 @@ static Json tokens(const Bytes &b) {
                      "scopes and type-0 byte semantics remain unassigned."}};
 }
 static Json bfa(const Bytes &b) {
+    static const std::map<std::string, std::string> kinds = {{"~$^", "component_definition"},
+                                                             {"@#$", "component_type"},
+                                                             {"!_#", "property_definition"},
+                                                             {"&@`", "primitive"},
+                                                             {"`%!", "driven_object"}};
     Reader r(b);
     auto reference = [&](Reader &r) {
         require(hex(r.take(3)) == "7c2340", "BFA reference");
@@ -66,7 +72,7 @@ static Json bfa(const Bytes &b) {
     while (r.left()) {
         auto off = r.p;
         auto tag = utf8(r.take(3));
-        require(tag == "~$^" || tag == "@#$" || tag == "!_#" || tag == "&@`", "BFA type");
+        require(kinds.count(tag) != 0, "BFA type");
         auto oid = reference(r);
         auto body = r.take(r.u64());
         auto children = list(r, [&]() { return Json(reference(r)); }, 11, 'I');
@@ -74,11 +80,15 @@ static Json bfa(const Bytes &b) {
         require(body.size() >= 19 && reference(br) == oid, "BFA body identity");
         Json item = {{"offset", off},
                      {"type_tag", tag},
+                     {"node_kind", kinds.at(tag)},
                      {"id", oid},
                      {"children", children},
                      {"unassigned_header_uint64", br.u64()},
                      {"body_base64", base64(body)}};
-        if (tag == "&@`") {
+        if (tag == "`%!") {
+            item["unassigned_suffix_hex"] = hex(br.take(br.left()));
+            item["payload_status"] = "not_decoded";
+        } else if (tag == "&@`") {
             if (br.left())
                 try {
                     item["property_block"] = tokens(br.take(br.left()));
@@ -91,10 +101,44 @@ static Json bfa(const Bytes &b) {
             if (tag == "!_#")
                 item["unassigned_prefix_byte"] = br.u8();
             Json names = Json::array();
-            for (int i = 0; i < (tag == "@#$" ? 1 : 2); ++i)
-                names.push_back(gb18030(br.take(br.u32())));
+            for (int i = 0; i < (tag == "@#$" ? 1 : 2); ++i) {
+                const auto bytes = br.take(br.u32());
+                if (tag == "@#$") {
+                    // Keep the old display field, but never require its assumed code page
+                    // to parse the native reference list following the bounded name.
+                    item["names_encoding"] = "legacy_gb18030_display";
+                    try {
+                        names.push_back(gb18030(bytes));
+                    } catch (const std::exception &e) {
+                        names.push_back(nullptr);
+                        item["names_decode_error"] = e.what();
+                    }
+                    auto name = component_text(bytes, false);
+                    const auto end = std::find(bytes.begin(), bytes.end(), std::uint8_t(0));
+                    name["native_value"] = component_text(Bytes(bytes.begin(), end), false);
+                    item["type_name"] = std::move(name);
+                } else
+                    names.push_back(gb18030(bytes));
+            }
             item["names"] = names;
-            item["unassigned_suffix_hex"] = hex(br.take(br.left()));
+            const auto suffix = br.take(br.left());
+            if (tag == "@#$") {
+                item["suffix_hex"] = hex(suffix);
+                item["placed_instance_reference_scope"] = "component_project";
+                item["placed_instance_resolution_status"] = "not_performed";
+                try {
+                    Reader refs(suffix);
+                    require(refs.left() % 11 == 0, "BFA placed-instance reference width");
+                    Json ids = Json::array();
+                    while (refs.left())
+                        ids.push_back(reference(refs));
+                    item["placed_instance_ids"] = std::move(ids);
+                } catch (const std::exception &e) {
+                    item["placed_instance_decode_error"] = e.what();
+                    item["unassigned_suffix_hex"] = hex(suffix);
+                }
+            } else
+                item["unassigned_suffix_hex"] = hex(suffix);
         }
         records.push_back(item);
     }
@@ -107,8 +151,9 @@ static Json bfa(const Bytes &b) {
                 external.insert(c.get<std::uint64_t>());
     return {{"records", records},
             {"external_child_ids", external},
-            {"note", "All graph records and embedded property tokens retained. Parameter-node "
-                     "suffixes and some node header semantics remain unassigned."}};
+            {"note", "Node kinds and component-type placed-instance references are identified. "
+                     "The placed-instance IDs are not definition-tree child IDs. Other node "
+                     "suffixes, driven payloads and some header semantics remain unassigned."}};
 }
 static Json cached(const Bytes &b) {
     Reader r(b);
@@ -381,7 +426,7 @@ static Json vector_mesh(Reader &r) {
 }
 // This unversioned suffix follows the complete component-instance list.
 // Material and property text use Windows ANSI; remarks have no confirmed code page.
-static Json component_text(const Bytes &b, bool ansi = true) {
+static Json component_text(const Bytes &b, bool ansi) {
     Json out = {{"encoding", ansi ? "windows_ansi" : "not_established"},
                 {"source_bytes", rawbytes(b)},
                 {"text", nullptr},
@@ -553,6 +598,11 @@ Json complex_blob(const std::string &name, const Bytes &b) {
         const auto footer_start = r.p;
         auto footer = component_footer(r);
         out = {{"parent_id", parent},
+               {"type_definition_id", parent},
+               {"type_definition_reference",
+                {{"kind", "imported_bfa_type"},
+                 {"scope", "component_project"},
+                 {"resolution_status", parent.is_null() ? "absent" : "not_performed"}}},
                {"instances", instances},
                {"footer", std::move(footer)},
                {"footer_hex", hex(slice(b, footer_start, b.size() - footer_start))},

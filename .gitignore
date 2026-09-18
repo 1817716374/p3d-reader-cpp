@@ -60,6 +60,7 @@
 !/tests/electrical_wire.hpp
 !/tests/README.md
 !/tests/graphics_bytes.cpp
+!/tests/bfa.cpp
 *.p3d
 *.P3D
 *.BAK*

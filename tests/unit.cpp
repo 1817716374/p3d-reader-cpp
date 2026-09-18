@@ -8,6 +8,7 @@
 using namespace p3d;
 unsigned bspline_surface_tests();
 unsigned graphics_bytes_tests();
+unsigned bfa_tests();
 unsigned bspline_trim_tests();
 unsigned bspline_mesh_tests();
 unsigned loft_caps_tests();
@@ -2689,6 +2690,7 @@ int main() {
         bspline_tests();
         checks += bspline_surface_tests();
         checks += graphics_bytes_tests();
+        checks += bfa_tests();
         checks += bspline_trim_tests();
         checks += bspline_mesh_tests();
         checks += loft_caps_tests();
