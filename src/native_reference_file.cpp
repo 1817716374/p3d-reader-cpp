@@ -74,7 +74,136 @@ std::u16string slot_value(const Json &target, unsigned key) {
     }
     throw std::runtime_error("reference_search_string_slot_required");
 }
+
+Json probe_number(double value) {
+    std::uint64_t bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return {{"value", std::isfinite(value) ? Json(value) : Json()}, {"ieee754_bits", bits}};
+}
+
+void query_open_files(Json &out, const ReferenceFileQueryContext &context) {
+    out["registered_file_lookup"] = {{"status", "not_evaluated"}};
+    if (!context.lookup_reference_after_resource_service)
+        return;
+    if (out.contains("reason")) {
+        out["external_search_reason"] = out["reason"];
+        out.erase("reason");
+    }
+    auto &result = out["registered_file_lookup"];
+    result["scope"] = "initial_reference_after_resource_service_before_file_loading";
+    result["examined_entries"] = Json::array();
+    result["reference_file_selector"] = -1;
+    out["status"] = "not_evaluated";
+    const auto lookup = c_string(*context.lookup_reference_after_resource_service);
+    result["lookup_reference"] = wide_value(lookup);
+    require(context.open_files.has_value(), "complete_native_open_file_registry_required");
+    const auto &entries = *context.open_files;
+    for (std::size_t i = entries.size(); i-- > 0;) {
+        const auto &entry = entries[i];
+        result["examined_entries"].push_back({{"entry_index", i}});
+        auto &examined = result["examined_entries"].back();
+        require(entry.valid.has_value(), "registered_file_validity_required");
+        if (!*entry.valid) {
+            examined["decision"] = "skip_invalid_file";
+            continue;
+        }
+        require(entry.reference.has_value(), "registered_file_reference_required");
+        auto name = c_string(entry.reference->lookup_reference);
+        if (name.empty())
+            name = c_string(entry.reference->stored_reference);
+        examined["file_reference"] = wide_value(name);
+        bool equal = name == lookup;
+        if (!equal) {
+            require(bool(context.equal), "native_wide_case_comparison_required");
+            equal = context.equal(name, lookup);
+        }
+        if (!equal) {
+            examined["decision"] = "skip_different_reference";
+            continue;
+        }
+        require(entry.runtime_flags.has_value(), "registered_file_runtime_flags_required");
+        examined["runtime_flags"] = *entry.runtime_flags;
+        if (!(*entry.runtime_flags & 8)) {
+            examined["decision"] = "skip_missing_reference_file_flag";
+            continue;
+        }
+        examined["change_probe"] =
+            native_file_change_probe(*entry.runtime_flags, entry.change_probe);
+        require(examined["change_probe"]["status"] == "decoded",
+                "registered_file_change_probe_unresolved");
+        if (examined["change_probe"]["result"].get<bool>()) {
+            examined["decision"] = "skip_changed_file";
+            continue;
+        }
+        // Initial reference loading sets the signed selector to -1. Its later
+        // positive-value equality filter is outside this initial-state view.
+        examined["decision"] = "selected";
+        result["status"] = "matched";
+        result["entry_index"] = i;
+        out["status"] = "reuse_registered_file";
+        out["native_error_code"] = 0;
+        return;
+    }
+    result["status"] = "not_found";
+    require(context.allow_file_loading.has_value(), "file_loading_policy_required");
+    out["status"] = *context.allow_file_loading ? "file_loading_required" : "no_file";
+    if (!*context.allow_file_loading)
+        out["native_error_code"] = 0;
+}
 } // namespace
+
+Json native_file_change_probe(std::uint32_t flags, const NativeFileChangeProbeContext &context) {
+    Json out = {{"scope", "native_file_persistence_change_probe"},
+                {"status", "not_evaluated"},
+                {"source_runtime_flags", flags}};
+    try {
+        require(context.enabled.has_value(), "file_change_probe_enable_state_required");
+        if (!*context.enabled) {
+            out.update({{"status", "decoded"},
+                        {"result", false},
+                        {"branch", "disabled"},
+                        {"updated_runtime_flags", flags}});
+            return out;
+        }
+        require(context.current_clock_value.has_value() && context.previous_check_value.has_value(),
+                "file_change_probe_clock_context_required");
+        const auto now = double(*context.current_clock_value);
+        const double elapsed = now - *context.previous_check_value;
+        out["previous_check_value"] = probe_number(*context.previous_check_value);
+        if (elapsed < 2000.0) {
+            out.update({{"status", "decoded"},
+                        {"result", bool(flags & 0x20)},
+                        {"branch", "cached"},
+                        {"updated_runtime_flags", flags},
+                        {"updated_check_value", probe_number(*context.previous_check_value)}});
+            return out;
+        }
+        out["updated_check_value"] = probe_number(now);
+        require(context.persistence_available.has_value(),
+                "file_persistence_availability_required");
+        bool changed;
+        if (!*context.persistence_available) {
+            changed = true;
+            out["branch"] = "missing_persistence";
+        } else {
+            require(context.loaded_persistence_value.has_value() &&
+                        context.current_persistence_value.has_value(),
+                    "file_persistence_comparison_values_required");
+            const auto loaded = *context.loaded_persistence_value;
+            const auto current = *context.current_persistence_value;
+            changed = current > loaded;
+            out["branch"] = "refreshed";
+            out["loaded_persistence_value"] = probe_number(loaded);
+            out["current_persistence_value"] = probe_number(current);
+        }
+        out["updated_runtime_flags"] = (flags & ~std::uint32_t(0x20)) | (changed ? 0x20 : 0);
+        out["result"] = changed;
+        out["status"] = "decoded";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 
 Json initial_reference_file_query(const Json &record, const ReferenceFileQueryContext &context) {
     Json out = {{"scope", "initial_default_service_file_query_before_external_search"},
@@ -158,6 +287,7 @@ Json initial_reference_file_query(const Json &record, const ReferenceFileQueryCo
         if (!search.empty()) {
             out["status"] = "external_search_required";
             out["reason"] = "nonempty_search_context_bypasses_current_file_reuse";
+            query_open_files(out, context);
             return out;
         }
         require(!(context.current_file && context.current_file_known_absent),
@@ -167,6 +297,7 @@ Json initial_reference_file_query(const Json &record, const ReferenceFileQueryCo
         if (!context.current_file) {
             out["status"] = "external_search_required";
             out["reason"] = "current_file_unavailable";
+            query_open_files(out, context);
             return out;
         }
         auto current = c_string(context.current_file->lookup_reference);
@@ -182,6 +313,8 @@ Json initial_reference_file_query(const Json &record, const ReferenceFileQueryCo
         out["status"] = equal ? "reuse_current_file" : "external_search_required";
         if (equal)
             out["native_error_code"] = 0;
+        else
+            query_open_files(out, context);
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }

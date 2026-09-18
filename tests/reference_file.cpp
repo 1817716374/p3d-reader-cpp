@@ -210,5 +210,148 @@ unsigned reference_file_tests() {
     malformed["element_type"] = 62;
     check(initial_reference_file_query(malformed, context)["status"] == "not_evaluated",
           "file query does not treat ordinary blocks as model attachments");
+    NativeFileChangeProbeContext probe;
+    check(native_file_change_probe(8, probe)["status"] == "not_evaluated",
+          "unknown change monitoring state does not mean unchanged file");
+    probe.enabled = false;
+    out = native_file_change_probe(0x28, probe);
+    check(out["result"] == false && out["updated_runtime_flags"] == 0x28 &&
+              !out.contains("updated_check_value"),
+          "disabled native monitoring bypasses cached flag and clock");
+    probe.enabled = true;
+    probe.current_clock_value = 2999;
+    probe.previous_check_value = 1000;
+    out = native_file_change_probe(0x828, probe);
+    check(out["result"] == true && out["branch"] == "cached" &&
+              out["updated_check_value"]["value"] == 1000 && out["updated_runtime_flags"] == 0x828,
+          "interval below 2000 reuses cached change bit and preserves timestamp");
+    probe.current_clock_value = 999;
+    check(native_file_change_probe(8, probe)["result"] == false,
+          "clock rollback follows native cached branch without clamping elapsed time");
+    probe.current_clock_value = 3000;
+    out = native_file_change_probe(8, probe);
+    check(out["status"] == "not_evaluated" && out["updated_check_value"]["value"] == 3000 &&
+              !out.contains("result"),
+          "interval boundary requires persistence state after updating check time");
+    probe.persistence_available = false;
+    out = native_file_change_probe(0x808, probe);
+    check(out["result"] == true && out["branch"] == "missing_persistence" &&
+              out["updated_runtime_flags"] == 0x828,
+          "missing persistence sets native change bit while preserving other flags");
+    probe.persistence_available = true;
+    check(native_file_change_probe(8, probe)["status"] == "not_evaluated",
+          "available persistence still requires observed and loaded values");
+    probe.loaded_persistence_value = 100;
+    for (const auto current : {99.0, 100.0, 101.0}) {
+        probe.current_persistence_value = current;
+        out = native_file_change_probe(0x828, probe);
+        check(out["result"] == (current > 100) &&
+                  out["updated_runtime_flags"] == (current > 100 ? 0x828 : 0x808),
+              "change probe uses strict greater-than, including clearing a prior cached bit");
+    }
+    probe.previous_check_value = std::numeric_limits<double>::quiet_NaN();
+    probe.current_persistence_value = 100;
+    out = native_file_change_probe(8, probe);
+    check(out["branch"] == "refreshed" && out["result"] == false &&
+              out["previous_check_value"]["value"].is_null() && Json::parse(out.dump()) == out,
+          "unordered elapsed comparison refreshes and preserves nonfinite source bits");
+    probe.previous_check_value = 1000;
+    probe.current_persistence_value = std::numeric_limits<double>::quiet_NaN();
+    check(native_file_change_probe(0x28, probe)["result"] == false,
+          "unordered persistence comparison clears change bit like native cmova");
+    probe.current_persistence_value = std::numeric_limits<double>::infinity();
+    check(native_file_change_probe(8, probe)["result"] == true,
+          "positive infinity remains greater than a finite loaded value");
+    probe.loaded_persistence_value = std::numeric_limits<double>::quiet_NaN();
+    check(native_file_change_probe(0x28, probe)["result"] == false,
+          "unordered loaded value also follows native false comparison");
+
+    context.current_file.reset();
+    context.current_file_known_absent = true;
+    context.inherited_search_context = u"";
+    context.lookup_reference_after_resource_service = u"post-service.p3d";
+    out = initial_reference_file_query(own, context);
+    check(out["status"] == "not_evaluated" &&
+              out["reason"] == "complete_native_open_file_registry_required",
+          "post-service lookup needs the actual complete file registry");
+    NativeOpenFileCandidate candidate;
+    candidate.valid = true;
+    candidate.reference = NativeFileReference{u"unused.p3d", u"post-service.p3d"};
+    candidate.runtime_flags = 8;
+    candidate.change_probe.enabled = false;
+    NativeOpenFileCandidate invalid;
+    invalid.valid = false;
+    context.open_files = std::vector<NativeOpenFileCandidate>{candidate, candidate, invalid};
+    out = initial_reference_file_query(own, context);
+    check(out["status"] == "reuse_registered_file" &&
+              out["registered_file_lookup"]["entry_index"] == 1 &&
+              out["registered_file_lookup"]["examined_entries"].size() == 2 &&
+              out["registered_file_lookup"]["lookup_reference"]["text"] == "post-service.p3d" &&
+              out["lookup_reference"]["text"] == "lookup.p3d" && !out.contains("reason"),
+          "registry scans backwards, preserves duplicates and uses post-service reference");
+    (*context.open_files)[1].runtime_flags = 0;
+    out = initial_reference_file_query(own, context);
+    check(out["registered_file_lookup"]["entry_index"] == 0 &&
+              out["registered_file_lookup"]["examined_entries"][1]["decision"] ==
+                  "skip_missing_reference_file_flag",
+          "matching ordinary file without native bit3 is skipped without running change probe");
+    (*context.open_files)[1].runtime_flags = 0x28;
+    (*context.open_files)[1].change_probe.enabled = true;
+    (*context.open_files)[1].change_probe.current_clock_value = 1999;
+    (*context.open_files)[1].change_probe.previous_check_value = 0;
+    out = initial_reference_file_query(own, context);
+    check(out["registered_file_lookup"]["entry_index"] == 0 &&
+              out["registered_file_lookup"]["examined_entries"][1]["decision"] ==
+                  "skip_changed_file",
+          "cached changed state skips a newer matching registry entry");
+    (*context.open_files)[1] = candidate;
+    (*context.open_files)[1].change_probe.enabled.reset();
+    out = initial_reference_file_query(own, context);
+    check(out["status"] == "not_evaluated" &&
+              out["reason"] == "registered_file_change_probe_unresolved" &&
+              !out["registered_file_lookup"].contains("entry_index"),
+          "unknown higher-priority probe cannot fall through to older matching file");
+    (*context.open_files)[1] = candidate;
+    (*context.open_files)[1].valid.reset();
+    check(initial_reference_file_query(own, context)["reason"] ==
+              "registered_file_validity_required",
+          "unknown higher-priority file validity remains unresolved");
+    (*context.open_files)[1] = candidate;
+    (*context.open_files)[1].reference->lookup_reference = u"different.p3d";
+    (*context.open_files)[1].runtime_flags.reset();
+    check(initial_reference_file_query(own, context)["reason"] ==
+              "native_wide_case_comparison_required",
+          "ordered registry cannot skip unproven nonidentical name comparison");
+    context.equal = [](const std::u16string &a, const std::u16string &b) { return a == b; };
+    check(initial_reference_file_query(own, context)["registered_file_lookup"]["entry_index"] == 0,
+          "known name mismatch skips later runtime flag and change checks");
+    context.open_files = std::vector<NativeOpenFileCandidate>{};
+    out = initial_reference_file_query(own, context);
+    check(out["status"] == "not_evaluated" &&
+              out["registered_file_lookup"]["status"] == "not_found" &&
+              out["reason"] == "file_loading_policy_required",
+          "known registry miss does not invent caller load permission");
+    context.allow_file_loading = false;
+    out = initial_reference_file_query(own, context);
+    check(out["status"] == "no_file" && out["native_error_code"] == 0,
+          "registry miss with loading disabled returns native null file and zero error");
+    context.allow_file_loading = true;
+    check(initial_reference_file_query(own, context)["status"] == "file_loading_required",
+          "registry miss with loading enabled exposes next step without claiming loaded file");
+    candidate.reference = NativeFileReference{u"post-service.p3d", u""};
+    context.open_files = std::vector<NativeOpenFileCandidate>{candidate};
+    check(initial_reference_file_query(own, context)["status"] == "reuse_registered_file",
+          "registry wrapper falls back to saved reference for empty lookup text");
+    context.current_file_known_absent = false;
+    context.current_file = NativeFileReference{u"", u"lookup.p3d"};
+    context.open_files = std::vector<NativeOpenFileCandidate>{NativeOpenFileCandidate{}};
+    out = initial_reference_file_query(own, context);
+    check(out["status"] == "reuse_current_file" && !out.contains("registered_file_lookup"),
+          "direct current-file match takes precedence over registry service and unknown entries");
+    context.current_file.reset();
+    context.current_file_known_absent = true;
+    context.lookup_reference_after_resource_service.reset();
+    check(initial_reference_file_query(own, context)["status"] == "external_search_required",
+          "unavailable resource service result does not assume source lookup unchanged");
     return checks;
 }

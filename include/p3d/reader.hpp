@@ -28,6 +28,25 @@ struct NativeFileReference {
     std::u16string stored_reference;
     std::u16string lookup_reference;
 };
+// Explicit runtime inputs to the native persistence-change probe. Values are
+// in the originating service's units; the parser does not read a system clock
+// or infer them from a document path.
+struct NativeFileChangeProbeContext {
+    std::optional<bool> enabled;
+    std::optional<std::int64_t> current_clock_value;
+    std::optional<double> previous_check_value;
+    std::optional<bool> persistence_available;
+    std::optional<double> loaded_persistence_value;
+    std::optional<double> current_persistence_value;
+};
+Json native_file_change_probe(std::uint32_t runtime_flags,
+                              const NativeFileChangeProbeContext &context);
+struct NativeOpenFileCandidate {
+    std::optional<bool> valid;
+    std::optional<NativeFileReference> reference;
+    std::optional<std::uint32_t> runtime_flags;
+    NativeFileChangeProbeContext change_probe;
+};
 struct ReferenceFileQueryContext {
     std::optional<NativeFileReference> host_file;
     std::optional<NativeFileReference> current_file;
@@ -39,9 +58,16 @@ struct ReferenceFileQueryContext {
     std::vector<Json> host_reference_targets;
     bool complete_host_chain = false;
     NativeModelNameEqual equal;
+    // The resource service runs before registry lookup and can change the
+    // lookup reference. Do not substitute the pre-service source string.
+    std::optional<std::u16string> lookup_reference_after_resource_service;
+    // Complete registry in native registration order, including duplicates.
+    // Empty means known empty; nullopt means unavailable.
+    std::optional<std::vector<NativeOpenFileCandidate>> open_files;
+    std::optional<bool> allow_file_loading;
 };
 // Consumes a type-13 native record. Covers the initial default-service file
-// query up to native host/current-file reuse or external-search handoff.
+// query through host/current/registered-file reuse or file-loading handoff.
 // It neither opens files nor selects host contexts or loads target models.
 Json initial_reference_file_query(const Json &reference_record,
                                   const ReferenceFileQueryContext &context);
