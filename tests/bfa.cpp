@@ -59,6 +59,32 @@ Json decode_drive(const Bytes &body) {
     record(b, "@#$", 18, type_body(18, {}, {31}));
     return complex_blob("BfaTree", b);
 }
+void str(Bytes &b, const Bytes &s) {
+    put<std::uint32_t>(b, s.size());
+    b.insert(b.end(), s.begin(), s.end());
+}
+Bytes property_body(bool variable, unsigned value_type, const Bytes &value) {
+    Bytes b;
+    ref(b, 23);
+    put<std::uint64_t>(b, 0);
+    b.push_back(variable);
+    str(b, Bytes{'K', 0, 'x'});
+    str(b, Bytes{'E'});
+    put<std::int32_t>(b, 2); // Declaration deliberately differs from value wire type.
+    put<std::uint32_t>(b, value_type);
+    b.insert(b.end(), value.begin(), value.end());
+    b.push_back(1);
+    str(b, Bytes{'m', 'm'});
+    str(b, Bytes{'G'});
+    str(b, Bytes{'D'});
+    return b;
+}
+Json decode_property(const Bytes &body) {
+    Bytes b;
+    record(b, "!_#", 23, body);
+    record(b, "@#$", 18, type_body(18, {}, {31}));
+    return complex_blob("BfaTree", b);
+}
 } // namespace
 unsigned bfa_tests() {
     using namespace p3d;
@@ -230,5 +256,114 @@ unsigned bfa_tests() {
     }
     auto g = std::async(std::launch::async, [&] { return decode_drive(db); });
     check(g.get() == dj, "driven reference and formula decoding is reentrant");
+    Bytes numeric;
+    put<double>(numeric, 2.5);
+    auto prop = property_body(true, 0, numeric);
+    const auto base = decode_property(prop)["records"][0];
+    const auto &definition = base["property_definition"];
+    check(definition["variable"] == true && definition["declared_type"] == "double" &&
+              definition["declared_type_code"] == 2 && definition["base_value"]["type_code"] == 0 &&
+              definition["base_value"]["kind"] == "double" &&
+              definition["base_value"]["value"] == 2.5,
+          "BFA declared type and base value wire type are independent enums");
+    check(definition["keys"]["chinese"]["text"] == std::string("K\0x", 3) &&
+              definition["keys"]["chinese"]["native_value"]["text"] == "K" &&
+              definition["keys"]["english"]["text"] == "E" && definition["readonly"] == true &&
+              definition["unit"]["text"] == "mm" && definition["group"]["text"] == "G" &&
+              definition["description"]["text"] == "D",
+          "property keys retain source and terminated values with independent metadata");
+    check(definition["combobox"]["status"] == "not_stored" &&
+              definition["consumed_body_bytes"] == prop.size() &&
+              base["body_base64"] == base64(prop),
+          "legacy base body does not invent combo options or change original bytes");
+    prop.push_back(1);
+    put<std::uint32_t>(prop, 3);
+    str(prop, Bytes{'A'});
+    str(prop, Bytes{'A'});
+    str(prop, Bytes{0x81});
+    const auto combo = decode_property(prop)["records"][0]["property_definition"]["combobox"];
+    check(combo["enabled"] == true && combo["options"].size() == 3 &&
+              combo["options"][0] == combo["options"][1] && combo["options"][2]["text"].is_null(),
+          "combobox preserves order, duplicate values, and unknown text encoding");
+    Bytes iv;
+    put<std::int64_t>(iv, -42);
+    check(decode_property(property_body(
+              true, 1, iv))["records"][0]["property_definition"]["base_value"]["value"] == -42,
+          "base value wire type one retains a signed 64-bit integer");
+    check(decode_property(property_body(
+              true, 2,
+              Bytes{9}))["records"][0]["property_definition"]["base_value"]["value_status"] ==
+              "invalid_boolean",
+          "base bool retains malformed source instead of treating it as an integer");
+    Bytes sv;
+    str(sv, Bytes{'v', 0, 'z'});
+    check(decode_property(
+              property_body(true, 3, sv))["records"][0]["property_definition"]["base_value"]
+                                         ["value"]["native_value"]["text"] == "v",
+          "base string keeps native NUL termination separate from full stored bytes");
+    auto derived = property_body(false, 4, {});
+    derived.push_back('{');
+    ref(derived, 18);
+    put<std::uint32_t>(derived, 0);
+    derived.push_back(1); // Map zero is bool, not base zero's double.
+    ref(derived, 18);
+    put<std::uint32_t>(derived, 1);
+    put<double>(derived, 3.5);
+    derived.push_back('}');
+    ref(derived, 0xffffffffffffffffULL);
+    put<std::uint32_t>(derived, 2);
+    put<std::int64_t>(derived, -7);
+    ref(derived, 30);
+    put<std::uint32_t>(derived, 4);
+    str(derived, Bytes{'{', '}', '-', '|', '#', '@', 0});
+    ref(derived, 31);
+    put<std::uint32_t>(derived, 5); // Map five is none.
+    derived.push_back('-');
+    const auto controls_at = derived.size();
+    derived.insert(derived.end(), {1, 0, 1, 0, 1, 0, 0x7a, 1, 1});
+    put<std::int32_t>(derived, 2);
+    const auto mapped = decode_property(derived);
+    const auto &pd = mapped["records"][0]["property_definition"];
+    const auto &maps = pd["unassigned_value_maps"];
+    check(maps.size() == 2 && maps[0].size() == 2 && maps[1].size() == 3 &&
+              maps[0][0]["value"]["kind"] == "bool" && maps[0][0]["value"]["value"] == true &&
+              maps[0][1]["value"]["value"] == 3.5 &&
+              maps[1][0]["reference_id"] == 0xffffffffffffffffULL &&
+              maps[1][0]["value"]["value"] == -7 && maps[1][1]["value"]["kind"] == "binary" &&
+              maps[1][2]["value"]["kind"] == "none",
+          "derived map values use their own type enum and bounded binary lengths");
+    check(maps[0][0]["reference_id"] == maps[0][1]["reference_id"] &&
+              pd["base_value"]["kind"] == "none" && mapped["external_child_ids"].empty(),
+          "value-map duplicates remain in source order without changing tree edges");
+    const auto &controls = pd["controls"];
+    check(controls["inner_property"] == true && controls["type_property"] == false &&
+              controls["can_delete"] == true && controls["name_editable"] == false &&
+              controls["value_editable"] == true && controls["description_editable"] == false &&
+              controls["unassigned_byte"] == 0x7a && controls["value_type_editable"] == true &&
+              controls["driven_readonly"] == true && controls["source_type"] == "user",
+          "property control flags and source enum follow confirmed independent accessors");
+    for (const auto width : {2u, 7u, 8u}) {
+        auto short_body = Bytes(derived.begin(), derived.begin() + controls_at + width);
+        const auto old = decode_property(short_body)["records"][0]["property_definition"];
+        check(old["controls"].contains("value_type_editable") == (width == 8) &&
+                  !old["controls"].contains("driven_readonly") &&
+                  !old["controls"].contains("source_type_code"),
+              "shorter native property control layouts do not synthesize absent fields");
+    }
+    auto broken = derived;
+    broken[controls_at - 1] = '!';
+    const auto fail = decode_property(broken);
+    check(fail["records"][0].contains("decode_error") &&
+              fail["records"][0]["body_base64"] == base64(broken) &&
+              fail["records"][1]["placed_instance_ids"] == Json({31}),
+          "malformed property table marker remains bounded to its source node");
+    for (std::size_t cut = 19; cut < derived.size(); ++cut) {
+        const auto cut_result = decode_property(Bytes(derived.begin(), derived.begin() + cut));
+        check(cut_result["records"].size() == 2 &&
+                  cut_result["records"][1]["placed_instance_ids"] == Json({31}),
+              "every property body truncation preserves the following graph record");
+    }
+    auto pjob = std::async(std::launch::async, [&] { return decode_property(derived); });
+    check(pjob.get() == mapped, "property definitions are reentrant");
     return checks;
 }

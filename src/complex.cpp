@@ -167,6 +167,150 @@ static Json bfa_driven(const Bytes &payload) {
         out["unassigned_suffix_hex"] = hex(r.take(r.left()));
     return out;
 }
+static Json bfa_property(const Bytes &payload, Json &record) {
+    Reader r(payload);
+    auto text = [&]() {
+        const auto bytes = r.take(r.u32());
+        auto out = component_text(bytes, false);
+        const auto end = std::find(bytes.begin(), bytes.end(), std::uint8_t(0));
+        out["native_value"] = component_text(Bytes(bytes.begin(), end), false);
+        return std::make_pair(bytes, out);
+    };
+    auto flag = [&](Json &dst, const char *name) {
+        const auto value = r.u8();
+        dst[std::string(name) + "_byte"] = value;
+        dst[name] = value <= 1 ? Json(value != 0) : Json(nullptr);
+        if (value > 1)
+            dst[std::string(name) + "_status"] = "invalid_boolean";
+    };
+    Json out;
+    flag(out, "variable");
+    record["unassigned_prefix_byte"] = out["variable_byte"]; // Legacy field.
+    Json names = Json::array(), keys = Json::object();
+    for (const auto language : {"chinese", "english"}) {
+        const auto name = text();
+        keys[language] = name.second;
+        try {
+            names.push_back(gb18030(name.first));
+        } catch (const std::exception &e) {
+            names.push_back(nullptr);
+            record["names_decode_error"] = e.what();
+        }
+    }
+    record["names"] = std::move(names);
+    record["names_encoding"] = "legacy_gb18030_display";
+    record["suffix_hex"] = hex(slice(payload, r.p, r.left()));
+    out["keys"] = std::move(keys);
+    const auto type = r.i32();
+    out["declared_type_code"] = type;
+    static const char *types[] = {"none",        "int64",          "double",
+                                  "string",      "bool",           "binary",
+                                  "enumeration", "component_type", "subcomponent_type"};
+    out["declared_type"] = type >= 0 && type <= 8 ? Json(types[type]) : Json(nullptr);
+    auto value = [&](bool map_layout) {
+        const auto offset = r.p;
+        const auto code = r.u32();
+        // The base value and the two derived maps use different wire enums.
+        const auto kind = map_layout ? (code == 0   ? 2u
+                                        : code == 1 ? 0u
+                                        : code == 2 ? 1u
+                                                    : code)
+                                     : code;
+        Json v = {{"body_offset", offset + 19}, {"type_code", code}};
+        if (kind == 0) {
+            v["kind"] = "double";
+            v["value"] = r.f64();
+        } else if (kind == 1) {
+            v["kind"] = "int64";
+            v["value"] = r.i64();
+        } else if (kind == 2) {
+            v["kind"] = "bool";
+            flag(v, "value");
+        } else if (kind == 3) {
+            v["kind"] = "string";
+            v["value"] = text().second;
+        } else if (map_layout && kind == 4) {
+            v["kind"] = "binary";
+            v["value"] = rawbytes(r.take(r.u32()));
+        } else if ((!map_layout && kind == 4) || (map_layout && kind == 5)) {
+            v["kind"] = "none";
+            v["value"] = nullptr;
+        } else
+            throw std::runtime_error("BFA property value wire type");
+        v["source_bytes"] = rawbytes(slice(payload, offset, r.p - offset));
+        return v;
+    };
+    out["base_value"] = value(false);
+    flag(out, "readonly");
+    out["unit"] = text().second;
+    out["group"] = text().second;
+    out["description"] = text().second;
+    require(out["variable_byte"].get<unsigned>() <= 1, "BFA property variable discriminator");
+    const bool variable = out["variable"].get<bool>();
+    out["combobox"] = {{"status", "not_stored"}};
+    // Older bodies omit the combo block. In derived bodies the next explicit
+    // delimiter is '{'; no version or missing default is inferred from it.
+    if (r.left() && (variable || payload[r.p] != '{')) {
+        Json combo;
+        flag(combo, "enabled");
+        const auto count = r.count('I', 4);
+        combo["options"] = Json::array();
+        for (std::uint64_t i = 0; i < count; ++i)
+            combo["options"].push_back(text().second);
+        combo["status"] = "stored";
+        out["combobox"] = std::move(combo);
+    }
+    if (!variable) {
+        Json maps = Json::array();
+        for (const auto delimiters : {std::make_pair('{', '}'), std::make_pair('}', '-')}) {
+            require(r.u8() == delimiters.first, "BFA property value-map opening marker");
+            Json entries = Json::array();
+            while (true) {
+                require(r.left() != 0, "BFA property value-map closing marker");
+                if (payload[r.p] == delimiters.second)
+                    break;
+                const auto offset = r.p + 19;
+                require(hex(r.take(3)) == "7c2340", "BFA property map reference marker");
+                const auto id = r.u64();
+                entries.push_back(
+                    {{"body_offset", offset}, {"reference_id", id}, {"value", value(true)}});
+            }
+            maps.push_back(std::move(entries));
+        }
+        r.u8(); // '-'
+        out["unassigned_value_maps"] = std::move(maps);
+        const auto width = r.left();
+        require(width == 2 || width == 7 || width == 8 || width >= 13,
+                "BFA property control-field layout");
+        Json controls;
+        flag(controls, "inner_property");
+        flag(controls, "type_property");
+        if (width >= 7) {
+            flag(controls, "can_delete");
+            flag(controls, "name_editable");
+            flag(controls, "value_editable");
+            flag(controls, "description_editable");
+            controls["unassigned_byte"] = r.u8();
+        }
+        if (width >= 8)
+            flag(controls, "value_type_editable");
+        if (width >= 13) {
+            flag(controls, "driven_readonly");
+            const auto source = r.i32();
+            controls["source_type_code"] = source;
+            controls["source_type"] = source == 0   ? Json("default")
+                                      : source == 1 ? Json("code")
+                                      : source == 2 ? Json("user")
+                                                    : Json(nullptr);
+        }
+        out["controls"] = std::move(controls);
+    }
+    out["consumed_body_bytes"] = r.p + 19;
+    if (r.left())
+        out["unassigned_suffix_hex"] = hex(r.take(r.left()));
+    out["resolution_status"] = "requires_component_context";
+    return out;
+}
 static Json bfa(const Bytes &b) {
     static const std::map<std::string, std::string> kinds = {{"~$^", "component_definition"},
                                                              {"@#$", "component_type"},
@@ -206,6 +350,16 @@ static Json bfa(const Bytes &b) {
                 item["payload_status"] = "malformed_or_unsupported";
                 item["decode_error"] = e.what();
             }
+        } else if (tag == "!_#") {
+            const auto payload = br.take(br.left());
+            item["payload_hex"] = hex(payload);
+            try {
+                item["property_definition"] = bfa_property(payload, item);
+                item["payload_status"] = "structure_decoded";
+            } catch (const std::exception &e) {
+                item["payload_status"] = "malformed_or_unsupported";
+                item["decode_error"] = e.what();
+            }
         } else if (tag == "&@`") {
             if (br.left())
                 try {
@@ -216,8 +370,6 @@ static Json bfa(const Bytes &b) {
             else
                 item["empty_property_block"] = true;
         } else {
-            if (tag == "!_#")
-                item["unassigned_prefix_byte"] = br.u8();
             Json names = Json::array();
             for (int i = 0; i < (tag == "@#$" ? 1 : 2); ++i) {
                 const auto bytes = br.take(br.u32());
