@@ -15,6 +15,29 @@ Point3 finite_point(const Json &v) {
 Matrix4 identity() {
     return {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}};
 }
+Matrix4 affine_matrix(const Json &rows) {
+    require(rows.is_array() && rows.size() == 4, "reference requires a 4 by 4 matrix");
+    Matrix4 matrix{};
+    for (unsigned i = 0; i < 4; ++i) {
+        require(rows[i].is_array() && rows[i].size() == 4, "invalid reference matrix row");
+        for (unsigned j = 0; j < 4; ++j)
+            matrix[i][j] = finite_number(rows[i][j]);
+    }
+    require(matrix[3] == std::array<double, 4>{0, 0, 0, 1}, "reference requires affine matrix");
+    return matrix;
+}
+Matrix4 affine_product(const Matrix4 &a, const Matrix4 &b) {
+    auto product = identity();
+    for (unsigned i = 0; i < 3; ++i) {
+        for (unsigned j = 0; j < 3; ++j) {
+            product[i][j] = (a[i][0] * b[0][j] + a[i][1] * b[1][j]) + a[i][2] * b[2][j];
+            require(std::isfinite(product[i][j]), "reference linear product overflow");
+        }
+        product[i][3] = ((a[i][0] * b[0][3] + a[i][3]) + a[i][1] * b[1][3]) + a[i][2] * b[2][3];
+        require(std::isfinite(product[i][3]), "reference translation product overflow");
+    }
+    return product;
+}
 } // namespace
 
 Json reference_affine_transform(const Json &input, const ReferenceAffineContext &context) {
@@ -100,11 +123,14 @@ Json reference_affine_transform(const Json &input, const ReferenceAffineContext 
     return out;
 }
 
-Json compose_reference_chain_transforms(const std::vector<Json> &transforms) {
-    Json out = {{"profile", "bimbase_2025_reference_chain_composition"},
+namespace {
+Json compose_chain(const std::vector<Json> &transforms, bool owner_path) {
+    Json out = {{"profile", owner_path ? "bimbase_2025_owner_reference_chain_composition"
+                                       : "bimbase_2025_reference_chain_composition"},
                 {"scope", "explicit_selected_chain"},
                 {"status", "not_evaluated"},
-                {"order", "current_to_host_accumulated_times_next"}};
+                {"order", owner_path ? "current_to_host_next_times_accumulated"
+                                     : "current_to_host_accumulated_times_next"}};
     auto accumulated = identity();
     std::size_t completed = 0;
     bool contains_sentinel = false;
@@ -117,37 +143,12 @@ Json compose_reference_chain_transforms(const std::vector<Json> &transforms) {
                     "reference_chain_requires_forced_z_scale_query");
             contains_sentinel =
                 contains_sentinel || entry.value("native_translation_sentinel", false);
-            const auto &rows = entry.at("matrix");
-            require(rows.is_array() && rows.size() == 4,
-                    "reference chain requires a 4 by 4 matrix");
-            Matrix4 next{};
-            for (unsigned i = 0; i < 4; ++i) {
-                require(rows[i].is_array() && rows[i].size() == 4,
-                        "invalid reference chain matrix row");
-                for (unsigned j = 0; j < 4; ++j)
-                    next[i][j] = finite_number(rows[i][j]);
-            }
-            require(next[3] == std::array<double, 4>{0, 0, 0, 1},
-                    "reference chain requires affine matrices");
+            const auto next = affine_matrix(entry.at("matrix"));
             if (completed == 0) {
                 accumulated = next; // Native copies the first matrix without multiplication.
             } else {
-                auto product = identity();
-                for (unsigned i = 0; i < 3; ++i) {
-                    for (unsigned j = 0; j < 3; ++j) {
-                        product[i][j] =
-                            (accumulated[i][0] * next[0][j] + accumulated[i][1] * next[1][j]) +
-                            accumulated[i][2] * next[2][j];
-                        require(std::isfinite(product[i][j]),
-                                "reference chain linear product overflow");
-                    }
-                    product[i][3] = ((accumulated[i][0] * next[0][3] + accumulated[i][3]) +
-                                     accumulated[i][1] * next[1][3]) +
-                                    accumulated[i][2] * next[2][3];
-                    require(std::isfinite(product[i][3]),
-                            "reference chain translation product overflow");
-                }
-                accumulated = product;
+                accumulated = owner_path ? affine_product(next, accumulated)
+                                         : affine_product(accumulated, next);
             }
             ++completed;
         }
@@ -158,6 +159,90 @@ Json compose_reference_chain_transforms(const std::vector<Json> &transforms) {
     out["processed_count"] = completed;
     out["input_count"] = transforms.size();
     out["contains_native_translation_sentinel"] = contains_sentinel;
+    return out;
+}
+} // namespace
+
+Json compose_reference_chain_transforms(const std::vector<Json> &transforms) {
+    return compose_chain(transforms, false);
+}
+
+Json compose_owner_reference_chain_transforms(const std::vector<Json> &transforms) {
+    return compose_chain(transforms, true);
+}
+
+Json owner_reference_path_transform(const Json &collected_records,
+                                    const std::vector<Json> &owner_reference_chain,
+                                    const OwnerReferencePathTransformContext &context) {
+    Json out = {{"profile", "bimbase_2025_owner_reference_path_transform"},
+                {"scope", "explicit_collected_objects_and_owner_chain"},
+                {"status", "not_evaluated"},
+                {"applied_blocks", Json::array()},
+                {"path_resolution", "not_evaluated"},
+                {"geometry_transformation", "not_evaluated"}};
+    try {
+        require(context.owner_kind.has_value(), "owner_kind_required");
+        if (*context.owner_kind == 8) {
+            out.update({{"status", "native_failure"}, {"native_status", 0x11006}});
+            return out;
+        }
+        require(context.terminal_index.has_value(), "collector_terminal_index_required");
+        // The native loop uses signed 32-bit index arithmetic. Do not interpret
+        // high-bit values as a huge portable array index or guess wrapped state.
+        require(*context.terminal_index <= INT32_MAX, "invalid_collector_terminal_index");
+        require(collected_records.is_array(), "collected_records_array_required");
+        out["terminal_index"] = *context.terminal_index;
+        auto accumulated = identity();
+        if (*context.terminal_index > 0) {
+            out["local_mode"] = "preceding_block_instances";
+            out["local_stop"] = "beginning";
+            for (std::size_t i = *context.terminal_index; i > 0;) {
+                --i;
+                if (i >= collected_records.size() || collected_records[i].is_null()) {
+                    out["local_stop"] =
+                        i >= collected_records.size() ? "outside_collection" : "null_object";
+                    out["local_stop_index"] = i;
+                    break;
+                }
+                const auto &record = collected_records[i];
+                const auto &type = record.at("element_type");
+                require(type.is_number_integer() && type >= 0 && type <= UINT16_MAX,
+                        "native_collected_record_type_required");
+                if (type != 62)
+                    continue;
+                const auto &block = record.at("block_transform");
+                require(block.value("status", "") == "resolved" &&
+                            block.value("reader_profile", "") ==
+                                "bimbase_2025_block_transform_input",
+                        "accepted_block_transform_required");
+                // Read the effective input matrix, including native repair,
+                // not the saved source coefficients.
+                accumulated = affine_product(affine_matrix(block.at("matrix")), accumulated);
+                out["applied_blocks"].push_back(i);
+            }
+        } else {
+            out["local_mode"] = "single_object_handler";
+            const auto &handler = context.single_object_transform;
+            require(handler.is_object(), "single_object_handler_result_required");
+            const auto status = handler.value("status", "");
+            if (status == "native_failure") {
+                out.update({{"status", "native_failure"}, {"native_status", 1}});
+                return out;
+            }
+            if (status == "computed")
+                accumulated = affine_product(affine_matrix(handler.at("matrix")), accumulated);
+            else
+                require(status == "absent", "single_object_handler_result_unresolved");
+            out["single_object_transform_status"] = status;
+        }
+        const auto chain = compose_owner_reference_chain_transforms(owner_reference_chain);
+        out["owner_chain"] = chain;
+        require(chain.at("status") == "computed", "owner_reference_chain_unresolved");
+        accumulated = affine_product(affine_matrix(chain.at("matrix")), accumulated);
+        out.update({{"status", "computed"}, {"matrix", accumulated}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
     return out;
 }
 } // namespace p3d

@@ -55,6 +55,24 @@ Json reference_affine_transform(const Json &reference_input, const ReferenceAffi
 // Entries must be computed reference_affine_transform results in native
 // current-to-host traversal order. Target selection is not inferred here.
 Json compose_reference_chain_transforms(const std::vector<Json> &transforms);
+// Owner-path conversion uses the same traversal order but PRE-multiplies
+// subsequent references. Exclude the selected stop reference from the input.
+Json compose_owner_reference_chain_transforms(const std::vector<Json> &transforms);
+struct OwnerReferencePathTransformContext {
+    // Runtime owner category, not the saved model_coordinates.kind field.
+    std::optional<std::uint32_t> owner_kind;
+    // Native collector's terminal position; preceding entries supply blocks.
+    std::optional<std::uint32_t> terminal_index;
+    // Required only at terminal_index == 0: status absent/computed/native_failure.
+    // computed carries the affine matrix returned by the selected handler.
+    Json single_object_transform;
+};
+// Already selected, accepted collected records in native append order; null
+// entries represent known null objects. Does not resolve paths or load models.
+// The explicit owner reference chain excludes its selected stop reference.
+Json owner_reference_path_transform(const Json &collected_records,
+                                    const std::vector<Json> &owner_reference_chain,
+                                    const OwnerReferencePathTransformContext &context);
 // Initial reference extension state from one complete, already selected
 // persisted attribute collection. Does not merge runtime edits or locate targets.
 Json reference_extension_input(const Json &attributes);

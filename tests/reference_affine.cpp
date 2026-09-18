@@ -169,5 +169,130 @@ unsigned reference_affine_tests() {
     right["matrix"] = Matrix4{{{1, 0, 0, 1e16}, {0, 1, 0, 1}, {0, 0, 1, 0}, {0, 0, 0, 1}}};
     check(compose_reference_chain_transforms({left, right})["matrix"][0][3] == 1,
           "chain translation preserves native rounding order");
+    const Matrix4 ba{{{-6, 0, 0, -47}, {0, -6, 0, 53}, {0, 0, 6, 85}, {0, 0, 0, 1}}};
+    check(compose_owner_reference_chain_transforms({a, b})["matrix"] == ba,
+          "owner path reference chain premultiplies each host in traversal order");
+    check(compose_owner_reference_chain_transforms({a, b, b})["matrix"] ==
+              Matrix4{{{0, 18, 0, -152}, {-18, 0, 0, -130}, {0, 0, 18, 268}, {0, 0, 0, 1}}},
+          "third owner reference continues premultiplication without deduplicating instances");
+    const Matrix4 id{{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}};
+    check(compose_owner_reference_chain_transforms({})["matrix"] == id &&
+              compose_owner_reference_chain_transforms({a})["matrix"] == a["matrix"],
+          "empty owner chain is identity and first reference is copied");
+    check(compose_owner_reference_chain_transforms({right, left})["matrix"][0][3] == 1,
+          "owner chain retains native translation rounding during premultiplication");
+    broken = b;
+    broken["force_z_scale"] = false;
+    check(compose_owner_reference_chain_transforms({a, broken})["status"] == "not_evaluated",
+          "owner chain uses forced-Z reference query");
+    broken["status"] = "not_evaluated";
+    check(!compose_owner_reference_chain_transforms({a, broken}).contains("matrix"),
+          "owner chain failure does not expose usable partial result");
+    auto block_record = [&](const Matrix4 &matrix) {
+        return Json{{"element_type", 62},
+                    {"block_transform",
+                     {{"reader_profile", "bimbase_2025_block_transform_input"},
+                      {"status", "resolved"},
+                      {"matrix", matrix}}}};
+    };
+    auto translation = id, scale = id;
+    translation[0][3] = 10;
+    scale[0][0] = 2;
+    const auto bt = block_record(translation), bs = block_record(scale);
+    auto records = Json::array({bt, bs, {{"element_type", 62}}});
+    OwnerReferencePathTransformContext pc;
+    pc.owner_kind = 0;
+    pc.terminal_index = 2;
+    auto path = owner_reference_path_transform(records, {a, b}, pc);
+    check(path["status"] == "computed" &&
+              path["matrix"] ==
+                  Matrix4{{{-12, 0, 0, -107}, {0, -6, 0, 53}, {0, 0, 6, 85}, {0, 0, 0, 1}}},
+          "owner chain acts after reverse-collected block transformations");
+    check(path["applied_blocks"] == Json::array({1, 0}) &&
+              path["geometry_transformation"] == "not_evaluated",
+          "terminal object is excluded even when its block matrix is unavailable");
+    auto repaired = records;
+    repaired[0]["block_transform"]["source_matrix"] = scale;
+    check(owner_reference_path_transform(repaired, {a, b}, pc)["matrix"] == path["matrix"],
+          "path uses effective accepted block matrix rather than saved source coefficients");
+    records = Json::array({bt, {{"element_type", 13}}, bs, {{"element_type", 19}}});
+    pc.terminal_index = 3;
+    check(owner_reference_path_transform(records, {a, b}, pc)["matrix"] == path["matrix"],
+          "non-block collected objects are skipped without changing block order");
+    records[1] = nullptr;
+    auto stopped = owner_reference_path_transform(records, {}, pc);
+    check(stopped["status"] == "computed" && stopped["matrix"] == scale &&
+              stopped["local_stop"] == "null_object" &&
+              stopped["applied_blocks"] == Json::array({2}),
+          "null collected object stops local traversal but preserves later processed block");
+    pc.terminal_index = 9;
+    stopped = owner_reference_path_transform(records, {a}, pc);
+    check(stopped["status"] == "computed" && stopped["matrix"] == a["matrix"] &&
+              stopped["local_stop"] == "outside_collection",
+          "out-of-range local index stops local traversal but still applies owner chain");
+    pc.terminal_index = 0;
+    check(owner_reference_path_transform(Json::array({bt}), {}, pc)["reason"] ==
+              "single_object_handler_result_required",
+          "single block cannot stand in for unknown handler query result");
+    pc.single_object_transform = {{"status", "absent"}};
+    check(owner_reference_path_transform(Json::array({bt}), {}, pc)["matrix"] == id,
+          "proven absent single-object handler contributes identity");
+    pc.single_object_transform = {{"status", "computed"}, {"matrix", translation}};
+    check(owner_reference_path_transform(Json::array({bt}), {a, b}, pc)["matrix"] ==
+              Matrix4{{{-6, 0, 0, -107}, {0, -6, 0, 53}, {0, 0, 6, 85}, {0, 0, 0, 1}}},
+          "single-object handler matrix precedes owner-chain transformation");
+    pc.single_object_transform = {{"status", "native_failure"}};
+    auto failure = owner_reference_path_transform(Json::array({bt}), {broken}, pc);
+    check(failure["status"] == "native_failure" && failure["native_status"] == 1 &&
+              !failure.contains("owner_chain") && !failure.contains("matrix"),
+          "failed single-object handler stops before inspecting owner chain");
+    pc.owner_kind = 8;
+    pc.terminal_index.reset();
+    failure = owner_reference_path_transform(Json(), {broken}, pc);
+    check(failure["status"] == "native_failure" && failure["native_status"] == 0x11006,
+          "native owner category eight rejects before collector and chain processing");
+    pc.owner_kind.reset();
+    check(owner_reference_path_transform(records, {}, pc)["reason"] == "owner_kind_required",
+          "unknown owner category is not replaced by saved model kind or default");
+    pc.owner_kind = 0;
+    check(owner_reference_path_transform(records, {}, pc)["reason"] ==
+              "collector_terminal_index_required",
+          "collector terminal position must be explicitly known");
+    pc.terminal_index = UINT32_MAX;
+    check(owner_reference_path_transform(records, {}, pc)["status"] == "not_evaluated",
+          "high-bit collector index is not treated as portable array size");
+    pc.terminal_index = 1;
+    failure =
+        owner_reference_path_transform(Json::array({{{"element_type", "unknown"}}, {}}), {}, pc);
+    check(failure["status"] == "not_evaluated" && !failure.contains("matrix"),
+          "unknown collected record type is not treated as a known non-block");
+    auto invalid_block = bt;
+    invalid_block["block_transform"]["status"] = "invalid";
+    failure = owner_reference_path_transform(Json::array({invalid_block, {}}), {}, pc);
+    check(failure["status"] == "not_evaluated" && !failure.contains("matrix"),
+          "unknown effective block matrix is not silently skipped");
+    invalid_block = bt;
+    invalid_block["block_transform"]["matrix"][0][3] = maximum;
+    auto over = a;
+    over["matrix"] = scale;
+    failure = owner_reference_path_transform(Json::array({invalid_block, {}}), {over}, pc);
+    check(failure["status"] == "not_evaluated" && !failure.contains("matrix"),
+          "path composition overflow cannot publish an effective matrix");
+    check(Json::parse(path.dump()) == path,
+          "computed path transform and provenance survive JSON roundtrip");
+    Bytes native_block(260, 0);
+    put(native_block, 4, 62, 2);
+    put(native_block, 8, 128, 4);
+    put(native_block, 12, 128, 4);
+    for (unsigned row = 0; row < 3; ++row) {
+        for (unsigned column = 0; column < 3; ++column)
+            number(native_block, 164 + 24 * row + 8 * column, translation[row][column]);
+        number(native_block, 236 + 8 * row, translation[row][3]);
+    }
+    const auto parsed = parse_native(native_block);
+    pc.terminal_index = 1;
+    check(owner_reference_path_transform(Json::array({parsed.at(0), {}}), {}, pc)["matrix"] ==
+              translation,
+          "actual parsed native block record is consumed without a private field adapter");
     return checks;
 }
