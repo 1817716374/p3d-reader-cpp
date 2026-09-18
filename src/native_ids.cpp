@@ -217,4 +217,87 @@ Json Document::native_model_id_assignments(const StreamPath &model_storage,
     return p3d::native_model_id_assignments(containers, native_records(), index(), model_storage,
                                             initial_id_counter);
 }
+
+Json native_owner_object_lookup(const Json &owner_ids, const Json &system_ids, std::uint64_t id) {
+    Json out = {{"scope", "initial_registry_lookup_before_runtime_filters"},
+                {"lookup_profile", "owner_system"},
+                {"id", id},
+                {"status", "not_evaluated"},
+                {"lookups", Json::array()},
+                {"runtime_filter", "not_applied"},
+                {"owner_path_expansion", "not_evaluated"}};
+    try {
+        for (const auto *scope : {"owner", "system"}) {
+            const auto &ids = scope == std::string("owner") ? owner_ids : system_ids;
+            if (!ids.is_object() || ids.value("status", Json()) != "resolved" ||
+                !ids.contains("registry") || !ids.at("registry").is_array()) {
+                out["reason"] = std::string("complete_") + scope + "_registry_required";
+                return out;
+            }
+            const Json *selected = nullptr;
+            for (const auto &entry : ids.at("registry")) {
+                if (entry.at("id") != id)
+                    continue;
+                require(selected == nullptr, "ambiguous_registered_id");
+                selected = &entry;
+            }
+            out["lookups"].push_back(
+                {{"scope", scope}, {"status", selected ? "selected" : "missing"}});
+            if (selected) {
+                out["status"] = "selected";
+                out["selected_scope"] = scope;
+                out["target"] = *selected;
+                return out; // Post-lookup rejection must not restart at system scope.
+            }
+        }
+        out["status"] = "missing";
+    } catch (const std::exception &e) {
+        out["status"] = "not_evaluated";
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json Document::native_model_object_lookup(const StreamPath &model_storage,
+                                          std::uint64_t initial_id_counter,
+                                          std::uint64_t id) const {
+    const auto containers = p3d::native_input_containers(streams(), index(), native_records());
+    const auto owner = p3d::native_model_id_assignments(containers, native_records(), index(),
+                                                        model_storage, initial_id_counter);
+    auto result = native_owner_object_lookup(owner, Json(), id);
+    result["model_storage"] = model_storage;
+    result["initial_id_counter"] = initial_id_counter;
+    if (result.value("reason", Json()) != "complete_system_registry_required")
+        return result;
+    // If no model input container is known, a caller's arbitrary path does not
+    // establish a real model owner for a system fallback.
+    bool known_model = false;
+    for (const auto &input : owner.at("inputs"))
+        known_model = known_model || input.at("status") != "not_loaded";
+    if (!known_model) {
+        result["reason"] = "model_record_container_unavailable";
+        return result;
+    }
+    const Json *system = nullptr;
+    for (const auto &container : containers) {
+        if (container.at("kind") != "P3D-SSYS")
+            continue;
+        if (system) {
+            result["reason"] = "ambiguous_system_record_container";
+            return result;
+        }
+        system = &container;
+    }
+    if (!system) {
+        result["reason"] = "system_record_container_unavailable";
+        return result;
+    }
+    const auto system_ids = native_system_id_assignments(system->at("list_preparation"),
+                                                         native_records(), file_header());
+    result = native_owner_object_lookup(owner, system_ids, id);
+    result["model_storage"] = model_storage;
+    result["initial_id_counter"] = initial_id_counter;
+    result["system_storage"] = system->at("container");
+    return result;
+}
 } // namespace p3d

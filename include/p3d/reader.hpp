@@ -516,6 +516,11 @@ class Document {
     // after intervening loads. Does not execute host callbacks or attach attributes.
     Json native_model_id_assignments(const StreamPath &model_storage,
                                      std::uint64_t initial_id_counter) const;
+    // Lookup in the initial model registry, then the system registry on miss.
+    // Shares the explicit counter restrictions above. Does not apply runtime
+    // deletion filters, expand owner paths, or scan unrelated models.
+    Json native_model_object_lookup(const StreamPath &model_storage,
+                                     std::uint64_t initial_id_counter, std::uint64_t id) const;
     // Conditional initial SMC/SMCA then SMG/SMGA input into a fresh model.
     // Preserves collection state and uses the registry available at each step.
     // Shares the counter/context restrictions of native_model_id_assignments.

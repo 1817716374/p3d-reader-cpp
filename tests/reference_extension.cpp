@@ -66,6 +66,11 @@ unsigned reference_extension_tests() {
             d["object_references"][0]["owner_reference_path_indirection"] == true &&
             d["object_references"][0]["target_resolution"] == "not_evaluated",
         "clip object references retain exact uint64 identities without claiming resolved targets");
+    check(
+        d["object_references"][0]["lookup_profile"] == "owner_system" &&
+            d["object_references"][0]["runtime_reject_mask"] == 8 &&
+            d["object_references"][0]["filter_order"] == "after_lookup_without_fallback_retry",
+        "clip lookup falls back on missing objects but not after runtime deleted-object rejection");
     check(d["status"] == "partial" && d["remaining_semantics"].size() == 3 &&
               d["indexed_resources"][0]["slot_role"] == "unresolved" &&
               d["unresolved_ranges"][0] == Json({{"offset", 0}, {"size", 8}}),

@@ -213,5 +213,50 @@ unsigned native_id_tests() {
     check(model_result["roots"][1]["records"][0]["assigned_id"] == 0 &&
               model_result["registry"].size() == 1,
           "cross-list duplicate counter overflow preserves the earlier registration");
+    Json owner_ids = {
+        {"status", "resolved"},
+        {"registry",
+         Json::array({{{"id", 7}, {"native_record_index", 1}, {"input_occurrence_index", 0}}})}};
+    Json system_ids = {
+        {"status", "resolved"},
+        {"registry",
+         Json::array({{{"id", 7}, {"native_record_index", 2}, {"input_occurrence_index", 0}},
+                      {{"id", 8}, {"native_record_index", 3}, {"input_occurrence_index", 1}}})}};
+    auto lookup = native_owner_object_lookup(owner_ids, system_ids, 7);
+    check(lookup["status"] == "selected" && lookup["selected_scope"] == "owner" &&
+              lookup["target"]["native_record_index"] == 1 && lookup["lookups"].size() == 1,
+          "owner registry wins over same numeric ID and occurrence in the system registry");
+    lookup = native_owner_object_lookup(owner_ids, system_ids, 8);
+    check(lookup["status"] == "selected" && lookup["selected_scope"] == "system" &&
+              lookup["target"]["native_record_index"] == 3 &&
+              lookup["lookups"][0]["status"] == "missing",
+          "owner miss falls back to system before any runtime rejection filter");
+    check(native_owner_object_lookup(owner_ids, system_ids, 9)["status"] == "missing",
+          "complete owner and system misses do not scan unrelated models");
+    check(native_owner_object_lookup(owner_ids, Json(), 7)["status"] == "selected",
+          "system context is unnecessary when the owner already supplies an object");
+    check(native_owner_object_lookup(owner_ids, Json(), 8)["reason"] ==
+              "complete_system_registry_required",
+          "unknown system registry is not assumed empty after owner miss");
+    auto partial_owner = owner_ids;
+    partial_owner["status"] = "partial";
+    check(native_owner_object_lookup(partial_owner, system_ids, 7)["reason"] ==
+              "complete_owner_registry_required",
+          "incomplete owner registry cannot justify either selection or fallback");
+    auto duplicated = owner_ids;
+    duplicated["registry"].push_back(duplicated["registry"][0]);
+    check(native_owner_object_lookup(duplicated, system_ids, 7)["reason"] ==
+              "ambiguous_registered_id",
+          "ambiguous registered identities are not silently collapsed");
+    owner_ids["registry"][0]["runtime_flags"] = 8;
+    lookup = native_owner_object_lookup(owner_ids, system_ids, 7);
+    check(lookup["selected_scope"] == "owner" && lookup["runtime_filter"] == "not_applied" &&
+              lookup["lookups"].size() == 1,
+          "lookup does not turn a later deleted-object rejection into a system retry");
+    owner_ids["registry"][0]["id"] = std::numeric_limits<std::uint64_t>::max();
+    lookup = native_owner_object_lookup(owner_ids, system_ids,
+                                        std::numeric_limits<std::uint64_t>::max());
+    check(lookup["status"] == "selected" && Json::parse(lookup.dump()) == lookup,
+          "ordinary registry lookup does not inherit the paired dependency maximum-ID skip rule");
     return checks;
 }

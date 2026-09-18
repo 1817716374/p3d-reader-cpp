@@ -31,7 +31,10 @@ static Json extension_object_references(const Bytes &b) {
         references.push_back({{"source_offset", offset},
                               {"slot", (offset - 40) / 8},
                               {"id", Reader(b, offset).u64()},
-                              {"lookup_domain", "connected_model_id_registry"},
+                              {"lookup_domain", "connected_model_then_system_id_registry"},
+                              {"lookup_profile", "owner_system"},
+                              {"runtime_reject_mask", 8},
+                              {"filter_order", "after_lookup_without_fallback_retry"},
                               {"owner_reference_path_indirection", true},
                               {"target_resolution", "not_evaluated"},
                               {"slot_role", "unresolved_clip_object"}});
