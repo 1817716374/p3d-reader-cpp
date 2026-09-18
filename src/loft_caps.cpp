@@ -134,4 +134,38 @@ LoftCapRegions SectionLoft::cap_regions(unsigned max_control_points) const {
     }
     return out;
 }
+
+LoftFaceIndexSet SectionLoft::face_indices(unsigned max_cap_control_points) const {
+    const auto caps = cap_regions(max_cap_control_points);
+    LoftFaceIndexSet out;
+    out.report = {{"status", caps.report.at("status")},
+                  {"representation", "native_loft_face_indices"},
+                  {"index_scope", "solid"},
+                  {"cap_status", caps.report.at("status")},
+                  {"material_part_mapping", "not_established"}};
+    const bool capped = source_.at("capped").get<bool>();
+    if (capped && caps.report.at("status") != "complete") {
+        out.report["cap_failure"] = caps.report;
+        return out;
+    }
+    // getCappedPatches retains one patch per source primitive, including its
+    // linear-V knot cleanup. getFaceIndices uses one counter across all loops.
+    // Do not use getBsplineSurface's joined loop surfaces as the face count.
+    if (sides_.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        out.report["status"] = "incomplete";
+        out.report["reason"] = "loft native face counter range";
+        return out;
+    }
+    out.indices.reserve(sides_.size() + (capped ? 2 : 0));
+    if (capped) {
+        out.indices.push_back({-1, 0, 0});
+        out.indices.push_back({-1, 1, 0});
+    }
+    for (std::size_t i = 0; i < sides_.size(); ++i)
+        out.indices.push_back({0, static_cast<std::int64_t>(i), 0});
+    out.report["status"] = "complete";
+    out.report["side_count"] = sides_.size();
+    out.report["cap_count"] = capped ? 2 : 0;
+    return out;
+}
 } // namespace p3d

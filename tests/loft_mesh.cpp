@@ -85,6 +85,9 @@ unsigned loft_mesh_tests() {
     auto verify = [&](const Json &source, bool edge_closed) {
         const auto loft = SectionLoft::from_bgfb(source);
         const auto mesh = loft.mesh(options);
+        const auto native = loft.face_indices(options.max_cap_control_points);
+        check(native.report["status"] == "complete" && native.indices.size() == mesh.parts.size(),
+              "mesh parts cover the native loft face enumeration");
         check(mesh.report.at("status") == "complete", "loft mesh complete: " + mesh.report.dump());
         check(mesh.report.at("indexed_edge_topology").at("closed_oriented_edges") == edge_closed,
               "loft mesh declared edge topology");
@@ -92,6 +95,12 @@ unsigned loft_mesh_tests() {
         std::map<std::array<unsigned, 2>, std::pair<unsigned, int>> edges;
         std::size_t covered = 0;
         for (const auto &part : mesh.parts) {
+            const auto ordinal = part.role == "bottom" ? 0
+                                 : part.role == "top"
+                                     ? 1
+                                     : *part.side_index + (source.at("capped").get<bool>() ? 2 : 0);
+            require(part.native_face_indices == native.indices.at(ordinal),
+                    "mesh range identifies its native solid face independently of output order");
             require(part.first_face == covered && part.face_count > 0,
                     "contiguous nonempty mesh part ranges");
             covered += part.face_count;

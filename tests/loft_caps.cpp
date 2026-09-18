@@ -103,6 +103,36 @@ unsigned loft_caps_tests() {
     const auto inner = verify(SectionLoft::from_bgfb(source(1, 3)));
     check(inner.bottom["type"] == 2, "single inner-labelled source is still an outer cap");
     const auto holes = verify(SectionLoft::from_bgfb(source(2)));
+    const std::vector<std::array<std::int64_t, 3>> expected_faces = {
+        {-1, 0, 0}, {-1, 1, 0}, {0, 0, 0}, {0, 1, 0}, {0, 2, 0},
+        {0, 3, 0},  {0, 4, 0},  {0, 5, 0}, {0, 6, 0}, {0, 7, 0}};
+    const auto hole_faces = SectionLoft::from_bgfb(source(2)).face_indices();
+    check(hole_faces.report["status"] == "complete" && hole_faces.indices == expected_faces,
+          "native cap-first face enumeration uses one side counter across loops");
+    check(hole_faces.report["cap_count"] == 2 && hole_faces.report["side_count"] == 8 &&
+              hole_faces.report["material_part_mapping"] == "not_established",
+          "a parity cap is one face, and face identity is not a material part mapping");
+    auto composite = source(2);
+    for (auto &group : composite["guide_groups"])
+        for (auto &guide : group) {
+            const auto poles = guide["curves"][0]["geometry"]["poles"];
+            Point3 a{poles[0], poles[1], poles[2]}, b{poles[3], poles[4], poles[5]};
+            Json segments = Json::array();
+            for (unsigned i = 0; i < 4; ++i) {
+                auto x = a, y = a;
+                for (unsigned k = 0; k < 3; ++k) {
+                    x[k] += (b[k] - a[k]) * i / 4;
+                    y[k] += (b[k] - a[k]) * (i + 1) / 4;
+                }
+                segments.push_back(line(x, y));
+            }
+            guide = array(segments, 1);
+        }
+    const auto composite_loft = SectionLoft::from_bgfb(composite);
+    check(composite_loft.sides()[0].surface.v().order() == 2 &&
+              composite_loft.sides()[0].surface.v().pole_count() > 4 &&
+              composite_loft.face_indices().indices == expected_faces,
+          "linear-V composite guides do not create additional native face identities");
     check(holes.bottom["type"] == 4 && holes.top["type"] == 4 &&
               holes.bottom["curves"][0]["geometry"]["type"] == 2 &&
               holes.bottom["curves"][1]["geometry"]["type"] == 3,
@@ -126,6 +156,8 @@ unsigned loft_caps_tests() {
     auto nonplanar = curved;
     nonplanar["section0"]["curves"][0]["geometry"]["poles"][5] = 1;
     verify(SectionLoft::from_bgfb(nonplanar));
+    check(SectionLoft::from_bgfb(nonplanar).face_indices().report["status"] == "complete",
+          "native face enumeration does not require planar cap triangulation");
     auto altered = source();
     // Coons construction accepts this corner discrepancy. Extracted cap must
     // follow the final side, not return the unmodified source profile.
@@ -135,6 +167,9 @@ unsigned loft_caps_tests() {
     check(near(cap_curve.point_at(0), {2, 0, 0}), "cap follows constructed side endpoint");
     verify(SectionLoft::from_bgfb(source(1, 1, 1e-11)));
     const auto failed = SectionLoft::from_bgfb(source(1, 1, 1e-9)).cap_regions();
+    const auto failed_faces = SectionLoft::from_bgfb(source(1, 1, 1e-9)).face_indices();
+    check(failed_faces.indices.empty() && failed_faces.report["status"] == "native_failure",
+          "native requested cap failure prevents even side face enumeration");
     check(failed.report["status"] == "native_failure" && failed.bottom.is_null() &&
               failed.top.is_null(),
           "open cap rejected without a synthetic closing segment or partial region");
@@ -148,9 +183,19 @@ unsigned loft_caps_tests() {
     auto no_caps = source(1, 1, 1e-9);
     no_caps["capped"] = false;
     const auto none = SectionLoft::from_bgfb(no_caps).cap_regions();
+    const auto uncapped_faces = SectionLoft::from_bgfb(no_caps).face_indices();
+    check(uncapped_faces.report["status"] == "complete" &&
+              uncapped_faces.report["cap_status"] == "not_requested" &&
+              uncapped_faces.indices ==
+                  std::vector<std::array<std::int64_t, 3>>{
+                      {0, 0, 0}, {0, 1, 0}, {0, 2, 0}, {0, 3, 0}},
+          "uncapped native face enumeration ignores an unclosed end profile");
     check(none.report["status"] == "not_requested" && none.bottom.is_null(),
           "uncapped source does not attempt cap closure");
     const auto budget = loft.cap_regions(15);
+    const auto budget_faces = loft.face_indices(15);
+    check(budget_faces.report["status"] == "incomplete" && budget_faces.indices.empty(),
+          "budget-limited cap verification cannot fabricate a complete face index set");
     check(budget.report["status"] == "incomplete" && budget.bottom.is_null() &&
               budget.top.is_null(),
           "total cap control budget does not expose partial success");
@@ -161,6 +206,18 @@ unsigned loft_caps_tests() {
         invalid = true;
     }
     check(invalid, "zero cap budget rejected");
+    invalid = false;
+    try {
+        loft.face_indices(0);
+    } catch (const std::exception &) {
+        invalid = true;
+    }
+    check(invalid, "zero face-enumeration cap budget rejected");
+    auto face_future = std::async(std::launch::async, [&] { return loft.face_indices(); });
+    const auto concurrent_faces = face_future.get();
+    check(concurrent_faces.indices == loft.face_indices().indices &&
+              concurrent_faces.report == loft.face_indices().report,
+          "native face enumeration is concurrent and repeatable");
     auto future = std::async(std::launch::async, [&] { return loft.cap_regions(); });
     check(future.get().bottom == caps.bottom && loft.source() == input &&
               loft.cap_regions().report == caps.report,

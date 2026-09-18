@@ -441,7 +441,11 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
                              std::array<Point2, 3>{Point2{u[i], v[j]}, Point2{u[i + 1], v[j + 1]},
                                                    Point2{u[i], v[j + 1]}});
                     }
-                out.parts.push_back({"side", side_index, start, out.faces.size() - start});
+                out.parts.push_back({"side",
+                                     side_index,
+                                     start,
+                                     out.faces.size() - start,
+                                     {0, static_cast<std::int64_t>(side_index), 0}});
             }
             std::reverse(boundary[0].begin(), boundary[0].end());
             for (unsigned end = 0; end < 2; ++end)
@@ -456,7 +460,11 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
                                        max_plane, max_collinear);
                 for (auto face : faces)
                     emit(face, {});
-                out.parts.push_back({end ? "top" : "bottom", {}, start, out.faces.size() - start});
+                out.parts.push_back({end ? "top" : "bottom",
+                                     {},
+                                     start,
+                                     out.faces.size() - start,
+                                     {-1, static_cast<std::int64_t>(end), 0}});
             }
         std::map<std::array<std::uint32_t, 2>, std::pair<unsigned, int>> edges;
         for (const auto &face : out.faces)
