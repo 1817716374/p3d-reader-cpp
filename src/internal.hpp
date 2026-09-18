@@ -270,6 +270,7 @@ Json material_projection_getter_states(const Json &local_states, const Json &top
 Json material_reader_paths(const Json &tree, Json &maps);
 Json material_legacy_parameters(const Json &owner, const Json &dispatch);
 Json material_resource_reference(const Json &source);
+Json native_file_resource_reference(const Json &primary, const Json &alternate);
 Json material_texture_references(const Json &tree, const Json &settings);
 Json material_procedure_nodes(const Json &owner);
 Json material_map_bindings(const Json &maps);

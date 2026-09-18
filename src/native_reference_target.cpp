@@ -141,6 +141,61 @@ Json model_id_link(const Json &links) {
     }
     return out;
 }
+
+Json file_specification(const Json &links) {
+    Json out = {{"scope", "persisted_file_specification_before_host_fallback"},
+                {"status", "not_evaluated"},
+                {"file_location", "not_evaluated"},
+                {"host_search_context", "not_evaluated"},
+                {"strings", Json::array()}};
+    for (const auto key : {3u, 31u, 64u}) {
+        // This getter sizes its destination from the complete linkage area.
+        // For a structurally bounded payload it cannot truncate the string.
+        auto slot = string_slot(links, key, SIZE_MAX);
+        slot.erase("capacity_code_units");
+        slot["capacity_policy"] = "record_linkage_sized";
+        slot["role"] = key == 3    ? "source_file_reference"
+                       : key == 31 ? "lookup_reference_override"
+                                   : "resource_service_parameter";
+        if (slot.at("status") != "not_evaluated") {
+            const bool success =
+                slot.at("status") == "decoded" && slot.at("native_conversion_status") == 0;
+            slot["getter_status"] = success ? "success" : "failure";
+            if (!success) {
+                slot["text"] = "";
+                slot["utf16_code_units"] = Json::array();
+            }
+        }
+        out["strings"].push_back(std::move(slot));
+    }
+    const auto &primary = out["strings"][0];
+    if (primary.at("status") == "not_evaluated") {
+        out["reason"] = "primary_file_reference_unresolved";
+        return out;
+    }
+    if (primary.at("utf16_code_units").empty()) {
+        out["status"] = "host_file_specification_required";
+        out["reason"] = "primary_file_reference_absent_empty_or_rejected";
+        out["resource_service_called"] = false;
+        return out;
+    }
+    out["resource_service_called"] = true;
+    for (const auto &slot : out.at("strings"))
+        if (slot.at("status") == "not_evaluated" || !slot.contains("text")) {
+            out["reason"] = "file_specification_string_unresolved";
+            return out;
+        }
+    const auto &alternate = out["strings"][1];
+    const auto &parameter = out["strings"][2];
+    out["service_parameter"] = parameter.at("text");
+    out["service_option"] = parameter.at("utf16_code_units").empty()
+                                ? "runtime_service_state_required"
+                                : "enabled_by_nonempty_parameter";
+    out["default_service_reference"] =
+        native_file_resource_reference(primary.at("text"), alternate.at("text"));
+    out["status"] = out["default_service_reference"]["status"];
+    return out;
+}
 } // namespace
 
 Json native_reference_target(const Json &input, const Json &links) {
@@ -197,6 +252,9 @@ Json native_reference_target(const Json &input, const Json &links) {
         out["status"] = "partial";
     }
     out["model_selection"] = std::move(selection);
+    out["file_specification"] = file_specification(links);
+    if (out["file_specification"]["status"] == "not_evaluated")
+        out["status"] = "partial";
     return out;
 }
 } // namespace p3d

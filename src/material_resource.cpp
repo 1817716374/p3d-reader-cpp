@@ -92,4 +92,69 @@ Json material_resource_reference(const Json &source) {
     out["value"] = codec.to_bytes(result);
     return out;
 }
+
+Json native_file_resource_reference(const Json &primary, const Json &alternate) {
+    Json out = {{"scope", "native_default_resource_service"},
+                {"status", "not_evaluated"},
+                {"lookup_status", "not_performed"},
+                {"primary_source", primary},
+                {"alternate_source", alternate}};
+    if (!primary.is_string() || primary.get_ref<const std::string &>().empty()) {
+        out["reason"] = "nonempty_persisted_primary_reference_required";
+        return out;
+    }
+    // The two entry points share the marker scanner. The file-specification
+    // entry does not have the material entry's special http: preprocessing.
+    const auto first = material_resource_reference(primary);
+    const auto second = material_resource_reference(alternate);
+    out["marker_scans"] = Json::array();
+    for (const auto *scan : {&first, &second}) {
+        if (scan->at("status") != "decoded") {
+            out["reason"] = "unresolved_resource_marker_or_text";
+            return out;
+        }
+        out["marker_scans"].push_back(scan->value("marker", Json()));
+    }
+    bool compound = false;
+    std::int32_t index = 0;
+    std::string suffix;
+    std::array<std::string, 2> prefixes{};
+    unsigned i = 0;
+    for (const auto *scan : {&first, &second}) {
+        if (scan->contains("marker")) {
+            const auto &marker = scan->at("marker");
+            // The native scanner writes prefix/suffix before scanning %d.
+            // Thus an invalid alternate marker can replace the suffix while
+            // retaining the successful primary marker's integer.
+            prefixes[i] = marker.at("prefix").get<std::string>();
+            suffix = marker.at("suffix").get<std::string>();
+            if (marker.at("status") == "decoded") {
+                compound = true;
+                index = marker.at("value").get<std::int32_t>();
+            }
+        }
+        ++i;
+    }
+    const auto source = primary.get<std::string>();
+    const auto alternative = alternate.get<std::string>();
+    if (!compound) {
+        out["stored_reference"] = source;
+        out["lookup_reference"] = alternative.empty() ? source : alternative;
+        out["construction"] = "ordinary";
+    } else {
+        auto base = prefixes[1].empty() ? prefixes[0] : prefixes[1];
+        out["stored_reference"] = prefixes[0];
+        out["base_lookup_reference"] = base;
+        out["marker_value"] = index;
+        out["marker_suffix"] = suffix;
+        if (!base.empty() && index != 0) {
+            base += index < 0 ? "<>" : "<" + std::to_string(index) + ">";
+            base += suffix;
+        }
+        out["lookup_reference"] = base;
+        out["construction"] = "compound";
+    }
+    out["status"] = "decoded";
+    return out;
+}
 } // namespace p3d

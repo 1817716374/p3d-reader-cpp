@@ -135,6 +135,77 @@ unsigned reference_target_tests() {
               q["model_selection"]["utf16_code_units"] == Json::array({0xd800}) &&
               Json::parse(q.dump()) == q,
           "invalid surrogate retains exact native wide units without invalid UTF8 JSON");
+    auto file = [&](Json links) { return query(0, links).at("file_specification"); };
+    auto string_link = [&](unsigned key, const std::string &s) {
+        return text_link(key, Bytes(s.begin(), s.end()));
+    };
+    auto file_link = string_link(3, "models/source.p3d");
+    auto override_link = string_link(31, "other/lookup.p3d");
+    q = file(Json::array({file_link, override_link, string_link(64, "context-token")}));
+    check(q["status"] == "decoded" &&
+              q["default_service_reference"]["stored_reference"] == "models/source.p3d" &&
+              q["default_service_reference"]["lookup_reference"] == "other/lookup.p3d" &&
+              q["service_parameter"] == "context-token" &&
+              q["service_option"] == "enabled_by_nonempty_parameter" &&
+              q["file_location"] == "not_evaluated",
+          "file specification separates stored and lookup strings from actual file location");
+    q = file(Json::array({file_link}));
+    check(q["default_service_reference"]["lookup_reference"] == "models/source.p3d" &&
+              q["service_option"] == "runtime_service_state_required",
+          "empty alternate uses primary reference without inventing runtime service option");
+    check(file(Json::array({override_link}))["resource_service_called"] == false &&
+              file(Json::array({string_link(3, ""), override_link}))["status"] ==
+                  "host_file_specification_required",
+          "alternate cannot create a persisted file specification without nonempty primary");
+    q = file(Json::array({text_link(3, Bytes{254, 255, 0, 65}), file_link}));
+    check(q["status"] == "host_file_specification_required" &&
+              q["strings"][0]["getter_status"] == "failure" &&
+              q["strings"][0]["selected_linkage_index"] == 0,
+          "rejected first file string triggers host fallback rather than later duplicate");
+    q = file(Json::array({file_link, text_link(31, Bytes{254, 255, 0, 65})}));
+    check(q["default_service_reference"]["lookup_reference"] == "models/source.p3d",
+          "failed optional dynamic string getter leaves initialized empty alternate");
+    q = file(Json::array({text_link(3, Bytes(4096, 'x'))}));
+    check(q["strings"][0]["utf16_code_units"].size() == 4096 &&
+              q["default_service_reference"]["lookup_reference"].get<std::string>().size() == 4096,
+          "file string getter is linkage-sized and does not inherit 512-unit model-name limit");
+    auto malformed_file = file_link;
+    p = bytesof(malformed_file["payload"]);
+    put(p, 4, 9999, 4);
+    malformed_file["payload"] = rawbytes(p);
+    check(file(Json::array({malformed_file, file_link}))["status"] == "not_evaluated",
+          "out-of-linkage file string cannot be converted into a known absent reference");
+    q = file(Json::array({text_link(3, Bytes{255, 253, 0, 0xd8})}));
+    check(q["status"] == "not_evaluated" &&
+              q["strings"][0]["utf16_code_units"] == Json::array({0xd800}) &&
+              Json::parse(q.dump()) == q,
+          "file reference with invalid Unicode preserves source units without invented text");
+    struct ResourceCase {
+        const char *primary, *alternate, *stored, *lookup;
+    };
+    for (const auto &c : {
+             ResourceCase{"a<2>x", "", "a", "a<2>x"},
+             ResourceCase{"a<2>x", "ordinary", "a", "a<2>x"},
+             ResourceCase{"ordinary", "b<3>y", "", "b<3>y"},
+             ResourceCase{"a<2>x", "b<3>y", "a", "b<3>y"},
+             ResourceCase{"a<2>x", "b<bad>y", "a", "b<2>y"},
+             ResourceCase{"a<2>x", "<bad>y", "a", "a<2>y"},
+             ResourceCase{"a<bad>x", "b<3>y", "a", "b<3>y"},
+             ResourceCase{"a<bad>x", "b<bad>y", "a<bad>x", "b<bad>y"},
+             ResourceCase{"a<7>x", "b<0>y", "a", "b"},
+             ResourceCase{"a<7>x", "b<-9>y", "a", "b<>y"},
+             ResourceCase{"<2>x", "", "", ""},
+             ResourceCase{"http:source<2>x", "", "http:source", "http:source<2>x"},
+         }) {
+        q = native_file_resource_reference(c.primary, c.alternate);
+        check(q["status"] == "decoded" && q["stored_reference"] == c.stored &&
+                  q["lookup_reference"] == c.lookup,
+              "default file resource service preserves ordered marker-scanner side effects");
+    }
+    check(material_resource_reference("http:source<2>x")["value"] == "http:source",
+          "material wrapper keeps its separate http prefix behavior");
+    check(native_file_resource_reference("a<2147483648>", "b<1>")["status"] == "not_evaluated",
+          "undefined primary integer overflow is not masked by a valid alternate");
     Bytes raw(372, 0);
     put(raw, 4, 13, 2);
     put(raw, 12, 184, 4);
@@ -152,12 +223,23 @@ unsigned reference_target_tests() {
     put(raw, at, name.at("header").get<unsigned>(), 2);
     put(raw, at + 2, 0x56d2, 2);
     std::copy(payload_bytes.begin(), payload_bytes.end(), raw.begin() + at + 4);
+    const auto file_payload = bytesof(file_link.at("payload"));
+    const auto file_at = raw.size();
+    raw.resize(file_at + 4 + file_payload.size());
+    put(raw, file_at, file_link.at("header").get<unsigned>(), 2);
+    put(raw, file_at + 2, 0x56d2, 2);
+    std::copy(file_payload.begin(), file_payload.end(), raw.begin() + file_at + 4);
     put(raw, 8, (raw.size() - 4) / 2, 4);
     const auto records = parse_native(raw);
     check(records.size() == 1 &&
               records[0]["reference_target"]["model_selection"]["name"] == "Model" &&
               records[0]["reference_target"]["strings"][2]["source_offset"] == at,
           "native reference parsing automatically exposes linkage-derived model selector");
+    check(records[0]["reference_target"]["file_specification"]["default_service_reference"]
+                 ["lookup_reference"] == "models/source.p3d" &&
+              records[0]["reference_target"]["file_specification"]["strings"][0]["source_offset"] ==
+                  file_at,
+          "native record parsing integrates file specification with source linkage location");
     Bytes control(32), header(0x610);
     put(header, 0x124, 0xf1234567, 4);
     put(header, 0x128, 0x1122334455667788ull, 8);
