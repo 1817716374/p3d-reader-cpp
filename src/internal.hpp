@@ -222,6 +222,7 @@ Json native_block_header(const Bytes &);
 Json native_file_header(const Bytes &index_stream, const Bytes &header_payload);
 Json native_dependency_link(const Bytes &payload);
 Json native_reference_path(const Bytes &base, const Json &links);
+Json native_reference_target(const Json &reference_input, const Json &links);
 Json native_reference_path_collection(const Json &owner_ids, const Json &system_ids,
                                      const Json &records, std::uint64_t id);
 Json native_application_record(const Bytes &base);

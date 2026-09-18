@@ -22,6 +22,9 @@ Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
     out["decoded_control_header"] = rawbytes(control);
     out["control_flags"] = flags;
     out["unassigned_control_bytes"] = rawbytes(slice(control, 2, 18));
+    out["default_model_id_header_offset"] = 0x124;
+    if (payload.size() >= 0x128)
+        out["source_default_model_id"] = Reader(payload, 0x124).u32();
     if (payload.size() >= 0x130)
         out["source_id_counter"] = Reader(payload, 0x128).u64();
     if (payload.size() >= 0x314)
@@ -29,14 +32,17 @@ Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
     if (flags & 2) {
         // Initial header probing has a null auxiliary argument: the native
         // reader initializes a blank header instead of consuming its payload.
-        out["initial_probe"] = {
-            {"action", "initialize_blank_header"}, {"id_counter", 0}, {"header_flags", 2}};
+        out["initial_probe"] = {{"action", "initialize_blank_header"},
+                                {"id_counter", 0},
+                                {"header_flags", 2},
+                                {"default_model_id", 0}};
         out["status"] = "resolved";
     } else if (payload.size() < 0x610) {
         out["reason"] = "incomplete_file_header_payload";
     } else {
         out["initial_probe"] = {{"action", "read_header_payload"},
                                 {"id_counter", out["source_id_counter"]},
+                                {"default_model_id", out["source_default_model_id"]},
                                 {"header_flags", Reader(payload, 0x310).u32() | flags}};
         out["status"] = "resolved";
         if (payload.size() > 0x610)

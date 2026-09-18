@@ -48,6 +48,7 @@ unsigned native_reference_path_tests();
 unsigned native_reference_input_tests();
 unsigned reference_origin_tests();
 unsigned reference_affine_tests();
+unsigned reference_target_tests();
 unsigned reference_extension_tests();
 unsigned native_application_tests();
 unsigned mesh_normal_tests();
@@ -2710,6 +2711,7 @@ int main() {
         checks += native_reference_input_tests();
         checks += reference_origin_tests();
         checks += reference_affine_tests();
+        checks += reference_target_tests();
         checks += reference_extension_tests();
         checks += native_application_tests();
         checks += mesh_normal_tests();
