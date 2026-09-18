@@ -489,6 +489,26 @@ struct LoftCapRegions {
     Json bottom, top; // Derived CurveVector trees; null unless both caps succeed.
     Json report;
 };
+struct LoftMeshOptions {
+    double max_uv_edge = 1.0 / 16; // Side triangles only; not a 3D error bound.
+    double join_tolerance = 1e-8; // Absolute distance in geometry coordinates.
+    double planarity_tolerance = 1e-8;
+    unsigned max_vertices = 200000;
+    unsigned max_triangles = 400000;
+    unsigned max_cap_control_points = 100000;
+};
+struct LoftMeshPart {
+    std::string role; // side, bottom, top
+    std::optional<std::size_t> side_index;
+    std::size_t first_face = 0, face_count = 0;
+};
+struct LoftMesh {
+    std::vector<Point3> vertices;
+    std::vector<Triangle> faces;
+    std::vector<std::optional<std::array<Point2, 3>>> face_parameters;
+    std::vector<LoftMeshPart> parts; // Derived ranges, not native material part IDs.
+    Json report;
+};
 // Explicit reconstruction of the side surfaces in a decoded P3DSectionLoft.
 // Keeps source order and source data; does not replace the active graphics cache.
 class SectionLoft {
@@ -503,6 +523,9 @@ class SectionLoft {
     // Native endpoint-isocurve regions and bottom reversal, without meshing,
     // fitting a plane, filling internal gaps, or replacing source profiles.
     LoftCapRegions cap_regions(unsigned max_control_points = 100000) const;
+    // Consistent side sampling and planar cap triangulation. Shares vertices
+    // along known adjacent side boundaries, without source geometry deduplication.
+    LoftMesh mesh(const LoftMeshOptions &options = {}) const;
     const Json &report() const {
         return report_;
     }

@@ -10,6 +10,7 @@ unsigned bspline_surface_tests();
 unsigned bspline_trim_tests();
 unsigned bspline_mesh_tests();
 unsigned loft_caps_tests();
+unsigned loft_mesh_tests();
 unsigned akima_tests();
 unsigned interpolation_tests();
 unsigned spiral_tests();
@@ -2677,6 +2678,7 @@ int main() {
         checks += bspline_trim_tests();
         checks += bspline_mesh_tests();
         checks += loft_caps_tests();
+        checks += loft_mesh_tests();
         checks += akima_tests();
         checks += interpolation_tests();
         checks += spiral_tests();
