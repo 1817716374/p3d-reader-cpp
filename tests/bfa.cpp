@@ -750,6 +750,15 @@ unsigned bfa_tests() {
                   graph["component_property_bindings"][2]["property_id"] == 201,
               "multiple component environments remain explicit mapping candidates without guessing "
               "an SDK ID");
+        check(graph["node_parent_bindings"][1]["status"] == "matched_parent_record" &&
+                  graph["node_parent_bindings"][1]["parent_record_index"] == 0 &&
+                  graph["node_parent_bindings"][1]["parent_id"] == 40 &&
+                  graph["node_parent_bindings"][1]["native_identity_status"] == "preserved" &&
+                  bindings[0]["parent_binding_index"] == 1 &&
+                  bindings[0]["parent_component_mapping_binding_indices"] == Json({0}) &&
+                  bindings[0]["component_mapping_binding_indices"] == Json({0, 2}) &&
+                  graph["component_property_bindings"][0]["parent_binding_index"] == 1,
+              "serialized parent identifies the owning component map without losing other sources");
         check(bindings[1]["reference_source"]["input_index"] == 0 &&
                   bindings[2]["reference_source"]["input_index"] == 1 &&
                   bindings[1]["property_record_index"] == bindings[2]["property_record_index"] &&
@@ -800,6 +809,98 @@ unsigned bfa_tests() {
             "native target ignores zero while input enumeration retains the serialized zero entry");
         auto job = std::async(std::launch::async, [&] { return make_graph(1, 41, false); });
         check(job.get() == graph, "driven bindings are deterministic across concurrent decoding");
+    }
+    {
+        Bytes mapping;
+        for (const auto pair :
+             {std::make_pair(9ULL, 17LL), std::make_pair(4ULL, 17LL), std::make_pair(9ULL, 22LL),
+              std::make_pair(7ULL, 17LL), std::make_pair(0xffffffffffffffffULL, -5LL),
+              std::make_pair(0ULL, -5LL), std::make_pair(2ULL, 0LL), std::make_pair(3ULL, 0LL)}) {
+            ref(mapping, pair.first);
+            put<std::int64_t>(mapping, pair.second);
+        }
+        mapping.push_back('+');
+        ref(mapping, 1);
+        put<std::int64_t>(mapping, 17);
+        const auto tree = decode_component(component_body(mapping));
+        const auto &maps = tree["records"][0]["component_definition"]["mapping_layout_candidates"]
+                               [0]["property_id_maps"];
+        const auto &inverse = maps[0]["inverse_lookup"];
+        check(inverse["selected_entry_indices"] == Json({4, 7, 3, 2}) &&
+                  inverse["duplicate_value_rule"] == "greatest_unsigned_definition_id_wins" &&
+                  inverse["index_order"] == "signed_property_id",
+              "inverse lookup uses the greatest effective unsigned node key rather than the last "
+              "source row");
+        check(maps[0]["entries"].size() == 8 && maps[0]["entries"][0]["property_id"] == 17 &&
+                  maps[0]["selected_entry_indices"] == Json({5, 6, 7, 1, 3, 2, 4}) &&
+                  inverse["missing_key_value"] == 0 &&
+                  maps[1]["inverse_lookup"]["selected_entry_indices"] == Json({0}),
+              "inverse lookup excludes overwritten node values, keeps both families independent "
+              "and preserves the zero miss sentinel");
+    }
+    {
+        auto node_body = [](std::uint64_t id) {
+            Bytes body;
+            ref(body, id);
+            put<std::uint64_t>(body, 987654321); // Not the parent ID.
+            return body;
+        };
+        auto graph_with_parents = [&](const std::vector<std::uint64_t> &first,
+                                      const std::vector<std::uint64_t> &second, std::uint64_t child,
+                                      bool duplicate_parent) {
+            Bytes data;
+            record(data, "&@`", 30, node_body(30), first);
+            record(data, "&@`", 31, node_body(31), second);
+            record(data, "&@`", child, node_body(child));
+            if (duplicate_parent)
+                record(data, "&@`", 30, node_body(30));
+            return complex_blob("BfaTree", data);
+        };
+        auto ordinary = graph_with_parents({42, 999}, {}, 42, false);
+        const auto &parents = ordinary["node_parent_bindings"];
+        check(parents.size() == 3 && parents[2]["status"] == "matched_parent_record" &&
+                  parents[2]["parent_id"] == 30 &&
+                  parents[2]["parent_sources"] ==
+                      Json::array({{{"parent_record_index", 0}, {"child_index", 0}}}) &&
+                  ordinary["external_child_ids"] == Json({999}) &&
+                  ordinary["records"][2]["unassigned_header_uint64"] == 987654321,
+              "parent provenance comes from child lists without consuming the unassigned body "
+              "header or missing children");
+        check(parents[0]["status"] == "no_parent_in_this_tree" &&
+                  parents[0]["parent_sources"].empty(),
+              "a local parentless record does not invent an external project environment");
+        auto repeated = graph_with_parents({42, 42}, {}, 42, false);
+        check(repeated["node_parent_bindings"][2]["status"] == "ambiguous_parent" &&
+                  repeated["node_parent_bindings"][2]["parent_sources"].size() == 2 &&
+                  !repeated["node_parent_bindings"][2].contains("parent_record_index"),
+              "duplicate child occurrences remain visible without guessing native placeholder "
+              "replacement");
+        auto multiple = graph_with_parents({42}, {42}, 42, false);
+        check(multiple["node_parent_bindings"][2]["status"] == "ambiguous_parent",
+              "multiple declared parents are not resolved by record order");
+        auto duplicate = graph_with_parents({42}, {}, 42, true);
+        check(duplicate["node_parent_bindings"][0]["status"] == "ambiguous_node_id" &&
+                  duplicate["node_parent_bindings"][2]["status"] == "ambiguous_parent_id",
+              "duplicate parent identities prevent an apparently unique edge from selecting an "
+              "environment");
+        auto self = graph_with_parents({30}, {}, 42, false);
+        check(self["node_parent_bindings"][0]["status"] == "self_parent",
+              "self-parent is reported without recursive traversal");
+        for (const auto id : {0x10000002aULL, 0x80000000ULL}) {
+            const auto wide = graph_with_parents({id}, {}, id, false);
+            check(wide["node_parent_bindings"][2]["native_identity_status"] ==
+                          "requires_32bit_conversion" &&
+                      wide["records"][2]["id"] == id,
+                  "wide source IDs remain lossless rather than being silently narrowed to native "
+                  "wrapper IDs");
+        }
+        const auto negative =
+            graph_with_parents({0xffffffffffffffffULL}, {}, 0xffffffffffffffffULL, false);
+        check(negative["node_parent_bindings"][2]["native_identity_status"] == "preserved",
+              "sign-extended signed-32 node identities preserve their original 64-bit pattern");
+        auto job = std::async(std::launch::async,
+                              [&] { return graph_with_parents({42, 999}, {}, 42, false); });
+        check(job.get() == ordinary, "parent source indexing is reentrant");
     }
     return checks;
 }

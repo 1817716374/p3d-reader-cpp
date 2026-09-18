@@ -535,13 +535,28 @@ static Json bfa_component(const Bytes &payload, Json &record) {
                 if (terminated)
                     c.u8();
                 Json indices = Json::array();
-                for (const auto &entry : selected)
+                std::map<std::int64_t, std::size_t> inverse;
+                for (const auto &entry : selected) {
                     indices.push_back(entry.second);
+                    // Native inverse lookup walks the effective unsigned node-key map
+                    // to its end, replacing the result for every equal SDK property ID.
+                    inverse[entries[entry.second]["property_id"].get<std::int64_t>()] =
+                        entry.second;
+                }
+                Json inverse_indices = Json::array();
+                for (const auto &entry : inverse)
+                    inverse_indices.push_back(entry.second);
                 candidate["property_id_maps"].push_back(
                     {{"driven_storage_kind", map_index + 1},
                      {"entries", std::move(entries)},
                      {"selected_entry_indices", std::move(indices)},
                      {"duplicate_key_rule", "last_entry_wins"},
+                     {"inverse_lookup",
+                      {{"key", "property_id"},
+                       {"selected_entry_indices", std::move(inverse_indices)},
+                       {"index_order", "signed_property_id"},
+                       {"duplicate_value_rule", "greatest_unsigned_definition_id_wins"},
+                       {"missing_key_value", std::uint64_t(0)}}},
                      {"terminator_stored", terminated}});
             }
             candidate["consumed_body_bytes"] = c.p + 19;
@@ -688,6 +703,53 @@ static Json bfa(const Bytes &b) {
     std::map<std::uint64_t, std::vector<std::size_t>> local_nodes;
     for (std::size_t i = 0; i < records.size(); ++i)
         local_nodes[records[i]["id"].get<std::uint64_t>()].push_back(i);
+    // The native loader builds parent pointers from serialized child references;
+    // the common body's unassigned u64 is not used as a parent ID.
+    std::map<std::uint64_t, Json> parent_sources;
+    for (std::size_t i = 0; i < records.size(); ++i)
+        for (std::size_t c = 0; c < records[i]["children"].size(); ++c) {
+            auto &sources = parent_sources[records[i]["children"][c].get<std::uint64_t>()];
+            if (sources.is_null())
+                sources = Json::array();
+            sources.push_back({{"parent_record_index", i}, {"child_index", c}});
+        }
+    Json parents = Json::array();
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        const auto id = records[i]["id"].get<std::uint64_t>();
+        const auto source = parent_sources.find(id);
+        Json binding = {
+            {"record_index", i},
+            {"scope", "this_bfa_tree"},
+            {"parent_sources", source == parent_sources.end() ? Json::array() : source->second}};
+        if (local_nodes.at(id).size() != 1)
+            binding["status"] = "ambiguous_node_id";
+        else if (source == parent_sources.end())
+            binding["status"] = "no_parent_in_this_tree";
+        else if (source->second.size() != 1)
+            binding["status"] = "ambiguous_parent";
+        else {
+            const auto parent_index = source->second[0]["parent_record_index"].get<std::size_t>();
+            const auto parent_id = records[parent_index]["id"].get<std::uint64_t>();
+            if (local_nodes.at(parent_id).size() != 1)
+                binding["status"] = "ambiguous_parent_id";
+            else if (parent_index == i)
+                binding["status"] = "self_parent";
+            else {
+                binding["status"] = "matched_parent_record";
+                binding["parent_record_index"] = parent_index;
+                binding["parent_id"] = parent_id;
+                binding["parent_node_kind"] = records[parent_index]["node_kind"];
+                // Native wrapper construction narrows IDs to signed int32.
+                // Keep raw u64 identities here and flag cases needing loader conversion.
+                binding["native_identity_status"] =
+                    std::uint64_t(bfa_enum_code(id)) == id &&
+                            std::uint64_t(bfa_enum_code(parent_id)) == parent_id
+                        ? "preserved"
+                        : "requires_32bit_conversion";
+            }
+        }
+        parents.push_back(std::move(binding));
+    }
     Json bindings = Json::array();
     for (std::size_t i = 0; i < records.size(); ++i) {
         const auto &node = records[i];
@@ -753,6 +815,7 @@ static Json bfa(const Bytes &b) {
                 else {
                     binding["target_status"] = "matched_property_record";
                     binding["property_record_index"] = found->second.front();
+                    binding["parent_binding_index"] = found->second.front();
                 }
                 property_ids.push_back(std::move(binding));
             }
@@ -808,6 +871,18 @@ static Json bfa(const Bytes &b) {
                         binding["component_mapping_binding_indices"] =
                             sources == property_mapping_sources.end() ? Json::array()
                                                                       : Json(sources->second);
+                        binding["parent_binding_index"] = index;
+                        binding["parent_component_mapping_binding_indices"] = Json::array();
+                        const auto &parent = parents[index];
+                        if (parent["status"] == "matched_parent_record" &&
+                            parent["parent_node_kind"] == "component_definition" &&
+                            parent["native_identity_status"] == "preserved" &&
+                            sources != property_mapping_sources.end())
+                            for (const auto source_index : sources->second)
+                                if (property_ids[source_index]["component_record_index"] ==
+                                    parent["parent_record_index"])
+                                    binding["parent_component_mapping_binding_indices"].push_back(
+                                        source_index);
                         binding["environment_selection_status"] = "not_performed";
                     } else
                         binding["property_resolution_status"] = "requires_object_property_schema";
@@ -822,6 +897,7 @@ static Json bfa(const Bytes &b) {
     }
     return {{"records", records},
             {"external_child_ids", external},
+            {"node_parent_bindings", std::move(parents)},
             {"type_property_bindings", std::move(bindings)},
             {"component_property_bindings", std::move(property_ids)},
             {"driven_reference_bindings", std::move(driven_bindings)},
