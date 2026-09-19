@@ -29,6 +29,7 @@ unsigned native_input_tests();
 unsigned native_attribute_input_tests();
 unsigned native_attribute_lookup_tests();
 unsigned material_catalog_registration_tests();
+unsigned component_material_tests();
 unsigned material_auxiliary_tests();
 unsigned material_xml_integer_tests();
 unsigned material_xml_float_tests();
@@ -2711,6 +2712,7 @@ int main() {
         checks += native_attribute_input_tests();
         checks += native_attribute_lookup_tests();
         checks += material_catalog_registration_tests();
+        checks += component_material_tests();
         checks += material_auxiliary_tests();
         checks += material_xml_integer_tests();
         checks += material_xml_float_tests();

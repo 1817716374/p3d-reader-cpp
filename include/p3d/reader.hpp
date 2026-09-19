@@ -656,6 +656,24 @@ struct MaterialCatalogOptions {
     // Supply the relevant host-locale equality when reproducing another locale.
     std::function<bool(const std::string &, const std::string &)> case_equal;
 };
+struct ComponentMaterialContext {
+    // Names of successfully loaded BPMaterials in native enumeration order.
+    // This must be the full list or an ordered prefix, not arbitrary candidates.
+    // Returned material indices refer to this vector; duplicate names keep the first.
+    std::vector<std::u16string> material_names;
+    bool material_list_complete = false;
+    // Narrow value of Noumenon's exact key: byte 0x07 followed by _component_material.
+    // A known absent property is distinct from an unavailable extraction context.
+    bool noumenon_material_known = false;
+    std::optional<Bytes> noumenon_material_name;
+    // Converts NUL-excluded Windows ANSI bytes to UTF-16. Without it, ASCII only.
+    std::function<std::u16string(const Bytes &)> ansi_decoder;
+};
+// Input: decoded ParaCmptInstance. Resolves the inner Noumenon override followed
+// by the outer footer override. Does not rebuild geometry, select a project,
+// load materials, or associate serialized entry indices with rebuilt parts.
+Json resolve_component_material_overrides(const Json &component_instance,
+                                          const ComponentMaterialContext &context);
 // Parsed once in source stream order. All IDs retain their original scopes.
 // References returned by accessors are immutable and remain valid for the document lifetime.
 class Document {
