@@ -39,6 +39,24 @@ unsigned material_auxiliary_tests() {
     check(first["key"] == Json({{"byte_19", 255}, {"word_16", 65535}}) &&
               bytesof(first["data"]) == Bytes({1, 2, 3}),
           "material auxiliary identity retains unsigned byte/word and exact body");
+    check(first.at("image_dimensions") == Json({{"width_pixels", 100}, {"height_pixels", 200}}) &&
+              first.at("image_encoding") == "unresolved",
+          "auxiliary image dimensions have confirmed pixel meaning without guessing encoding");
+    for (const auto &size : std::vector<std::pair<std::int32_t, std::int32_t>>{
+             {0, 0}, {-1, 1}, {1, -1}, {INT32_MIN, INT32_MAX}, {INT32_MAX, INT32_MIN}}) {
+        auto sample = packet(7, 2, {8, 9});
+        put(sample, 8, size.first);
+        put(sample, 12, size.second);
+        const auto decoded = decode_material_auxiliary_records(sample);
+        const auto &image = decoded.at("records")[0];
+        check(decoded.at("status") == "resolved" &&
+                  image.at("image_dimensions").at("width_pixels") == size.first &&
+                  image.at("image_dimensions").at("height_pixels") == size.second &&
+                  bytesof(image.at("header")) == slice(sample, 0, 64) &&
+                  bytesof(image.at("data")) == Bytes({8, 9}),
+              "signed dimensions retain invalid and extreme declarations without allocation or "
+              "repair");
+    }
     check(first["unassigned_fields"]["u32_8"] == 100 &&
               first["unassigned_fields"]["u32_12"] == 200 &&
               first["unassigned_fields"]["u8_18"] == 11 &&
@@ -63,6 +81,17 @@ unsigned material_auxiliary_tests() {
               r["records"][3]["replaced_record_index"] == 0 &&
               bytesof(r["records"][3]["data"]).empty(),
           "duplicate key fully replaces earlier data including replacement with empty body");
+    auto changed_size = replacement;
+    put(changed_size, 8, std::int32_t(320));
+    put(changed_size, 12, std::int32_t(240));
+    auto with_new_size = a;
+    join(with_new_size, changed_size);
+    const auto size_replacement = decode_material_auxiliary_records(with_new_size);
+    check(size_replacement.at("selected_record_indices") == Json::array({2, 1, 4}) &&
+              size_replacement.at("records")[4].at("image_dimensions") ==
+                  Json({{"width_pixels", 320}, {"height_pixels", 240}}) &&
+              size_replacement.at("records")[0].at("image_dimensions").at("width_pixels") == 100,
+          "replacing an image key replaces dimensions while retaining the original record");
     check(r["records"][0]["offset"] == 0 && r["records"][1]["offset"] == 67 &&
               r["records"].size() == 4,
           "source order and prior duplicate records are not discarded");
@@ -74,6 +103,8 @@ unsigned material_auxiliary_tests() {
     check(r["status"] == "resolved" && r["records"][0]["action"] == "skipped_version" &&
               r["selected_record_indices"] == Json::array({1}),
           "unsupported record versions skip their declared bytes without ending input");
+    check(!r.at("records")[0].contains("image_dimensions"),
+          "unknown record versions are not assigned image dimension layout");
     put(skipped, 0, std::uint32_t(1000));
     r = decode_material_auxiliary_records(skipped);
     check(r["status"] == "resolved" && r["native_cursor"] == 1000 &&
@@ -124,6 +155,9 @@ unsigned material_auxiliary_tests() {
         check(r["encoding"] == "material_auxiliary_records" && bytesof(r["data"]) == a &&
                   r["native_input"]["selected_record_indices"] == Json::array({2, 1, 3}),
               "stored and compressed attribute paths expose auxiliary structure");
+        check(r.at("native_input").at("records")[0].at("image_dimensions") ==
+                  Json({{"width_pixels", 100}, {"height_pixels", 200}}),
+              "attribute envelope dispatch preserves confirmed image dimension semantics");
     }
     r = decode_attribute(0, 20091, envelope({1, 2, 3}, 1), 0);
     check(r["encoding"] == "material_auxiliary_buffer" && r["content_semantics"] == "unresolved" &&

@@ -30,6 +30,14 @@ Json decode_material_auxiliary_records(const Bytes &b) {
                 const auto x = r.f64(), y = r.f64();
                 const auto value_dword = r.u32();
                 record["key"] = {{"byte_19", key_byte}, {"word_16", key_word}};
+                // The image encoder receives {width, height} in signed pixel
+                // counts and copies this pair to the fields serialized at 8/12.
+                // They describe the stored buffer; do not infer its codec or
+                // allocate width * height bytes from these declarations.
+                Reader dimensions(b, pos + 8);
+                const auto width = dimensions.i32(), height = dimensions.i32();
+                record["image_dimensions"] = {{"width_pixels", width}, {"height_pixels", height}};
+                record["image_encoding"] = "unresolved";
                 record["unassigned_fields"] = {{"u32_8", a},
                                                {"u32_12", c},
                                                {"u8_18", value_byte},
