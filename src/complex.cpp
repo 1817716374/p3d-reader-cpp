@@ -147,6 +147,8 @@ static Json bfa_driven(const Bytes &payload) {
         if (value > 1)
             dst[std::string(name) + "_status"] = "invalid_boolean";
     };
+    formula["native_expression"] = decode_bfa_formula_expression(encoded);
+    formula["expression_status"] = formula["native_expression"]["status"];
     flag(formula, "valid");
     out["formula"] = std::move(formula);
     flag(out, "bidirectional");

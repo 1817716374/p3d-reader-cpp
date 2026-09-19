@@ -221,12 +221,92 @@ unsigned bfa_tests() {
               expr["parts"][1]["reference_id_bits"] == 0xffffffffffffffffULL &&
               expr["reference_expanded_form"]["text"] == "x+><@18446744073709551615#a+2",
           "packed formula references expand unsigned bits without evaluating the formula");
-    check(expr["encoded_bytes"] == rawbytes(formula) &&
-              expr["expression_status"] == "requires_native_expression_conversion" &&
+    check(expr["encoded_bytes"] == rawbytes(formula) && expr["expression_status"] == "converted" &&
               expr["evaluation_status"] == "not_performed" &&
               dj["records"][0]["body_base64"] == base64(db) &&
               drive["consumed_body_bytes"] == db.size(),
           "binary formula and whole body stay lossless with explicit conversion boundary");
+    {
+        const std::string primitive("\xcd\xbc\xd4\xaa", 4),
+            subcomponent("\xd7\xd3\xd7\xe9\xbc\xfe", 6);
+        auto bytes = [](const std::string &text) { return Bytes(text.begin(), text.end()); };
+        auto packed = [&](const std::string &family, std::uint64_t id,
+                          const std::string &property) {
+            auto data = bytes("{" + family + "><@");
+            put(data, id);
+            const auto tail = bytes("#" + property + "}");
+            data.insert(data.end(), tail.begin(), tail.end());
+            return data;
+        };
+        auto text = [](const Json &result, const char *key = "expression_bytes") {
+            const auto b = bytesof(result.at(key));
+            return std::string(b.begin(), b.end());
+        };
+        auto data = packed(primitive, 7, "Length");
+        const auto second = packed(subcomponent, UINT64_MAX, "Width");
+        data.push_back('+');
+        data.insert(data.end(), second.begin(), second.end());
+        const auto converted = decode_bfa_formula_expression(data);
+        check(converted["status"] == "converted" &&
+                  converted["evaluation_status"] == "not_performed" &&
+                  text(converted) == "{" + primitive + "7#Length}+{" + subcomponent +
+                                         "18446744073709551615#Width}",
+              "native formulas convert both fixed-byte reference families without truncating "
+              "unsigned IDs");
+        check(converted["conversions"].size() == 2 &&
+                  converted["conversions"][0]["kind"] == "primitive" &&
+                  converted["conversions"][1]["kind"] == "subcomponent",
+              "native conversion records the two ordered reference-family passes");
+        const auto raw = "{" + primitive + "12#X}";
+        check(text(decode_bfa_formula_expression(bytes(raw))) ==
+                  "{" + primitive + "{" + primitive + "12#X}",
+              "native conversion does not assume unmarked brace references are already converted");
+        for (const auto &row : std::vector<std::pair<std::string, std::string>>{
+                 {"1>2", "1>22"}, {">x", ">xx"}, {"><x", "><xx"}, {"abc", "abc"}, {"", ""}})
+            check(text(decode_bfa_formula_expression(bytes(row.first))) == row.second,
+                  "mismatched native marker peeks retain their repeated-byte behavior");
+        for (const auto &bad :
+             std::vector<Bytes>{bytes(">"), bytes("><"), bytes("><@"), Bytes{'>', '<', '@', 0, 0}})
+            check(decode_bfa_formula_expression(bad)["status"] == "native_read_outside_formula",
+                  "native lookahead cannot consume formula flags or neighboring records");
+        const auto invalid = decode_bfa_formula_expression(packed(primitive, 7, "["));
+        check(invalid["status"] == "regex_error" && !invalid.contains("expression_bytes") &&
+                  invalid.contains("expanded_bytes"),
+              "invalid native dynamic regex preserves expansion but never publishes a completed "
+              "formula");
+        auto joined = packed(primitive, 7, "x.y");
+        const auto similar = packed(primitive, 7, "xay");
+        joined.push_back('+');
+        joined.insert(joined.end(), similar.begin(), similar.end());
+        const auto matching = decode_bfa_formula_expression(joined);
+        check(text(matching) == "{" + primitive + "7#x.y}+{" + primitive + "7#x.y}" &&
+                  matching["conversions"].size() == 2,
+              "native brace-only escaping preserves regex metacharacters and global replacement "
+              "behavior");
+        check(text(decode_bfa_formula_expression(packed(primitive, 7, "$&"))) ==
+                  "{" + primitive + "><@7#$&}",
+              "a dollar anchor in the source pattern can prevent native replacement");
+        check(text(decode_bfa_formula_expression(packed(primitive, 7, "x|$&"))) ==
+                  "{" + primitive + "7#x|{" + primitive + "><@7#x}|$&}",
+              "native alternation and default dollar replacement formatting both remain active");
+        const auto empty = decode_bfa_formula_expression(packed(primitive, 7, ""));
+        check(empty["conversions"].empty() && text(empty) == "{" + primitive + "><@7#}",
+              "empty properties do not satisfy the native nonempty expression pattern");
+        const auto newline = decode_bfa_formula_expression(packed(primitive, 7, "x\ny"));
+        check(newline["conversions"].empty(), "native dot matching does not cross line endings");
+        const auto nul =
+            decode_bfa_formula_expression(packed(primitive, 0, std::string("x\0y", 3)));
+        check(text(nul) == "{" + primitive + std::string("0#x\0y}", 6),
+              "formula string length preserves embedded NUL unlike property metadata C strings");
+        const auto graph = decode_drive(drive_body(1, data));
+        check(
+            graph["records"][0]["driven"]["formula"]["native_expression"] == converted &&
+                graph["records"][0]["driven"]["formula"]["encoded_bytes"] == rawbytes(data),
+            "BFA driven formula decoding exposes native conversion while retaining encoded bytes");
+        auto future =
+            std::async(std::launch::async, [&] { return decode_bfa_formula_expression(data); });
+        check(future.get() == converted, "formula conversion has no shared mutable state");
+    }
     for (unsigned kind : {1u, 2u}) {
         const auto target = decode_drive(drive_body(kind, {}))["records"][0]["driven"]["target"];
         check(target["storage_kind"] == kind && target["property_reference_id"] == placed_id &&

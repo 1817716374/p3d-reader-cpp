@@ -3,6 +3,7 @@
 namespace p3d {
 Json application_blob(const std::string &, const Bytes &, const std::string &);
 Json complex_blob(const std::string &, const Bytes &);
+Json decode_bfa_formula_expression(const Bytes &encoded);
 void bind_bfa_entity_sources(Json &binary_fields, const Json &objects);
 void bind_bfa_definition_sources(Json &binary_fields, const Json &objects);
 Json binary_json(const Bytes &);
