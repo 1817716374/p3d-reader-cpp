@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "material_catalog_read.hpp"
 #include <lz4/lz4.h>
 #include <miniz/miniz_tinfl.h>
 namespace p3d {
@@ -758,6 +759,39 @@ static Bytes decompress_attribute(const Bytes &b, Json &metadata) {
         codec = "zlib";
     }
     metadata = {{"version", ver}, {"codec", codec}, {"decoded_bytes", n}};
+    return out;
+}
+Json native_material_texture_file(const Bytes &b) {
+    Json out;
+    const auto payload = decompress_attribute(b, out);
+    require(payload.size() >= 260, "native embedded texture size field truncated");
+    Reader r(payload, 256);
+    const auto size = r.u32();
+    out["file_bytes"] = size;
+    // The material reader tests a signed 32-bit length before reading the
+    // filename or exporting bytes. High-bit values also fail this guard.
+    if (size == 0 || size >= 0x1400000u) {
+        out["status"] = "skipped";
+        out["reason"] = "native_file_size_guard";
+        out["data"] = rawbytes(payload);
+        return out;
+    }
+    const auto map_type = r.u32();
+    require(size <= r.left(), "native embedded texture file exceeds payload");
+    std::size_t end = 0;
+    while (end + 1 < payload.size() && (payload[end] || payload[end + 1]))
+        end += 2;
+    require(end + 1 < payload.size(), "native embedded texture filename unterminated");
+    out.update({{"status", "decoded"},
+                {"encoding", "embedded_texture_file"},
+                {"filename", utf16(slice(payload, 0, end))},
+                {"filename_field", rawbytes(slice(payload, 0, 256))},
+                {"filename_terminator_offset", end},
+                {"filename_within_field", end < 256},
+                {"native_map_type", map_type},
+                {"file_offset", 264},
+                {"file_data", rawbytes(r.take(size))}});
+    out["ignored_suffix"] = rawbytes(r.take(r.left()));
     return out;
 }
 Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index) {

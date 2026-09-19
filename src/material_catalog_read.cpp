@@ -44,6 +44,46 @@ Json supplementary_input(const Json &attachment) {
     }
     return inputs;
 }
+Json embedded_texture_input(const Json &attachment) {
+    Json out = {{"reader_profile", "bimbase_2025_material_embedded_texture_input"},
+                {"scope", "selected_attributes_before_filesystem_checks"},
+                {"status", "absent"},
+                {"entries", Json::array()},
+                {"filesystem_processing", "not_performed"},
+                {"texture_reference_binding", "not_performed"}};
+    for (unsigned group = 0; group < 40; ++group) {
+        for (const auto &lookup : attachment.at("lookup").at("keys")) {
+            if (lookup.at("group") != group || lookup.at("key") != 22913 || lookup.at("index") != 0)
+                continue;
+            const auto ordinal = lookup.at("selected_source_ordinal").get<std::size_t>();
+            Json entry = {{"group", group},
+                          {"key", 22913},
+                          {"index", 0},
+                          {"source_ordinal", ordinal},
+                          {"status", "unresolved"}};
+            if (out.at("status") == "absent")
+                out["status"] = "resolved";
+            try {
+                auto attribute = source_attribute(attachment, ordinal);
+                entry["source_attribute"] = attribute;
+                require(attribute.at("group") == group && attribute.at("key") == 22913 &&
+                            attribute.at("index") == 0,
+                        "inconsistent_embedded_texture_attribute_selection");
+                // Read the selected source envelope, even if the convenience
+                // decoder rejected a trailing suffix accepted by this reader.
+                auto file = native_material_texture_file(bytesof(attribute.at("payload")));
+                entry["status"] = file.at("status");
+                entry["file"] = std::move(file);
+            } catch (const std::exception &e) {
+                entry["reason"] = e.what();
+                out["status"] = "partial";
+            }
+            out["entries"].push_back(std::move(entry));
+            break;
+        }
+    }
+    return out;
+}
 Json primary_xml(const Json &attribute) {
     const auto &decoded = attribute.at("decoded");
     require(decoded.contains("data"), "material_attribute_codec_unavailable");
@@ -174,6 +214,7 @@ Json native_catalog_material_read(const Json &catalog, const Json &container, co
                 material["object_name"] = name.at("value");
                 material["name_source"] = "catalog_entry";
                 material["supplementary_attributes"] = supplementary_input(attachment);
+                material["embedded_texture_inputs"] = embedded_texture_input(attachment);
                 material["texture_postprocessing"] = "not_performed";
                 read["material"] = std::move(material);
                 read["status"] = "decoded";
