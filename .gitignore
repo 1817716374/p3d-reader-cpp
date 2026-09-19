@@ -22,6 +22,7 @@
 !/tests/native_materials.cpp
 !/tests/material_catalog_registration.cpp
 !/tests/material_catalog_read.cpp
+!/tests/view_sequence.cpp
 !/tests/component_material.cpp
 !/tests/material_auxiliary.cpp
 !/tests/material_xml_integer.cpp
