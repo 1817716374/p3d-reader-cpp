@@ -964,7 +964,7 @@ Json application_blob(const std::string &name, const Bytes &b, const std::string
             entries.push_back(
                 {{"parameter_handle", r.u64()}, {"class_id", r.u64()}, {"object_id", r.u64()}});
         v = {{"entries", entries}};
-        if (cl == "BPParaHandleAndBfaDataMap") {
+        if (cl == "BPParaHandleAndBfaDataMap" || cl == "BPParaHandleAndEntityDataMap") {
             std::map<std::uint64_t, std::size_t> first;
             for (std::size_t i = 0; i < entries.size(); ++i)
                 first.emplace(entries[i]["parameter_handle"].get<std::uint64_t>(), i);
@@ -976,11 +976,12 @@ Json application_blob(const std::string &name, const Bytes &b, const std::string
                                   {"index_order", "unsigned_parameter_handle"},
                                   {"selected_entry_indices", std::move(indices)},
                                   {"source_schema_group", "PBM_CoreModel"},
-                                  {"source_class", "BPParaHandleAndBfaDataMap"},
+                                  {"source_class", cl},
                                   {"target_key_kind", "BPDataKey"},
-                                  {"target_field", "BfaTree"},
                                   {"scope", "selected_component_project"},
                                   {"project_selection", "not_performed"}};
+            if (cl == "BPParaHandleAndBfaDataMap")
+                v["native_lookup"]["target_field"] = "BfaTree";
         }
     } else if (name == "DataUnit")
         return data_unit(b);

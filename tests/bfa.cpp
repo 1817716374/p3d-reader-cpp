@@ -1069,10 +1069,12 @@ unsigned bfa_tests() {
                   decoded["native_lookup"]["target_field"] == "BfaTree",
               "component definition data map keeps the first handle key and unsigned ordering "
               "while retaining all rows");
-        check(!application_blob("DataIdMap", bytes, "BPParaHandleAndEntityDataMap")
-                      .contains("native_lookup") &&
+        const auto entity_map =
+            application_blob("DataIdMap", bytes, "BPParaHandleAndEntityDataMap");
+        check(entity_map["native_lookup"]["selected_entry_indices"] == Json({0, 2, 3}) &&
+                  !entity_map["native_lookup"].contains("target_field") &&
                   !application_blob("DataIdMap", bytes, "").contains("native_lookup"),
-              "definition lookup semantics are not imposed on same-named fields of other schemas");
+              "entity maps share native key selection without imposing a BFA target property");
         Json objects =
             Json::array({{{"class_id", 7}, {"object_id", 1}}, {{"class_id", 8}, {"object_id", 9}}});
         auto field = [](const char *cl, const char *name, std::uint64_t cid, std::uint64_t oid,
@@ -1089,6 +1091,84 @@ unsigned bfa_tests() {
         const auto tree = complex_blob("BfaTree", tree_bytes);
         Json fields = Json::array({field("BPParaHandleAndBfaDataMap", "DataIdMap", 7, 1, decoded),
                                    field("BPParaBfaTree", "BfaTree", 8, 9, tree)});
+        {
+            auto entity_fields =
+                Json::array({field("BPParaHandleAndEntityDataMap", "DataIdMap", 7, 1, entity_map),
+                             field("BPParaBfaTree", "BfaTree", 8, 9, tree)});
+            auto &type = entity_fields[1]["value"]["decoded"]["records"][0];
+            type["placed_instance_ids"] = Json({31, 31, 99, 42, 0xffffffffffffffffULL});
+            const auto raw = entity_fields;
+            bind_bfa_entity_sources(entity_fields, objects);
+            const auto &sources = entity_fields[0]["value"]["decoded"]["entity_source_bindings"];
+            const auto &placed = entity_fields[1]["value"]["decoded"]["placed_instance_bindings"];
+            check(sources.size() == 3 && sources[0]["entry_index"] == 0 &&
+                      sources[0]["target_object_index"] == 1 &&
+                      sources[1]["target_object_index"] == 1 &&
+                      sources[2]["target_status"] == "object_not_in_document",
+                  "native entity mappings use the full data key and retain shared target objects");
+            check(
+                placed.size() == 5 && placed[0]["target_object_index"] == 1 &&
+                    placed[0]["map_field_index"] == 0 &&
+                    placed[0]["entity_source_binding_index"] == 0 &&
+                    placed[1]["placed_instance_index"] == 1 &&
+                    placed[1]["parameter_handle"] == 31 &&
+                    placed[2]["entity_source_binding_index"] == 1,
+                "type placed references keep duplicates, source positions and shared map indices");
+            check(placed[3]["target_status"] == "entity_mapping_not_in_document" &&
+                      placed[4]["target_status"] == "object_not_in_document" &&
+                      !placed[4].contains("target_object_index"),
+                  "missing handle mappings remain distinct from missing mapped objects");
+            check(entity_fields[1]["value"]["decoded"]["records"] ==
+                          raw[1]["value"]["decoded"]["records"] &&
+                      entity_fields[0]["value"]["decoded"]["entries"] == entity_map["entries"],
+                  "instance association preserves raw graph records and all map rows");
+            auto wrong_key_objects = objects;
+            wrong_key_objects[1]["class_id"] = 88;
+            auto wrong_key = raw;
+            bind_bfa_entity_sources(wrong_key, wrong_key_objects);
+            check(
+                wrong_key[1]["value"]["decoded"]["placed_instance_bindings"][0]["target_status"] ==
+                    "object_not_in_document",
+                "object IDs alone cannot resolve placed entities");
+            auto duplicate = objects;
+            duplicate.push_back(objects[1]);
+            auto ambiguous = raw;
+            bind_bfa_entity_sources(ambiguous, duplicate);
+            const auto &ambiguity = ambiguous[1]["value"]["decoded"]["placed_instance_bindings"][0];
+            check(ambiguity["target_status"] == "ambiguous_object_identity" &&
+                      ambiguity["object_candidates"] == Json({1, 2}) &&
+                      !ambiguity.contains("target_object_index"),
+                  "ambiguous entity identities are propagated to placed references");
+            auto maps = raw;
+            maps.push_back(raw[0]);
+            bind_bfa_entity_sources(maps, objects);
+            const auto &map_ambiguity = maps[1]["value"]["decoded"]["placed_instance_bindings"][0];
+            check(map_ambiguity["target_status"] == "ambiguous_entity_mapping" &&
+                      map_ambiguity["mapping_candidates"].size() == 2 &&
+                      !map_ambiguity.contains("target_object_index"),
+                  "multiple entity tables do not silently select a project or table by traversal "
+                  "order");
+            auto nested = raw;
+            nested[0]["path"] = "/BPParaHandleAndEntityDataMap/Nested[0]/DataIdMap[0]";
+            bind_bfa_entity_sources(nested, objects);
+            check(nested[1]["value"]["decoded"]["placed_instance_bindings"][0]["target_status"] ==
+                          "entity_mapping_not_in_document" &&
+                      !nested[0]["value"]["decoded"].contains("entity_source_bindings"),
+                  "nested map properties are not used as native root mapping tables");
+            auto damaged = raw;
+            damaged[0]["value"].erase("decoded");
+            bind_bfa_entity_sources(damaged, objects);
+            check(damaged[1]["value"]["decoded"]["placed_instance_bindings"][0]["target_status"] ==
+                      "entity_mapping_not_in_document",
+                  "undecoded mappings do not invent target keys");
+            auto job = std::async(std::launch::async, [&] {
+                auto copy = raw;
+                bind_bfa_entity_sources(copy, objects);
+                return copy;
+            });
+            check(job.get() == entity_fields,
+                  "entity source association is deterministic across threads");
+        }
         const auto before = fields;
         bind_bfa_definition_sources(fields, objects);
         const auto &links = fields[0]["value"]["decoded"]["definition_source_bindings"];

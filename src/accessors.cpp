@@ -24,6 +24,7 @@ Json Document::binary_fields() const {
         walk(obj["root"], "/" + obj["root"]["name"].get<std::string>());
     }
     bind_bfa_definition_sources(out, objects());
+    bind_bfa_entity_sources(out, objects());
     return out;
 }
 Json Document::inline_materials() const {
