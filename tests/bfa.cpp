@@ -63,7 +63,8 @@ void str(Bytes &b, const Bytes &s) {
     put<std::uint32_t>(b, s.size());
     b.insert(b.end(), s.begin(), s.end());
 }
-Bytes property_body(bool variable, unsigned value_type, const Bytes &value) {
+Bytes property_body(bool variable, unsigned value_type, const Bytes &value,
+                    const Bytes &unit = Bytes{'m', 'm'}) {
     Bytes b;
     ref(b, 23);
     put<std::uint64_t>(b, 0);
@@ -74,7 +75,7 @@ Bytes property_body(bool variable, unsigned value_type, const Bytes &value) {
     put<std::uint32_t>(b, value_type);
     b.insert(b.end(), value.begin(), value.end());
     b.push_back(1);
-    str(b, Bytes{'m', 'm'});
+    str(b, unit);
     str(b, Bytes{'G'});
     str(b, Bytes{'D'});
     return b;
@@ -325,6 +326,56 @@ unsigned bfa_tests() {
               property_body(true, 3, sv))["records"][0]["property_definition"]["base_value"]
                                          ["value"]["native_value"]["text"] == "v",
           "base string keeps native NUL termination separate from full stored bytes");
+    {
+        const std::vector<std::pair<std::string, bool>> cases = {
+            {"", true},
+            {"mm", true},
+            {"isShow", true},
+            {"isshow:false", true},
+            {"isShow:", false},
+            {"isShow:true", true},
+            {"isShow:false", false},
+            {"isShow:TRUE", false},
+            {"isShow: true", false},
+            {"isShow:true ", false},
+            {"mm#isShow:true", true},
+            {"x:isShow:true", true},
+            {"isShow:true#", false},
+            {"isShow:true#other:value", false},
+            {"isShow:false#isShow:true", false},
+            {"isShow:isShow:true", false},
+            {std::string("isShow:true\0#suffix", 19), true},
+            {std::string("mm\0isShow:false", 15), true},
+            {std::string("\xff\xfeisShow:true", 13), true}};
+        for (const auto &example : cases) {
+            const Bytes bytes(example.first.begin(), example.first.end());
+            const auto node = decode_property(property_body(true, 4, {}, bytes))["records"][0];
+            const auto &definition = node["property_definition"];
+            check(definition["property_visibility"]["status"] == "evaluated" &&
+                      definition["property_visibility"]["is_show"] == example.second,
+                  "native property visibility retains byte search, NUL, first marker and exact "
+                  "comparison rules");
+            check(node["body_base64"] == base64(property_body(true, 4, {}, bytes)),
+                  "visibility evaluation keeps complete source unit bytes in the node body");
+        }
+        auto visibility = [&](const std::string &text) {
+            return decode_property(property_body(
+                true, 4, {},
+                Bytes(text.begin(),
+                      text.end())))["records"][0]["property_definition"]["property_visibility"];
+        };
+        const auto plain = visibility("mm#isShow:true");
+        const auto delimited = visibility("mm#isShow:true#");
+        check(
+            plain["comparison_byte_offset"] == 10 && plain["comparison_byte_length"] == 4 &&
+                plain["selection_rule"] == "suffix_after_colon" &&
+                delimited["comparison_byte_offset"] == 3 &&
+                delimited["comparison_byte_length"] == 11 &&
+                delimited["selection_rule"] == "prefix_before_hash",
+            "native hash branch keeps the marker rather than assuming a generic key-value parser");
+        auto job = std::async(std::launch::async, [&] { return visibility("mm#isShow:true"); });
+        check(job.get() == plain, "property visibility has no shared mutable state");
+    }
     auto derived = property_body(false, 4, {});
     derived.push_back('{');
     ref(derived, 18);
@@ -366,10 +417,24 @@ unsigned bfa_tests() {
               controls["unassigned_byte"] == 0x7a && controls["value_type_editable"] == true &&
               controls["driven_readonly"] == true && controls["source_type"] == "user",
           "property control flags and source enum follow confirmed independent accessors");
+    check(controls["category_inner_property"].is_null() &&
+              controls["category_inner_property_byte"] == 0x7a &&
+              controls["category_inner_property_status"] == "invalid_boolean",
+          "category-inner control retains an invalid byte instead of inventing a valid flag");
+    for (unsigned byte : {0u, 1u}) {
+        auto body = derived;
+        body[controls_at + 6] = static_cast<std::uint8_t>(byte);
+        const auto flags = decode_property(body)["records"][0]["property_definition"]["controls"];
+        check(flags["category_inner_property"] == (byte != 0) && flags["unassigned_byte"] == byte &&
+                  flags["inner_property"] == true &&
+                  !flags.contains("category_inner_property_status"),
+              "category-inner and ordinary inner-property flags are separate stored fields");
+    }
     for (const auto width : {2u, 7u, 8u}) {
         auto short_body = Bytes(derived.begin(), derived.begin() + controls_at + width);
         const auto old = decode_property(short_body)["records"][0]["property_definition"];
-        check(old["controls"].contains("value_type_editable") == (width == 8) &&
+        check(old["controls"].contains("category_inner_property") == (width >= 7) &&
+                  old["controls"].contains("value_type_editable") == (width == 8) &&
                   !old["controls"].contains("driven_readonly") &&
                   !old["controls"].contains("source_type_code"),
               "shorter native property control layouts do not synthesize absent fields");

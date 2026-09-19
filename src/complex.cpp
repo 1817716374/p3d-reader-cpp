@@ -167,6 +167,37 @@ static Json bfa_driven(const Bytes &payload) {
         out["unassigned_suffix_hex"] = hex(r.take(r.left()));
     return out;
 }
+static Json bfa_property_visibility(const Bytes &unit) {
+    // The native property loader assigns a NUL-terminated string. Its display
+    // predicate searches that string as bytes, without decoding a code page.
+    const auto end = std::find(unit.begin(), unit.end(), std::uint8_t(0));
+    const std::string text(unit.begin(), end);
+    Json out = {
+        {"source_field", "unit"}, {"scope", "stored_property_definition"}, {"status", "evaluated"}};
+    if (text.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        out["status"] = "native_string_index_out_of_range";
+        return out;
+    }
+    const auto marker = text.find("isShow:");
+    out["marker_found"] = marker != std::string::npos;
+    if (marker == std::string::npos) {
+        out["is_show"] = true;
+        out["selection_rule"] = "marker_absent_default_true";
+        return out;
+    }
+    out["marker_byte_offset"] = marker;
+    const auto hash = text.find('#', marker);
+    // Preserve the two distinct native substr branches. With '#', the
+    // comparison retains the marker itself; it does not strip "isShow:".
+    const auto start = hash == std::string::npos ? marker + 7 : marker;
+    const auto length = (hash == std::string::npos ? text.size() : hash) - start;
+    out["comparison_byte_offset"] = start;
+    out["comparison_byte_length"] = length;
+    out["selection_rule"] = hash == std::string::npos ? "suffix_after_colon" : "prefix_before_hash";
+    out["comparison"] = "case_sensitive_equal_true";
+    out["is_show"] = length == 4 && text.compare(start, length, "true") == 0;
+    return out;
+}
 static Json bfa_property(const Bytes &payload, Json &record) {
     Reader r(payload);
     auto text = [&]() {
@@ -242,7 +273,9 @@ static Json bfa_property(const Bytes &payload, Json &record) {
     };
     out["base_value"] = value(false);
     flag(out, "readonly");
-    out["unit"] = text().second;
+    const auto unit = text();
+    out["unit"] = unit.second;
+    out["property_visibility"] = bfa_property_visibility(unit.first);
     out["group"] = text().second;
     out["description"] = text().second;
     require(out["variable_byte"].get<unsigned>() <= 1, "BFA property variable discriminator");
@@ -312,7 +345,8 @@ static Json bfa_property(const Bytes &payload, Json &record) {
             flag(controls, "name_editable");
             flag(controls, "value_editable");
             flag(controls, "description_editable");
-            controls["unassigned_byte"] = r.u8();
+            flag(controls, "category_inner_property");
+            controls["unassigned_byte"] = controls["category_inner_property_byte"]; // Legacy alias.
         }
         if (width >= 8)
             flag(controls, "value_type_editable");
