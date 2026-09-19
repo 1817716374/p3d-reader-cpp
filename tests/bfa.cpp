@@ -1053,5 +1053,123 @@ unsigned bfa_tests() {
                               [&] { return graph_with_parents({42, 999}, {}, 42, false); });
         check(job.get() == ordinary, "parent source indexing is reentrant");
     }
+    {
+        Bytes bytes;
+        for (const auto row : {std::array<std::uint64_t, 3>{31, 8, 9},
+                               {31, 8, 10},
+                               {99, 8, 9},
+                               {0xffffffffffffffffULL, 11, 12}})
+            for (auto word : row)
+                put(bytes, word);
+        const auto decoded = application_blob("DataIdMap", bytes, "BPParaHandleAndBfaDataMap");
+        check(decoded["entries"].size() == 4 &&
+                  decoded["native_lookup"]["selected_entry_indices"] == Json({0, 2, 3}) &&
+                  decoded["native_lookup"]["duplicate_key_rule"] == "first_entry_wins" &&
+                  decoded["native_lookup"]["target_key_kind"] == "BPDataKey" &&
+                  decoded["native_lookup"]["target_field"] == "BfaTree",
+              "component definition data map keeps the first handle key and unsigned ordering "
+              "while retaining all rows");
+        check(!application_blob("DataIdMap", bytes, "BPParaHandleAndEntityDataMap")
+                      .contains("native_lookup") &&
+                  !application_blob("DataIdMap", bytes, "").contains("native_lookup"),
+              "definition lookup semantics are not imposed on same-named fields of other schemas");
+        Json objects =
+            Json::array({{{"class_id", 7}, {"object_id", 1}}, {{"class_id", 8}, {"object_id", 9}}});
+        auto field = [](const char *cl, const char *name, std::uint64_t cid, std::uint64_t oid,
+                        const Json &value) {
+            return Json{{"class_name", cl},
+                        {"name", name},
+                        {"class_id", cid},
+                        {"object_id", oid},
+                        {"path", std::string("/") + cl + "/" + name + "[0]"},
+                        {"value", {{"decoded", value}}}};
+        };
+        Bytes tree_bytes;
+        record(tree_bytes, "@#$", 31, type_body(31, {}, {}));
+        const auto tree = complex_blob("BfaTree", tree_bytes);
+        Json fields = Json::array({field("BPParaHandleAndBfaDataMap", "DataIdMap", 7, 1, decoded),
+                                   field("BPParaBfaTree", "BfaTree", 8, 9, tree)});
+        const auto before = fields;
+        bind_bfa_definition_sources(fields, objects);
+        const auto &links = fields[0]["value"]["decoded"]["definition_source_bindings"];
+        check(links.size() == 3 && links[0]["entry_index"] == 0 &&
+                  links[0]["target_status"] == "matched_bfa_field" &&
+                  links[0]["target_field_index"] == 1 && links[0]["target_object_index"] == 1 &&
+                  links[0]["handle_record_indices"] == Json({0}) &&
+                  links[0]["handle_node_status"] == "unique_node_in_payload",
+              "BPDataKey resolves the source object and BFA field before matching a handle within "
+              "that payload");
+        check(links[1]["target_field_index"] == links[0]["target_field_index"] &&
+                  links[1]["target_status"] == "matched_bfa_field" &&
+                  links[1]["handle_node_status"] == "not_in_payload" &&
+                  links[1]["handle_record_indices"].empty() && !links[1].contains("records") &&
+                  fields[1] == before[1] &&
+                  fields[0]["value"]["decoded"]["entries"] == decoded["entries"],
+              "several native handles share one source field without cloning its definition or "
+              "inventing absent nodes");
+        check(links[2]["target_status"] == "object_not_in_document" &&
+                  links[2]["project_selection"] == "not_performed",
+              "external or missing data key remains separate from local node identity");
+        auto duplicate_objects = objects;
+        duplicate_objects.push_back(objects[1]);
+        auto ambiguous = before;
+        bind_bfa_definition_sources(ambiguous, duplicate_objects);
+        check(ambiguous[0]["value"]["decoded"]["definition_source_bindings"][0]["target_status"] ==
+                      "ambiguous_object_identity" &&
+                  !ambiguous[0]["value"]["decoded"]["definition_source_bindings"][0].contains(
+                      "target_field_index"),
+              "duplicate object identities do not select a BFA field by traversal order");
+        auto duplicate_fields = before;
+        duplicate_fields.push_back(before[1]);
+        bind_bfa_definition_sources(duplicate_fields, objects);
+        check(duplicate_fields[0]["value"]["decoded"]["definition_source_bindings"][0]
+                              ["target_status"] == "ambiguous_bfa_field",
+              "multiple binary fields with the same root property name remain ambiguous");
+        auto mixed_properties = objects;
+        mixed_properties[1]["root"]["children"] =
+            Json::array({{{"name", "BfaTree"}, {"value", false}},
+                         {{"name", "BfaTree"}, {"value", {{"binary_base64", ""}}}}});
+        auto mixed_names = before;
+        bind_bfa_definition_sources(mixed_names, mixed_properties);
+        check(
+            mixed_names[0]["value"]["decoded"]["definition_source_bindings"][0]["target_status"] ==
+                "ambiguous_named_property",
+            "a nonbinary duplicate root property prevents silently selecting the only binary "
+            "field");
+        auto nested = before;
+        nested[1]["path"] = "/BPParaBfaTree/Nested[0]/BfaTree[0]";
+        bind_bfa_definition_sources(nested, objects);
+        check(nested[0]["value"]["decoded"]["definition_source_bindings"][0]["target_status"] ==
+                  "bfa_binary_field_not_found",
+              "native named-property lookup does not accidentally bind a nested same-named field");
+        auto corrupt = before;
+        corrupt[1]["value"].erase("decoded");
+        bind_bfa_definition_sources(corrupt, objects);
+        check(corrupt[0]["value"]["decoded"]["definition_source_bindings"][0]["target_status"] ==
+                      "bfa_payload_unavailable" &&
+                  corrupt[0]["value"]["decoded"]["definition_source_bindings"][0]
+                         ["target_field_index"] == 1,
+              "a source field remains identified when its BFA payload cannot be decoded");
+        auto duplicate_nodes = before;
+        duplicate_nodes[1]["value"]["decoded"]["records"].push_back(tree["records"][0]);
+        bind_bfa_definition_sources(duplicate_nodes, objects);
+        check(duplicate_nodes[0]["value"]["decoded"]["definition_source_bindings"][0]
+                             ["handle_node_status"] == "ambiguous_node_id" &&
+                  duplicate_nodes[0]["value"]["decoded"]["definition_source_bindings"][0]
+                                 ["handle_record_indices"] == Json({0, 1}),
+              "source tree identity can resolve while its handle node identity remains ambiguous");
+        auto wrong_class = before;
+        wrong_class[0]["class_name"] = "BPParaHandleAndEntityDataMap";
+        bind_bfa_definition_sources(wrong_class, objects);
+        check(!wrong_class[0]["value"]["decoded"].contains("definition_source_bindings"),
+              "same-name entity map does not acquire BFA source associations");
+        auto job = std::async(std::launch::async, [&] {
+            auto result = before;
+            bind_bfa_definition_sources(result, objects);
+            return result;
+        });
+        check(job.get() == fields,
+              "source bindings reuse only per-call indices and are deterministic concurrently");
+    }
     return checks;
 }

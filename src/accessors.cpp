@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "blob_internal.hpp"
 namespace p3d {
 Json Document::binary_fields() const {
     Json out = Json::array();
@@ -23,6 +23,7 @@ Json Document::binary_fields() const {
         };
         walk(obj["root"], "/" + obj["root"]["name"].get<std::string>());
     }
+    bind_bfa_definition_sources(out, objects());
     return out;
 }
 Json Document::inline_materials() const {

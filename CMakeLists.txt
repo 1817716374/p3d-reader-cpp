@@ -9,7 +9,7 @@ add_library(p3d_reader STATIC src/core.cpp src/records.cpp src/command_metadata.
 # Only tinfl is linked; unused zlib wrappers otherwise require miniz.c in Debug builds.
 target_sources(p3d_reader PRIVATE src/layers.cpp src/bspline.cpp src/bspline_trim.cpp src/akima.cpp src/interpolation.cpp src/spiral.cpp src/spiral_fit.cpp)
 target_sources(p3d_reader PRIVATE src/bspline_mesh.cpp)
-target_sources(p3d_reader PRIVATE src/bfa_driven.cpp)
+target_sources(p3d_reader PRIVATE src/bfa_driven.cpp src/bfa_sources.cpp)
 target_sources(p3d_reader PRIVATE src/loft_curve.cpp src/loft_open.cpp src/loft_close.cpp src/section_loft.cpp)
 target_sources(p3d_reader PRIVATE src/loft_caps.cpp src/graphics_bytes.cpp)
 target_sources(p3d_reader PRIVATE src/loft_native_faces.cpp)
