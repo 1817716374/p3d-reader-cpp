@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "material_catalog_read.hpp"
 
 namespace p3d {
 namespace {
@@ -228,6 +229,8 @@ Json Document::native_material_catalog(const MaterialCatalogOptions &options) co
                 entry["supplementary_attributes"].push_back(std::move(extra));
             }
         }
+        result["initial_source_materials"] =
+            native_catalog_material_read(result, container, native_records(), options);
         out.push_back(std::move(result));
     }
     return out;
