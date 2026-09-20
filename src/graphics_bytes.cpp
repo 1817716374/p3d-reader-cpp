@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "text_bytes.hpp"
 
 namespace p3d {
 namespace {
@@ -91,7 +92,16 @@ Json entry_bytes(const Bytes &b) {
     const auto geometry = r.take(std::size_t(size));
     out["geometry_bytes"] = size;
     out["geometry_status"] = geometry.empty() ? "empty" : "unsupported_encoding";
-    if (geometry.size() >= 8 && hex(slice(geometry, 0, 8)) == "6267303030316662") {
+    if (type == 7 && !geometry.empty()) {
+        try {
+            out["geometry"] = decode_text_bytes(geometry);
+            out["geometry"]["_type"] = "TextEntity";
+            out["geometry_status"] = "decoded";
+        } catch (const std::exception &e) {
+            out["geometry_status"] = "invalid";
+            out["geometry_decode_error"] = e.what();
+        }
+    } else if (geometry.size() >= 8 && hex(slice(geometry, 0, 8)) == "6267303030316662") {
         try {
             out["geometry"] = decode_bgfb(geometry);
             out["geometry_status"] = "decoded";

@@ -74,9 +74,16 @@ unsigned graphics_native_tests() {
                   result.at("material_footer") == "not_read" && result.at("reader").is_null(),
               "empty length returns the Entry before typed geometry and material readers");
     }
-    for (auto type : {4, 7, 10})
+    for (auto type : {7, 10})
         check(with_project(packet(type, bgfb(13))).at("status") == "not_evaluated",
               "separate byte formats are not accepted because generic BGFB decodes");
+    check(with_project(packet(4, bgfb(13))).at("status") == "rejected",
+          "B-spline helper first rejects roots not accepted by the basic curve reader");
+    result = with_project(packet(4, bgfb(3)));
+    check(result.at("root_dispatch") == "selected" &&
+              result.at("post_read_operation") == "get_bspline_curve_pointer" &&
+              result.at("status") == "not_evaluated",
+          "B-spline extraction follows basic curve construction, not arbitrary conversion");
     for (auto type : {0, 8, 9, -1, INT32_MAX})
         check(with_project(packet(type, bgfb(13))).at("status") == "geometry_not_read",
               "native default branch leaves geometry null without rejecting the Entry");

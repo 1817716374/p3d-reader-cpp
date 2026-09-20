@@ -27,8 +27,9 @@ Json native_input(const Bytes &entry, bool model_has_project) {
         const auto type = r.i32();
         out["entry_geometry_type"] = type;
         static const std::map<int, const char *> readers = {
-            {1, "curve_primitive_bgfb"}, {2, "curve_vector_bgfb"},    {3, "polyface_bgfb"},
-            {4, "bspline_curve_bytes"},  {5, "bspline_surface_bgfb"}, {6, "solid_primitive_bgfb"},
+            {1, "curve_primitive_bgfb"}, {2, "curve_vector_bgfb"},
+            {3, "polyface_bgfb"},        {4, "bspline_curve_via_bgfb_primitive"},
+            {5, "bspline_surface_bgfb"}, {6, "solid_primitive_bgfb"},
             {7, "text_entity_bytes"},    {10, "csg_tree_bytes"}};
         r.p = geometry_start - 8;
         const auto count = r.u64();
@@ -52,10 +53,12 @@ Json native_input(const Bytes &entry, bool model_has_project) {
             return out;
         }
         out["reader"] = readers.at(type);
-        // These two formats and the CSG archive have separate readers. A decoded
-        // BGFB packet is not evidence that their native byte reader succeeds.
-        if (type == 4 || type == 7 || type == 10)
+        // Text and the CSG archive have separate readers. A decoded BGFB packet
+        // is not evidence that their native byte reader succeeds.
+        if (type == 7 || type == 10)
             return out;
+        if (type == 4)
+            out["post_read_operation"] = "get_bspline_curve_pointer";
         auto reject = [&](const char *reason) {
             out.update({{"status", "rejected"}, {"reason", reason}, {"geometry_pointer", "null"}});
         };
@@ -86,6 +89,7 @@ Json native_input(const Bytes &entry, bool model_has_project) {
         bool selected = false;
         switch (type) {
         case 1:
+        case 4:
             selected = tag == 1 || tag == 2 || tag == 3 || tag == 4 || tag == 16 || tag == 17 ||
                        tag == 18 || tag == 19;
             break;

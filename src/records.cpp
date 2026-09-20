@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "text_bytes.hpp"
 #include "material_catalog_read.hpp"
 #include <lz4/lz4.h>
 #include <miniz/miniz_tinfl.h>
@@ -698,22 +699,7 @@ Json command_fields(unsigned op, const Bytes &b) {
             }
             r.finish();
         } else if (op == 37) {
-            auto ver = r.u8();
-            auto h = r.u32(), n = r.u32();
-            require(std::uint64_t(h) + n == b.size() && h >= 97, "text payload length");
-            auto s = utf16(slice(b, h, n));
-            while (!s.empty() && s.back() == 0)
-                s.pop_back();
-            v["text"] = s;
-            v["origin"] = r.doubles(3);
-            v["quaternion"] = r.doubles(4);
-            v["width"] = r.f64();
-            v["height"] = r.f64();
-            v["style_words"] = r.uints(4);
-            v["extra_style_hex"] = hex(r.take(h - 97));
-            v["version"] = ver;
-            v["header_bytes"] = h;
-            v["text_bytes"] = n;
+            v.update(decode_text_bytes(b));
         } else if (op == 28)
             v.update(decode_symbology(b));
         else if (op == 25)

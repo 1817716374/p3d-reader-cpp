@@ -2,6 +2,7 @@
 #include <cstring>
 #include <future>
 unsigned graphics_native_tests();
+unsigned text_bytes_tests();
 namespace {
 using namespace p3d;
 template <class T> void put(Bytes &b, T v) {
@@ -129,8 +130,8 @@ unsigned graphics_bytes_tests() {
               p["symbology"]["resolved_color"] == 0x00332211,
           "entry style separated from graphics style");
     check(p["geometry_offset"] == 36 && p["geometry_bytes"] == 3 &&
-              p["geometry_status"] == "unsupported_encoding",
-          "unsupported geometry retained without guessed text decoding");
+              p["geometry_status"] == "invalid" && p.contains("geometry_decode_error"),
+          "truncated text payload remains bounded and reports the decoding failure");
     check(p["inline_material"]["name"] == "part material" &&
               p["inline_material"]["texture_references"][0]["filename"] == "relative/texture.jpg",
           "entry material and external texture reference decoded");
@@ -374,5 +375,5 @@ unsigned graphics_bytes_tests() {
               duplicate_footer["values"][4]["value"] == 73 &&
               duplicate_footer["values"][7]["value"] == 73,
           "null unknown and truncated first matches prevent substituting later same-ID values");
-    return checks + graphics_native_tests();
+    return checks + graphics_native_tests() + text_bytes_tests();
 }

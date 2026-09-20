@@ -36,6 +36,7 @@
 !/tests/component_material.cpp
 !/tests/graphics_material.cpp
 !/tests/graphics_native.cpp
+!/tests/text_bytes.cpp
 !/tests/material_auxiliary.cpp
 !/tests/material_xml_integer.cpp
 !/tests/material_xml_float.cpp
