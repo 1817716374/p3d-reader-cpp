@@ -21,6 +21,7 @@ target_sources(p3d_reader PRIVATE src/material_catalog.cpp src/material_table_in
 target_sources(p3d_reader PRIVATE src/material_catalog_registration.cpp)
 target_sources(p3d_reader PRIVATE src/material_catalog_read.cpp)
 target_sources(p3d_reader PRIVATE src/view_sequence.cpp src/view_candidates.cpp src/view_link_registry.cpp)
+target_sources(p3d_reader PRIVATE src/reference_recursion.cpp)
 target_sources(p3d_reader PRIVATE src/component_material.cpp)
 target_sources(p3d_reader PRIVATE src/material_auxiliary.cpp)
 target_sources(p3d_reader PRIVATE src/material_xml_integer.cpp)

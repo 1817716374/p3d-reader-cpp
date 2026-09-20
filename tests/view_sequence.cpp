@@ -1,10 +1,180 @@
 #include "internal.hpp"
 #include <p3d/view_sequence.hpp>
+#include <p3d/reference_recursion.hpp>
 #include <future>
 #include <numeric>
 #include <random>
 
 namespace {
+unsigned reference_repetition_tests() {
+    using namespace p3d;
+    unsigned checks = 0;
+    auto check = [&](bool ok, const char *message) {
+        ++checks;
+        require(ok, message);
+    };
+    auto target = [](std::u16string primary, std::u16string alternate = u"") {
+        return Json{
+            {"strings",
+             Json::array({{{"key", 21},
+                           {"status", "decoded"},
+                           {"utf16_code_units",
+                            std::vector<std::uint16_t>(primary.begin(), primary.end())}},
+                          {{"key", 36},
+                           {"status", "decoded"},
+                           {"utf16_code_units",
+                            std::vector<std::uint16_t>(alternate.begin(), alternate.end())}}})}};
+    };
+    auto text = target(u"model", u"alternate");
+    ReferenceRepetitionContext c;
+    check(reference_ancestor_repetition(0x200, 0, nullptr, c).at("repeated") == false,
+          "reference bit 9 disables checking before gate or strings are needed");
+    check(reference_ancestor_repetition(0, 0, text, c).at("status") == "unresolved",
+          "unknown native gate is not assumed enabled or disabled");
+    c.native_setting_enabled = false;
+    c.host_file_fallback_gate = false;
+    check(reference_ancestor_repetition(0, 0, nullptr, c).at("repeated") == false,
+          "both disabled gate inputs avoid unused string and chain reads");
+    c.native_setting_enabled.reset();
+    c.host_file_fallback_gate = true;
+    c.lookup_reference = u"file";
+    c.complete_ancestor_chain = true;
+    c.equal = [](const auto &a, const auto &b) { return a == b; };
+    auto ancestor = [](std::u16string file, std::u16string name) {
+        ReferenceAncestorState a;
+        a.reference_known_absent = true;
+        a.file = NativeFileReference{file, file};
+        a.is_default_model = false;
+        a.model_name = name;
+        return a;
+    };
+    c.ancestors = {ancestor(u"file", u"model")};
+    auto r = reference_ancestor_repetition(0, 0, text, c);
+    check(r.at("repeated") == false && r.at("matching_ancestor_indices") == Json::array({0}),
+          "first host match has depth plus previous matches zero and does not reach limit one");
+    c.ancestors.insert(c.ancestors.begin(), ancestor(u"other", u"model"));
+    r = reference_ancestor_repetition(0, 0, text, c);
+    check(r.at("repeated") == true && r.at("triggering_ancestor_index") == 1 &&
+              r.at("native_comparison_value") == 1,
+          "a single match at depth one meets native threshold without two equal ancestors");
+    c.limit = 2;
+    check(reference_ancestor_repetition(0, 0, text, c).at("repeated") == false,
+          "limit compares depth plus previous match count rather than current match count");
+    c.ancestors[0] = ancestor(u"file", u"model");
+    check(reference_ancestor_repetition(0, 0, text, c).at("native_comparison_value") == 2,
+          "earlier matches contribute to later depth comparison");
+    c.limit = -1;
+    check(reference_ancestor_repetition(0, 0, text, c).at("triggering_ancestor_index") == 0,
+          "negative signed limit preserves the native comparison");
+    c.limit = 1;
+    c.complete_ancestor_chain = false;
+    check(reference_ancestor_repetition(0, 0, text, c).at("repeated") == true,
+          "a decisive repetition does not require an unvisited parent suffix");
+    c.ancestors.resize(1);
+    check(reference_ancestor_repetition(0, 0, text, c).at("reason") ==
+              "remaining_ancestor_chain_required",
+          "below-threshold prefix cannot prove absence of repetition");
+    c.ancestors[0].valid = false;
+    check(reference_ancestor_repetition(0, 0, text, c).at("repeated") == false,
+          "invalid host terminates the native chain independently of supplied completeness");
+    c.ancestors = {ancestor(u"file", u"model"), ancestor(u"file", u"model")};
+    c.ancestors[0].reference_known_absent = false;
+    c.ancestors[0].reference_primary_flags = 0x200;
+    c.ancestors[0].file.reset();
+    c.ancestors[0].model_name.reset();
+    r = reference_ancestor_repetition(0, 0, text, c);
+    check(r.at("triggering_ancestor_index") == 1 &&
+              r.at("matching_ancestor_indices") == Json::array({1}),
+          "skipped reference counts toward depth but needs neither file nor model name");
+    c.ancestors[0].reference_primary_flags.reset();
+    check(reference_ancestor_repetition(0, 0, text, c).at("status") == "unresolved",
+          "missing reference state cannot silently skip a host");
+    c.ancestors = {ancestor(u"unused", u"unused"), ancestor(u"file", u"model")};
+    c.ancestors[0].file.reset();
+    c.ancestors[0].file_known_absent = true;
+    check(reference_ancestor_repetition(0, 0, text, c).at("repeated") == true,
+          "known absent host file is different from missing file context");
+    c.ancestors[0] = ancestor(u"file", u"model");
+    c.ancestors[1].file->lookup_reference = u"";
+    check(reference_ancestor_repetition(0, 0, text, c).at("repeated") == true,
+          "ancestor wrapper falls back to stored reference when its lookup reference is empty");
+    c.ancestors[1].file->stored_reference = u"other/file";
+    c.complete_ancestor_chain = true;
+    check(reference_ancestor_repetition(0, 0, text, c).at("repeated") == false,
+          "file comparison does not discard directories or compare basenames only");
+    c.equal = {};
+    check(reference_ancestor_repetition(0, 0, text, c).at("status") == "unresolved",
+          "unequal wide strings require the actual comparison context");
+    c.equal = [](const auto &a, const auto &b) { return a == b; };
+    c.ancestors = {ancestor(u"alternate-file", u"alternate"),
+                   ancestor(u"alternate-file", u"alternate")};
+    c.alternate_file_reference = u"alternate-file";
+    c.lookup_reference.reset();
+    check(reference_ancestor_repetition(0, 0x20000, text, c).at("repeated") == true,
+          "bit 17 selects runtime alternate file and persisted alternate model name");
+    c.alternate_file_reference = u"";
+    check(reference_ancestor_repetition(0, 0x20000, text, c).at("reason") ==
+              "repetition_lookup_reference_required",
+          "known empty alternate file takes lookup-reference fallback");
+    c.alternate_file_reference.reset();
+    c.lookup_reference = u"file";
+    check(reference_ancestor_repetition(0, 0x20000, text, c).at("reason") ==
+              "alternate_repetition_file_state_required",
+          "unavailable alternate file is not treated as an empty one");
+    c.ancestors = {ancestor(u"file", u"model"), ancestor(u"file", u"model")};
+    check(reference_ancestor_repetition(0, 0x8000, text, c).at("repeated") == true,
+          "file-default-model selection bit does not replace this check's model name");
+    c.ancestors[0].is_default_model.reset();
+    c.ancestors[1].is_default_model.reset();
+    check(reference_ancestor_repetition(0, 0, text, c).at("repeated") == true,
+          "nonempty query name makes default-model status irrelevant to matching");
+    for (auto &a : c.ancestors) {
+        a.is_default_model = true;
+        a.model_name.reset();
+    }
+    check(reference_ancestor_repetition(0, 0, target(u""), c).at("repeated") == true,
+          "empty query matches a known default model without reading its name");
+    for (auto &a : c.ancestors) {
+        a.is_default_model = false;
+        a.model_name = u"";
+    }
+    check(reference_ancestor_repetition(0, 0, target(u""), c).at("repeated") == true,
+          "non-default empty-name model can still match through the name branch");
+    c.ancestors = {ancestor(u"file", u"model"), ancestor(u"file", u"model")};
+    c.lookup_reference = std::u16string(u"file\0tail", 9);
+    check(reference_ancestor_repetition(0, 0, target(std::u16string(u"model\0tail", 10)), c)
+                  .at("repeated") == true,
+          "native pointer strings compare only their NUL-terminated prefixes");
+
+    std::mt19937 rng(148);
+    for (unsigned trial = 0; trial < 500; ++trial) {
+        ReferenceRepetitionContext random;
+        random.native_setting_enabled = true;
+        random.lookup_reference = u"file";
+        random.equal = [](const auto &a, const auto &b) { return a == b; };
+        random.complete_ancestor_chain = true;
+        random.limit = static_cast<std::int32_t>(rng() % 18) - 2;
+        bool expected = false;
+        unsigned prior = 0;
+        const unsigned size = rng() % 20;
+        for (unsigned i = 0; i < size; ++i) {
+            const bool file_match = rng() % 2, model_match = rng() % 2, skip = rng() % 5 == 0;
+            auto a = ancestor(file_match ? u"file" : u"other", model_match ? u"model" : u"other");
+            a.reference_known_absent = false;
+            a.reference_primary_flags = skip ? 0x200u : 0u;
+            random.ancestors.push_back(a);
+            if (!skip && file_match && model_match) {
+                if (static_cast<std::int32_t>(i + prior) >= random.limit)
+                    expected = true;
+                ++prior;
+            }
+        }
+        check(reference_ancestor_repetition(0, 0, text, random).at("repeated") == expected,
+              "native depth and prior-match predicate agrees with independent chain oracle");
+    }
+    return checks;
+}
+
 unsigned model_link_registry_tests() {
     using namespace p3d;
     unsigned checks = 0;
@@ -305,7 +475,8 @@ unsigned view_candidate_tests() {
 
 unsigned view_sequence_tests() {
     using namespace p3d;
-    unsigned checks = view_candidate_tests() + model_link_registry_tests();
+    unsigned checks =
+        view_candidate_tests() + model_link_registry_tests() + reference_repetition_tests();
     auto check = [&](bool ok, const char *message) {
         ++checks;
         require(ok, message);
