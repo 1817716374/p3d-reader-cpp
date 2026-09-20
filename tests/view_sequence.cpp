@@ -5,6 +5,8 @@
 #include <numeric>
 #include <random>
 
+unsigned reference_loading_tests();
+
 namespace {
 unsigned reference_repetition_tests() {
     using namespace p3d;
@@ -475,8 +477,8 @@ unsigned view_candidate_tests() {
 
 unsigned view_sequence_tests() {
     using namespace p3d;
-    unsigned checks =
-        view_candidate_tests() + model_link_registry_tests() + reference_repetition_tests();
+    unsigned checks = view_candidate_tests() + model_link_registry_tests() +
+                      reference_repetition_tests() + reference_loading_tests();
     auto check = [&](bool ok, const char *message) {
         ++checks;
         require(ok, message);
