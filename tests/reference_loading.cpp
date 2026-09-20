@@ -3,9 +3,11 @@
 #include <p3d/reference_recursion.hpp>
 #include <future>
 
+unsigned reference_search_tests();
+
 unsigned reference_loading_tests() {
     using namespace p3d;
-    unsigned checks = 0;
+    unsigned checks = reference_search_tests();
     auto check = [&](bool ok, const char *message) {
         ++checks;
         require(ok, message);
