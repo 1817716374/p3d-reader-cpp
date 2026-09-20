@@ -25,6 +25,14 @@ struct ReferenceSearchQuery {
     std::optional<std::u16string> model_name;
     NativeModelNameEqual equal;
 };
+// Builds the search input for a successful ordinary native input operation,
+// before outer loading or callbacks change the reference. file_specification
+// must be the prepared specification, including any host/service fallback.
+// Invalid records or unresolved runtime words throw; an unresolved primary name
+// remains absent and is required by the matcher only when it actually uses it.
+ReferenceSearchQuery initial_reference_search_query(const Json &reference_record,
+                                                    const NativeFileReference &file_specification,
+                                                    NativeModelNameEqual equal = {});
 enum class ReferenceObjectDispatch { unknown, model, reference };
 struct ReferenceSearchModel {
     bool valid = true;

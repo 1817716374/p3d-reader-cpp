@@ -242,6 +242,60 @@ Json file_query_state(const Json &links) {
     }
     return out;
 }
+
+Json initial_runtime_state(const Json &input, const Json &links, const Json &id,
+                           const Json &query_state) {
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "ordinary_reference_input_before_outer_loading"},
+                {"applies_when", "ordinary_native_input_succeeds"},
+                {"alternate_file_reference", ""},
+                {"mask_link", {{"status", "absent"}, {"app", 0x56e1}, {"key", 0}}}};
+    try {
+        require(input.at("status") == "decoded", "decoded_reference_input_required");
+        // This getter does not test the user-linkage bit. The first key-zero
+        // occurrence is selected, and four words are read before it succeeds.
+        auto &mask = out["mask_link"];
+        for (std::size_t i = 0; i < links.size(); ++i) {
+            const auto &link = links[i];
+            if (link.at("app") != 0x56e1)
+                continue;
+            mask["status"] = "not_evaluated";
+            const auto bytes = bytesof(link.at("payload"));
+            require(bytes.size() >= 2, "truncated_reference_mask_key");
+            if (Reader(bytes).u16() != 0) {
+                mask["status"] = "absent";
+                continue;
+            }
+            mask["selected_linkage_index"] = i;
+            mask["source_offset"] = link.value("offset", Json());
+            require(bytes.size() >= 20, "truncated_selected_reference_mask");
+            mask["control_word"] = Reader(bytes, 2).u16();
+            mask["word_values"] = Json::array();
+            for (unsigned at = 4; at < 20; at += 4)
+                mask["word_values"].push_back(Reader(bytes, at).u32());
+            mask["trailing_storage"] = rawbytes(slice(bytes, 20, bytes.size() - 20));
+            mask["status"] = "decoded";
+            break;
+        }
+        require(id.at("status") == "selected" || id.at("status") == "absent",
+                "initial_reference_model_id_state_unresolved");
+        require(query_state.at("status") == "decoded",
+                "initial_reference_file_query_state_unresolved");
+        const bool explicit_id = id.at("status") == "selected";
+        const auto pair0 = query_state.at("state_pair_0").get<std::uint32_t>();
+        const auto pair1 = query_state.at("state_pair_1").get<std::uint32_t>();
+        const auto flags = (mask.at("status") == "decoded" ? 1u : 0u) |
+                           (explicit_id ? 0x1000u : 0u) | (pair0 << 18) | (pair1 << 20);
+        out.update({{"status", "decoded"},
+                    {"runtime_flags", flags},
+                    {"explicit_model_id_enabled", explicit_id},
+                    {"model_id", explicit_id ? id.at("model_id") : Json(0u)},
+                    {"mask_present", mask.at("status") == "decoded"}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace
 
 Json native_reference_target(const Json &input, const Json &links) {
@@ -303,6 +357,10 @@ Json native_reference_target(const Json &input, const Json &links) {
         out["status"] = "partial";
     out["file_query_state"] = file_query_state(links);
     if (out["file_query_state"]["status"] == "not_evaluated")
+        out["status"] = "partial";
+    out["initial_runtime_state"] =
+        initial_runtime_state(input, links, id_link, out["file_query_state"]);
+    if (out["initial_runtime_state"]["status"] != "decoded")
         out["status"] = "partial";
     return out;
 }

@@ -4,10 +4,11 @@
 #include <future>
 
 unsigned reference_graph_tests();
+unsigned reference_search_input_tests();
 
 unsigned reference_search_tests() {
     using namespace p3d;
-    unsigned checks = reference_graph_tests();
+    unsigned checks = reference_graph_tests() + reference_search_input_tests();
     auto check = [&](bool ok, const char *message) {
         ++checks;
         require(ok, message);
