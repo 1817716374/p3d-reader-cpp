@@ -25,6 +25,7 @@ struct ReferenceSearchQuery {
     std::optional<std::u16string> model_name;
     NativeModelNameEqual equal;
 };
+enum class ReferenceObjectDispatch { unknown, model, reference };
 struct ReferenceSearchModel {
     bool valid = true;
     std::optional<bool> root_present;
@@ -40,6 +41,11 @@ struct ReferenceSearchModel {
     bool active_list_known_absent = false;
     std::vector<std::optional<std::size_t>> active_links;
     bool active_links_complete = false;
+    // Confirmed ordinary native implementation, not a saved model-type value.
+    ReferenceObjectDispatch object_dispatch = ReferenceObjectDispatch::unknown;
+    std::optional<std::size_t> parent;
+    bool parent_known = false;
+    std::optional<std::uint32_t> reference_primary_flags;
 };
 Json match_reference_model(const ReferenceSearchQuery &query, const ReferenceSearchModel &model);
 struct ReferenceSearchContext {
@@ -52,4 +58,14 @@ struct ReferenceSearchContext {
 // in native order. This is not a traversal of the document's structural tree.
 Json search_reference_descendants(const ReferenceSearchQuery &query,
                                   const ReferenceSearchContext &context);
+// Native parent-root query: ordinary model returns itself, ordinary reference
+// forwards to its valid parent. This does not query a reference's connected root.
+Json reference_parent_root(const ReferenceSearchContext &context,
+                           std::optional<std::size_t> object_index);
+// Host and candidate are known object identities (nullopt means known absent).
+// Derives the gate and search start from this graph; context.start is not used.
+Json evaluate_reference_descendant_filter(const ReferenceSearchQuery &query,
+                                          const ReferenceSearchContext &context,
+                                          std::optional<std::size_t> host,
+                                          std::optional<std::size_t> candidate);
 } // namespace p3d

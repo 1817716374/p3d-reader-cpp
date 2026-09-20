@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include <p3d/reference_search.hpp>
+#include "reference_graph_internal.hpp"
 #include <unordered_set>
 
 namespace p3d {
@@ -63,7 +64,14 @@ Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchM
     };
     try {
         require(q.reference_present, "reference_object_required_for_model_match");
-        const bool root = m.valid && known(m.root_present, "search_model_root_presence_required");
+        bool root = false;
+        if (m.valid) {
+            if (m.object_dispatch == ReferenceObjectDispatch::model) {
+                require(!m.root_present || *m.root_present, "ordinary_model_has_no_self_root");
+                root = true;
+            } else
+                root = known(m.root_present, "search_model_root_presence_required");
+        }
         std::u16string file;
         bool file_present = false;
         if (root) {
@@ -116,8 +124,9 @@ Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchM
     return out;
 }
 
-Json search_reference_descendants(const ReferenceSearchQuery &query,
-                                  const ReferenceSearchContext &c) {
+Json detail::search_reference_descendants_impl(const ReferenceSearchQuery &query,
+                                               const std::vector<ReferenceSearchModel> &models,
+                                               bool start_known, std::optional<std::size_t> start) {
     Json out = {{"status", "unresolved"},
                 {"scope", "explicit_active_reference_descendant_search"},
                 {"visited_model_indices", Json::array()},
@@ -134,18 +143,18 @@ Json search_reference_descendants(const ReferenceSearchQuery &query,
     try {
         if (!query.reference_present)
             return finish(false);
-        require(c.start_known, "reference_search_start_required");
+        require(start_known, "reference_search_start_required");
         ReferenceSearchModel null_model;
         null_model.valid = false;
-        std::vector<Frame> stack = {{c.start}};
+        std::vector<Frame> stack = {{start}};
         std::unordered_set<std::size_t> active;
-        if (c.start)
-            active.insert(*c.start);
+        if (start)
+            active.insert(*start);
         while (!stack.empty()) {
             auto &frame = stack.back();
-            require(!frame.index || *frame.index < c.models.size(),
+            require(!frame.index || *frame.index < models.size(),
                     "search_model_index_out_of_range");
-            const auto &model = frame.index ? c.models[*frame.index] : null_model;
+            const auto &model = frame.index ? models[*frame.index] : null_model;
             if (!frame.entered) {
                 frame.entered = true;
                 out["visited_model_indices"].push_back(frame.index ? Json(*frame.index) : Json());
@@ -190,15 +199,14 @@ Json search_reference_descendants(const ReferenceSearchQuery &query,
                 skip("null_link");
                 continue;
             }
-            require(*child < c.models.size(), "active_reference_index_out_of_range");
-            const auto &node = c.models[*child];
-            if (known(node.native_kind, "active_reference_kind_required") != 2) {
+            require(*child < models.size(), "active_reference_index_out_of_range");
+            const auto &node = models[*child];
+            if (detail::reference_object_kind(node) != 2) {
                 skip("native_kind_not_2");
                 continue;
             }
             require(node.valid, "invalid_kind2_reference_in_active_list");
-            require(known(node.reference_present, "active_reference_presence_required"),
-                    "kind2_object_has_no_reference");
+            require(detail::reference_object_present(node), "kind2_object_has_no_reference");
             if (known(node.reference_runtime_flags, "active_reference_runtime_flags_required") &
                 0x20u) {
                 skip("reference_runtime_bit5");
@@ -212,5 +220,10 @@ Json search_reference_descendants(const ReferenceSearchQuery &query,
         out["reason"] = e.what();
     }
     return out;
+}
+Json search_reference_descendants(const ReferenceSearchQuery &query,
+                                  const ReferenceSearchContext &context) {
+    return detail::search_reference_descendants_impl(query, context.models, context.start_known,
+                                                     context.start);
 }
 } // namespace p3d
