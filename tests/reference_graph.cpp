@@ -3,10 +3,12 @@
 #include <p3d/reference_loading.hpp>
 #include <future>
 
+unsigned reference_nesting_tests();
+
 unsigned reference_graph_tests() {
     using namespace p3d;
     using Dispatch = ReferenceObjectDispatch;
-    unsigned checks = 0;
+    unsigned checks = reference_nesting_tests();
     auto check = [&](bool ok, const char *s) {
         ++checks;
         require(ok, s);

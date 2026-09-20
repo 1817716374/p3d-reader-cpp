@@ -256,6 +256,10 @@ Json native_reference_input(const Bytes &source) {
         require(base_size >= 372, "truncated current reference base");
         const auto entries = Reader(data, 370).u16();
         out["entry_count"] = entries;
+        out["nesting_inputs"] = {{"scope", "ordinary_reference_after_base_input"},
+                                 {"nest_depth", Reader(data, 364).u16()},
+                                 {"source_offset", layout.upgraded ? 340 : 364},
+                                 {"source_offsets_include_stream_prefix", true}};
         out["origin_inputs"] = {{"primary_flags", Reader(data, 60).u32()},
                                 {"secondary_flags", Reader(data, 64).u32()},
                                 {"primary_flags_source_offset", layout.upgraded ? 52 : 60},

@@ -69,6 +69,67 @@ Json reference_parent_root(const ReferenceSearchContext &c, std::optional<std::s
     return out;
 }
 
+Json reference_nesting_depth(const ReferenceSearchContext &c, std::optional<std::size_t> index,
+                             std::int32_t cap) {
+    Json out = {{"status", "unresolved"},
+                {"scope", "native_reference_ancestor_nesting_depth"},
+                {"cap", cap},
+                {"reference_path", Json::array()},
+                {"local_limits", Json::array()}};
+    try {
+        std::unordered_set<std::size_t> visited;
+        std::vector<std::int32_t> limits;
+        while (index) {
+            const auto &m = object(c, *index);
+            if (!m.valid || !detail::reference_object_present(m))
+                break;
+            require(visited.insert(*index).second, "cycle_in_reference_nesting_depth");
+            const auto source = known(m.reference_nest_depth, "reference_nest_depth_required");
+            const auto local = cap > 0 ? std::min<std::int32_t>(source, cap) : source;
+            limits.push_back(local);
+            out["reference_path"].push_back(*index);
+            out["local_limits"].push_back(local);
+            index = parent(m);
+        }
+        // Native only recurses when a parent has a reference. A parent model
+        // without one terminates the chain; its null-reference result 1 is NOT
+        // subtracted into the preceding reference's own limit.
+        std::int32_t depth = limits.empty() ? 1 : limits.back();
+        for (std::size_t i = limits.size(); i > 1; --i) {
+            const auto bits = static_cast<std::uint32_t>(depth) - 1u;
+            const auto previous = bits <= INT32_MAX
+                                      ? static_cast<std::int32_t>(bits)
+                                      : static_cast<std::int32_t>(static_cast<std::int64_t>(bits) -
+                                                                  INT64_C(0x100000000));
+            depth = std::min(limits[i - 2], previous);
+        }
+        out.update({{"status", "resolved"}, {"remaining_depth", depth}, {"exhausted", depth <= 0}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json reference_link_loading_policy(const ReferenceSearchContext &c, std::optional<std::size_t> host,
+                                   bool force_input, std::int32_t cap) {
+    Json out = {{"status", "unresolved"},
+                {"scope", "ordinary_reference_collection_depth_gate"},
+                {"force_input", force_input}};
+    bool restricted = false;
+    if (!force_input) {
+        out["nesting"] = reference_nesting_depth(c, host, cap);
+        if (out["nesting"].at("status") != "resolved") {
+            out["reason"] = out["nesting"].at("reason");
+            return out;
+        }
+        restricted = out["nesting"].at("exhausted").get<bool>();
+    }
+    out.update({{"status", "resolved"},
+                {"require_source_bit14", restricted},
+                {"process_view_sequence", !restricted}});
+    return out;
+}
+
 Json evaluate_reference_descendant_filter(const ReferenceSearchQuery &query,
                                           const ReferenceSearchContext &c,
                                           std::optional<std::size_t> host,

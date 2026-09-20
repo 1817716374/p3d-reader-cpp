@@ -54,7 +54,12 @@ struct ReferenceSearchModel {
     std::optional<std::size_t> parent;
     bool parent_known = false;
     std::optional<std::uint32_t> reference_primary_flags;
+    std::optional<std::uint16_t> reference_nest_depth;
 };
+// A freshly constructed ordinary reference after successful initial input,
+// before connecting its target or loading its own active links. parent is the
+// required host identity in the caller's graph, not a saved model/file ID.
+ReferenceSearchModel initial_reference_graph_node(const Json &reference_record, std::size_t parent);
 Json match_reference_model(const ReferenceSearchQuery &query, const ReferenceSearchModel &model);
 struct ReferenceSearchContext {
     // Indices express native object identity; file/model IDs may repeat.
@@ -70,6 +75,16 @@ Json search_reference_descendants(const ReferenceSearchQuery &query,
 // forwards to its valid parent. This does not query a reference's connected root.
 Json reference_parent_root(const ReferenceSearchContext &context,
                            std::optional<std::size_t> object_index);
+// Computes the native ancestor-adjusted signed depth. A positive cap limits
+// each reference's uint16 depth; zero/negative cap does not impose that limit.
+// A model without a reference gives 1. Unknown parents and cycles are unresolved.
+Json reference_nesting_depth(const ReferenceSearchContext &context,
+                             std::optional<std::size_t> object_index, std::int32_t cap = 0);
+// Gate inside the ordinary collection loop, after its earlier host/input guards.
+// force_input bypasses depth evaluation; it does not prove the host was loaded.
+Json reference_link_loading_policy(const ReferenceSearchContext &context,
+                                   std::optional<std::size_t> host, bool force_input = false,
+                                   std::int32_t cap = 0);
 // Host and candidate are known object identities (nullopt means known absent).
 // Derives the gate and search start from this graph; context.start is not used.
 Json evaluate_reference_descendant_filter(const ReferenceSearchQuery &query,

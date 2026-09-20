@@ -35,4 +35,27 @@ ReferenceSearchQuery initial_reference_search_query(const Json &record,
     }
     return query;
 }
+
+ReferenceSearchModel initial_reference_graph_node(const Json &record, std::size_t parent_index) {
+    require(record.at("element_type") == 13, "type_13_reference_record_required");
+    const auto &input = record.at("reference_input");
+    require(input.at("status") == "decoded", "decoded_reference_input_required");
+    ReferenceSearchModel node;
+    node.object_dispatch = ReferenceObjectDispatch::reference;
+    node.native_kind = 2;
+    node.reference_present = true;
+    node.root_present = false;
+    node.parent = parent_index;
+    node.parent_known = true;
+    node.active_list_known_absent = true;
+    node.reference_nest_depth = input.at("nesting_inputs").at("nest_depth").get<std::uint16_t>();
+    const auto &target = record.at("reference_target");
+    const auto &runtime = target.at("initial_runtime_state");
+    if (runtime.at("status") == "decoded")
+        node.reference_runtime_flags = runtime.at("runtime_flags").get<std::uint32_t>();
+    const auto &primary = target.at("initial_loaded_flags").at("primary");
+    if (primary.at("status") == "decoded")
+        node.reference_primary_flags = primary.at("value").get<std::uint32_t>();
+    return node;
+}
 } // namespace p3d

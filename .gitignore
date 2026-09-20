@@ -26,6 +26,7 @@
 !/tests/native_reference_sort.cpp
 !/tests/reference_search_input.cpp
 !/tests/reference_loading_input.cpp
+!/tests/reference_nesting.cpp
 !/tests/reference_loading.cpp
 !/tests/reference_search.cpp
 !/tests/reference_graph.cpp
