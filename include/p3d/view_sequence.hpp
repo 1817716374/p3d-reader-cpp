@@ -13,7 +13,8 @@ struct ViewSequenceContext {
     // Preserve native list order, duplicates, null slots and excluded links.
     std::vector<ViewSequenceLink> links;
     bool links_complete = false;
-    // Model-info bit 11's confirmed effect. Missing means not yet known.
+    // Document::models()[key].view_state.current_model_last (header bit 11).
+    // Missing means the selected model's position has not been established.
     std::optional<bool> current_model_last;
     // nullopt differs from an allocated, empty sequence.
     std::optional<std::vector<std::uint64_t>> previous_sequence;

@@ -339,6 +339,18 @@ Json parse_native(const Bytes &b) {
         if (type == 47 && r.at<std::uint32_t>(pos + 16) == 32) {
             out.back()["model_unit_state"] = decode_model_units(slice(b, pos, attr - pos));
             out.back()["model_coordinate_state"] = decode_model_coordinates(slice(b, pos, attr - pos));
+            Json view = {{"status", "unsupported_header"},
+                         {"scope", "model_header_view_sequence_position"},
+                         {"source_offsets_include_stream_prefix", true}};
+            if (attr - pos >= 500) {
+                const auto flags = r.at<std::uint32_t>(pos + 72);
+                view.update({{"status", "decoded"},
+                             {"source_flags", flags},
+                             {"flags_source_offset", 72},
+                             {"current_model_last_bit", 11},
+                             {"current_model_last", bool(flags & 0x800u)}});
+            }
+            out.back()["model_view_state"] = std::move(view);
             Json reference = {{"encoding", "model_layer_group_reference"},
                               {"source_offset", 492},
                               {"status", "unsupported_header"}};
@@ -1115,6 +1127,16 @@ Json read_models(const Document &doc) {
             info["layer_group_references"] = Json::array();
             info["unit_records"] = Json::array();
             info["coordinate_records"] = Json::array();
+            info["view_records"] = Json::array();
+            for (const auto &n : records)
+                if (n.contains("model_view_state")) {
+                    auto view = n.at("model_view_state");
+                    view["stream"] = s.path;
+                    view["record_offset"] = 4096 + n.at("offset").get<std::uint64_t>();
+                    info["view_records"].push_back(std::move(view));
+                }
+            if (info["view_records"].size() == 1)
+                info["view_state"] = info["view_records"][0];
             for (const auto &n : records)
                 if (n.contains("model_coordinate_state")) {
                     auto coordinates = n.at("model_coordinate_state");

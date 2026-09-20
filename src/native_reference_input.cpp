@@ -260,6 +260,20 @@ Json native_reference_input(const Bytes &source) {
                                 {"secondary_flags", Reader(data, 64).u32()},
                                 {"primary_flags_source_offset", layout.upgraded ? 52 : 60},
                                 {"secondary_flags_source_offset", layout.upgraded ? 56 : 64}};
+        // These are base-record inputs. Subsequent runtime changes, link kind
+        // discovery and construction of the model's link list are separate.
+        out["view_sequence_inputs"] = {
+            {"scope", "after_base_field_load_before_linkages"},
+            {"source_offsets_include_stream_prefix", true},
+            {"link_id", Reader(data, 20).u64()},
+            {"link_id_source_offset", 20},
+            {"source_primary_flags", Reader(data, 60).u32()},
+            {"primary_flags_source_offset", layout.upgraded ? 52 : 60},
+            {"excluded_from_reconciliation", bool(Reader(data, 60).u32() & 0x4000u)},
+            {"exclusion_bit", 14},
+            {"same_kind_2_sort_value", Reader(data, 48).u32()},
+            {"sort_value_source_offset", layout.upgraded ? 44 : 48},
+            {"runtime_link_kind", "not_evaluated"}};
         out["clipping"] = reference_clipping(data, layout.upgraded);
         require(out["clipping"]["status"] == "decoded", "truncated current reference entries");
         out["transform"] = reference_transform(data);

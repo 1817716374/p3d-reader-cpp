@@ -17,6 +17,64 @@ unsigned view_sequence_tests() {
                     {"entry_count", ids.size()},
                     {"entry_ids", ids}};
     };
+    // Exercise the file-to-context connection, including neighboring flag bits
+    // and the legacy reference layout's distinct physical source offsets.
+    auto put = [](Bytes &b, std::size_t offset, auto value) {
+        std::memcpy(b.data() + offset, &value, sizeof value);
+    };
+    for (unsigned bit = 0; bit < 32; ++bit) {
+        Bytes model(500, 0);
+        put(model, 4, std::uint16_t(47));
+        put(model, 8, std::uint32_t(248));
+        put(model, 12, std::uint32_t(248));
+        put(model, 16, std::uint32_t(32));
+        put(model, 72, std::uint32_t(1) << bit);
+        const auto original = model;
+        const auto records = parse_native(model);
+        const auto &view = records.at(0).at("model_view_state");
+        check(view.at("status") == "decoded" &&
+                  view.at("current_model_last") == (bit == 11) &&
+                  view.at("flags_source_offset") == 72 && model == original &&
+                  bytesof(records.at(0).at("data")) == model,
+              "model sequence position comes from bit 11 and preserves the source");
+        ViewSequenceContext loaded;
+        loaded.current_model_last = view.at("current_model_last").get<bool>();
+        loaded.links_complete = true;
+        loaded.initialize_default = true;
+        loaded.links = {{123}};
+        check(resolve_view_link_sequence(nullptr, loaded).at("entry_ids") ==
+                  (bit == 11 ? Json::array({123, 0}) : Json::array({0, 123})),
+              "decoded model header determines default current-model position");
+        for (const bool legacy : {false, true}) {
+            Bytes reference(legacy ? 348 : 372, 0);
+            put(reference, 4, std::uint16_t(13));
+            put(reference, 8, std::uint32_t((reference.size() - 4) / 2));
+            put(reference, 12, std::uint32_t((reference.size() - 4) / 2));
+            put(reference, 20, UINT64_MAX);
+            put(reference, legacy ? 44 : 48, std::uint32_t(0xfedcba98));
+            put(reference, legacy ? 52 : 60, std::uint32_t(1) << bit);
+            const auto before = reference;
+            const auto parsed = parse_native(reference);
+            const auto &input = parsed.at(0).at("reference_input");
+            const auto &fields = input.at("view_sequence_inputs");
+            check(input.at("status") == "decoded" &&
+                      input.at("layout").at("upgraded") == legacy &&
+                      fields.at("link_id") == UINT64_MAX &&
+                      fields.at("same_kind_2_sort_value") == 0xfedcba98u &&
+                      fields.at("sort_value_source_offset") == (legacy ? 44 : 48) &&
+                      fields.at("primary_flags_source_offset") == (legacy ? 52 : 60) &&
+                      reference == before && bytesof(parsed.at(0).at("data")) == before,
+                  "modern and legacy references preserve unsigned link ordering inputs");
+            loaded.links = {{fields.at("link_id").get<std::uint64_t>(), true,
+                             fields.at("excluded_from_reconciliation").get<bool>()}};
+            loaded.initialize_default = false;
+            loaded.current_model_last = false;
+            check(resolve_view_link_sequence(saved({0}), loaded).at("entry_ids") ==
+                      (bit == 14 ? Json::array({0})
+                                 : Json::array({std::uint64_t(0), UINT64_MAX})),
+                  "only primary bit 14 excludes a base-loaded reference from reconciliation");
+        }
+    }
     ViewSequenceContext context;
     auto run = [&](std::vector<std::uint64_t> ids) {
         return resolve_view_link_sequence(saved(ids), context);
