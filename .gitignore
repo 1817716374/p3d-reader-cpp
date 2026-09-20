@@ -23,6 +23,7 @@
 !/tests/material_catalog_registration.cpp
 !/tests/material_catalog_read.cpp
 !/tests/view_sequence.cpp
+!/tests/native_reference_sort.cpp
 !/tests/reference_loading.cpp
 !/tests/reference_search.cpp
 !/tests/reference_graph.cpp

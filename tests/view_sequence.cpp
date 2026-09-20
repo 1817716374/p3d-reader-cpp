@@ -6,6 +6,7 @@
 #include <random>
 
 unsigned reference_loading_tests();
+unsigned native_reference_sort_tests();
 
 namespace {
 unsigned reference_repetition_tests() {
@@ -478,7 +479,8 @@ unsigned view_candidate_tests() {
 unsigned view_sequence_tests() {
     using namespace p3d;
     unsigned checks = view_candidate_tests() + model_link_registry_tests() +
-                      reference_repetition_tests() + reference_loading_tests();
+                      reference_repetition_tests() + reference_loading_tests() +
+                      native_reference_sort_tests();
     auto check = [&](bool ok, const char *message) {
         ++checks;
         require(ok, message);

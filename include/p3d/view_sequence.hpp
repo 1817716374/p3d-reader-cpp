@@ -27,6 +27,20 @@ struct ViewSequenceContext {
 // This does not reproduce the surrounding model-loading and link-sorting pipeline.
 Json resolve_view_link_sequence(const Json &saved_sequence, const ViewSequenceContext &context);
 
+struct NativeViewLinkSortEntry {
+    bool present = true;
+    std::optional<std::int32_t> native_kind;
+    std::optional<std::uint32_t> secondary_key;
+};
+// Preserves the ordinary loader's permutation, including its handling of ties.
+// Returned indices address this full input list; source objects are not mutated.
+Json order_native_view_links(const std::vector<NativeViewLinkSortEntry> &links);
+// Reconcile saved order BEFORE sorting links, then build a default order only
+// when no sequence was allocated and the sorted list is nonempty. This native
+// call-site composition determines default creation; initialize_default is unused.
+Json prepare_native_view_sequence(const Json &saved_sequence, const ViewSequenceContext &context,
+                                  const std::vector<NativeViewLinkSortEntry> &sort_inputs);
+
 struct ViewSequenceCandidate {
     std::uint64_t link_id = 0;
     // Native pointer identity with the current model, not link_id == 0.
