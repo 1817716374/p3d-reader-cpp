@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include <future>
+unsigned graphics_material_tests();
 
 unsigned component_material_tests() {
     using namespace p3d;
@@ -136,5 +137,5 @@ unsigned component_material_tests() {
         }));
     for (auto &task : tasks)
         check(task.get() == expected, "concurrent resolution has no shared mutable lookup cache");
-    return checks;
+    return checks + graphics_material_tests();
 }
