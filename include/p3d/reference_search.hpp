@@ -1,5 +1,6 @@
 #pragma once
 #include <p3d/reference_recursion.hpp>
+#include <unordered_map>
 
 namespace p3d {
 struct ReferenceDescendantGateContext {
@@ -55,11 +56,21 @@ struct ReferenceSearchModel {
     bool parent_known = false;
     std::optional<std::uint32_t> reference_primary_flags;
     std::optional<std::uint16_t> reference_nest_depth;
+    // Assigned input-record ID stored by the native loaded reference (+260),
+    // distinct from the target model ID and the 32-bit secondary insertion key.
+    std::optional<std::uint64_t> reference_link_id;
+    bool secondary_list_known_absent = false;
+    std::vector<std::optional<std::size_t>> secondary_links;
+    bool secondary_links_complete = false;
 };
 // A freshly constructed ordinary reference after successful initial input,
 // before connecting its target or loading its own active links. parent is the
 // required host identity in the caller's graph, not a saved model/file ID.
-ReferenceSearchModel initial_reference_graph_node(const Json &reference_record, std::size_t parent);
+// assigned_link_id must come from the actual input registration; omission keeps
+// it unknown rather than assuming the saved source ID survived registration.
+ReferenceSearchModel
+initial_reference_graph_node(const Json &reference_record, std::size_t parent,
+                             std::optional<std::uint64_t> assigned_link_id = std::nullopt);
 Json match_reference_model(const ReferenceSearchQuery &query, const ReferenceSearchModel &model);
 struct ReferenceSearchContext {
     // Indices express native object identity; file/model IDs may repeat.
@@ -85,6 +96,26 @@ Json reference_nesting_depth(const ReferenceSearchContext &context,
 Json reference_link_loading_policy(const ReferenceSearchContext &context,
                                    std::optional<std::size_t> host, bool force_input = false,
                                    std::int32_t cap = 0);
+// Plans a single native reference request. registry must describe the complete
+// current host registry (same resolved/registry/id shape as initial_model_link_registry).
+// A hit returns the existing graph object identity without re-input or list mutation.
+// A miss describes registration and input still required; it does not execute them.
+Json reference_link_request(const ReferenceSearchContext &context, std::size_t host,
+                            std::uint64_t assigned_link_id, const Json &registry);
+// Validated ID-membership snapshot for repeated requests against one registry.
+// Rebuild after registry changes; source pointers and loading states are not
+// copied because this pre-input branch does not inspect them. Invalid JSON throws.
+class ReferenceLinkRegistryIndex {
+  public:
+    explicit ReferenceLinkRegistryIndex(const Json &registry);
+    std::optional<std::size_t> entry_index(std::uint64_t id) const;
+
+  private:
+    std::unordered_map<std::uint64_t, std::size_t> indices_;
+};
+Json reference_link_request(const ReferenceSearchContext &context, std::size_t host,
+                            std::uint64_t assigned_link_id,
+                            const ReferenceLinkRegistryIndex &registry);
 // Host and candidate are known object identities (nullopt means known absent).
 // Derives the gate and search start from this graph; context.start is not used.
 Json evaluate_reference_descendant_filter(const ReferenceSearchQuery &query,

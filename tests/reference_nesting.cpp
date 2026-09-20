@@ -55,6 +55,12 @@ unsigned reference_nesting_tests() {
                   "record builds ordinary initial reference node without inventing its connected "
                   "target");
             c.models = {root, node};
+            const auto assigned = initial_reference_graph_node(r, 0, UINT64_MAX);
+            check(
+                !node.reference_link_id && assigned.reference_link_id == UINT64_MAX &&
+                    assigned.secondary_list_known_absent && assigned.secondary_links.empty() &&
+                    initial_reference_graph_node(r, 0, 0).reference_link_id == 0,
+                "initial node requires explicit assigned link ID and preserves zero and all bits");
             check(reference_nesting_depth(c, 1).at("remaining_depth") == depth,
                   "parent ordinary model terminates without consuming another reference level");
         }

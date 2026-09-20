@@ -36,7 +36,8 @@ ReferenceSearchQuery initial_reference_search_query(const Json &record,
     return query;
 }
 
-ReferenceSearchModel initial_reference_graph_node(const Json &record, std::size_t parent_index) {
+ReferenceSearchModel initial_reference_graph_node(const Json &record, std::size_t parent_index,
+                                                  std::optional<std::uint64_t> assigned_link_id) {
     require(record.at("element_type") == 13, "type_13_reference_record_required");
     const auto &input = record.at("reference_input");
     require(input.at("status") == "decoded", "decoded_reference_input_required");
@@ -48,6 +49,8 @@ ReferenceSearchModel initial_reference_graph_node(const Json &record, std::size_
     node.parent = parent_index;
     node.parent_known = true;
     node.active_list_known_absent = true;
+    node.secondary_list_known_absent = true;
+    node.reference_link_id = assigned_link_id;
     node.reference_nest_depth = input.at("nesting_inputs").at("nest_depth").get<std::uint16_t>();
     const auto &target = record.at("reference_target");
     const auto &runtime = target.at("initial_runtime_state");
