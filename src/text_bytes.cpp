@@ -93,7 +93,7 @@ Json decode_text_bytes(const Bytes &b) {
                                   "custom_slant_angle",
                                   nullptr,
                                   "line_offset",
-                                  nullptr,
+                                  "line_weight",
                                   nullptr};
     // Property identifiers connect the source values to the SDK vocabulary;
     // they do not make source distances into TextStyle's normalized distances.

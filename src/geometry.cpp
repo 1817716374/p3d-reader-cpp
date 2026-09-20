@@ -1,5 +1,6 @@
 #include "geometry.hpp"
 #include "guided.hpp"
+#include "text_bytes.hpp"
 #include <mapbox/earcut.hpp>
 namespace p3d {
 static constexpr double pi = 3.1415926535897932384626433832795;
@@ -979,22 +980,14 @@ Geometry reconstruct_native(const Json &n, const Tessellation &policy) {
                                      {"sweep_angle", sweep}},
                                     policy));
         } else if (kind == 54) {
-            require(b.size() >= 206, "native text length");
-            r.p = 108;
-            auto style = r.uints(4, 2);
-            auto size = style[3].get<unsigned>();
-            auto values = r.doubles(11);
-            require(size <= b.size() - 206, "native text extent");
-            auto text = native_string(slice(b, 206, size));
-            g.texts.push_back({{"text", text},
-                               {"origin", {values[8], values[9], values[10]}},
-                               {"quaternion", {values[4], values[5], values[6], values[7]}},
-                               {"width", values[2]},
-                               {"height", values[3]},
-                               {"font_scale", {values[0], values[1]}},
-                               {"style_words", style},
-                               {"source_encoding_marker", hex(slice(b, 206, 2))},
-                               {"trailing_hex", hex(slice(b, 206 + size, b.size() - 206 - size))}});
+            auto decoded =
+                n.contains("native_text") ? n.at("native_text") : decode_native_text_record(b);
+            require(decoded.contains("origin") && decoded.contains("quaternion"),
+                    "native text fixed header not decoded");
+            g.texts.push_back(std::move(decoded));
+            const auto &text = g.texts.back();
+            if (text.value("status", "invalid") != "decoded")
+                g.unknown.push_back({{"native_type", kind}, {"reason", "incomplete native text"}});
         } else if (kind == 19 || kind == 20 || kind == 21)
             g.notes.push_back(
                 "native composite header; constituent records are retained separately");

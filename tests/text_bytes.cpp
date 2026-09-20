@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "text_bytes.hpp"
+#include "geometry.hpp"
 
 unsigned text_bytes_tests() {
     using namespace p3d;
@@ -232,5 +233,126 @@ unsigned text_bytes_tests() {
               packets[0].at("geometry").at("_type") == "TextEntity" &&
               packets[0].at("geometry").at("text_style") == j.at("text_style"),
           "serialized text Entry exposes text and style instead of opaque bytes");
+    Bytes weight(4);
+    write(weight, 0, 0xfffffffeu, 4);
+    auto wf = decode_text_bytes(fixture(1u << 19, weight)).at("text_style").at("fields")[0];
+    check(wf.at("name") == "line_weight" && wf.at("value") == 0xfffffffeu,
+          "default text line weight preserves native sentinel bits");
+
+    auto native = [&](bool planar, Bytes source, const Bytes &ranges = Bytes{}) {
+        const std::size_t start = planar ? 174 : 206;
+        Bytes data(start + source.size() + ranges.size());
+        write(data, 4, 54, 2);
+        write(data, 6, 0x20, 2);
+        write(data, 36, planar ? 0 : 0x1000, 2);
+        write(data, 108, 1024, 4);
+        write(data, 112, 8, 2);
+        write(data, 114, source.size(), 2);
+        auto real = [&](std::size_t p, double value) { std::memcpy(data.data() + p, &value, 8); };
+        real(116, 500.);
+        real(124, 0.);
+        real(132, 12.);
+        real(140, 6.);
+        if (planar) {
+            real(148, 1.5707963267948966);
+            real(156, 7.);
+            real(164, -3.);
+        } else {
+            real(148, -1.);
+            real(180, 7.);
+            real(188, -3.);
+            real(196, 5.);
+        }
+        write(data, start - 2, ranges.size() / 3, 2);
+        std::copy(source.begin(), source.end(), data.begin() + start);
+        std::copy(ranges.begin(), ranges.end(), data.begin() + start + source.size());
+        if (data.size() % 2)
+            data.push_back(0);
+        write(data, 8, (data.size() - 4) / 2, 4);
+        write(data, 12, (data.size() - 4) / 2, 4);
+        return data;
+    };
+    auto spatial = native(false, {0xff, 0xfe, 0x41, 0, 0x2d, 0x4e});
+    auto nt = decode_native_text_record(spatial);
+    check(nt.at("status") == "decoded" && nt.at("text") == u8"A中" &&
+              nt.at("origin") == Json::array({7., -3., 5.}) &&
+              nt.at("quaternion") == Json::array({-1., 0., 0., 0.}) && nt.at("font_id") == 1024 &&
+              nt.at("justification_value") == 8,
+          "spatial native text retains source origin quaternion and full font reference");
+    check(nt.at("font_scale") == Json::array({500., 0.}) &&
+              nt.at("native_font_size") == Json::array({3., 0.006}) && nt.at("width") == 12. &&
+              nt.at("height") == 6.,
+          "native text font size uses the native scale rule independently of stored extents");
+    auto planar = native(true, {0xff, 0xfe, 0x41, 0});
+    auto pt = decode_native_text_record(planar);
+    check(pt.at("text_offset") == 174 && pt.at("source_layout") == "planar" &&
+              pt.at("origin") == Json::array({7., -3., 0.}) && pt.at("text") == "A",
+          "planar native text is read within its smaller header with source zero Z");
+    const auto pq = pt.at("quaternion").get<std::array<double, 4>>();
+    check(std::abs(pq[0] - std::sqrt(0.5)) < 1e-14 && std::abs(pq[3] - std::sqrt(0.5)) < 1e-14 &&
+              pq[1] == 0 && pq[2] == 0,
+          "planar source rotation is a positive Z rotation in radians");
+    auto no_extended = spatial;
+    write(no_extended, 6, 0, 2);
+    write(no_extended, 36, 0, 2);
+    check(decode_native_text_record(no_extended).at("source_layout") == "spatial",
+          "missing extended flag selects spatial layout regardless of dimension bit");
+    auto nr = native(true, {0xff, 0xfe, 0x41, 0}, {1, 1, 0xff, 0, 9, 2});
+    auto ranges = decode_native_text_record(nr);
+    check(ranges.at("declared_text_range_count") == 2 &&
+              ranges.at("text_ranges")[0].at("source_offset") == 178 &&
+              ranges.at("text_ranges")[0].at("raw_hex") == "0101ff" &&
+              ranges.at("text_ranges")[1].at("start_1_based") == 0 &&
+              ranges.at("text_ranges")[1].at("control_byte") == 2,
+          "native text range triples retain invalid source starts and control bytes");
+    auto capped = native(true, {0xff, 0xfe, 0x41, 0}, Bytes(60, 0));
+    write(capped, 172, 21, 2);
+    auto cap = decode_native_text_record(capped);
+    check(cap.at("declared_text_range_count") == 21 && cap.at("native_text_range_count") == 20 &&
+              cap.at("text_ranges").size() == 20 && cap.at("text_range_status") == "decoded",
+          "native range reader clamps count to twenty without borrowing a twenty-first triple");
+    auto short_ranges = native(true, {0xff, 0xfe, 0x41, 0}, {1, 1, 0});
+    write(short_ranges, 172, 2, 2);
+    auto sr = decode_native_text_record(short_ranges);
+    check(sr.at("status") == "partial" && sr.at("text") == "A" &&
+              sr.at("text_range_status") == "invalid" && sr.at("text_ranges").size() == 1,
+          "truncated native range tail does not discard text and decoded source coordinates");
+    auto encoded = decode_native_text_record(native(false, {0xff, 0xfd, 0xd0, 0xd6}));
+    check(encoded.at("text") == u8"中" &&
+              encoded.at("text_conversion").at("source_units") == Json::array({0xd6d0}) &&
+              encoded.at("text_conversion").at("font_mapping_status") == "not_evaluated" &&
+              encoded.at("text_conversion").at("text_interpretation") ==
+                  "gb18030_compatibility_preview",
+          "packed font character codes keep the old preview but never claim native font mapping");
+    auto unsigned_text = decode_native_text_record(native(true, {0xff, 0xfe, 1, 0, 0x41, 0xe9}));
+    check(unsigned_text.at("text") == u8"Aé" &&
+              unsigned_text.at("text_conversion").at("prefix_bytes") == 4 &&
+              unsigned_text.at("text_conversion").at("source_units") == Json::array({65, 233}),
+          "byte marker widens unsigned values instead of guessing UTF8 or system codepage");
+    auto bad_marker = decode_native_text_record(native(true, {0xfe, 0xff, 0x41, 0}));
+    check(bad_marker.at("status") == "partial" && bad_marker.at("text").is_null() &&
+              bad_marker.at("text_source").at("bytes") == 4 && bad_marker.contains("origin"),
+          "unsupported native marker retains the source and independently decoded geometry");
+    auto parsed_native = parse_native(planar);
+    check(parsed_native.size() == 1 && parsed_native[0].at("native_text") == pt,
+          "native record traversal exposes the same text decoder result");
+    auto geometry = reconstruct_native(parsed_native[0], {});
+    auto scene_text = geometry.texts.at(0);
+    check(scene_text.at("source_origin") == pt.at("origin") &&
+              scene_text.at("placement_matrix") == Json(identity()),
+          "native text scene placement retains the decoded source position");
+    scene_text.erase("source_origin");
+    scene_text.erase("placement_matrix");
+    check(geometry.texts.size() == 1 && scene_text == pt && geometry.unknown.empty(),
+          "scene fallback reuses parsed planar native text without a second fixed-header parser");
+    auto broken = planar;
+    write(broken, 114, 65535, 2);
+    auto broken_record = parse_native(broken)[0];
+    check(broken_record.at("native_text").at("status") == "invalid" &&
+              bytesof(broken_record.at("data")) == broken,
+          "native text declared size cannot escape its base record");
+    auto broken_geometry = reconstruct_native(broken_record, {});
+    check(broken_geometry.texts.empty() && !broken_geometry.unknown.empty(),
+          "invalid cached text metadata cannot create a positionless scene primitive");
     return checks;
 }
