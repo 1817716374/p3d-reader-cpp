@@ -10,6 +10,8 @@
 #include <sstream>
 #include <stdexcept>
 namespace p3d {
+Json graphics_entry_native_input(const Bytes &entry);
+Json parametric_graphics_append_rule(std::int32_t type);
 inline void require(bool v, const std::string &s) {
     if (!v)
         throw std::runtime_error(s);

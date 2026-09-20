@@ -1,6 +1,7 @@
 #include "blob_internal.hpp"
 #include <cstring>
 #include <future>
+unsigned graphics_native_tests();
 namespace {
 using namespace p3d;
 template <class T> void put(Bytes &b, T v) {
@@ -167,6 +168,10 @@ unsigned graphics_bytes_tests() {
     check(short_j["geometry_packets"][0].contains("decode_error") &&
               short_j["geometry_packets"][1]["entry_index"] == 1,
           "damaged entry does not shift later boundaries");
+    check(short_j.at("native_geometry_input").at("status") == "rejected" &&
+              short_j.at("native_geometry_input").at("rejecting_entry_index") == 0 &&
+              short_j.at("geometry_packets").size() == 2,
+          "native container rejection does not discard inspectable later source packets");
     auto bad_geo = e;
     bad_geo[32] = 1;
     check(
@@ -369,5 +374,5 @@ unsigned graphics_bytes_tests() {
               duplicate_footer["values"][4]["value"] == 73 &&
               duplicate_footer["values"][7]["value"] == 73,
           "null unknown and truncated first matches prevent substituting later same-ID values");
-    return checks;
+    return checks + graphics_native_tests();
 }

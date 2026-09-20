@@ -141,6 +141,10 @@ Json decode_graphics_bytes(const Bytes &b) {
                        {"source_offset", offset},
                        {"source_bytes", size},
                        {"raw_base64", base64(data)}};
+        packet["native_geometry_input"] = graphics_entry_native_input(data);
+        if (data.size() >= 8)
+            packet["parametric_append_rule"] =
+                parametric_graphics_append_rule(Reader(data, 4).i32());
         try {
             packet.update(entry_bytes(data));
         } catch (const std::exception &e) {
@@ -152,6 +156,14 @@ Json decode_graphics_bytes(const Bytes &b) {
     out["entry_index_scope"] = "serialized_graphics";
     out["view_flag_status"] = "not_serialized";
     out["owning_element_part_mapping_status"] = "not_established";
+    out["native_geometry_input"] = {{"status", "not_evaluated"},
+                                    {"failure_policy", "reject_entire_graphics_container"}};
+    for (const auto &packet : out.at("geometry_packets"))
+        if (packet.at("native_geometry_input").at("status") == "rejected") {
+            out["native_geometry_input"].update(
+                {{"status", "rejected"}, {"rejecting_entry_index", packet.at("entry_index")}});
+            break;
+        }
     r.finish();
     return out;
 }
