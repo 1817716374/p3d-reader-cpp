@@ -78,6 +78,102 @@ unsigned text_bytes_tests() {
     check(all_j.at("fields").size() == 21 && all_j.at("status") == "decoded" &&
               all_j.at("fields")[17].at("native_usage") == "skipped",
           "all optional fields coexist without losing the explicitly skipped word");
+    // Distinct values distinguish line color/style/weight and background fill
+    // from its border. Signed styles must keep the same original source bits.
+    Bytes lines(40);
+    write(lines, 0, 0x12345678, 4);
+    write(lines, 4, 0xffffffff, 4);
+    write(lines, 8, 7, 4);
+    double under_offset = -0.125, over_offset = 2.5;
+    std::memcpy(lines.data() + 12, &under_offset, 8);
+    write(lines, 20, 0x87654321, 4);
+    write(lines, 24, 0x80000000, 4);
+    write(lines, 28, 9, 4);
+    std::memcpy(lines.data() + 32, &over_offset, 8);
+    auto line_fields = decode_text_bytes(fixture(0xff, lines)).at("text_style").at("fields");
+    check(line_fields[0].at("name") == "underline_color" &&
+              line_fields[0].at("value") == 0x12345678u &&
+              line_fields[2].at("name") == "underline_weight" && line_fields[2].at("value") == 7,
+          "underline color and weight retain distinct native positions");
+    check(line_fields[1].at("name") == "underline_line_style" &&
+              line_fields[1].at("signed_value") == -1 && line_fields[1].at("value") == UINT32_MAX &&
+              line_fields[1].at("raw_hex") == "ffffffff",
+          "negative underline style preserves signed meaning and original bits");
+    check(line_fields[3].at("name") == "underline_offset" &&
+              line_fields[3].at("value") == under_offset &&
+              line_fields[7].at("name") == "overline_offset" &&
+              line_fields[7].at("value") == over_offset,
+          "line offsets are source doubles, not rescaled style distances");
+    check(line_fields[4].at("name") == "overline_color" &&
+              line_fields[4].at("value") == 0x87654321u &&
+              line_fields[5].at("name") == "overline_line_style" &&
+              line_fields[5].at("signed_value") == INT32_MIN &&
+              line_fields[6].at("name") == "overline_weight" && line_fields[6].at("value") == 9,
+          "overline color style and weight do not borrow the underline fields");
+    Bytes background(32);
+    write(background, 0, 12, 4);
+    write(background, 4, 34, 4);
+    write(background, 8, 0xfffffffe, 4);
+    write(background, 12, 56, 4);
+    double border[2] = {-1.25, 3.75};
+    std::memcpy(background.data() + 16, border, 16);
+    auto bg = decode_text_bytes(fixture(0x1f00, background)).at("text_style");
+    const auto &bf = bg.at("fields");
+    check(bf[0].at("name") == "background_fill_color" && bf[0].at("value") == 12 &&
+              bf[0].at("text_style_property_id") == 18 && bf[1].at("name") == "background_color" &&
+              bf[1].at("value") == 34 && bf[1].at("text_style_property_id") == 17,
+          "background source fill precedes border color despite SDK enum order");
+    check(bf[2].at("name") == "background_line_style" && bf[2].at("signed_value") == -2 &&
+              bf[3].at("name") == "background_weight" && bf[3].at("value") == 56 &&
+              bf[4].at("name") == "background_border" &&
+              bf[4].at("value") == Json::array({-1.25, 3.75}) &&
+              bg.at("flags_decoded").at("background_style") == false,
+          "disabled background retains every stored field without enabling itself");
+    Bytes offset(16);
+    std::memcpy(offset.data(), border, 16);
+    auto lf = decode_text_bytes(fixture(1u << 18, offset)).at("text_style").at("fields")[0];
+    check(lf.at("name") == "line_offset" && lf.at("text_style_property_id") == 32 &&
+              lf.at("value") == Json::array({-1.25, 3.75}),
+          "line offset is a two component property independent of background border");
+    Bytes spacing(9);
+    spacing[0] = 2;
+    double gap = -0.75;
+    std::memcpy(spacing.data() + 1, &gap, 8);
+    auto spaced = fixture((1u << 13) | (1u << 14), spacing);
+    auto sf = decode_text_bytes(spaced).at("text_style").at("fields");
+    check(sf[0].at("name") == "inter_character_spacing_mode" &&
+              sf[0].at("mode_name") == "AcadInterCharSpacing" &&
+              sf[1].at("name") == "inter_character_spacing" && sf[1].at("value") == gap &&
+              sf[0].at("native_value_used") == false && sf[1].at("native_value_used") == false,
+          "spacing flag disables use without discarding serialized mode or distance");
+    write(spaced, 89, 1u << 7, 4);
+    sf = decode_text_bytes(spaced).at("text_style").at("fields");
+    check(sf[0].at("native_value_used") == true && sf[1].at("native_value_used") == true &&
+              sf[1].at("value") == gap && sf[1].at("text_style_property_id") == 33,
+          "spacing use follows its source flag independently of optional presence");
+    spaced[97] = 1;
+    check(decode_text_bytes(spaced).at("text_style").at("fields")[0].at("mode_name") ==
+              "FixedSpacing",
+          "fixed spacing is distinct from Acad spacing");
+    spaced[97] = 255;
+    sf = decode_text_bytes(spaced).at("text_style").at("fields");
+    check(sf[0].at("mode_name").is_null() && sf[0].at("value") == 255,
+          "unknown spacing mode is preserved without an invented default");
+    const std::pair<unsigned, const char *> new_flags[] = {
+        {0, "background_style"}, {2, "underline_style"},
+        {4, "overline_style"},   {7, "use_inter_character_spacing"},
+        {8, "subscript"},        {9, "superscript"}};
+    for (const auto &selected : new_flags) {
+        auto flagged = fixture(0, {});
+        write(flagged, 89, 1u << selected.first, 4);
+        const auto fs = decode_text_bytes(flagged).at("text_style");
+        unsigned enabled = 0;
+        for (const auto &flag : fs.at("flags_decoded"))
+            enabled += flag.get<bool>();
+        check(fs.at("flags_decoded").at(selected.second) == true && enabled == 1 &&
+                  fs.at("fields").empty(),
+              "a style flag neither enables another flag nor creates optional source data");
+    }
     for (unsigned id : {0u, 511u, 512u, 1023u, 1024u, 65535u}) {
         Bytes font(4);
         write(font, 0, id, 4);

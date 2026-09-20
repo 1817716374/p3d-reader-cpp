@@ -28,10 +28,18 @@ Json decode_text_bytes(const Bytes &b) {
         out["text_style"] = std::move(style);
         return out;
     }
-    style["flags_decoded"] = {
-        {"underline", bool(flags & (1u << 1))}, {"overline", bool(flags & (1u << 3))},
-        {"bold", bool(flags & (1u << 5))},      {"italic", bool(flags & (1u << 6))},
-        {"vertical", bool(flags & (1u << 10))}, {"is_3d", bool(flags & (1u << 14))}};
+    style["flags_decoded"] = {{"background_style", bool(flags & (1u << 0))},
+                              {"underline", bool(flags & (1u << 1))},
+                              {"overline", bool(flags & (1u << 3))},
+                              {"underline_style", bool(flags & (1u << 2))},
+                              {"overline_style", bool(flags & (1u << 4))},
+                              {"bold", bool(flags & (1u << 5))},
+                              {"italic", bool(flags & (1u << 6))},
+                              {"use_inter_character_spacing", bool(flags & (1u << 7))},
+                              {"subscript", bool(flags & (1u << 8))},
+                              {"superscript", bool(flags & (1u << 9))},
+                              {"vertical", bool(flags & (1u << 10))},
+                              {"is_3d", bool(flags & (1u << 14))}};
     static const char *justifications[] = {"LeftTop",
                                            "LeftMiddle",
                                            "LeftBaseline",
@@ -66,6 +74,31 @@ Json decode_text_bytes(const Bytes &b) {
     // dump. Some business names remain unassigned; source bit and position stay.
     static const unsigned widths[] = {4, 4,  4, 8, 4, 4, 4, 8,  4, 4, 4,
                                       4, 16, 1, 8, 4, 8, 4, 16, 4, 8};
+    static const char *names[] = {"underline_color",
+                                  "underline_line_style",
+                                  "underline_weight",
+                                  "underline_offset",
+                                  "overline_color",
+                                  "overline_line_style",
+                                  "overline_weight",
+                                  "overline_offset",
+                                  "background_fill_color",
+                                  "background_color",
+                                  "background_line_style",
+                                  "background_weight",
+                                  "background_border",
+                                  "inter_character_spacing_mode",
+                                  "inter_character_spacing",
+                                  "big_font_id",
+                                  "custom_slant_angle",
+                                  nullptr,
+                                  "line_offset",
+                                  nullptr,
+                                  nullptr};
+    // Property identifiers connect the source values to the SDK vocabulary;
+    // they do not make source distances into TextStyle's normalized distances.
+    static const unsigned property_ids[] = {22, 20, 21, 24, 27, 25, 26, 29, 18, 17, 15,
+                                            16, 19, 0,  33, 4,  7,  0,  32, 0,  0};
     try {
         for (unsigned bit = 0; bit < 21; ++bit) {
             if (!(presence & (1u << bit)))
@@ -76,7 +109,9 @@ Json decode_text_bytes(const Bytes &b) {
             Json field = {{"bit", bit},
                           {"source_offset", start},
                           {"source_bytes", widths[bit]},
-                          {"name", nullptr}};
+                          {"name", names[bit] ? Json(names[bit]) : Json()}};
+            if (property_ids[bit])
+                field["text_style_property_id"] = property_ids[bit];
             if (bit == 13) {
                 field["value"] = r.u8();
                 field["encoding"] = "uint8";
@@ -90,12 +125,24 @@ Json decode_text_bytes(const Bytes &b) {
                 field["value"] = r.u32();
                 field["encoding"] = "uint32_bits";
             }
-            if (bit == 15) {
-                field["name"] = "big_font_id";
+            if (bit == 1 || bit == 5 || bit == 10) {
+                // Preserve the original unsigned bit view, including sentinels.
+                const auto value = field.at("value").get<std::uint32_t>();
+                field["signed_value"] =
+                    value <= INT32_MAX ? std::int64_t(value) : std::int64_t(value) - 0x100000000ll;
+            } else if (bit == 13 || bit == 14) {
+                // Both source fields are consumed even when flag 7 clears the
+                // resulting native spacing mode and value. Do not erase them.
+                field["native_value_used"] = bool(flags & (1u << 7));
+                if (bit == 13) {
+                    const auto mode = field.at("value").get<unsigned>();
+                    field["mode_name"] = mode == 1   ? Json("FixedSpacing")
+                                         : mode == 2 ? Json("AcadInterCharSpacing")
+                                                     : Json();
+                }
+            } else if (bit == 15) {
                 const auto id = field.at("value").get<std::uint32_t>();
                 field["native_font_id_in_lookup_range"] = id >= 512 && id <= 1023;
-            } else if (bit == 16) {
-                field["name"] = "custom_slant_angle";
             } else if (bit == 17) {
                 field["native_usage"] = "skipped";
             } else if (bit == 20) {
