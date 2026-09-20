@@ -36,4 +36,34 @@ struct ViewSequenceCandidate {
 // refer to this input array; no model discovery or visibility filtering occurs.
 Json order_view_link_candidates(const std::vector<std::uint64_t> &entry_ids,
                                 const std::vector<ViewSequenceCandidate> &candidates);
+
+enum class ViewCandidateNodeKind { unknown, model, reference };
+struct ViewCandidateNode {
+    ViewCandidateNodeKind kind = ViewCandidateNodeKind::unknown;
+    bool valid = true;
+    // Indices represent native object identity, independently of serialized IDs.
+    // A model terminates ancestry traversal; only references follow parent.
+    std::optional<std::size_t> parent;
+    bool parent_known = false;
+    std::optional<std::uint64_t> link_id;
+};
+struct ViewCandidateContext {
+    std::vector<ViewCandidateNode> nodes;
+    std::size_t current_model = 0;
+    // Result of the selected object's native root-model query, not its parent.
+    std::optional<bool> root_model_available;
+    std::vector<std::optional<std::size_t>> links;
+    bool links_complete = false;
+    // nullopt selects the include_* path; an empty array is an explicit filter.
+    std::optional<std::vector<std::optional<std::size_t>>> provided_candidates;
+    bool include_current_model = true;
+    bool include_links = true;
+    bool apply_sequence = true;
+    // The already resolved sequence of the selected object's root model.
+    std::optional<std::vector<std::uint64_t>> sequence;
+};
+// Reproduces native candidate collection, ancestry filtering and optional swaps
+// in the supplied object graph. Does not open files or construct runtime links.
+// On an unresolved result, no final candidate list is returned.
+Json collect_view_link_candidates(const ViewCandidateContext &context);
 } // namespace p3d

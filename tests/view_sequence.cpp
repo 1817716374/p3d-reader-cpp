@@ -4,9 +4,190 @@
 #include <numeric>
 #include <random>
 
-unsigned view_sequence_tests() {
+namespace {
+unsigned view_candidate_tests() {
     using namespace p3d;
     unsigned checks = 0;
+    auto check = [&](bool ok, const char *message) {
+        ++checks;
+        require(ok, message);
+    };
+    using Kind = ViewCandidateNodeKind;
+    ViewCandidateContext c;
+    c.nodes = {{Kind::model, true, {}, false, 0},    {Kind::reference, true, 0, true, 10},
+               {Kind::reference, true, 1, true, 20}, {Kind::model, true, {}, false, 0},
+               {Kind::reference, true, 3, true, 10}, {Kind::reference, false, 0, true, 30}};
+    c.root_model_available = true;
+    auto ids = [](const Json &r) {
+        Json result = Json::array();
+        for (const auto &item : r.at("candidates"))
+            result.push_back(item.at("model_index"));
+        return result;
+    };
+    c.provided_candidates = std::vector<std::optional<std::size_t>>{2, 1, 2, 4, 3, {}, 5, 0};
+    auto r = collect_view_link_candidates(c);
+    check(
+        r.at("status") == "resolved" && ids(r) == Json::array({2, 1, 2, 0}) &&
+            r.at("rejected_candidates").size() == 4,
+        "provided candidates follow ancestry, preserve duplicate identity and reject null/invalid");
+    c.include_current_model = c.include_links = false;
+    check(ids(collect_view_link_candidates(c)) == ids(r),
+          "explicit candidates override both include flags");
+    c.current_model = 1;
+    check(ids(collect_view_link_candidates(c)) == Json::array({2, 1, 2}),
+          "nested selected reference accepts its own identity and descendants");
+    c.sequence = std::vector<std::uint64_t>{0, 20};
+    r = collect_view_link_candidates(c);
+    check(ids(r) == Json::array({1, 2, 2}) && r.at("matches").size() == 2,
+          "collection and sequence swaps use selected object identity rather than a zero file ID");
+    c.nodes[2].parent_known = false;
+    r = collect_view_link_candidates(c);
+    check(r.at("status") == "unresolved" && !r.contains("candidates"),
+          "unknown parent does not publish a partial final candidate list");
+    c.nodes[2].parent_known = true;
+    c.nodes[2].parent = 2;
+    check(collect_view_link_candidates(c).at("reason") == "cycle_in_candidate_parent_chain",
+          "parent cycle before a match is explicit instead of looping");
+    c.current_model = 2;
+    c.provided_candidates = std::vector<std::optional<std::size_t>>{2};
+    check(ids(collect_view_link_candidates(c)) == Json::array({2}),
+          "identity succeeds without following an unused self-cycle");
+    c.current_model = 0;
+    c.nodes[2].parent = 1;
+    c.nodes[1].valid = false;
+    c.provided_candidates = std::vector<std::optional<std::size_t>>{2};
+    check(ids(collect_view_link_candidates(c)).empty(),
+          "invalid parent terminates ancestry before the selected root");
+    c.nodes[1].valid = true;
+    c.nodes[1].kind = Kind::unknown;
+    check(collect_view_link_candidates(c).at("status") == "unresolved",
+          "unknown native object kind is not assumed to forward to parent");
+    c.nodes[1].kind = Kind::reference;
+    c.nodes[3].parent = 0;
+    c.nodes[3].parent_known = true;
+    c.provided_candidates = std::vector<std::optional<std::size_t>>{4};
+    check(ids(collect_view_link_candidates(c)).empty(),
+          "ordinary model terminates traversal despite an irrelevant parent field");
+    c.provided_candidates->clear();
+    check(collect_view_link_candidates(c).at("native_return_code") == 1 &&
+              collect_view_link_candidates(c).at("output_replaced") == true,
+          "explicit empty filter replaces output with empty list");
+    c.root_model_available = false;
+    r = collect_view_link_candidates(c);
+    check(r.at("output_replaced") == false && !r.contains("candidates"),
+          "missing root returns before replacing existing native output");
+    c.root_model_available.reset();
+    check(collect_view_link_candidates(c).at("status") == "unresolved",
+          "root availability is not inferred from a parent or sequence");
+    c.nodes[0].valid = false;
+    check(collect_view_link_candidates(c).at("output_replaced") == false,
+          "invalid selected model returns before requiring a root");
+    c.nodes[0].valid = true;
+    c.root_model_available = true;
+    c.provided_candidates.reset();
+    c.include_current_model = c.include_links = true;
+    check(collect_view_link_candidates(c).at("status") == "unresolved",
+          "default collection requires the complete list when links are requested");
+    c.links_complete = true;
+    c.links = {4, 5, {}, 1, 1};
+    c.apply_sequence = false;
+    check(ids(collect_view_link_candidates(c)) == Json::array({0, 4, 5, nullptr, 1, 1}),
+          "default collection copies all slots without validity or ancestry filtering");
+    c.apply_sequence = true;
+    c.sequence = std::vector<std::uint64_t>{0};
+    check(ids(collect_view_link_candidates(c)) == Json::array({0, 4, 5, nullptr, 1, 1}),
+          "zero sequence item does not dereference a null link");
+    c.sequence = std::vector<std::uint64_t>{99};
+    r = collect_view_link_candidates(c);
+    check(r.at("reason") == "null_candidate_in_native_id_lookup" && !r.contains("candidates"),
+          "nonzero sequence item reports the native null dereference boundary");
+    c.nodes[4].link_id.reset();
+    c.links = {4};
+    c.sequence = std::vector<std::uint64_t>{0};
+    check(ids(collect_view_link_candidates(c)) == Json::array({0, 4}),
+          "unqueried missing ID does not prevent identity-only ordering");
+    c.sequence = std::vector<std::uint64_t>{10};
+    check(collect_view_link_candidates(c).at("reason") == "candidate_link_id_required",
+          "missing ID matters only when visited by native ID comparison");
+    c.include_current_model = false;
+    check(ids(collect_view_link_candidates(c)) == Json::array({4}),
+          "one candidate bypasses sequence ID lookup");
+    c.links = {99};
+    check(collect_view_link_candidates(c).at("status") == "unresolved",
+          "graph indices cannot refer outside the supplied identity table");
+
+    // Independent literal ancestry and swap implementation over random forests.
+    std::mt19937_64 rng(146);
+    for (unsigned trial = 0; trial < 400; ++trial) {
+        ViewCandidateContext random;
+        random.root_model_available = true;
+        const std::size_t count = 2 + rng() % 50;
+        for (std::size_t i = 0; i < count; ++i)
+            random.nodes.push_back(
+                {i == 0 || rng() % 7 == 0 ? Kind::model : Kind::reference, i == 0 || rng() % 9 != 0,
+                 i ? std::optional<std::size_t>(rng() % i) : std::nullopt, true, rng() % 8});
+        random.current_model = rng() % count;
+        random.nodes[random.current_model].valid = true;
+        random.provided_candidates.emplace();
+        std::vector<std::size_t> expected;
+        for (unsigned j = 0; j < 70; ++j) {
+            const auto candidate = static_cast<std::size_t>(rng() % count);
+            random.provided_candidates->push_back(candidate);
+            auto at = candidate;
+            for (;;) {
+                const auto &n = random.nodes[at];
+                if (!n.valid)
+                    break;
+                if (at == random.current_model) {
+                    expected.push_back(candidate);
+                    break;
+                }
+                if (n.kind == Kind::model || !n.parent)
+                    break;
+                at = *n.parent;
+            }
+        }
+        random.sequence.emplace();
+        std::size_t next = 0;
+        for (unsigned j = 0; j < 12; ++j) {
+            const auto id = rng() % 10;
+            random.sequence->push_back(id);
+            if (expected.size() <= 1)
+                continue;
+            for (std::size_t k = next; k < expected.size(); ++k) {
+                if (id == 0 ? expected[k] != random.current_model
+                            : *random.nodes[expected[k]].link_id != id)
+                    continue;
+                std::swap(expected[next++], expected[k]);
+                break;
+            }
+        }
+        const auto result = collect_view_link_candidates(random);
+        check(result.at("status") == "resolved" && ids(result) == Json(expected),
+              "cached ancestry and indexed swaps equal literal forest traversal and swaps");
+    }
+    ViewCandidateContext deep;
+    deep.root_model_available = true;
+    deep.nodes.push_back({Kind::model, true, {}, true, 0});
+    for (std::size_t i = 1; i <= 10000; ++i)
+        deep.nodes.push_back({Kind::reference, true, i - 1, true, i});
+    deep.provided_candidates = std::vector<std::optional<std::size_t>>{10000, 9999, 10000};
+    const auto deep_result = collect_view_link_candidates(deep);
+    check(ids(deep_result) == Json::array({10000, 9999, 10000}),
+          "deep shared ancestry is iterative and keeps repeated object occurrences");
+    std::vector<std::future<Json>> jobs;
+    for (unsigned i = 0; i < 4; ++i)
+        jobs.push_back(
+            std::async(std::launch::async, [&] { return collect_view_link_candidates(deep); }));
+    for (auto &job : jobs)
+        check(job.get() == deep_result, "candidate graph caches are call-local and parallel-safe");
+    return checks;
+}
+} // namespace
+
+unsigned view_sequence_tests() {
+    using namespace p3d;
+    unsigned checks = view_candidate_tests();
     auto check = [&](bool ok, const char *message) {
         ++checks;
         require(ok, message);
@@ -32,8 +213,7 @@ unsigned view_sequence_tests() {
         const auto original = model;
         const auto records = parse_native(model);
         const auto &view = records.at(0).at("model_view_state");
-        check(view.at("status") == "decoded" &&
-                  view.at("current_model_last") == (bit == 11) &&
+        check(view.at("status") == "decoded" && view.at("current_model_last") == (bit == 11) &&
                   view.at("flags_source_offset") == 72 && model == original &&
                   bytesof(records.at(0).at("data")) == model,
               "model sequence position comes from bit 11 and preserves the source");
@@ -57,8 +237,7 @@ unsigned view_sequence_tests() {
             const auto parsed = parse_native(reference);
             const auto &input = parsed.at(0).at("reference_input");
             const auto &fields = input.at("view_sequence_inputs");
-            check(input.at("status") == "decoded" &&
-                      input.at("layout").at("upgraded") == legacy &&
+            check(input.at("status") == "decoded" && input.at("layout").at("upgraded") == legacy &&
                       fields.at("link_id") == UINT64_MAX &&
                       fields.at("same_kind_2_sort_value") == 0xfedcba98u &&
                       fields.at("sort_value_source_offset") == (legacy ? 44 : 48) &&
@@ -70,8 +249,7 @@ unsigned view_sequence_tests() {
             loaded.initialize_default = false;
             loaded.current_model_last = false;
             check(resolve_view_link_sequence(saved({0}), loaded).at("entry_ids") ==
-                      (bit == 14 ? Json::array({0})
-                                 : Json::array({std::uint64_t(0), UINT64_MAX})),
+                      (bit == 14 ? Json::array({0}) : Json::array({std::uint64_t(0), UINT64_MAX})),
                   "only primary bit 14 excludes a base-loaded reference from reconciliation");
         }
     }
