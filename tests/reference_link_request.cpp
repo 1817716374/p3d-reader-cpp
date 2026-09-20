@@ -4,9 +4,11 @@
 #include <future>
 #include <random>
 
+unsigned reference_model_tests();
+
 unsigned reference_link_request_tests() {
     using namespace p3d;
-    unsigned checks = 0;
+    unsigned checks = reference_model_tests();
     auto check = [&](bool ok, const char *why) {
         ++checks;
         require(ok, why);
