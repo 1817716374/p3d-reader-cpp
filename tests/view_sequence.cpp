@@ -5,6 +5,124 @@
 #include <random>
 
 namespace {
+unsigned model_link_registry_tests() {
+    using namespace p3d;
+    unsigned checks = 0;
+    auto check = [&](bool ok, const char *message) {
+        ++checks;
+        require(ok, message);
+    };
+    Json records = Json::array();
+    Json input = {{"scope", "fresh_model_control_then_graphics_id_registration"},
+                  {"status", "resolved"},
+                  {"model_storage", Json::array({"model"})},
+                  {"initial_id_counter", 100},
+                  {"roots", Json::array()},
+                  {"inputs", Json::array({{{"kind", "P3D-SMC"},
+                                           {"status", "resolved"},
+                                           {"container", Json::array({"model", "control"})},
+                                           {"root_count", 0}}})}};
+    auto add = [&](unsigned type, std::uint64_t source_id, std::uint64_t assigned_id,
+                   unsigned subtype = 0, bool control = true) {
+        Bytes bytes(type == 13 ? 372 : 44, 0);
+        auto put = [&](std::size_t offset, auto value) {
+            std::memcpy(bytes.data() + offset, &value, sizeof value);
+        };
+        put(4, static_cast<std::uint16_t>(type));
+        put(8, static_cast<std::uint32_t>((bytes.size() - 4) / 2));
+        put(12, static_cast<std::uint32_t>((bytes.size() - 4) / 2));
+        put(16, static_cast<std::uint32_t>(subtype));
+        put(20, source_id);
+        const auto ni = records.size();
+        records.push_back(parse_native(bytes).at(0));
+        const auto ri = input["roots"].size();
+        input["roots"].push_back(
+            {{"kind", control ? "P3D-SMC" : "P3D-SMG"},
+             {"input_list_index", control ? 0 : 1},
+             {"container", Json::array({"model", control ? "control" : "graphics"})},
+             {"native_record_index", ni},
+             {"block_number", ri + 1},
+             {"records", Json::array({{{"native_record_index", ni},
+                                       {"input_occurrence_index", ri},
+                                       {"parent_input_occurrence_index", nullptr},
+                                       {"source_id", source_id},
+                                       {"assigned_id", assigned_id}}})}});
+        if (control)
+            input["inputs"][0]["root_count"] = input["inputs"][0]["root_count"].get<unsigned>() + 1;
+        return ri;
+    };
+    add(13, 8, UINT64_MAX);
+    add(13, 8, 2);
+    add(13, 9, UINT64_C(0x8000000000000000));
+    add(47, 11, 11, 33);
+    auto last = add(47, 12, 12, 33);
+    const auto graphics = add(13, 44, 44, 0, false);
+    add(47, 45, 45, 33, false);
+    // A descendant in the prepared preorder is not a control-list root.
+    auto child = input["roots"][graphics]["records"][0];
+    child["parent_input_occurrence_index"] = 0;
+    child["input_occurrence_index"] = 99;
+    input["roots"][0]["records"].push_back(child);
+    const auto unchanged = records;
+    auto r = initial_model_link_registry(input, records);
+    check(
+        r.at("status") == "resolved" && r.at("registry").size() == 3 &&
+            r.at("registry")[0].at("id") == 2 &&
+            r.at("registry")[1].at("id") == UINT64_C(0x8000000000000000) &&
+            r.at("registry")[2].at("id") == UINT64_MAX && records == unchanged,
+        "control-root registry uses assigned IDs and unsigned tree order without changing sources");
+    check(r.at("saved_sequence_source").at("root_index") == last &&
+              r.at("registry")[0].at("source").at("source_id") == 8,
+          "last control sequence wins while original colliding file IDs remain available");
+    const auto sequence_index = input["roots"][last]["native_record_index"].get<std::size_t>();
+    records[sequence_index]["view_link_sequence"]["decode_error"] = "invalid sequence";
+    check(
+        initial_model_link_registry(input, records).at("saved_sequence_source").at("root_index") ==
+            last,
+        "registry selection does not fall back from a malformed final sequence");
+    input["status"] = "partial"; // Later graphics input does not alter completed control IDs.
+    check(initial_model_link_registry(input, records).at("status") == "resolved",
+          "incomplete later graphics input does not block completed control registration");
+    input["roots"][0]["records"][0]["assigned_id"] = 0;
+    input["roots"][1]["records"][0]["assigned_id"] = 0;
+    r = initial_model_link_registry(input, records);
+    check(r.at("registry").size() == 2 && r.at("registry")[0].at("id") == 0 &&
+              r.at("registry")[0].at("source").at("root_index") == 1 &&
+              r.at("replaced_sources").size() == 1,
+          "zero registration keys are retained and repeated keys select the last root");
+    auto bad = input;
+    bad["inputs"][0]["status"] = "partial";
+    check(initial_model_link_registry(bad, records).at("status") == "unresolved",
+          "incomplete control input cannot establish the complete link registry");
+    bad = input;
+    bad["roots"].erase(0);
+    check(initial_model_link_registry(bad, records).at("reason") ==
+              "incomplete_assigned_control_roots",
+          "control root count prevents silently accepting a missing source");
+    bad = input;
+    bad["roots"][0]["records"][0]["assigned_id"] = -1;
+    check(initial_model_link_registry(bad, records).at("status") == "unresolved",
+          "negative assigned ID cannot wrap to a valid unsigned key");
+    bad = input;
+    bad["roots"][1]["records"][0]["input_occurrence_index"] = 0;
+    check(initial_model_link_registry(bad, records).at("status") == "unresolved",
+          "duplicate occurrence identity is not merged merely because source IDs match");
+    bad = input;
+    bad["roots"][0]["container"] = Json::array({"other", "control"});
+    check(initial_model_link_registry(bad, records).at("status") == "unresolved",
+          "control roots cannot be borrowed from a different model container");
+    bad = input;
+    bad["roots"] = Json::array();
+    bad["inputs"][0]["status"] = "not_loaded";
+    r = initial_model_link_registry(bad, records);
+    check(r.at("registry").empty() && r.at("saved_sequence_source").is_null(),
+          "missing control container has an empty conditional initial registry");
+    bad["status"] = "unresolved";
+    check(initial_model_link_registry(bad, records).at("status") == "unresolved",
+          "failed ID preparation is not interpreted as an empty successful model");
+    return checks;
+}
+
 unsigned view_candidate_tests() {
     using namespace p3d;
     unsigned checks = 0;
@@ -187,7 +305,7 @@ unsigned view_candidate_tests() {
 
 unsigned view_sequence_tests() {
     using namespace p3d;
-    unsigned checks = view_candidate_tests();
+    unsigned checks = view_candidate_tests() + model_link_registry_tests();
     auto check = [&](bool ok, const char *message) {
         ++checks;
         require(ok, message);

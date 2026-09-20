@@ -66,4 +66,11 @@ struct ViewCandidateContext {
 // in the supplied object graph. Does not open files or construct runtime links.
 // On an unresolved result, no final candidate list is returned.
 Json collect_view_link_candidates(const ViewCandidateContext &context);
+
+// Fresh control-list registration, before runtime flag changes or callbacks.
+// model_input is Document::native_model_id_assignments(...); native_records are
+// from the same document. Only root objects of the control list participate.
+Json initial_model_link_registry(const Json &model_input, const Json &native_records);
+Json initial_model_link_registry(const Document &document, const StreamPath &model_storage,
+                                 std::uint64_t initial_id_counter);
 } // namespace p3d
