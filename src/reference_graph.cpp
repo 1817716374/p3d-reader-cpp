@@ -69,6 +69,45 @@ Json reference_parent_root(const ReferenceSearchContext &c, std::optional<std::s
     return out;
 }
 
+std::optional<std::size_t>
+detail::reference_connected_root_impl(const std::vector<ReferenceSearchModel> &models,
+                                      std::optional<std::size_t> index) {
+    if (!index)
+        return {};
+    require(*index < models.size(), "reference_graph_index_out_of_range");
+    const auto &node = models[*index];
+    if (!node.valid)
+        return {};
+    std::optional<std::size_t> root;
+    if (node.object_dispatch == ReferenceObjectDispatch::model) {
+        require(!node.root_present || *node.root_present, "ordinary_model_has_no_self_root");
+        root = index;
+        require(!node.connected_root_known || node.connected_root == root,
+                "ordinary_model_has_nonself_connected_root");
+    } else if (node.connected_root_known) {
+        root = node.connected_root;
+    } else {
+        require(node.root_present && !*node.root_present, "connected_root_identity_required");
+    }
+    require(!node.root_present || *node.root_present == root.has_value(),
+            "conflicting_connected_root_presence");
+    require(!root || *root < models.size(), "connected_root_index_out_of_range");
+    // The native getter returns this model pointer directly. It does not walk
+    // the target's parent/root chain or apply another object-validity filter.
+    return root;
+}
+
+Json reference_connected_root(const ReferenceSearchContext &c, std::optional<std::size_t> index) {
+    Json out = {{"status", "unresolved"}, {"scope", "native_connected_root_query"}};
+    try {
+        const auto root = detail::reference_connected_root_impl(c.models, index);
+        out.update({{"status", "resolved"}, {"model_index", root ? Json(*root) : Json()}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
 Json reference_nesting_depth(const ReferenceSearchContext &c, std::optional<std::size_t> index,
                              std::int32_t cap) {
     Json out = {{"status", "unresolved"},

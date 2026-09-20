@@ -62,6 +62,10 @@ struct ReferenceSearchModel {
     bool secondary_list_known_absent = false;
     std::vector<std::optional<std::size_t>> secondary_links;
     bool secondary_links_complete = false;
+    // Native virtual root query: an ordinary reference's connected model (+88).
+    // This is independent of parent/owner. Unknown differs from known null.
+    bool connected_root_known = false;
+    std::optional<std::size_t> connected_root;
 };
 // A freshly constructed ordinary reference after successful initial input,
 // before connecting its target or loading its own active links. parent is the
@@ -78,6 +82,12 @@ struct ReferenceSearchContext {
     std::optional<std::size_t> start;
     bool start_known = false;
 };
+Json reference_connected_root(const ReferenceSearchContext &context,
+                              std::optional<std::size_t> object_index);
+// Uses connected-root identity when provided; root metadata is borrowed from
+// that model. Without a binding, the existing explicit flat metadata is used.
+Json match_reference_model(const ReferenceSearchQuery &query, const ReferenceSearchContext &context,
+                           std::optional<std::size_t> object_index);
 // Includes the starting model, then eligible direct active references recursively
 // in native order. This is not a traversal of the document's structural tree.
 Json search_reference_descendants(const ReferenceSearchQuery &query,

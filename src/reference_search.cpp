@@ -56,7 +56,8 @@ Json reference_descendant_search_gate(const ReferenceDescendantGateContext &c) {
     return out;
 }
 
-Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchModel &m) {
+static Json match_model(const ReferenceSearchQuery &q, const ReferenceSearchModel &m,
+                        const ReferenceSearchModel *root_data, bool root_known, bool root_value) {
     Json out = {{"status", "unresolved"}, {"scope", "loaded_reference_model_search_match"}};
     auto finish = [&](bool matched, const char *reason) {
         out.update({{"status", "resolved"}, {"matched", matched}, {"reason", reason}});
@@ -66,18 +67,26 @@ Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchM
         require(q.reference_present, "reference_object_required_for_model_match");
         bool root = false;
         if (m.valid) {
-            if (m.object_dispatch == ReferenceObjectDispatch::model) {
+            if (root_known) {
+                root = root_value;
+            } else if (m.connected_root_known) {
+                require(!m.connected_root, "connected_root_graph_context_required");
+                require(m.object_dispatch != ReferenceObjectDispatch::model &&
+                            (!m.root_present || !*m.root_present),
+                        "conflicting_connected_root_presence");
+            } else if (m.object_dispatch == ReferenceObjectDispatch::model) {
                 require(!m.root_present || *m.root_present, "ordinary_model_has_no_self_root");
                 root = true;
             } else
                 root = known(m.root_present, "search_model_root_presence_required");
         }
+        const auto &data = root_data ? *root_data : m;
         std::u16string file;
         bool file_present = false;
         if (root) {
-            require(!(m.file_known_absent && m.file), "conflicting_search_model_file_state");
-            if (!m.file_known_absent) {
-                const auto &f = known(m.file, "search_model_file_required");
+            require(!(data.file_known_absent && data.file), "conflicting_search_model_file_state");
+            if (!data.file_known_absent) {
+                const auto &f = known(data.file, "search_model_file_required");
                 file = prefix(f.lookup_reference);
                 if (file.empty())
                     file = prefix(f.stored_reference);
@@ -101,7 +110,7 @@ Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchM
         if (known(q.runtime_flags, "search_reference_runtime_flags_required") & 0x1000u) {
             const auto id = !m.valid ? UINT32_C(0xfffffffe)
                             : !root  ? UINT32_MAX
-                                     : known(m.model_id, "search_model_id_required");
+                                     : known(data.model_id, "search_model_id_required");
             out["model_match_kind"] = "model_id";
             out["compared_model_id"] = id;
             return finish(id == known(q.model_id, "search_reference_model_id_required"),
@@ -111,17 +120,51 @@ Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchM
             prefix(known(q.model_name, "search_reference_primary_model_name_required"));
         if (root && !name.empty()) {
             out["model_match_kind"] = "primary_model_name";
-            return finish(equal(name, prefix(known(m.model_name, "search_model_name_required"))),
+            return finish(equal(name, prefix(known(data.model_name, "search_model_name_required"))),
                           "primary_model_name_comparison");
         }
         out["model_match_kind"] = "file_default_model";
         return finish(root && file_present &&
-                          known(m.is_default_model, "search_default_model_state_required"),
+                          known(data.is_default_model, "search_default_model_state_required"),
                       "default_model_comparison");
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }
     return out;
+}
+
+Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchModel &m) {
+    return match_model(q, m, nullptr, false, false);
+}
+
+Json detail::match_reference_model_impl(const ReferenceSearchQuery &q,
+                                        const std::vector<ReferenceSearchModel> &models,
+                                        std::optional<std::size_t> index) {
+    try {
+        require(q.reference_present, "reference_object_required_for_model_match");
+        if (!index) {
+            ReferenceSearchModel absent;
+            absent.valid = false;
+            return match_model(q, absent, nullptr, true, false);
+        }
+        require(*index < models.size(), "reference_graph_index_out_of_range");
+        const auto &node = models[*index];
+        if (!node.connected_root_known && node.object_dispatch != ReferenceObjectDispatch::model)
+            return match_reference_model(q, node);
+        const auto root = reference_connected_root_impl(models, index);
+        auto result = match_model(q, node, root ? &models[*root] : nullptr, true, root.has_value());
+        result["root_model_index"] = root ? Json(*root) : Json();
+        return result;
+    } catch (const std::exception &e) {
+        return {{"status", "unresolved"},
+                {"scope", "loaded_reference_model_search_match"},
+                {"reason", e.what()}};
+    }
+}
+
+Json match_reference_model(const ReferenceSearchQuery &q, const ReferenceSearchContext &c,
+                           std::optional<std::size_t> index) {
+    return detail::match_reference_model_impl(q, c.models, index);
 }
 
 Json detail::search_reference_descendants_impl(const ReferenceSearchQuery &query,
@@ -158,7 +201,7 @@ Json detail::search_reference_descendants_impl(const ReferenceSearchQuery &query
             if (!frame.entered) {
                 frame.entered = true;
                 out["visited_model_indices"].push_back(frame.index ? Json(*frame.index) : Json());
-                auto matched = match_reference_model(query, model);
+                auto matched = detail::match_reference_model_impl(query, models, frame.index);
                 if (matched.at("status") != "resolved") {
                     out["reason"] = matched.at("reason");
                     out["unresolved_model_match"] = std::move(matched);

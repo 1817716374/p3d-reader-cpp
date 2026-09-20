@@ -49,4 +49,11 @@ Json lookup_native_model(std::uint32_t id, const NativeModelLookupContext &conte
 Json resolve_reference_model(const ReferenceModelQuery &query,
                              const ReferenceModelFileContext &file,
                              const NativeModelLookupContext &models);
+enum class NativeModelReferenceOperation { add, remove };
+// Complete ordered list of model back-reference pointer identities. Null is a
+// known null pointer. Preserves the native compact-then-single-erase behavior,
+// including its result on duplicate input. Does not execute attachment callbacks.
+Json native_model_reference_list(const std::vector<std::optional<std::size_t>> &references,
+                                 std::optional<std::size_t> reference,
+                                 NativeModelReferenceOperation operation);
 } // namespace p3d

@@ -29,6 +29,7 @@
 !/tests/reference_nesting.cpp
 !/tests/reference_link_request.cpp
 !/tests/reference_model.cpp
+!/tests/reference_connection.cpp
 !/tests/reference_loading.cpp
 !/tests/reference_search.cpp
 !/tests/reference_graph.cpp

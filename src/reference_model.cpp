@@ -184,4 +184,35 @@ Json resolve_reference_model(const ReferenceModelQuery &q, const ReferenceModelF
                 {"primary_flags_set_mask", 0x200}});
     return out;
 }
+Json native_model_reference_list(const std::vector<std::optional<std::size_t>> &references,
+                                 std::optional<std::size_t> reference,
+                                 NativeModelReferenceOperation operation) {
+    Json out = {{"status", "unresolved"}, {"scope", "native_model_back_reference_list"}};
+    try {
+        require(operation == NativeModelReferenceOperation::add ||
+                    operation == NativeModelReferenceOperation::remove,
+                "invalid_model_reference_list_operation");
+        auto result = references;
+        auto first = std::find(result.begin(), result.end(), reference);
+        if (operation == NativeModelReferenceOperation::add) {
+            if (first == result.end())
+                result.push_back(reference);
+        } else if (first != result.end()) {
+            // Native 1b3940 compacts nonmatches, then erases ONE item at the
+            // logical end, not the entire trailing range. Do not "repair" it.
+            auto write = first;
+            for (auto read = first + 1; read != result.end(); ++read)
+                if (*read != reference)
+                    *write++ = *read;
+            result.erase(write);
+        }
+        out["references"] = Json::array();
+        for (auto index : result)
+            out["references"].push_back(index ? Json(*index) : Json());
+        out.update({{"status", "resolved"}, {"changed", result != references}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace p3d

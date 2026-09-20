@@ -5,11 +5,13 @@
 
 unsigned reference_nesting_tests();
 unsigned reference_link_request_tests();
+unsigned reference_connection_tests();
 
 unsigned reference_graph_tests() {
     using namespace p3d;
     using Dispatch = ReferenceObjectDispatch;
-    unsigned checks = reference_nesting_tests() + reference_link_request_tests();
+    unsigned checks =
+        reference_nesting_tests() + reference_link_request_tests() + reference_connection_tests();
     auto check = [&](bool ok, const char *s) {
         ++checks;
         require(ok, s);
