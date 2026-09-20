@@ -296,6 +296,112 @@ Json initial_runtime_state(const Json &input, const Json &links, const Json &id,
     }
     return out;
 }
+
+Json flag_control_dependency(const Json &links) {
+    Json out = {{"status", "absent"}, {"app", 0x56d0}, {"owner", 10000}, {"relation", 16}};
+    try {
+        for (std::size_t i = 0; i < links.size(); ++i) {
+            const auto &link = links[i];
+            if (link.at("app") != 0x56d0 || !(link.at("header").get<unsigned>() & 0x1000u))
+                continue;
+            const auto bytes = bytesof(link.at("payload"));
+            require(bytes.size() >= 2, "truncated_flag_dependency_owner");
+            if (Reader(bytes).u16() != 10000)
+                continue;
+            require(bytes.size() >= 4, "truncated_flag_dependency_relation");
+            if (Reader(bytes, 2).u16() != 16)
+                continue;
+            out["selected_linkage_index"] = i;
+            out["source_offset"] = link.value("offset", Json());
+            require(bytes.size() >= 6, "truncated_flag_dependency_format");
+            const auto flags = Reader(bytes, 4).u16();
+            out["flags"] = flags;
+            if ((flags & 0x3c00u) != 0x1000u) {
+                out["status"] = "ignored_format";
+                return out;
+            }
+            require(bytes.size() >= 8, "truncated_flag_dependency_count");
+            out["count"] = Reader(bytes, 6).u16();
+            if (out.at("count") != 1) {
+                out["status"] = "ignored_count";
+                return out;
+            }
+            // This particular consumer reads only the first element ID. The
+            // generic format-4 dependency's second ID is not accessed here.
+            require(bytes.size() >= 16, "truncated_flag_dependency_element_id");
+            out["element_id"] = Reader(bytes, 8).u64();
+            out["status"] = "selected";
+            return out;
+        }
+    } catch (const std::exception &e) {
+        out["status"] = "not_evaluated";
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json initial_loaded_flags(const Json &input, const Json &links) {
+    Json out = {{"status", "partial"},
+                {"scope", "ordinary_reference_input_before_outer_loading"},
+                {"applies_when", "ordinary_native_input_succeeds"},
+                {"primary", {{"status", "not_evaluated"}}},
+                {"secondary", {{"status", "not_evaluated"}}}};
+    out["control_dependency"] = flag_control_dependency(links);
+    auto &primary = out["primary"];
+    try {
+        require(input.at("status") == "decoded", "decoded_reference_input_required");
+        const auto source = input.at("origin_inputs").at("primary_flags").get<std::uint32_t>();
+        primary["source_flags"] = source;
+        auto flags = source;
+        const auto &transform = input.at("transform");
+        require(transform.at("status") == "computed", "initial_reference_transform_required");
+        const bool recompute = transform.at("scale_adjustment_applied").get<bool>();
+        primary["bit0_recomputed"] = recompute;
+        if (recompute) {
+            // This native query precedes loading the two source points. Both
+            // point members are still zero from reset, even for translated input.
+            bool identity = transform.at("scale").get<double>() == 1.;
+            if (identity) {
+                const auto matrix = transform.at("matrix").get<Matrix3>();
+                for (unsigned row = 0; row < 3; ++row)
+                    for (unsigned col = 0; col < 3; ++col)
+                        identity = identity &&
+                                   std::abs(matrix[row][col] - (row == col ? 1. : 0.)) <= 1e-12;
+            }
+            flags = (flags & ~1u) | (identity ? 1u : 0u);
+            primary["recomputed_bit0"] = identity;
+        }
+        const auto &dependency = out.at("control_dependency");
+        require(dependency.at("status") != "not_evaluated", "flag_control_dependency_unresolved");
+        const bool nonzero = dependency.at("status") == "selected" &&
+                             dependency.at("element_id").get<std::uint64_t>() != 0;
+        if (!nonzero)
+            flags &= UINT32_C(0x7dfffeff);
+        primary.update({{"status", "decoded"},
+                        {"value", flags},
+                        {"cleared_without_dependency", !nonzero},
+                        {"changed_bits", flags ^ source}});
+    } catch (const std::exception &e) {
+        primary["reason"] = e.what();
+    }
+    auto &secondary = out["secondary"];
+    try {
+        require(input.at("status") == "decoded", "decoded_reference_input_required");
+        const auto source = input.at("origin_inputs").at("secondary_flags").get<std::uint32_t>();
+        const auto &depths = input.at("clipping").at("depths");
+        const auto value = depths.at("flags_after_depth_validation").get<std::uint32_t>();
+        secondary.update({{"status", "decoded"},
+                          {"source_flags", source},
+                          {"value", value},
+                          {"depth_flags_cleared", depths.at("depth_flags_cleared")},
+                          {"changed_bits", source ^ value}});
+    } catch (const std::exception &e) {
+        secondary["reason"] = e.what();
+    }
+    if (primary.at("status") == "decoded" && secondary.at("status") == "decoded")
+        out["status"] = "decoded";
+    return out;
+}
 } // namespace
 
 Json native_reference_target(const Json &input, const Json &links) {
@@ -361,6 +467,9 @@ Json native_reference_target(const Json &input, const Json &links) {
     out["initial_runtime_state"] =
         initial_runtime_state(input, links, id_link, out["file_query_state"]);
     if (out["initial_runtime_state"]["status"] != "decoded")
+        out["status"] = "partial";
+    out["initial_loaded_flags"] = initial_loaded_flags(input, links);
+    if (out["initial_loaded_flags"]["status"] != "decoded")
         out["status"] = "partial";
     return out;
 }

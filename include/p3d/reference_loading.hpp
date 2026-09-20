@@ -44,6 +44,12 @@ struct ReferenceLoadingDecisionContext {
 // is supplied. Does not run input callbacks, build a graph, or mutate lists.
 Json reference_loading_decision(std::uint16_t record_type,
                                 const ReferenceLoadingDecisionContext &context);
+// Uses source and initial loaded flags from a parsed native record. The two
+// corresponding flag members in context are ignored. Other operation results,
+// including native_input_status, must still describe the actual loading attempt.
+// This entry is for the initial ordinary input state, before later mutations.
+Json initial_reference_loading_decision(const Json &reference_record,
+                                        const ReferenceLoadingDecisionContext &context);
 
 enum class ReferenceLinkList { active, secondary };
 struct ReferenceLinkListEntry {
