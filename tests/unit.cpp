@@ -8,6 +8,7 @@
 using namespace p3d;
 unsigned bspline_surface_tests();
 unsigned graphics_bytes_tests();
+unsigned native_font_selection_tests();
 unsigned bfa_tests();
 unsigned bspline_trim_tests();
 unsigned bspline_mesh_tests();
@@ -2746,6 +2747,7 @@ int main() {
         checks += native_model_directory_tests();
         checks += reference_extension_tests();
         checks += native_application_tests();
+        checks += native_font_selection_tests();
         checks += mesh_normal_tests();
         checks += mesh_tessellation_tests();
         checks += mesh_buffer_tests();

@@ -679,6 +679,33 @@ Json resolve_component_material_overrides(const Json &component_instance,
 // Returns the requested declaration/default family, before actual font loading,
 // substitution or the separate big-font selection step.
 Json native_primary_font_request(const Json &catalog, std::uint32_t lookup_id);
+// Metadata supplied by a caller's font provider. No font file is opened by the
+// parser. nullopt flags mean unknown, not false. present=false describes a
+// known null declaration entry or absent default big font. A missing font
+// file normally produces a present placeholder, not a null registry entry.
+struct NativeFontResource {
+    Json identity = nullptr;
+    std::uint8_t type = 0; // 2=TrueType, 3=SHX
+    bool present = true;
+    std::optional<bool> is_valid;
+    std::optional<bool> is_big_font;
+    // TrueType's primary substitution decision is distinct from is_valid.
+    // For SHX the native decision uses is_valid instead.
+    std::optional<bool> primary_substitution_required;
+};
+struct NativeFontContext {
+    // Requests have status declaration_request, default_font_request or
+    // default_big_font_request. The latter observes the SHX manager after its
+    // default initialization. Return nullopt for unavailable knowledge.
+    // Results must describe a consistent resource context throughout the call.
+    std::function<std::optional<NativeFontResource>(const Json &)> resolve;
+};
+// Applies primary substitution, explicit/default big-font selection and the
+// primary-is-big swap. Keys are explicit full-width lookup IDs. Does not load
+// glyphs or derive codepages. Native type 54 maps characters with the returned
+// character_mapping_font (big_font when present, otherwise main_font).
+Json select_native_text_fonts(const Json &catalog, std::uint32_t primary_lookup_id,
+                              std::uint32_t big_lookup_id, const NativeFontContext &context);
 // Parsed once in source stream order. All IDs retain their original scopes.
 // References returned by accessors are immutable and remain valid for the document lifetime.
 class Document {
