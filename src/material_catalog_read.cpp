@@ -3,6 +3,26 @@
 
 namespace p3d {
 namespace {
+Json assign_name(std::string &current, const std::string &requested, const char *source,
+                 std::string &name_source) {
+    const auto prefix = requested.substr(0, requested.find('\0'));
+    // Native 2fa3a0 counts Windows wchar_t units up to the first NUL. Rejected
+    // names leave the object unchanged; the provider ignores its return code.
+    Json(prefix).dump(); // Strict UTF-8 validation before counting leading bytes.
+    std::size_t units = 0;
+    for (unsigned char byte : prefix)
+        if ((byte & 0xc0) != 0x80)
+            units += byte >= 0xf0 ? 2 : 1; // Supplementary code points need a surrogate pair.
+    const bool accepted = units <= 30;
+    if (accepted) {
+        current = prefix;
+        name_source = source;
+    }
+    return {{"source", source},
+            {"requested_prefix_utf16_units", units},
+            {"assigned", accepted},
+            {"native_return_code", accepted ? 0 : 1}};
+}
 bool same_context(const Json &resource, const MaterialCatalogOptions &options) {
     const auto &context = resource.at("primary_context");
     if (context.at("kind") == "current_resource_context")
@@ -203,16 +223,23 @@ Json native_catalog_material_read(const Json &catalog, const Json &container, co
                 read["object_resource_reference"] = source.at("resource_reference");
                 const auto &resource = source.at("resource_reference").at("interpretation");
                 require(resource.at("status") == "decoded", "material_object_resource_unresolved");
-                // The object reader first applies the record's name; its caller
-                // then overwrites name and ID with the actual catalog entry.
-                auto final_name = entry.at("name").get<std::string>();
-                final_name.resize(final_name.find('\0') == std::string::npos
-                                      ? final_name.size()
-                                      : final_name.find('\0'));
+                // XML initializes the parameter block, not the object's name.
+                // Both later setter calls can reject a long name without
+                // failing the load. The final catalog ID is always assigned.
+                std::string final_name, name_source = "constructor_default";
+                Json assignments = Json::array();
+                assignments.push_back(assign_name(final_name, name.at("value").get<std::string>(),
+                                                  "object_record", name_source));
+                assignments.push_back(assign_name(final_name, entry.at("name").get<std::string>(),
+                                                  "catalog_entry", name_source));
                 material["name"] = final_name;
                 material["id"] = id;
                 material["object_name"] = name.at("value");
-                material["name_source"] = "catalog_entry";
+                material["catalog_name"] = entry.at("name");
+                material["name_source"] = name_source;
+                material["name_assignment"] = {{"initial_name", ""},
+                                               {"limit_utf16_units", 30},
+                                               {"steps", std::move(assignments)}};
                 material["supplementary_attributes"] = supplementary_input(attachment);
                 material["embedded_texture_inputs"] = embedded_texture_input(attachment);
                 material["texture_postprocessing"] = "not_performed";

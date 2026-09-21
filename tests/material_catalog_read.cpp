@@ -110,6 +110,82 @@ unsigned material_catalog_read_tests() {
     check(read.at("object_resource_reference").at("interpretation").at("reader_fallback") ==
               "missing_resource_reference",
           "missing resource string uses native current-context fallback");
+    auto material = [&] { return run().at("entries")[0].at("material"); };
+    catalog["entries"][0]["name"] = std::string(30, 'c');
+    auto named = material();
+    check(named["name"] == std::string(30, 'c') && named["name_source"] == "catalog_entry" &&
+              named["name_assignment"]["steps"][1]["native_return_code"] == 0,
+          "exactly thirty UTF16 units are accepted as the catalog object name");
+    catalog["entries"][0]["name"] = std::string(31, 'c');
+    named = material();
+    check(named["name"] == "Object name" && named["name_source"] == "object_record" &&
+              named["id"] == 777 && named["catalog_name"] == std::string(31, 'c') &&
+              named["name_assignment"]["steps"][1]["native_return_code"] == 1,
+          "rejected catalog rename preserves object name but still assigns catalog ID");
+    records[1] = record(std::string(31, 'o'));
+    named = material();
+    check(named["name"] == "" && named["name_source"] == "constructor_default" &&
+              named["object_name"] == std::string(31, 'o') &&
+              named["name_assignment"]["steps"][0]["assigned"] == false &&
+              named["name_assignment"]["steps"][1]["assigned"] == false,
+          "both rejected setters retain the constructor empty name without dropping source names");
+    reset_attributes(Json::array({attribute(u"<Material name='XML name'/>")}));
+    check(material()["name"] == "", "XML parameters do not replace native object identity");
+    reset_attributes(Json::array({first, second}));
+    catalog["entries"][0]["name"] = "Accepted catalog";
+    named = material();
+    check(named["name"] == "Accepted catalog" && named["name_source"] == "catalog_entry",
+          "rejected object rename does not prevent subsequent catalog rename");
+    catalog["entries"][0]["name"] = "";
+    check(material()["name"] == "" && material()["name_source"] == "catalog_entry",
+          "empty requested name is assigned rather than treated as an absent override");
+    catalog["entries"][0]["name"] = std::string("Short\0", 6) + std::string(80, 'x');
+    named = material();
+    check(named["name"] == "Short" &&
+              named["name_assignment"]["steps"][1]["requested_prefix_utf16_units"] == 5,
+          "setter length and assignment both stop at first NUL");
+    auto wide_record = [&](const std::u16string &name) {
+        std::string bytes{"\xff\xfd", 2};
+        for (auto unit : name) {
+            bytes.push_back(char(unit & 255));
+            bytes.push_back(char(unit >> 8));
+        }
+        bytes.append(2, '\0');
+        return record(bytes);
+    };
+    std::string han30;
+    for (unsigned i = 0; i < 30; ++i)
+        han30 += u8"材";
+    records[1] = wide_record(std::u16string(30, u'材'));
+    catalog["entries"][0]["name"] = std::string(31, 'c');
+    named = material();
+    check(named["name"] == han30 && named["name_source"] == "object_record" &&
+              named["name_assignment"]["steps"][0]["requested_prefix_utf16_units"] == 30,
+          "thirty non-ASCII BMP units are accepted independently of UTF8 byte length");
+    records[1] = wide_record(std::u16string(31, u'材'));
+    check(material()["name_source"] == "constructor_default",
+          "thirty-one non-ASCII BMP units are rejected by the object setter");
+    records[1] = record("Object name");
+    catalog["entries"][0]["name"] = std::string(28, 'x') + u8"\U0001f600";
+    named = material();
+    check(named["name"] == catalog["entries"][0]["name"] &&
+              named["name_assignment"]["steps"][1]["requested_prefix_utf16_units"] == 30,
+          "supplementary Unicode character uses two UTF16 units at the accepted boundary");
+    catalog["entries"][0]["name"] = std::string(29, 'x') + u8"\U0001f600";
+    named = material();
+    check(named["name"] == "Object name" &&
+              named["name_assignment"]["steps"][1]["requested_prefix_utf16_units"] == 31,
+          "thirty Unicode code points can exceed the thirty-unit native limit");
+    std::string combining;
+    for (unsigned i = 0; i < 16; ++i)
+        combining += u8"a\u0301";
+    catalog["entries"][0]["name"] = combining;
+    check(material()["name"] == "Object name",
+          "combining sequences are counted by code units, not displayed graphemes");
+    catalog["entries"][0]["name"] = std::string("\xff", 1);
+    check(run().at("entries")[0].at("status") == "unresolved",
+          "invalid UTF8 cannot fabricate a native material name decision");
+    catalog["entries"][0]["name"] = "Catalog name";
     auto with_tail = attribute(u"<M/>", true, Bytes{0, 0xdc, 7});
     reset_attributes(Json::array({with_tail}));
     result = run();
