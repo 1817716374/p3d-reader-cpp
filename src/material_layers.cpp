@@ -2,6 +2,46 @@
 
 namespace p3d {
 namespace {
+Json empty_resources() {
+    return {{"scope", "ordered_source_requests_before_resource_service"},
+            {"status", "resolved"},
+            {"entries", Json::array()},
+            {"count", 0},
+            {"runtime_resource_status", "not_evaluated"}};
+}
+Json resource_inputs(bool primary_present, const Json &primary, const char *source_key,
+                     const Json &extras) {
+    auto out = empty_resources();
+    auto append = [&](const Json &value, const char *key, unsigned service_slot,
+                      const Json &append_index) {
+        require(value.is_string(), "texture_resource_request_requires_text");
+        const auto text = value.get<std::string>();
+        require(text.find('\0') == std::string::npos, "texture_resource_request_contains_nul");
+        out["entries"].push_back(
+            {{"slot_index", out["entries"].size()},
+             {"source_attribute", key},
+             {"source_value", value},
+             {"source_append_index", append_index},
+             {"service_entry", service_slot == 0x20 ? "primary" : "additional"}});
+    };
+    try {
+        if (primary_present)
+            append(primary, source_key, 0x20, nullptr);
+        if (!extras.is_null()) {
+            const auto status = extras.at("status");
+            require(status == "decoded" || status == "missing",
+                    "additional_texture_requests_unresolved");
+            for (const auto &entry : extras.at("entries"))
+                append(entry.at("value"), "M556", 0x18, entry.at("append_index"));
+        }
+        out["count"] = out["entries"].size();
+    } catch (const std::exception &e) {
+        out["status"] = "unresolved";
+        out["count"] = nullptr;
+        out["reason"] = e.what();
+    }
+    return out;
+}
 Json field(const Json &value) {
     return {{"constructor_value", value}, {"value", value}, {"read_status", "not_written"}};
 }
@@ -58,9 +98,13 @@ void mapping_read(Json &mapping, const Json &reads) {
     }
 }
 Json default_layer() {
-    return {{"origin", "native_constructor"}, {"source_layer_child_index", nullptr},
-            {"data_flags", field(0x800u)},    {"enabled", field(true)},
-            {"option_bit_1", field(false)},   {"option_bit_2", field(false)},
+    return {{"origin", "native_constructor"},
+            {"source_layer_child_index", nullptr},
+            {"resource_inputs", empty_resources()},
+            {"data_flags", field(0x800u)},
+            {"enabled", field(true)},
+            {"option_bit_1", field(false)},
+            {"option_bit_2", field(false)},
             {"mapping", default_mapping()}};
 }
 bool failed(const Json &read) {
@@ -157,6 +201,9 @@ Json material_layer_input(const Json &map, std::size_t child_count) {
         auto &layer = out["layers"][0];
         layer["origin"] = "single_provider";
         const auto &attributes = map.at("source_parameters");
+        layer["resource_inputs"] =
+            resource_inputs(attributes.contains("Filename"), attributes.value("Filename", Json()),
+                            "Filename", map.at("semantics").at("additional_texture_references"));
         const auto &reads = map.at("numeric_reader").at("parameters");
         mapping_read(layer["mapping"], reads);
         boolean_read(layer["enabled"], reads.at("pattern_off"));
@@ -186,6 +233,9 @@ Json material_layer_input(const Json &map, std::size_t child_count) {
             if (gate == "skipped")
                 continue;
             if (gate != "read") {
+                layers.back()["resource_inputs"]["status"] = "unresolved";
+                layers.back()["resource_inputs"]["count"] = nullptr;
+                layers.back()["resource_inputs"]["reason"] = "unresolved_layer_reader_acceptance";
                 out["status"] = "partial";
                 out["reason"] = "unresolved_layer_reader_acceptance";
                 out["layer_count"] = nullptr;
@@ -196,6 +246,10 @@ Json material_layer_input(const Json &map, std::size_t child_count) {
             layer["origin"] = "xml_layer";
             layer["source_layer_child_index"] = index;
             const auto &sem = entry.at("semantics");
+            if (sem.at("type").value("argument_role", Json()) == "texture_reference")
+                layer["resource_inputs"] =
+                    resource_inputs(true, sem.at("type").at("argument"), "LayerType",
+                                    sem.at("additional_texture_references"));
             mapping_read(layer["mapping"], entry.at("numeric_reader").at("parameters"));
             flag_read(layer["data_flags"], sem.at("data_flags"), -1, true);
             if (sem.at("flags").at("reader_applies") == true) {
@@ -317,6 +371,49 @@ Json material_layer_mapping_getters(const Json &containers, const Json &topology
         if (entry.at("status") != "resolved")
             out["status"] = "partial";
         out["entries"].push_back(std::move(entry));
+    }
+    return out;
+}
+
+Json material_layer_resource_getters(const Json &containers, const Json &topology) {
+    Json out = {{"scope", "effective_first_layer_resource_inputs_after_version_conversion"},
+                {"status", "resolved"},
+                {"entries", Json::array()},
+                {"runtime_resource_status", "not_evaluated"}};
+    try {
+        require(topology.at("status") == "resolved", "resolved_map_topology_required");
+        for (const auto &id_value : topology.at("active_object_ids")) {
+            const auto id = id_value.get<std::size_t>();
+            const auto &object = topology.at("objects").at(id);
+            const auto owner = object.at("layer_container_owner_object_id").get<std::size_t>();
+            Json entry = {{"object_id", id},
+                          {"layer_container_owner_object_id", owner},
+                          {"status", "unresolved"}};
+            try {
+                const auto &local = containers.at("containers").at(owner);
+                // Flags/mapping may be incomplete without obscuring a known first layer.
+                require(!local.at("layers").empty(), "effective_first_layer_unavailable");
+                const auto &resources = local.at("layers")[0].at("resource_inputs");
+                entry["layer_index"] = 0;
+                entry["resource_count"] = resources.at("count");
+                if (!resources.at("entries").empty()) {
+                    entry["first_slot_index"] = 0;
+                    entry["first_request_status"] = "known";
+                } else {
+                    entry["first_request_status"] =
+                        resources.at("status") == "resolved" ? "empty" : "unresolved";
+                }
+                require(resources.at("status") == "resolved", "resource_input_sequence_unresolved");
+                entry["status"] = resources.at("entries").empty() ? "empty" : "resolved";
+            } catch (const std::exception &e) {
+                entry["reason"] = e.what();
+                out["status"] = "partial";
+            }
+            out["entries"].push_back(std::move(entry));
+        }
+    } catch (const std::exception &e) {
+        out["status"] = "partial";
+        out["reason"] = e.what();
     }
     return out;
 }
