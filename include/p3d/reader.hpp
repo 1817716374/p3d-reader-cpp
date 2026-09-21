@@ -706,6 +706,22 @@ struct NativeFontContext {
 // character_mapping_font (big_font when present, otherwise main_font).
 Json select_native_text_fonts(const Json &catalog, std::uint32_t primary_lookup_id,
                               std::uint32_t big_lookup_id, const NativeFontContext &context);
+enum class NativeFontCharacterMode { Unknown, TrueType, ShxUnicode, ShxLegacy };
+struct NativeTextCharacterContext {
+    NativeFontCharacterMode mode = NativeFontCharacterMode::Unknown;
+    // Legacy SHX source codes, in degree / diameter / plus-minus order.
+    // These are configured font values, not assumed Unicode codepoints.
+    std::optional<std::array<std::uint16_t, 3>> symbol_codes;
+    std::optional<std::uint32_t> codepage;
+    // Receives one native conversion request: one or two bytes, already cut
+    // at NUL. Match the originating Windows codepage conversion with flags=0.
+    // nullopt means unknown; an empty string means a known failed conversion.
+    std::function<std::optional<std::u16string>(const Bytes &, std::uint32_t)> decode;
+};
+// Consumes native_text.text_conversion.source_units until the first zero.
+// Applies the installed TrueType/SHX classes' character rules, independently
+// of glyph outlines. Keeps the original native_text view unchanged.
+Json map_native_text_characters(const Json &native_text, const NativeTextCharacterContext &context);
 // Parsed once in source stream order. All IDs retain their original scopes.
 // References returned by accessors are immutable and remain valid for the document lifetime.
 class Document {

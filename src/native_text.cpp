@@ -50,7 +50,9 @@ Json decode_native_text_record(const Bytes &b) {
     out["source_encoding_marker"] = hex(slice(source, 0, std::min<std::size_t>(2, source.size())));
     out["trailing_hex"] = hex(slice(b, r.p, r.left()));
     out["text"] = nullptr;
-    Json conversion = {{"status", "not_evaluated"}, {"font_mapping_status", "not_evaluated"}};
+    Json conversion = {{"status", "not_evaluated"},
+                       {"units_status", "not_evaluated"},
+                       {"font_mapping_status", "not_evaluated"}};
     try {
         std::size_t prefix = 0;
         bool wide = false;
@@ -84,6 +86,7 @@ Json decode_native_text_record(const Bytes &b) {
             unicode.push_back(std::uint8_t(unit));
             unicode.push_back(std::uint8_t(unit >> 8));
         }
+        conversion["units_status"] = "decoded";
         if (first == 0xfdff) {
             // Keep the existing string preview for API compatibility, while
             // exposing that the native font/codepage mapping is still required.
@@ -93,11 +96,13 @@ Json decode_native_text_record(const Bytes &b) {
             auto text = utf16(unicode);
             while (!text.empty() && text.back() == 0)
                 text.pop_back();
-            out["text"] = text;
+            out["text"] = utf8(Bytes(text.begin(), text.end()));
             conversion["text_interpretation"] = "source_units_before_font_mapping";
         }
         conversion["status"] = "decoded";
     } catch (const std::exception &e) {
+        if (conversion.at("units_status") != "decoded")
+            conversion["units_status"] = "invalid";
         conversion["status"] = "invalid";
         conversion["error"] = e.what();
     }
