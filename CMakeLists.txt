@@ -14,6 +14,7 @@ target_sources(p3d_reader PRIVATE src/loft_curve.cpp src/loft_open.cpp src/loft_
 target_sources(p3d_reader PRIVATE src/loft_caps.cpp src/graphics_bytes.cpp)
 target_sources(p3d_reader PRIVATE src/graphics_native.cpp)
 target_sources(p3d_reader PRIVATE src/text_bytes.cpp src/native_text.cpp src/native_font.cpp)
+target_sources(p3d_reader PRIVATE src/native_font_catalog.cpp)
 target_sources(p3d_reader PRIVATE src/loft_native_faces.cpp)
 target_sources(p3d_reader PRIVATE src/loft_cap_uv.cpp)
 target_sources(p3d_reader PRIVATE src/loft_mesh.cpp)

@@ -674,6 +674,11 @@ struct ComponentMaterialContext {
 // load materials, or associate serialized entry indices with rebuilt parts.
 Json resolve_component_material_overrides(const Json &component_instance,
                                           const ComponentMaterialContext &context);
+// Query a catalog returned by Document::native_font_catalogs(). The lookup key
+// is explicit: native text callers use font_lookup_id, not the full source ID.
+// Returns the requested declaration/default family, before actual font loading,
+// substitution or the separate big-font selection step.
+Json native_primary_font_request(const Json &catalog, std::uint32_t lookup_id);
 // Parsed once in source stream order. All IDs retain their original scopes.
 // References returned by accessors are immutable and remain valid for the document lifetime.
 class Document {
@@ -713,6 +718,10 @@ class Document {
     // Initial registration of each system table into an empty material catalog.
     // External resources are never searched automatically.
     Json native_material_catalog(const MaterialCatalogOptions & = {}) const;
+    // Fresh SSYS input: last font table, direct members, last key
+    // wins. Does not search font files, load glyphs or evaluate host callbacks.
+    // File-scoped declarations are shared by the file's models.
+    Json native_font_catalogs() const;
     const Json &graphics_records() const;
     const Json &bindings() const;
     const Json &relationships() const;

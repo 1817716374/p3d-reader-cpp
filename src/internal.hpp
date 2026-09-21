@@ -238,6 +238,7 @@ Json native_owner_object_lookup(const Json &owner_ids, const Json &system_ids, s
 Json native_list_record_header(const Json &, const Json &conversion, bool child,
                               bool compound, std::uint32_t descendants, bool system);
 Json native_list_input_preparation(const Json &container, const Json &records);
+Json initial_native_font_catalog(const Json &list, const Json &records);
 Json native_input_containers(const std::vector<Stream> &, const Json &index, const Json &records);
 Json native_material_catalog_records(const Json &native_records,
                                     const std::vector<std::size_t> *selected_members = nullptr);

@@ -455,5 +455,113 @@ unsigned text_bytes_tests() {
     const auto ft = decode_native_text_record(high_font_text);
     check(ft.at("font_id") == 0x12340401 && ft.at("font_lookup_id") == 1025,
           "native text lookup uses low word without changing stored reference");
+    auto table_record = [&](unsigned count) {
+        auto data = font_table;
+        write(data, 36, count, 4);
+        return data;
+    };
+    auto join = [](const std::vector<Bytes> &parts) {
+        Bytes data;
+        for (const auto &part : parts)
+            data.insert(data.end(), part.begin(), part.end());
+        return data;
+    };
+    auto catalog_from = [&](const Bytes &data, bool repeat = false) {
+        Bytes bootstrap(36);
+        write(bootstrap, 4, 46, 2);
+        write(bootstrap, 8, 16, 4);
+        write(bootstrap, 12, 16, 4);
+        write(bootstrap, 16, 8, 4);
+        const auto payload = join({bootstrap, data});
+        auto rows = parse_native(payload);
+        const StreamPath path{"file", "system", "one"};
+        for (auto &row : rows)
+            row["stream"] = path;
+        Bytes raw(16);
+        write(raw, 0, 1, 4);
+        write(raw, 4, repeat ? 0 : 1, 4);
+        for (unsigned i = 0; i < 16; ++i)
+            raw[i] ^= i ? raw[i - 1] : 0x26;
+        raw.push_back(0);
+        Stream stream{path, std::make_shared<Bytes>(raw), std::make_shared<Bytes>(payload), 24};
+        Json aliases = {{"P3D-SSYS", "system"}, {"$1", "one"}};
+        if (repeat)
+            aliases["$2"] = "one";
+        const auto containers = native_input_containers({stream}, aliases, rows);
+        return initial_native_font_catalog(containers[0].at("list_preparation"), rows);
+    };
+    const auto catalog = catalog_from(
+        join({table_record(1), font_record(1025, {88, 0}), table_record(5),
+              font_record(512, {83, 0}), font_record(1024, {65, 0}), font_record(1024, {66, 0}),
+              font_record(511, {67, 0}), font_record(0xffffffffu, {90, 0})}));
+    check(catalog.at("status") == "resolved" && catalog.at("table_candidates").size() == 2 &&
+              catalog.at("selected_table").at("native_record_index") == 3 &&
+              catalog.at("entries").size() == 3,
+          "last font table replaces earlier table instead of merging declarations");
+    check(catalog.at("entries")[0].at("font_id") == 512 &&
+              catalog.at("entries")[1].at("name") == "B" &&
+              catalog.at("entries")[2].at("font_id") == 0xffffffffu &&
+              catalog.at("input")[2].at("action") == "replaced_request" &&
+              catalog.at("input")[2].at("previous_source").at("native_record_index") == 5,
+          "duplicate font IDs replace in input order with full source and unsigned keys");
+    check(catalog.at("input")[3].at("action") == "skipped_font_id" &&
+              native_primary_font_request(catalog, 511).at("requested_font_family") == "Shx",
+          "unregistered low font declaration does not override the lookup fallback");
+    const auto reference = native_primary_font_request(catalog, 1024);
+    check(reference.at("status") == "declaration_request" &&
+              reference.at("declaration").at("name") == "B" &&
+              reference.at("font_resolution_status") == "not_evaluated",
+          "primary font query locates selected declaration without claiming a resolved face");
+    for (unsigned id : {0u, 255u, 256u, 511u, 513u, 1023u, 1025u, 65536u}) {
+        const auto request = native_primary_font_request(catalog, id);
+        check(request.at("status") == "default_font_request" &&
+                  request.at("requested_font_family") ==
+                      (id > 255 && id < 1024 ? "Shx" : "TrueType"),
+              "primary fallback boundaries use explicit query key without truncation");
+    }
+    check(native_primary_font_request(catalog, 0xffffffffu).at("declaration").at("name") == "Z",
+          "full width font request can address a full width declaration key");
+    const auto cleared =
+        catalog_from(join({table_record(1), font_record(1024, {65, 0}), table_record(0)}));
+    check(cleared.at("entries").empty() &&
+              cleared.at("selected_table").at("native_record_index") == 3,
+          "empty last font table clears previous declarations");
+    const auto absent = catalog_from(font_record(1024, {65, 0}));
+    check(absent.at("status") == "resolved" && absent.at("table_selection") == "absent" &&
+              native_primary_font_request(absent, 1024).at("status") == "default_font_request",
+          "font record outside a table is not a registered declaration");
+    auto deleted_font = font_record(1024, {66, 0});
+    write(deleted_font, 6, 0x18, 2);
+    const auto filtered = catalog_from(join(
+        {table_record(3), font_record(1024, {65, 0}), deleted_font, font_record(1025, {67, 0})}));
+    check(filtered.at("entries").size() == 2 && filtered.at("entries")[0].at("name") == "A",
+          "font registration consumes accepted prepared members rather than skipped source rows");
+    const auto damaged = catalog_from(
+        join({table_record(1), font_record(1024, {65, 0}), table_record(1), truncated_font}));
+    check(damaged.at("status") == "unresolved" &&
+              native_primary_font_request(damaged, 1024).at("status") == "unresolved",
+          "bad selected declaration cannot fall back to earlier table or default font");
+    auto ambiguous = catalog;
+    Json wrong_owner = {{"scope", "empty_list_before_runtime_registration"},
+                        {"status", "resolved"},
+                        {"system_bootstrap_required", false},
+                        {"roots", Json::array()}};
+    check(initial_native_font_catalog(wrong_owner, Json::array()).at("status") == "unresolved",
+          "model control list cannot substitute for the file system font owner");
+    wrong_owner["system_bootstrap_required"] = true;
+    wrong_owner["system_bootstrap_found"] = false;
+    check(initial_native_font_catalog(wrong_owner, Json::array()).at("status") == "unresolved",
+          "font directory requires successful system list initialization");
+    const auto repeated = catalog_from(join({table_record(1), font_record(1024, {65, 0})}), true);
+    check(repeated.at("status") == "resolved" && repeated.at("table_candidates").size() == 2 &&
+              repeated.at("selected_table").at("root_index") == 3 &&
+              repeated.at("selected_table").at("native_record_index") == 1,
+          "repeated physical table input retains the last occurrence identity");
+    check(native_primary_font_request(Json(), 255).at("requested_font_family") == "TrueType" &&
+              native_primary_font_request(Json(), 256).at("status") == "unresolved",
+          "low primary IDs bypass font catalog but higher IDs require its complete state");
+    ambiguous["entries"].push_back(catalog.at("entries")[1]);
+    check(native_primary_font_request(ambiguous, 1024).at("status") == "unresolved",
+          "ambiguous externally modified font registry is not resolved arbitrarily");
     return checks;
 }
