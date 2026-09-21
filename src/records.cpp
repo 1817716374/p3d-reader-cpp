@@ -332,6 +332,8 @@ Json parse_native(const Bytes &b) {
             }
         }
         if (type == 54) {
+            out.back()["native_text_style"] =
+                decode_native_text_style(slice(b, pos, attr - pos), out.back()["links"]);
             try {
                 out.back()["native_text"] = decode_native_text_record(slice(b, pos, attr - pos));
             } catch (const std::exception &e) {

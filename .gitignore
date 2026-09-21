@@ -38,6 +38,7 @@
 !/tests/graphics_native.cpp
 !/tests/text_bytes.cpp
 !/tests/native_font_selection.cpp
+!/tests/native_text_style.cpp
 !/tests/material_auxiliary.cpp
 !/tests/material_xml_integer.cpp
 !/tests/material_xml_float.cpp
