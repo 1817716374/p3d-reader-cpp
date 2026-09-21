@@ -20,6 +20,7 @@ Json decode_native_text_record(const Bytes &b) {
                 {"text_offset", start},
                 {"text_bytes", count},
                 {"font_id", r.at<std::uint32_t>(108)},
+                {"font_lookup_id", r.at<std::uint32_t>(108) & 0xffffu},
                 {"justification_value", words[2]},
                 {"style_words", words},
                 {"font_scale", scale},

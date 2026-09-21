@@ -338,6 +338,9 @@ Json parse_native(const Bytes &b) {
                 out.back()["native_text"] = {{"status", "invalid"}, {"error", e.what()}};
             }
         }
+        if ((type == 49 || type == 10) && r.at<std::uint32_t>(pos + 16) == 2)
+            out.back()[type == 49 ? "font_definition" : "font_table"] =
+                decode_native_font_record(slice(b, pos, attr - pos));
         if (type == 49 && r.at<std::uint32_t>(pos + 16) == 1)
             out.back()["layer_definition"] =
                 decode_native_layer(slice(b, pos, attr - pos), out.back()["links"]);

@@ -354,5 +354,106 @@ unsigned text_bytes_tests() {
     auto broken_geometry = reconstruct_native(broken_record, {});
     check(broken_geometry.texts.empty() && !broken_geometry.unknown.empty(),
           "invalid cached text metadata cannot create a positionless scene primitive");
+    auto font_record = [&](std::uint32_t id, const Bytes &name, const Bytes &tail = Bytes()) {
+        Bytes data(50);
+        data.insert(data.end(), name.begin(), name.end());
+        data.insert(data.end(), tail.begin(), tail.end());
+        if (data.size() % 2)
+            data.push_back(0);
+        write(data, 4, 49, 2);
+        write(data, 6, 0x10, 2);
+        write(data, 8, (data.size() - 4) / 2, 4);
+        write(data, 12, (data.size() - 4) / 2, 4);
+        write(data, 16, 2, 4);
+        write(data, 20, 37, 8);
+        write(data, 44, id, 4);
+        write(data, 48, name.size(), 2);
+        return data;
+    };
+    const Bytes chinese_name{0x8b, 0x5b, 0x53, 0x4f};
+    auto fd = decode_native_font_record(font_record(1024, chinese_name));
+    check(fd.at("name") == u8"宋体" && fd.at("font_id") == 1024 && fd.at("status") == "decoded" &&
+              fd.at("font_resolution_status") == "not_evaluated",
+          "font declaration exposes name without claiming installed font");
+    check(fd.at("name_source_units") == Json::array({0x5b8b, 0x4f53}) &&
+              bytesof(fd.at("name_source")) == chinese_name && fd.at("name_source_offset") == 50,
+          "font name offsets include stream prefix and preserve UTF16 units");
+    for (unsigned id : {0u, 255u, 256u, 511u, 512u, 1023u, 1024u, 0xffffffffu}) {
+        const auto f = decode_native_font_record(font_record(id, {65, 0}));
+        check(f.at("font_id") == id &&
+                  f.at("initial_loader_action") == (id < 512 ? "skip_font_id" : "request_font") &&
+                  f.at("requested_font_family") ==
+                      (id < 512 ? Json() : Json(id < 1024 ? "Shx" : "TrueType")),
+              "font loading ID boundaries do not truncate stored catalog key");
+    }
+    const auto null_name = decode_native_font_record(font_record(512, {65, 0, 0, 0, 66, 0}));
+    check(null_name.at("name") == "A" &&
+              null_name.at("name_source_units") == Json::array({65, 0, 66}),
+          "font name stops at first zero while source retains full span");
+    const auto odd = decode_native_font_record(font_record(512, {65, 0, 0xfe}, {0xab}));
+    check(odd.at("name") == "A" && odd.at("ignored_name_suffix_hex") == "fe" &&
+              bytesof(odd.at("unassigned_suffix")) == Bytes{0xab},
+          "font name floors odd byte count without borrowing following byte");
+    check(decode_native_font_record(font_record(1024, {})).at("name") == "",
+          "empty font name does not invent a default face");
+    check(decode_native_font_record(font_record(1024, Bytes(1022, 0))).at("status") == "decoded",
+          "native name accepts 511 wchar units plus terminator");
+    const auto long_name = decode_native_font_record(font_record(1024, Bytes(1024, 0)));
+    check(long_name.at("status") == "partial" && long_name.at("name").is_null() &&
+              long_name.at("name_source_units").size() == 512,
+          "oversized font name preserves source and reports native buffer limit");
+    check(decode_native_font_record(font_record(1024, {0x3d, 0xd8, 0, 0xde})).at("name") ==
+              "\xf0\x9f\x98\x80",
+          "font name converts valid surrogate pair");
+    for (const Bytes name : {Bytes{0, 0xdc}, Bytes{0, 0xd8}, Bytes{0, 0xd8, 65, 0}}) {
+        const auto bad = decode_native_font_record(font_record(1024, name));
+        check(bad.at("status") == "partial" && bad.at("name").is_null() &&
+                  bytesof(bad.at("name_source")) == name,
+              "malformed font UTF16 keeps source without invalid JSON UTF8");
+    }
+    auto truncated_font = font_record(513, chinese_name);
+    write(truncated_font, 48, 0xffff, 2);
+    auto invalid_font = parse_native(truncated_font)[0];
+    check(invalid_font.at("font_definition").at("status") == "invalid" &&
+              invalid_font.at("font_definition").at("font_id") == 513 &&
+              bytesof(invalid_font.at("data")) == truncated_font,
+          "font extent failure keeps independent ID and base record");
+    auto parsed_font = parse_native(font_record(1024, chinese_name));
+    check(parsed_font[0].at("font_definition") == fd && parsed_font[0].at("id") == 37,
+          "font lookup ID differs from native record object ID");
+    Bytes font_table(44);
+    write(font_table, 4, 10, 2);
+    write(font_table, 8, 20, 4);
+    write(font_table, 12, 20, 4);
+    write(font_table, 16, 2, 4);
+    write(font_table, 36, 7, 4);
+    write(font_table, 40, 0x1234abcd, 4);
+    const auto table = parse_native(font_table)[0].at("font_table");
+    check(table.at("declared_descendant_count") == 7 && table.at("status") == "decoded" &&
+              bytesof(table.at("unassigned_suffix")) == Bytes({0xcd, 0xab, 0x34, 0x12}) &&
+              table.at("font_resolution_status") == "not_evaluated",
+          "font table count does not claim validated membership or runtime loading");
+    auto high_font_text = planar;
+    auto extended_table = font_table;
+    extended_table.resize(116);
+    write(extended_table, 6, 0x20, 2);
+    write(extended_table, 108, 9, 4);
+    const auto ext = decode_native_font_record(extended_table);
+    check(ext.at("declared_descendant_count") == 9 &&
+              ext.at("descendant_count_source_offset") == 108 &&
+              ext.at("unassigned_header_extension").at("bytes") == 72,
+          "extended font table reads generic compound count after extended header");
+    extended_table.resize(110);
+    check(decode_native_font_record(extended_table).at("status") == "invalid",
+          "truncated extended font table does not use the normal header count");
+    auto wrong_class = font_record(1024, chinese_name);
+    write(wrong_class, 16, 3, 4);
+    check(decode_native_font_record(wrong_class).at("status") == "invalid" &&
+              !parse_native(wrong_class)[0].contains("font_definition"),
+          "font decoder is restricted to the native font class");
+    write(high_font_text, 108, 0x12340401, 4);
+    const auto ft = decode_native_text_record(high_font_text);
+    check(ft.at("font_id") == 0x12340401 && ft.at("font_lookup_id") == 1025,
+          "native text lookup uses low word without changing stored reference");
     return checks;
 }
