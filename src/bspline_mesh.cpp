@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "bspline_evaluation.hpp"
 #include "glu/sk_glu.h"
 #include <deque>
 
@@ -78,6 +79,14 @@ void combine(double[3], void *sources[4], float[4], void **result, void *data) n
                 require(t >= -margin && t <= 1 + margin && s >= -margin && s <= 1 + margin,
                         "surface trim intersection outside source segments");
                 point = {double(a[0] + t * x), double(a[1] + t * y), 0};
+                // Preserve exact axis-aligned constraints, in particular the
+                // source knot at a patch edge. Roundoff must not choose a side.
+                for (unsigned axis = 0; axis < 2; ++axis) {
+                    if (a[axis] == b[axis])
+                        point[axis] = a[axis];
+                    if (c[axis] == d[axis])
+                        point[axis] = c[axis];
+                }
             }
         } else {
             require(!sources[2] && !sources[3], "surface trim combine source pattern");
@@ -156,16 +165,38 @@ long double area(Point2 a, Point2 b, Point2 c) {
     return (static_cast<long double>(b[0]) - a[0]) * (static_cast<long double>(c[1]) - a[1]) -
            (static_cast<long double>(b[1]) - a[1]) * (static_cast<long double>(c[0]) - a[0]);
 }
-void check_continuity(const BsplineDirection &direction) {
+struct Cut {
+    double fraction, knot;
+};
+std::vector<Cut> discontinuity_cuts(const BsplineDirection &direction) {
     const auto domain = direction.knot_domain();
     const auto &knots = direction.knots();
+    std::vector<Cut> cuts{{0, domain[0]}};
     for (std::size_t i = 0; i < knots.size();) {
         const auto end = std::upper_bound(knots.begin() + i, knots.end(), knots[i]);
-        if (knots[i] > domain[0] && knots[i] < domain[1])
-            require(std::size_t(end - (knots.begin() + i)) < direction.order(),
-                    "surface mesh requires one-sided evaluation at discontinuous knots");
+        if (knots[i] > domain[0] && knots[i] < domain[1]) {
+            const auto multiplicity = std::size_t(end - (knots.begin() + i));
+            require(multiplicity <= direction.order(), "surface mesh excessive knot multiplicity");
+            if (multiplicity == direction.order()) {
+                const auto fraction = (knots[i] - domain[0]) / (domain[1] - domain[0]);
+                require(fraction > cuts.back().fraction && fraction < 1,
+                        "surface mesh discontinuity below parameter precision");
+                cuts.push_back({fraction, knots[i]});
+            }
+        }
         i = std::size_t(end - knots.begin());
     }
+    cuts.push_back({1, domain[1]});
+    return cuts;
+}
+double patch_knot(double fraction, Cut first, Cut last, const BsplineDirection &direction) {
+    if (fraction == first.fraction)
+        return first.knot;
+    if (fraction == last.fraction)
+        return last.knot;
+    const auto domain = direction.knot_domain();
+    const double knot = (1 - fraction) * domain[0] + fraction * domain[1];
+    return std::max(first.knot, std::min(last.knot, knot));
 }
 } // namespace
 
@@ -192,8 +223,15 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
             require(u().knot_domain() == std::array<double, 2>{0, 1} &&
                         v().knot_domain() == std::array<double, 2>{0, 1},
                     "trim UV mapping requires normalized surface knot domains");
-        check_continuity(u());
-        check_continuity(v());
+        const auto cuts_u = discontinuity_cuts(u()), cuts_v = discontinuity_cuts(v());
+        require(cuts_u.size() - 1 <= options.max_triangles / (cuts_v.size() - 1),
+                "surface mesh patch budget");
+        result.report["discontinuity_knots"] = {{"u", Json::array()}, {"v", Json::array()}};
+        for (std::size_t i = 1; i + 1 < cuts_u.size(); ++i)
+            result.report["discontinuity_knots"]["u"].push_back(cuts_u[i].knot);
+        for (std::size_t i = 1; i + 1 < cuts_v.size(); ++i)
+            result.report["discontinuity_knots"]["v"].push_back(cuts_v[i].knot);
+        result.report["discontinuity_boundary_vertices"] = "separate_per_patch";
         if (rational()) {
             const bool positive = weights().front() > 0;
             for (const auto weight : weights())
@@ -208,104 +246,134 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
         // GLU boundary output has the filled region on its left. Its signed
         // winding is therefore 1 inside, including correct hole orientation.
         auto parity = tessellate(source, true, GLU_TESS_WINDING_ODD, options);
-        parity.contours.push_back(square);
-        // Winding >=2 is the intersection of that region and the UV square.
-        const auto clipped =
-            tessellate(parity.contours, false, GLU_TESS_WINDING_ABS_GEQ_TWO, options);
-        std::map<Point2, std::uint32_t> vertices;
-        auto insert = [&](Point2 uv) {
-            constexpr double margin = 64 * std::numeric_limits<double>::epsilon();
-            for (auto &x : uv) {
-                require(std::isfinite(x) && x >= -margin && x <= 1 + margin,
-                        "surface tessellation left parameter domain");
-                x = std::max(0.0, std::min(1.0, x));
-            }
-            const auto found = vertices.find(uv);
-            if (found != vertices.end())
-                return found->second;
-            require(result.parameters.size() < options.max_vertices, "surface mesh vertex budget");
-            const auto index = std::uint32_t(result.parameters.size());
-            vertices.emplace(uv, index);
-            result.parameters.push_back(uv);
-            return index;
-        };
-        for (std::size_t i = 0; i < clipped.corners.size(); i += 3) {
-            Triangle face{insert(clipped.corners[i]), insert(clipped.corners[i + 1]),
-                          insert(clipped.corners[i + 2])};
-            const auto signed_area = area(result.parameters[face[0]], result.parameters[face[1]],
-                                          result.parameters[face[2]]);
-            if (signed_area == 0)
-                continue;
-            if (signed_area < 0)
-                std::swap(face[1], face[2]);
-            result.faces.push_back(face);
-        }
-        unsigned iterations = 0;
-        for (;;) {
-            std::map<Edge, std::uint32_t> split;
-            for (const auto &face : result.faces)
-                for (unsigned e = 0; e < 3; ++e) {
-                    const auto key = edge_key(face[e], face[(e + 1) % 3]);
-                    if (length(result.parameters[key[0]], result.parameters[key[1]]) >
-                        options.max_uv_edge)
-                        split.emplace(key, 0);
+        unsigned max_iterations = 0;
+        std::size_t meshed_patches = 0;
+        auto append_patch = [&](Cut u0, Cut u1, Cut v0, Cut v1) {
+            auto contours = parity.contours;
+            contours.push_back({{u0.fraction, v0.fraction},
+                                {u1.fraction, v0.fraction},
+                                {u1.fraction, v1.fraction},
+                                {u0.fraction, v1.fraction}});
+            // Winding >=2 intersects the parity region with this knot rectangle.
+            const auto clipped = tessellate(contours, false, GLU_TESS_WINDING_ABS_GEQ_TWO, options);
+            const auto vertex_begin = result.parameters.size();
+            std::vector<Triangle> faces;
+            std::map<Point2, std::uint32_t> vertices;
+            auto insert = [&](Point2 uv) {
+                constexpr double margin = 64 * std::numeric_limits<double>::epsilon();
+                const Point2 low{u0.fraction, v0.fraction}, high{u1.fraction, v1.fraction};
+                for (unsigned a = 0; a < 2; ++a) {
+                    auto &x = uv[a];
+                    require(std::isfinite(x) && x >= low[a] - margin && x <= high[a] + margin,
+                            "surface tessellation left patch domain");
+                    x = std::max(low[a], std::min(high[a], x));
                 }
-            if (split.empty())
-                break;
-            require(iterations++ < 64, "surface mesh refinement depth");
-            for (auto &entry : split) {
-                const auto a = result.parameters[entry.first[0]],
-                           b = result.parameters[entry.first[1]];
-                entry.second = insert({a[0] + (b[0] - a[0]) / 2, a[1] + (b[1] - a[1]) / 2});
-                require(entry.second != entry.first[0] && entry.second != entry.first[1],
-                        "surface mesh refinement below coordinate precision");
-            }
-            std::vector<Triangle> next;
-            auto emit = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c) {
-                require(next.size() < options.max_triangles, "surface mesh triangle budget");
-                require(area(result.parameters[a], result.parameters[b], result.parameters[c]) > 0,
-                        "surface mesh refinement lost triangle orientation");
-                next.push_back({a, b, c});
+                const auto found = vertices.find(uv);
+                if (found != vertices.end())
+                    return found->second;
+                require(result.parameters.size() < options.max_vertices,
+                        "surface mesh vertex budget");
+                const auto index = std::uint32_t(result.parameters.size());
+                vertices.emplace(uv, index);
+                result.parameters.push_back(uv);
+                return index;
             };
-            for (const auto &f : result.faces) {
-                std::array<std::optional<std::uint32_t>, 3> mid;
-                unsigned count = 0;
-                for (unsigned e = 0; e < 3; ++e) {
-                    const auto at = split.find(edge_key(f[e], f[(e + 1) % 3]));
-                    if (at != split.end()) {
-                        mid[e] = at->second;
-                        ++count;
+            for (std::size_t i = 0; i < clipped.corners.size(); i += 3) {
+                Triangle face{insert(clipped.corners[i]), insert(clipped.corners[i + 1]),
+                              insert(clipped.corners[i + 2])};
+                const auto signed_area =
+                    area(result.parameters[face[0]], result.parameters[face[1]],
+                         result.parameters[face[2]]);
+                if (signed_area == 0)
+                    continue;
+                if (signed_area < 0)
+                    std::swap(face[1], face[2]);
+                require(result.faces.size() + faces.size() < options.max_triangles,
+                        "surface mesh triangle budget");
+                faces.push_back(face);
+            }
+            unsigned iterations = 0;
+            for (;;) {
+                std::map<Edge, std::uint32_t> split;
+                for (const auto &face : faces)
+                    for (unsigned e = 0; e < 3; ++e) {
+                        const auto key = edge_key(face[e], face[(e + 1) % 3]);
+                        if (length(result.parameters[key[0]], result.parameters[key[1]]) >
+                            options.max_uv_edge)
+                            split.emplace(key, 0);
+                    }
+                if (split.empty())
+                    break;
+                require(iterations++ < 64, "surface mesh refinement depth");
+                for (auto &entry : split) {
+                    const auto a = result.parameters[entry.first[0]],
+                               b = result.parameters[entry.first[1]];
+                    entry.second = insert({a[0] + (b[0] - a[0]) / 2, a[1] + (b[1] - a[1]) / 2});
+                    require(entry.second != entry.first[0] && entry.second != entry.first[1],
+                            "surface mesh refinement below coordinate precision");
+                }
+                std::vector<Triangle> next;
+                auto emit = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c) {
+                    require(result.faces.size() + next.size() < options.max_triangles,
+                            "surface mesh triangle budget");
+                    require(area(result.parameters[a], result.parameters[b], result.parameters[c]) >
+                                0,
+                            "surface mesh refinement lost triangle orientation");
+                    next.push_back({a, b, c});
+                };
+                for (const auto &f : faces) {
+                    std::array<std::optional<std::uint32_t>, 3> mid;
+                    unsigned count = 0;
+                    for (unsigned e = 0; e < 3; ++e) {
+                        const auto at = split.find(edge_key(f[e], f[(e + 1) % 3]));
+                        if (at != split.end()) {
+                            mid[e] = at->second;
+                            ++count;
+                        }
+                    }
+                    if (count == 0)
+                        emit(f[0], f[1], f[2]);
+                    else if (count == 3) {
+                        emit(f[0], *mid[0], *mid[2]);
+                        emit(*mid[0], f[1], *mid[1]);
+                        emit(*mid[2], *mid[1], f[2]);
+                        emit(*mid[0], *mid[1], *mid[2]);
+                    } else if (count == 1) {
+                        unsigned e = 0;
+                        while (!mid[e])
+                            ++e;
+                        emit(f[e], *mid[e], f[(e + 2) % 3]);
+                        emit(*mid[e], f[(e + 1) % 3], f[(e + 2) % 3]);
+                    } else {
+                        unsigned e = 0;
+                        while (!mid[e] || !mid[(e + 1) % 3])
+                            ++e;
+                        const auto a = f[e], b = f[(e + 1) % 3], c = f[(e + 2) % 3];
+                        const auto m = *mid[e], n = *mid[(e + 1) % 3];
+                        emit(m, b, n);
+                        emit(a, m, n);
+                        emit(a, n, c);
                     }
                 }
-                if (count == 0)
-                    emit(f[0], f[1], f[2]);
-                else if (count == 3) {
-                    emit(f[0], *mid[0], *mid[2]);
-                    emit(*mid[0], f[1], *mid[1]);
-                    emit(*mid[2], *mid[1], f[2]);
-                    emit(*mid[0], *mid[1], *mid[2]);
-                } else if (count == 1) {
-                    unsigned e = 0;
-                    while (!mid[e])
-                        ++e;
-                    emit(f[e], *mid[e], f[(e + 2) % 3]);
-                    emit(*mid[e], f[(e + 1) % 3], f[(e + 2) % 3]);
-                } else {
-                    unsigned e = 0;
-                    while (!mid[e] || !mid[(e + 1) % 3])
-                        ++e;
-                    const auto a = f[e], b = f[(e + 1) % 3], c = f[(e + 2) % 3];
-                    const auto m = *mid[e], n = *mid[(e + 1) % 3];
-                    emit(m, b, n);
-                    emit(a, m, n);
-                    emit(a, n, c);
-                }
+                faces = std::move(next);
             }
-            result.faces = std::move(next);
-        }
-        for (const auto &uv : result.parameters)
-            result.vertices.push_back(point_at(uv[0], uv[1]));
-        result.report["refinement_iterations"] = iterations;
+            for (std::size_t i = vertex_begin; i < result.parameters.size(); ++i) {
+                const auto uv = result.parameters[i];
+                const auto ku = patch_knot(uv[0], u0, u1, u()), kv = patch_knot(uv[1], v0, v1, v());
+                result.vertices.push_back(
+                    bspline_surface_point_at_knots(*this, ku, kv, ku == u1.knot, kv == v1.knot));
+            }
+            if (!faces.empty())
+                ++meshed_patches;
+            result.faces.insert(result.faces.end(), faces.begin(), faces.end());
+            max_iterations = std::max(max_iterations, iterations);
+        };
+        for (std::size_t v = 1; v < cuts_v.size(); ++v)
+            for (std::size_t u = 1; u < cuts_u.size(); ++u)
+                append_patch(cuts_u[u - 1], cuts_u[u], cuts_v[v - 1], cuts_v[v]);
+        result.report["patch_count"] = (cuts_u.size() - 1) * (cuts_v.size() - 1);
+        result.report["meshed_patches"] = meshed_patches;
+        result.report["refinement_iterations"] = max_iterations;
         result.report["vertices"] = result.vertices.size();
         result.report["triangles"] = result.faces.size();
         result.report["status"] = "complete";

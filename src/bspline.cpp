@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "bspline_evaluation.hpp"
 namespace p3d {
 namespace {
 std::vector<double> numbers(const Json &table, const char *key) {
@@ -93,17 +94,14 @@ struct BasisTerm {
     std::size_t pole;
     double value;
 };
-std::vector<BasisTerm> basis(const BsplineDirection &direction, double fraction) {
-    require(std::isfinite(fraction) && fraction >= 0 && fraction <= 1,
-            "B-spline fraction must be in [0, 1]");
+std::vector<BasisTerm> basis_at_knot(const BsplineDirection &direction, double u, bool left_side) {
     const auto domain = direction.knot_domain();
     const auto &knots = direction.knots();
-    const double u = fraction == 0   ? domain[0]
-                     : fraction == 1 ? domain[1]
-                                     : (1 - fraction) * domain[0] + fraction * domain[1];
+    require(std::isfinite(u) && u >= domain[0] && u <= domain[1], "B-spline knot parameter");
     // Choose a nonempty span even when several endpoint knots coincide.
-    const auto end = u == domain[1] ? std::lower_bound(knots.begin(), knots.end(), u)
-                                    : std::upper_bound(knots.begin(), knots.end(), u);
+    const bool from_left = u == domain[1] || (left_side && u != domain[0]);
+    const auto end = from_left ? std::lower_bound(knots.begin(), knots.end(), u)
+                               : std::upper_bound(knots.begin(), knots.end(), u);
     require(end != knots.begin() && end != knots.end(), "B-spline span");
     const auto span = std::size_t(end - knots.begin() - 1);
     const std::size_t degree = direction.order() - 1;
@@ -135,6 +133,17 @@ std::vector<BasisTerm> basis(const BsplineDirection &direction, double fraction)
         result[j].pole = std::size_t(index);
     }
     return result;
+}
+double knot_parameter(const BsplineDirection &direction, double fraction) {
+    require(std::isfinite(fraction) && fraction >= 0 && fraction <= 1,
+            "B-spline fraction must be in [0, 1]");
+    const auto domain = direction.knot_domain();
+    return fraction == 0   ? domain[0]
+           : fraction == 1 ? domain[1]
+                           : (1 - fraction) * domain[0] + fraction * domain[1];
+}
+std::vector<BasisTerm> basis(const BsplineDirection &direction, double fraction) {
+    return basis_at_knot(direction, knot_parameter(direction, fraction), false);
 }
 Point3 cartesian(const std::array<double, 4> &h) {
     require(h[3] != 0, "B-spline zero evaluated weight");
@@ -198,18 +207,29 @@ BsplineSurface BsplineSurface::from_bgfb(const Json &table) {
             "BGFB B-spline surface trim table");
     return s;
 }
-std::array<double, 4> BsplineSurface::homogeneous_at(double fraction_u, double fraction_v) const {
-    const auto bu = basis(u_, fraction_u), bv = basis(v_, fraction_v);
+namespace {
+std::array<double, 4> surface_homogeneous(const BsplineSurface &surface,
+                                          const std::vector<BasisTerm> &bu,
+                                          const std::vector<BasisTerm> &bv) {
     std::array<double, 4> result{};
     for (const auto &v : bv)
         for (const auto &u : bu) {
-            const auto index = v.pole * u_.pole_count() + u.pole;
+            const auto index = v.pole * surface.u().pole_count() + u.pole;
             const double coefficient = u.value * v.value;
             for (unsigned a = 0; a < 3; ++a)
-                result[a] += coefficient * poles_[index][a];
-            result[3] += coefficient * (rational() ? weights_[index] : 1);
+                result[a] += coefficient * surface.poles()[index][a];
+            result[3] += coefficient * (surface.rational() ? surface.weights()[index] : 1);
         }
     return checked_homogeneous(result);
+}
+} // namespace
+std::array<double, 4> BsplineSurface::homogeneous_at(double fraction_u, double fraction_v) const {
+    return surface_homogeneous(*this, basis(u_, fraction_u), basis(v_, fraction_v));
+}
+Point3 bspline_surface_point_at_knots(const BsplineSurface &surface, double u, double v,
+                                      bool left_u, bool left_v) {
+    return cartesian(surface_homogeneous(surface, basis_at_knot(surface.u(), u, left_u),
+                                         basis_at_knot(surface.v(), v, left_v)));
 }
 Point3 BsplineSurface::point_at(double fraction_u, double fraction_v) const {
     return cartesian(homogeneous_at(fraction_u, fraction_v));
