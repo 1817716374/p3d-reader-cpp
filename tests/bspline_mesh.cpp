@@ -128,6 +128,8 @@ unsigned bspline_mesh_tests() {
     verify(BsplineSurface::from_bgfb(scaled_domain), .36);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .2, .8, .8), 1)), .36);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .2, .8, .8), 0)), .64);
+    verify(BsplineSurface::from_bgfb(plane(rectangle(.8, .2, 1.2, .8), 0)), .88);
+    verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .8, .8, 1.2), 0)), .88);
     verify(
         BsplineSurface::from_bgfb(plane(group({rectangle(.1, .1, .9, .9), rectangle(.3, .3, .7, .7),
                                                rectangle(.4, .4, .6, .6)}),
@@ -216,8 +218,7 @@ unsigned bspline_mesh_tests() {
                          1, 0, 1, 0, 1, 1, -1, 0, 1, 0, -1, 1};
     verify(BsplineSurface::from_bgfb(periodic), 1);
     periodic["boundaries"] = rectangle(.8, .2, 1.2, .8);
-    check(BsplineSurface::from_bgfb(periodic).mesh(options).report["status"] == "incomplete",
-          "periodic trimmed loops are not silently clipped without seam rules");
+    verify(BsplineSurface::from_bgfb(periodic), .88);
     rational["weights"] = {1, -1, 1, 2};
     check(BsplineSurface::from_bgfb(rational).mesh(options).faces.empty(),
           "unverified denominator cannot yield a mesh through an undiscovered singularity");

@@ -166,6 +166,73 @@ long double area(Point2 a, Point2 b, Point2 c) {
     return (static_cast<long double>(b[0]) - a[0]) * (static_cast<long double>(c[1]) - a[1]) -
            (static_cast<long double>(b[1]) - a[1]) * (static_cast<long double>(c[0]) - a[0]);
 }
+// GLU can leave an almost collinear internal triangle when a trim corner is
+// within roundoff of a tessellation diagonal. Midpoint rounding can then
+// collapse it. Flip an internal diagonal only when both replacement triangles
+// are safely oriented: this preserves every input vertex and the exact region.
+void improve_thin_triangles(std::vector<Triangle> &faces, const std::vector<Point2> &points) {
+    auto stable = [&](const Triangle &f) {
+        long double scale = 0;
+        for (unsigned e = 0; e < 3; ++e) {
+            const auto a = points[f[e]], b = points[f[(e + 1) % 3]];
+            const long double x = static_cast<long double>(b[0]) - a[0],
+                              y = static_cast<long double>(b[1]) - a[1];
+            scale = std::max(scale, x * x + y * y);
+        }
+        return area(points[f[0]], points[f[1]], points[f[2]]) >
+               64 * std::numeric_limits<double>::epsilon() * scale;
+    };
+    if (std::all_of(faces.begin(), faces.end(), stable))
+        return;
+    std::map<Edge, std::set<std::size_t>> adjacent;
+    auto register_face = [&](std::size_t i, bool add) {
+        const auto &f = faces[i];
+        for (unsigned e = 0; e < 3; ++e) {
+            auto &entries = adjacent[edge_key(f[e], f[(e + 1) % 3])];
+            if (add)
+                entries.insert(i);
+            else
+                entries.erase(i);
+        }
+    };
+    for (std::size_t i = 0; i < faces.size(); ++i)
+        register_face(i, true);
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+        if (stable(faces[i]))
+            continue;
+        const auto f = faces[i];
+        for (unsigned e = 0; e < 3; ++e) {
+            const auto a = f[e], b = f[(e + 1) % 3], c = f[(e + 2) % 3];
+            const auto &owners = adjacent.at(edge_key(a, b));
+            if (owners.size() != 2)
+                continue;
+            const auto j = *owners.begin() == i ? *owners.rbegin() : *owners.begin();
+            const auto g = faces[j];
+            std::optional<std::uint32_t> opposite;
+            for (unsigned k = 0; k < 3; ++k)
+                if (g[k] == b && g[(k + 1) % 3] == a)
+                    opposite = g[(k + 2) % 3];
+            if (!opposite || *opposite == c)
+                continue;
+            const auto d = *opposite;
+            // A pre-existing other diagonal would create an overlapping face
+            // or a nonmanifold connection, so never use it as a repair.
+            const auto existing = adjacent.find(edge_key(c, d));
+            if (existing != adjacent.end() && !existing->second.empty())
+                continue;
+            const Triangle first{c, a, d}, second{c, d, b};
+            if (!stable(first) || !stable(second))
+                continue;
+            register_face(i, false);
+            register_face(j, false);
+            faces[i] = first;
+            faces[j] = second;
+            register_face(i, true);
+            register_face(j, true);
+            break;
+        }
+    }
+}
 struct Cut {
     double fraction, knot;
 };
@@ -213,13 +280,16 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
                      {"parameter_domain", {{0, 1}, {0, 1}}},
                      {"max_uv_edge", options.max_uv_edge},
                      {"world_space_error_bound", nullptr},
-                     {"periodic_trim_unwrapping", "not_performed"}};
+                     {"periodic_trim_unwrapping", "not_performed"},
+                     {"trim_domain_policy", "source_uv_clipped_to_active_domain"},
+                     {"periodic_seam_vertices", "separate_parameter_coordinates"}};
     try {
         const auto region = trim_normalized(options.uv_tolerance, options.max_trim_segments);
         result.report["trim"] = region.report();
         require(region.report().at("status") == "complete", "surface trim conversion incomplete");
-        require(region.loops().empty() || (!u().closed() && !v().closed()),
-                "periodic trimmed surface requires seam unwrapping");
+        // Native trim paths use the saved UV contours in the active rectangle.
+        // Closed surface directions affect evaluation, not the contour's lift:
+        // do not take modulo, duplicate loops, or choose shorter seam crossings.
         const auto cuts_u = discontinuity_cuts(u()), cuts_v = discontinuity_cuts(v());
         require(cuts_u.size() - 1 <= options.max_triangles / (cuts_v.size() - 1),
                 "surface mesh patch budget");
@@ -286,6 +356,7 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
                         "surface mesh triangle budget");
                 faces.push_back(face);
             }
+            improve_thin_triangles(faces, result.parameters);
             unsigned iterations = 0;
             for (;;) {
                 std::map<Edge, std::uint32_t> split;
