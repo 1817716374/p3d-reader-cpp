@@ -18,6 +18,7 @@ unsigned bspline_trim_tests();
 unsigned bspline_mesh_tests();
 unsigned bspline_denominator_tests();
 unsigned bspline_periodic_trim_tests();
+unsigned native_pcurve_tests();
 unsigned loft_caps_tests();
 unsigned loft_mesh_tests();
 unsigned akima_tests();
@@ -2710,6 +2711,7 @@ int main() {
         checks += bspline_mesh_tests();
         checks += bspline_denominator_tests();
         checks += bspline_periodic_trim_tests();
+        checks += native_pcurve_tests();
         checks += loft_caps_tests();
         checks += loft_mesh_tests();
         checks += akima_tests();
