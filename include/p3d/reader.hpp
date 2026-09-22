@@ -202,9 +202,15 @@ struct MaterialProjectionRenderContext {
     std::optional<Point3> reference_point;
     std::optional<Matrix2x3> uv_transform;
     std::optional<double> geometry_scale;
+    // Kind zero instead uses this render vertex transform: float matrix R and
+    // float translation t, both supplied explicitly. Origin becomes
+    // R * (projection_origin - reference_point) + t; matrix becomes M * R^T.
+    // geometry_scale is required for every scale mode in this branch.
+    std::optional<Matrix3> vertex_linear_transform;
+    std::optional<Point3> vertex_translation;
 };
 // Consumes resolve_material_projection_transform output. The supported render
-// branch requires nonzero geometry_kind; mode 6 retains native cap selection.
+// inputs depend on geometry_kind; mode 6 retains native cap selection.
 Json prepare_material_projection_sampling(const Json &resolved,
                                           const MaterialProjectionRenderContext &context);
 // Point and normal are in the render vertex coordinate system and are rounded

@@ -184,7 +184,7 @@ unsigned material_projection_sampling_tests() {
     incomplete.geometry_kind = 0;
     check(prepare_material_projection_sampling(resolved, incomplete).at("status") ==
               "not_evaluated",
-          "unrecovered geometry kind zero branch is explicit");
+          "geometry kind zero requires its own vertex transform inputs");
     incomplete = render;
     incomplete.uv_transform.reset();
     check(prepare_material_projection_sampling(resolved, incomplete).at("status") ==

@@ -70,16 +70,23 @@ Json prepare_material_projection_sampling(const Json &resolved,
     if (!resolved.is_object() || !resolved.contains("status") ||
         resolved.at("status") != "resolved")
         return fail("projection_transform_unavailable");
-    if (!context.geometry_kind || !context.reference_transform || !context.reference_point ||
-        !context.uv_transform)
+    if (!context.geometry_kind || !context.reference_point || !context.uv_transform)
         return fail("missing_render_projection_context");
-    if (*context.geometry_kind == 0)
-        return fail("unsupported_render_geometry_kind_zero");
-    if (!finite_matrix(*context.reference_transform) || !finite_vector(*context.reference_point) ||
-        !finite_matrix(*context.uv_transform))
+    const bool zero_kind = *context.geometry_kind == 0;
+    if (!finite_vector(*context.reference_point) || !finite_matrix(*context.uv_transform))
         return fail("nonfinite_render_projection_context");
-    if ((*context.reference_transform)[3] != std::array<double, 4>{0, 0, 0, 1})
-        return fail("reference_transform_must_be_affine");
+    if (zero_kind) {
+        if (!context.vertex_linear_transform || !context.vertex_translation ||
+            !context.geometry_scale)
+            return fail("missing_zero_kind_render_context");
+    } else {
+        if (!context.reference_transform)
+            return fail("missing_render_projection_context");
+        if (!finite_matrix(*context.reference_transform))
+            return fail("nonfinite_render_projection_context");
+        if ((*context.reference_transform)[3] != std::array<double, 4>{0, 0, 0, 1})
+            return fail("reference_transform_must_be_affine");
+    }
     try {
         const auto mode = read_integer(resolved.at("mapping_mode"));
         if (mode < 3 || mode > 7)
@@ -94,45 +101,98 @@ Json prepare_material_projection_sampling(const Json &resolved,
         }
         if (absolute)
             flags |= 1;
-        const auto matrix = read_matrix<3>(resolved.at("matrix"));
+        auto matrix = read_matrix<3>(resolved.at("matrix"));
         auto origin = read_point(resolved.at("origin"));
         auto inverse = read_point(resolved.at("reference_dimensions"));
         Point3 render_origin{};
         const auto &p = *context.reference_point;
-        const auto &t = *context.reference_transform;
-        for (unsigned i = 0; i < 3; ++i) {
-            const auto linear = f32((p[1] * t[i][1] + p[0] * t[i][0]) + p[2] * t[i][2]);
-            render_origin[i] = f32(double(linear) + double(f32(t[i][3])));
-            origin[i] -= render_origin[i];
-            inverse[i] = inverse[i] == 0 ? 1 : 1 / inverse[i];
+        Matrix3 vertex_linear{};
+        Point3 vertex_translation{};
+        if (zero_kind) {
+            vertex_linear = *context.vertex_linear_transform;
+            vertex_translation = *context.vertex_translation;
+            Point3 relative{};
+            for (unsigned i = 0; i < 3; ++i) {
+                vertex_translation[i] = f32(vertex_translation[i]);
+                relative[i] = origin[i] - p[i];
+                for (auto &v : vertex_linear[i])
+                    v = f32(v);
+            }
+            // Inputs are native floats promoted to double. These products and
+            // sums remain double until the shared per-vertex kernel.
+            for (unsigned i = 0; i < 3; ++i) {
+                const auto &r = vertex_linear[i];
+                const double x = r[0] * relative[0], y = r[1] * relative[1];
+                origin[i] = ((i < 2 ? y + x : x + y) + r[2] * relative[2]) + vertex_translation[i];
+            }
+            const auto source_matrix = matrix;
+            for (unsigned i = 0; i < 3; ++i)
+                for (unsigned j = 0; j < 3; ++j) {
+                    const auto &m = source_matrix[i];
+                    const auto &r = vertex_linear[j];
+                    const double x = r[0] * m[0], y = r[1] * m[1];
+                    const bool y_first = (i == 0 && j < 2) || (i != 0 && j == 2);
+                    matrix[i][j] = (y_first ? y + x : x + y) + r[2] * m[2];
+                }
+        } else {
+            const auto &t = *context.reference_transform;
+            for (unsigned i = 0; i < 3; ++i) {
+                const auto linear = f32((p[1] * t[i][1] + p[0] * t[i][0]) + p[2] * t[i][2]);
+                render_origin[i] = f32(double(linear) + double(f32(t[i][3])));
+                origin[i] -= render_origin[i];
+            }
         }
+        for (auto &d : inverse)
+            d = d == 0 ? 1 : 1 / d;
         auto uv = *context.uv_transform;
         Point2 center{.5, .5};
-        if (absolute) {
+        double scale = 1;
+        if (zero_kind || absolute) {
             if (!context.geometry_scale)
                 return fail("missing_render_geometry_scale");
-            const double scale = f32(*context.geometry_scale);
+            scale = f32(*context.geometry_scale);
+        }
+        if (absolute) {
+            if (zero_kind && scale == 0)
+                return fail("zero_render_geometry_scale");
             for (unsigned i = 0; i < 2; ++i) {
-                uv[i][0] *= scale;
-                uv[i][1] *= scale;
+                for (unsigned j = 0; j < 2; ++j)
+                    uv[i][j] = zero_kind ? uv[i][j] / scale : uv[i][j] * scale;
                 const double squared = uv[i][0] * uv[i][0] + uv[i][1] * uv[i][1];
                 if (!std::isfinite(squared) || squared == 0)
                     return fail("unusable_absolute_uv_row_length");
                 center[i] /= std::sqrt(squared);
             }
         }
+        double inverse_squared_scale = 1;
+        if (zero_kind && (!absolute || (flags & 0xe0))) {
+            const float squared = f32(static_cast<float>(scale) * static_cast<float>(scale));
+            if (squared == 0)
+                return fail("zero_render_squared_scale");
+            inverse_squared_scale = f32(1.f / squared);
+            inverse[0] *= inverse_squared_scale;
+            if (!absolute)
+                inverse[1] *= inverse_squared_scale;
+            inverse[2] *= inverse_squared_scale;
+        }
         if (!finite_vector(origin) || !finite_vector(inverse) || !finite_vector(center) ||
-            !finite_matrix(uv))
+            !finite_matrix(uv) || !finite_matrix(matrix))
             return fail("nonfinite_projection_sampling_state");
         out.update({{"status", "prepared"},
                     {"mapping_mode", mode},
                     {"projection_flags", flags},
+                    {"geometry_kind", *context.geometry_kind},
                     {"matrix", matrix},
                     {"origin", origin},
-                    {"render_origin", render_origin},
                     {"inverse_reference_dimensions", inverse},
                     {"uv_transform", uv},
                     {"uv_center", center}});
+        if (zero_kind) {
+            out["vertex_linear_transform"] = vertex_linear;
+            out["vertex_translation"] = vertex_translation;
+            out["inverse_squared_scale"] = inverse_squared_scale;
+        } else
+            out["render_origin"] = render_origin;
     } catch (const Json::exception &) {
         return fail("missing_or_invalid_projection_transform_fields");
     } catch (const std::logic_error &e) {

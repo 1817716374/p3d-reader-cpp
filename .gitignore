@@ -54,6 +54,7 @@
 !/tests/material_projection_math.cpp
 !/tests/material_projection_transform.cpp
 !/tests/material_projection_sampling.cpp
+!/tests/material_projection_zero_kind.cpp
 !/tests/material_elevation.cpp
 !/tests/material_uv_transform.cpp
 !/tests/model_units.cpp

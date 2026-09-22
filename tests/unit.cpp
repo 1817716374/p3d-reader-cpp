@@ -49,6 +49,7 @@ unsigned material_projection_link_tests();
 unsigned material_projection_math_tests();
 unsigned material_projection_transform_tests();
 unsigned material_projection_sampling_tests();
+unsigned material_projection_zero_kind_tests();
 unsigned material_elevation_tests();
 unsigned material_uv_transform_tests();
 unsigned model_units_tests();
@@ -2735,6 +2736,7 @@ int main() {
         checks += material_projection_math_tests();
         checks += material_projection_transform_tests();
         checks += material_projection_sampling_tests();
+        checks += material_projection_zero_kind_tests();
         checks += material_elevation_tests();
         checks += material_uv_transform_tests();
         checks += model_units_tests();
