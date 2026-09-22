@@ -51,6 +51,7 @@ unsigned material_projection_transform_tests();
 unsigned material_projection_sampling_tests();
 unsigned material_projection_zero_kind_tests();
 unsigned material_elevation_tests();
+unsigned material_parametric_tests();
 unsigned material_uv_transform_tests();
 unsigned model_units_tests();
 unsigned bspline_derivative_tests();
@@ -2738,6 +2739,7 @@ int main() {
         checks += material_projection_sampling_tests();
         checks += material_projection_zero_kind_tests();
         checks += material_elevation_tests();
+        checks += material_parametric_tests();
         checks += material_uv_transform_tests();
         checks += model_units_tests();
         checks += bspline_derivative_tests();
