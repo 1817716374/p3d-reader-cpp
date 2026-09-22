@@ -416,6 +416,9 @@ struct BsplineMeshOptions {
     unsigned max_trim_segments = 100000;
     unsigned max_vertices = 200000;
     unsigned max_triangles = 400000;
+    // Interval proof work for surfaces whose source weights have mixed signs
+    // or include zero. Exhaustion returns an incomplete mesh, never a guess.
+    unsigned max_denominator_steps = 1000000;
 };
 struct BsplineSurfaceMesh {
     std::vector<Point3> vertices;

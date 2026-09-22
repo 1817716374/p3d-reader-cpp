@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "bspline_evaluation.hpp"
+#include "bspline_denominator.hpp"
 #include "glu/sk_glu.h"
 #include <deque>
 
@@ -232,12 +233,9 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
         for (std::size_t i = 1; i + 1 < cuts_v.size(); ++i)
             result.report["discontinuity_knots"]["v"].push_back(cuts_v[i].knot);
         result.report["discontinuity_boundary_vertices"] = "separate_per_patch";
-        if (rational()) {
-            const bool positive = weights().front() > 0;
-            for (const auto weight : weights())
-                require(weight != 0 && (weight > 0) == positive,
-                        "surface denominator sign not established for mesh");
-        }
+        result.report["denominator"] = certify_surface_denominator(*this, options.max_denominator_steps);
+        require(result.report["denominator"].at("status") == "verified",
+                "surface denominator sign not established for mesh");
         const Loop square{{0, 0}, {1, 0}, {1, 1}, {0, 1}};
         auto source = region.loops();
         if (source.empty() || outer_boundary_active())
