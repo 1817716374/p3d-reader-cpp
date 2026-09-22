@@ -58,6 +58,7 @@
 !/tests/material_elevation.cpp
 !/tests/material_parametric.cpp
 !/tests/material_planar.cpp
+!/tests/material_render_transform.cpp
 !/tests/material_uv_transform.cpp
 !/tests/model_units.cpp
 !/tests/bspline_derivatives.cpp
