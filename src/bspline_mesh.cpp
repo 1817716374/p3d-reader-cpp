@@ -215,15 +215,11 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
                      {"world_space_error_bound", nullptr},
                      {"periodic_trim_unwrapping", "not_performed"}};
     try {
-        const auto region = trim(options.uv_tolerance, options.max_trim_segments);
+        const auto region = trim_normalized(options.uv_tolerance, options.max_trim_segments);
         result.report["trim"] = region.report();
         require(region.report().at("status") == "complete", "surface trim conversion incomplete");
         require(region.loops().empty() || (!u().closed() && !v().closed()),
                 "periodic trimmed surface requires seam unwrapping");
-        if (!region.loops().empty())
-            require(u().knot_domain() == std::array<double, 2>{0, 1} &&
-                        v().knot_domain() == std::array<double, 2>{0, 1},
-                    "trim UV mapping requires normalized surface knot domains");
         const auto cuts_u = discontinuity_cuts(u()), cuts_v = discontinuity_cuts(v());
         require(cuts_u.size() - 1 <= options.max_triangles / (cuts_v.size() - 1),
                 "surface mesh patch budget");

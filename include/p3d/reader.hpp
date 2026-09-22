@@ -436,6 +436,10 @@ class BsplineTrim {
     const Json &report() const {
         return report_;
     }
+    // U and V query intervals in the same coordinates as loops().
+    const std::array<Point2, 2> &parameter_domain() const {
+        return domain_;
+    }
     TrimLocation classify(Point2 uv) const;
 
   private:
@@ -443,6 +447,7 @@ class BsplineTrim {
     BsplineTrim() = default;
     std::vector<std::vector<Point2>> loops_;
     std::vector<double> errors_;
+    std::array<Point2, 2> domain_{{{0, 1}, {0, 1}}};
     Json report_;
     double tolerance_ = 0;
     bool complete_ = false, outer_active_ = true;
@@ -486,9 +491,12 @@ class BsplineSurface {
     // Does not test whether the point belongs to the trimmed region.
     std::array<double, 4> homogeneous_at(double fraction_u, double fraction_v) const;
     Point3 point_at(double fraction_u, double fraction_v) const;
-    // Strokes source trim curves in UV coordinates. Incomplete results never
+    // Strokes source trim curves in knot-domain UV coordinates. Incomplete results never
     // classify points as inside/outside. Does not build a surface mesh.
     BsplineTrim trim(double uv_tolerance, unsigned max_segments = 100000) const;
+    // Transforms homogeneous boundary controls to surface fractions before
+    // stroking. Tolerance and queries use [0,1]^2; source curves remain unchanged.
+    BsplineTrim trim_normalized(double uv_tolerance, unsigned max_segments = 100000) const;
     // Mesh the derived parity region clipped to [0,1]^2, with conforming UV
     // edge refinement. max_uv_edge is not a bound on world-space chord error.
     // Incomplete conversion returns no mesh; inspect report before use.
@@ -496,6 +504,7 @@ class BsplineSurface {
 
   private:
     BsplineSurface() = default;
+    BsplineTrim trim_impl(double uv_tolerance, unsigned max_segments, bool normalized) const;
     BsplineDirection u_, v_;
     std::vector<Point3> poles_;
     std::vector<double> weights_;

@@ -359,16 +359,39 @@ struct Builder {
 };
 } // namespace
 BsplineTrim BsplineSurface::trim(double tolerance, unsigned max_segments) const {
+    return trim_impl(tolerance, max_segments, false);
+}
+BsplineTrim BsplineSurface::trim_normalized(double tolerance, unsigned max_segments) const {
+    return trim_impl(tolerance, max_segments, true);
+}
+BsplineTrim BsplineSurface::trim_impl(double tolerance, unsigned max_segments,
+                                      bool normalized) const {
     require(std::isfinite(tolerance) && tolerance > 0,
             "trim tolerance must be finite and positive");
     require(max_segments > 0, "trim segment limit must be positive");
     BsplineTrim result;
     result.tolerance_ = tolerance;
     result.outer_active_ = outer_boundary_active();
+    const std::array<Point2, 2> source_domain{u().knot_domain(), v().knot_domain()};
+    if (!normalized)
+        result.domain_ = source_domain;
     Builder build{tolerance, max_segments};
     build.collect(boundaries_, "");
-    for (const auto &loop : build.loops) {
+    for (auto &loop : build.loops) {
         try {
+            // Transform the rational numerators, not their Cartesian poles.
+            // This also preserves a zero-weight interior control correctly.
+            if (normalized)
+                for (auto &piece : loop.pieces)
+                    for (auto &h : piece)
+                        for (unsigned axis = 0; axis < 2; ++axis) {
+                            const auto domain = source_domain[axis];
+                            if (domain == Point2{0, 1})
+                                continue;
+                            h[axis] = std::fma(-domain[0], h[3], h[axis]) / (domain[1] - domain[0]);
+                            require(std::isfinite(h[axis]),
+                                    "trim coordinate normalization overflow");
+                        }
             double scale = 1;
             for (const auto &piece : loop.pieces)
                 for (const auto &h : piece) {
@@ -406,7 +429,9 @@ BsplineTrim BsplineSurface::trim(double tolerance, unsigned max_segments) const 
     }
     result.complete_ = build.complete;
     result.report_ = {{"status", build.complete ? "complete" : "incomplete"},
-                      {"coordinate_space", "source_uv"},
+                      {"coordinate_space", normalized ? "surface_fractions" : "source_uv"},
+                      {"parameter_domain", result.domain_},
+                      {"source_knot_domain", source_domain},
                       {"outer_boundary_active", result.outer_active_},
                       {"fill_rule", "parity"},
                       {"boundary_tolerance", tolerance},
@@ -423,9 +448,9 @@ BsplineTrim BsplineSurface::trim(double tolerance, unsigned max_segments) const 
     return result;
 }
 TrimLocation BsplineTrim::classify(Point2 uv) const {
-    require(std::isfinite(uv[0]) && std::isfinite(uv[1]) && uv[0] >= 0 && uv[0] <= 1 &&
-                uv[1] >= 0 && uv[1] <= 1,
-            "trim query must be inside the normalized UV square");
+    require(std::isfinite(uv[0]) && std::isfinite(uv[1]) && uv[0] >= domain_[0][0] &&
+                uv[0] <= domain_[0][1] && uv[1] >= domain_[1][0] && uv[1] <= domain_[1][1],
+            "trim query must be inside its parameter domain");
     if (!complete_)
         return TrimLocation::Indeterminate;
     // The native point-in-bounds routine returns true when there are no effective boundaries.

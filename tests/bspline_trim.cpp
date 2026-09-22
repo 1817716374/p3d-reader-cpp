@@ -22,22 +22,24 @@ Json rectangle(double x0, double y0, double x1, double y1, int type = 2, bool re
                           : Json{x0, y0, 0, x1, y0, 0, x1, y1, 0, x0, y1, 0, x0, y0, 0};
     return array(type, Json::array({variant({{"_type", "LineString"}, {"points", points}})}));
 }
-BsplineSurface surface(Json boundary, int hole = 1) {
-    return BsplineSurface::from_bgfb({{"_type", "BsplineSurface"},
-                                      {"numPolesU", 2},
-                                      {"numPolesV", 2},
-                                      {"orderU", 2},
-                                      {"orderV", 2},
-                                      {"closedU", false},
-                                      {"closedV", false},
-                                      {"numRulesU", 0},
-                                      {"numRulesV", 0},
-                                      {"poles", {0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0}},
-                                      {"weights", nullptr},
-                                      {"knotsU", nullptr},
-                                      {"knotsV", nullptr},
-                                      {"boundaries", boundary},
-                                      {"holeOrigin", hole}});
+BsplineSurface surface(Json boundary, int hole = 1,
+                       std::array<Point2, 2> domain = {{{0, 1}, {0, 1}}}) {
+    return BsplineSurface::from_bgfb(
+        {{"_type", "BsplineSurface"},
+         {"numPolesU", 2},
+         {"numPolesV", 2},
+         {"orderU", 2},
+         {"orderV", 2},
+         {"closedU", false},
+         {"closedV", false},
+         {"numRulesU", 0},
+         {"numRulesV", 0},
+         {"poles", {0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0}},
+         {"weights", nullptr},
+         {"knotsU", {domain[0][0], domain[0][0], domain[0][1], domain[0][1]}},
+         {"knotsV", {domain[1][0], domain[1][0], domain[1][1], domain[1][1]}},
+         {"boundaries", boundary},
+         {"holeOrigin", hole}});
 }
 Json spline(unsigned order, bool closed, Json poles, Json weights = nullptr, Json knots = nullptr) {
     return {{"_type", "BsplineCurve"}, {"order", order},     {"closed", closed},
@@ -291,5 +293,74 @@ unsigned bspline_trim_tests() {
               "periodic and nonuniform B-spline trim regions preserve source loop orientation and "
               "closure");
     }
+    const std::array<Point2, 2> domain{{{2, 5}, {-3, 7}}};
+    const auto domain_surface = surface(rectangle(2.6, -1, 4.4, 5), 1, domain);
+    const auto source_region = domain_surface.trim(1e-6);
+    const auto fraction_region = domain_surface.trim_normalized(1e-6);
+    check(
+        source_region.parameter_domain() == domain && source_region.classify({3.5, 2}) == inside &&
+            source_region.classify({2.1, -2}) == outside && source_region.classify({2.6, 2}) == on,
+        "source UV trim queries use the actual active knot domain");
+    check(fraction_region.parameter_domain() == std::array<Point2, 2>{{{0, 1}, {0, 1}}} &&
+              fraction_region.report()["coordinate_space"] == "surface_fractions" &&
+              fraction_region.classify({.5, .5}) == inside &&
+              fraction_region.classify({.1, .1}) == outside,
+          "normalized trim queries and report identify surface fractions");
+    rejects([&] { source_region.classify({.5, .5}); },
+            "fraction mistaken for a source parameter is rejected");
+    rejects([&] { fraction_region.classify({3.5, 2}); },
+            "source parameter mistaken for a fraction is rejected");
+    check(domain_surface.boundaries() == rectangle(2.6, -1, 4.4, 5) &&
+              source_region.loops().front().front() == Point2{2.6, -1},
+          "normalization leaves source boundary coordinates and knots unchanged");
+    for (double middle_weight : {s, 0., -.2}) {
+        auto original = sector;
+        original["curves"][0]["geometry"]["weights"][1] = middle_weight;
+        auto transformed = original;
+        for (auto &entry : transformed["curves"]) {
+            auto &g = entry["geometry"];
+            if (g["_type"] == "BsplineCurve") {
+                for (std::size_t i = 0; i < g["weights"].size(); ++i)
+                    for (unsigned axis = 0; axis < 2; ++axis)
+                        g["poles"][3 * i + axis] = (domain[axis][1] - domain[axis][0]) *
+                                                       g["poles"][3 * i + axis].get<double>() +
+                                                   domain[axis][0] * g["weights"][i].get<double>();
+            } else {
+                for (const auto prefix : {"point0", "point1"})
+                    for (unsigned axis = 0; axis < 2; ++axis) {
+                        const auto key = std::string(prefix) + (axis == 0 ? "X" : "Y");
+                        g["segment"][key] = domain[axis][0] + (domain[axis][1] - domain[axis][0]) *
+                                                                  g["segment"][key].get<double>();
+                    }
+            }
+        }
+        const auto input = surface(transformed, 1, domain);
+        const auto normalized = input.trim_normalized(1e-5);
+        check(normalized.report()["status"] == "complete" && input.boundaries() == transformed,
+              "homogeneous affine trim conversion handles positive, zero and negative interior "
+              "weights");
+        const auto evaluator = BsplineCurve::from_bgfb(original["curves"][0]["geometry"]);
+        const auto &polygon = normalized.loops().at(0);
+        const double bound = normalized.report()["loops"][0]["deviation_bound"].get<double>();
+        for (unsigned i = 0; i <= 100; ++i) {
+            const auto p = evaluator.point_at(i / 100.);
+            double d = std::numeric_limits<double>::infinity();
+            for (std::size_t j = 1; j < polygon.size(); ++j)
+                d = std::min(d, distance({p[0], p[1]}, polygon[j - 1], polygon[j]));
+            check(d <= bound + 1e-12,
+                  "normalized rational boundary matches independent fraction-space curve");
+        }
+        const auto incomplete = input.trim_normalized(1e-8, 1);
+        check(incomplete.report()["status"] == "incomplete" &&
+                  incomplete.classify({.5, .5}) == unknown,
+              "normalized trim retains conversion failure semantics");
+    }
+    // A tiny V span must not inherit the much larger U coordinate tolerance.
+    const auto anisotropic = surface(rectangle(1e6 + .25, .25e-12, 1e6 + .75, .75e-12), 1,
+                                     {{{1e6, 1e6 + 1}, {0, 1e-12}}})
+                                 .trim_normalized(1e-6);
+    check(anisotropic.report()["status"] == "complete" &&
+              anisotropic.classify({.5, .5}) == inside && anisotropic.classify({.5, .1}) == outside,
+          "anisotropic knot domains apply tolerance after coordinate normalization");
     return n;
 }

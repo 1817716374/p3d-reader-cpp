@@ -61,7 +61,7 @@ unsigned bspline_mesh_tests() {
               "surface mesh paired position/UV arrays");
         double total_area = 0;
         std::map<std::array<unsigned, 2>, std::pair<unsigned, int>> edges;
-        auto trim = surface.trim(options.uv_tolerance);
+        auto trim = surface.trim_normalized(options.uv_tolerance);
         for (const auto &face : mesh.faces) {
             for (auto index : face)
                 require(index < mesh.parameters.size(), "mesh index range");
@@ -121,8 +121,11 @@ unsigned bspline_mesh_tests() {
     scaled_domain["knotsV"] = {-3, -3, 7, 7};
     verify(BsplineSurface::from_bgfb(scaled_domain), 1);
     scaled_domain["boundaries"] = rectangle(.2, .2, .8, .8);
-    check(BsplineSurface::from_bgfb(scaled_domain).mesh(options).report["status"] == "incomplete",
-          "non-normalized source trim UV is not silently treated as surface fractions");
+    verify(BsplineSurface::from_bgfb(scaled_domain), 1);
+    scaled_domain["boundaries"] = rectangle(2.6, -1, 4.4, 5);
+    verify(BsplineSurface::from_bgfb(scaled_domain), .64);
+    scaled_domain["holeOrigin"] = 1;
+    verify(BsplineSurface::from_bgfb(scaled_domain), .36);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .2, .8, .8), 1)), .36);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .2, .8, .8), 0)), .64);
     verify(
@@ -265,6 +268,14 @@ unsigned bspline_mesh_tests() {
     discontinuous["boundaries"] = nullptr;
     discontinuous["knotsU"] = {-4, -4, 2, 2, 8, 8};
     verify_jump(discontinuous, 1);
+    auto domain_jump = discontinuous;
+    domain_jump["knotsV"] = {-3, -3, 7, 7};
+    domain_jump["boundaries"] = loop({{-2.8, -1}, {6.8, 0}, {4.4, 5}, {-2.8, -1}});
+    check(verify_jump(domain_jump, .21) == std::make_pair(true, true),
+          "non-normalized slanted trim preserves both exact sides of a full knot jump");
+    domain_jump["boundaries"] = rectangle(2, -1, 5.6, 5);
+    check(verify_jump(domain_jump, .18) == std::make_pair(false, true),
+          "normalization of a trim on the exact source knot does not select the opposite side");
 
     // Two quadratic directions, four independent rational patches. Weighted
     // poles have affine Bernstein coefficients; their analytic denominator is
