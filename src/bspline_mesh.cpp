@@ -287,9 +287,9 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
         const auto region = trim_normalized(options.uv_tolerance, options.max_trim_segments);
         result.report["trim"] = region.report();
         require(region.report().at("status") == "complete", "surface trim conversion incomplete");
-        // Native trim paths use the saved UV contours in the active rectangle.
-        // Closed surface directions affect evaluation, not the contour's lift:
-        // do not take modulo, duplicate loops, or choose shorter seam crossings.
+        // This derived mesh clips source-coordinate contours to the active
+        // rectangle. It does not reproduce native stroking/clamping. Closed
+        // directions do not authorize modulo, extra loops or shorter crossings.
         const auto cuts_u = discontinuity_cuts(u()), cuts_v = discontinuity_cuts(v());
         require(cuts_u.size() - 1 <= options.max_triangles / (cuts_v.size() - 1),
                 "surface mesh patch budget");

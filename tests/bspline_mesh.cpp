@@ -128,6 +128,9 @@ unsigned bspline_mesh_tests() {
     verify(BsplineSurface::from_bgfb(scaled_domain), .36);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .2, .8, .8), 1)), .36);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .2, .8, .8), 0)), .64);
+    verify(BsplineSurface::from_bgfb(plane(loop({{.2,.2},{.8,.2},{.8,.8},{.2,.8}}),1)),.36);
+    verify(BsplineSurface::from_bgfb(plane(loop({{.2,.2},{.8,.2},{.8,.8},{.2,.8}}),0)),.64);
+    verify(BsplineSurface::from_bgfb(plane(loop({{.2,.2},{.8,.2},{.5,.8}}),1)),.18);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.8, .2, 1.2, .8), 0)), .88);
     verify(BsplineSurface::from_bgfb(plane(rectangle(.2, .8, .8, 1.2), 0)), .88);
     verify(
@@ -170,6 +173,11 @@ unsigned bspline_mesh_tests() {
                hole ? .06 * 3.141592653589793 : 1 - .06 * 3.141592653589793, 2e-6);
         ellipse["arc"]["sweepRadians"] = -6.2831853071795864769;
     }
+    ellipse["arc"]["sweepRadians"] = 3.14159265358979323846;
+    verify(BsplineSurface::from_bgfb(plane(
+        {{"_type","CurveVector"},{"type",2},
+         {"curves",Json::array({{{"_type","VariantGeometry"},{"geometry",ellipse}}})}},1)),
+        .03*3.14159265358979323846,2e-6);
 
     auto curved = plane();
     curved["numPolesU"] = curved["numPolesV"] = 3;

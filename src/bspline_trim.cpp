@@ -408,19 +408,32 @@ BsplineTrim BsplineSurface::trim_impl(double tolerance, unsigned max_segments,
             double bound = roundoff;
             for (std::size_t i = 0; i < loop.pieces.size(); ++i) {
                 const auto a = cartesian(loop.pieces[i].front());
-                const auto b = cartesian(
-                    loop.pieces[(i + loop.pieces.size() - 1) % loop.pieces.size()].back());
-                require(std::hypot(a[0] - b[0], a[1] - b[1]) <= roundoff,
-                        "trim boundary has a gap or discontinuity");
+                if (i > 0) {
+                    const auto b = cartesian(loop.pieces[i - 1].back());
+                    require(std::hypot(a[0] - b[0], a[1] - b[1]) <= roundoff,
+                            "trim boundary has a gap or discontinuity");
+                }
                 build.stroke(loop.pieces[i], polygon, bound);
             }
-            polygon.back() = polygon.front();
+            Json closing_segment = nullptr;
+            const auto first = polygon.front(), last = polygon.back();
+            if (std::hypot(first[0] - last[0], first[1] - last[1]) > roundoff) {
+                // Outer/Inner boundaries are implicitly cyclic. The native
+                // mesh input appends the first UV when its final UV differs;
+                // this is a closing edge, not a periodic shortest-path join.
+                require(build.segments < max_segments, "trim segment budget exhausted");
+                ++build.segments;
+                polygon.push_back(first);
+                closing_segment = {{"from", last}, {"to", first}};
+            } else
+                polygon.back() = polygon.front();
             result.loops_.push_back(std::move(polygon));
             result.errors_.push_back(bound + roundoff);
             build.sources.push_back(
                 {{"source_path", loop.path},
                  {"source_boundary_type", loop.source_type},
                  {"effective_boundary_type", loop.source_type == 1 ? 2 : loop.source_type},
+                 {"implicit_closing_segment", closing_segment},
                  {"polyline_index", result.loops_.size() - 1},
                  {"deviation_bound", bound + roundoff}});
         } catch (const std::exception &e) {

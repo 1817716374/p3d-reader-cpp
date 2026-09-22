@@ -215,13 +215,16 @@ unsigned bspline_periodic_trim_tests() {
     scaled["knotsV"] = kv;
     scaled["boundaries"] = rectangle(4.4, -1, 5.6, 5);
     verify(scaled, .12, true, true, false);
-    // A line from one seam to the other is not a closed UV contour, even
-    // when its endpoints map to the same spatial point on the periodic surface.
+    // Outer boundaries close in UV. A single line plus its return edge has
+    // zero filled area; coincident spatial endpoints do not imply a full band.
     scaled["boundaries"] = rectangle(2, -1, 5, 5);
     scaled["boundaries"]["curves"][0]["geometry"]["points"] = {2, -1, 0, 5, -1, 0};
     const auto open = BsplineSurface::from_bgfb(scaled).mesh(options);
-    check(open.report.at("status") == "incomplete" && open.vertices.empty() && open.faces.empty(),
-          "UV-open boundary is not repaired by joining spatially coincident seam endpoints");
+    check(open.report.at("status") == "complete" && open.faces.empty(),
+          "implicit UV closure of a seam-to-seam line does not invent a periodic band");
+    scaled["boundaries"]["curves"][0]["geometry"]["points"] = {2, -1, 0, 5, -1, 0,
+                                                               5, 5,  0, 2, 5,  0};
+    verify(scaled, .6, true, true, false);
     scaled["boundaries"] = rectangle(2, -3, 5, 7);
     options.max_vertices = 4;
     const auto limited = BsplineSurface::from_bgfb(scaled).mesh(options);

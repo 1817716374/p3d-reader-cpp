@@ -159,10 +159,38 @@ unsigned bspline_trim_tests() {
               "even a singleton PointString contributes endpoints to native Open closure");
     }
     open["type"] = 2;
-    auto gap = surface(open).trim(1e-6);
+    const auto one_line = surface(open).trim(1e-6);
+    check(one_line.report()["status"] == "complete" &&
+              !one_line.report()["loops"][0]["implicit_closing_segment"].is_null() &&
+              one_line.classify({.5, .5}) == outside,
+          "Outer line closes with a return edge and has no filled area");
+    auto broken = open;
+    broken["curves"].push_back(variant(line({.8, .8, 0}, {.2, .8, 0})));
+    auto gap = surface(broken).trim(1e-6);
     check(gap.report()["status"] == "incomplete" && gap.classify({.5, .5}) == unknown,
-          "declared closed boundary with geometric gap is not silently closed or treated as "
-          "untrimmed");
+          "internal primitive gaps remain explicit instead of being confused with final closure");
+    for (const int type : {2, 3}) {
+        auto missing_last = rectangle(.2, .2, .8, .8, type);
+        auto &p = missing_last["curves"][0]["geometry"]["points"];
+        p.erase(p.end() - 3, p.end());
+        const auto input = surface(missing_last);
+        const auto r = input.trim(1e-6, 4);
+        check(r.report()["status"] == "complete" && r.report()["segments"] == 4 &&
+                  r.classify({.5, .5}) == inside && r.classify({.1, .5}) == outside &&
+                  r.classify({.2, .5}) == on,
+              "Outer and Inner point sequences include the implicit closing edge");
+        check(r.report()["loops"][0]["implicit_closing_segment"] ==
+                      Json{{"from", Point2{.2, .8}}, {"to", Point2{.2, .2}}} &&
+                  input.boundaries() == missing_last,
+              "closing-edge provenance does not modify the stored boundary tree");
+        const auto limited = input.trim(1e-6, 3);
+        check(limited.report()["status"] == "incomplete" && limited.classify({.5, .5}) == unknown,
+              "implicit closing edge counts against the global segment budget");
+        missing_last["type"] = 1;
+        const auto ignored_open = surface(missing_last).trim(1e-6);
+        check(ignored_open.loops().empty() && ignored_open.classify({.5, .5}) == inside,
+              "implicit Outer closure does not bypass the source Open admission predicate");
+    }
     auto unsupported = array(2, Json::array({variant({{"_type", "InterpolationCurve"}})}));
     check(surface(unsupported).trim(1e-6).classify({.5, .5}) == unknown,
           "unsupported trim curves cannot produce a false inside result");
@@ -208,6 +236,10 @@ unsigned bspline_trim_tests() {
     }
     const double w = std::sqrt(.5), s = std::sqrt(3.) / 2;
     auto quarter = spline(3, false, {.8, .5, 0, .8 * w, .8 * w, 0, .5, .8, 0}, {1, w, 1});
+    const auto segment = surface(array(2, Json::array({variant(quarter)}))).trim(1e-5);
+    check(segment.report()["status"] == "complete" && segment.classify({.71, .71}) == inside &&
+              segment.classify({.55, .55}) == outside && segment.classify({.65, .65}) == on,
+          "rational arc closes by its UV chord instead of rejecting the circular segment");
     auto sector = array(2, Json::array({variant(quarter), variant(line({.5, .8, 0}, {.5, .5, 0})),
                                         variant(line({.5, .5, 0}, {.8, .5, 0}))}));
     auto q = surface(sector).trim(1e-5);
