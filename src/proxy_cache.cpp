@@ -179,7 +179,11 @@ struct ProxyReader {
         out["reference_parameters_storage"] = rawbytes(reference_bytes);
         out["reference_parameters"] = cached_reference_parameters(reference_bytes);
         out["reference_parameters"]["model_source_offset"] = reference_start;
-        out["source_block_32"] = rawbytes(take(32, end));
+        const auto hash_start = reader.p;
+        const auto hash_bytes = take(32, end);
+        out["source_block_32"] = rawbytes(hash_bytes);
+        out["reference_state_hash"] = decode_native_cache_hash(hash_bytes);
+        out["reference_state_hash"]["model_source_offset"] = hash_start;
         out["child_model_count"] = word(end);
         const auto optional_size = word(end);
         const auto metadata_start = reader.p;
@@ -378,7 +382,10 @@ Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits
                         {"header", std::move(header)}});
             return out;
         }
-        header["source_block_32"] = rawbytes(reader.take(32, bytes.size()));
+        const auto hash_bytes = reader.take(32, bytes.size());
+        header["source_block_32"] = rawbytes(hash_bytes);
+        header["cache_state_hash"] = decode_native_cache_hash(hash_bytes);
+        header["cache_state_hash"]["source_offset"] = 8;
         header["source_uint64_at_40"] = reader.id(bytes.size());
         header["source_uint64_at_48"] = reader.id(bytes.size());
         header["display_parameters_storage"] = rawbytes(reader.take(80, bytes.size()));

@@ -123,11 +123,21 @@ unsigned model_edge_cache_tests() {
     const auto decoded = decode_native_model_edge_cache(input);
     check(decoded.at("status") == "decoded", "full cache structure decoded");
     check(decoded.at("semantics_status") == "partial", "cache semantics not overstated");
+    check(decoded.at("header").at("cache_state_hash").at("source_offset") == 8 &&
+              decoded.at("header").at("cache_state_hash").at("mode") == 0,
+          "main header hash is decoded at its native source location");
     check(decoded.at("runtime_attachment_status") == "not_evaluated",
           "no invented runtime targets");
     check(decoded.at("models").size() == 4, "all preorder model attributes read");
     check(decoded.at("next_model_attribute_index") == 5, "counter follows recursion");
     const auto &models = decoded.at("models");
+    const auto &state_hash = models[0].at("reference_state_hash");
+    check(state_hash.at("digest_status") == "declared_size_exceeds_storage" &&
+              state_hash.at("declared_digest_bytes") == 0x09090909u,
+          "invalid saved model hash does not erase the decodable geometry structure");
+    check(slice(root, state_hash.at("model_source_offset").get<std::size_t>(), 32) ==
+              bytesof(models[0].at("source_block_32")),
+          "reference hash source offset resolves to preserved model bytes");
     check(models[0].at("children") == Json({1, 3}) && models[1].at("children") == Json({2}),
           "child counts reconstruct hierarchy, not numeric ID sorting");
     check(models[0].at("parent_model_index").is_null() && models[2].at("parent_model_index") == 1,

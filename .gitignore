@@ -109,3 +109,4 @@
 
 !/tests/proxy_cache.cpp
 !/tests/model_edge_cache.cpp
+!/tests/cache_hash.cpp

@@ -27,4 +27,12 @@ struct ModelEdgeCacheLimits {
 // A decoded result is structural: runtime attachment and some fields remain
 // explicitly unevaluated. Truncated/unsafe source extents are rejected.
 Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits = {});
+
+// A native cache hash occupies exactly 32 bytes. Exported mode 0 uses MD5;
+// nonzero modes select SHA-1. The source marker does not prove hash success.
+Json decode_native_cache_hash(const Bytes &);
+// Native equality compares mode, declared length (at most 20), and only that
+// many digest bytes. It ignores marker/padding/unused digest storage. This
+// does not regenerate the current runtime hash or validate the whole cache.
+Json compare_native_cache_hash(const Bytes &saved, const Bytes &current);
 } // namespace p3d
