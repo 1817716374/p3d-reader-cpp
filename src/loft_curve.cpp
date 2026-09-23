@@ -1,7 +1,8 @@
 #include "loft_curve.hpp"
 namespace p3d::loft_detail {
 Point3 cartesian(H h) {
-    require(h[3] > 0 && std::isfinite(h[3]), "loft requires positive control weights");
+    require(h[3] != 0 && std::isfinite(h[3]),
+            "loft cannot deweight a zero or nonfinite control weight");
     Point3 p{h[0] / h[3], h[1] / h[3], h[2] / h[3]};
     for (double x : p)
         require(std::isfinite(x), "nonfinite loft control point");

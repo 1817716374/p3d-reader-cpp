@@ -535,6 +535,7 @@ struct LoftMeshOptions {
     unsigned max_vertices = 200000;
     unsigned max_triangles = 400000;
     unsigned max_cap_control_points = 100000;
+    unsigned max_denominator_steps = 1000000; // Per side; includes interval subdivision.
 };
 struct LoftMeshPart {
     std::string role; // side, bottom, top

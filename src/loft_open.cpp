@@ -88,25 +88,22 @@ double seam_tolerance(Curve &c, double length, bool boundary) {
     }
     return std::max(1e-14, tolerance);
 }
-bool special_seam(const Curve &c, bool boundary) {
+bool special_seam(const Curve &c) {
     Point3 low, high;
     const double largest = std::numeric_limits<double>::max();
-    low.fill(boundary ? largest : std::numeric_limits<double>::infinity());
-    high.fill(boundary ? -largest : -std::numeric_limits<double>::infinity());
+    low.fill(largest);
+    high.fill(-largest);
     for (auto h : c.poles) {
-        if (c.rational && (boundary ? std::abs(h[3]) : h[3]) <= 1e-12)
+        if (c.rational && std::abs(h[3]) <= 1e-12)
             continue;
         Point3 p;
-        if (boundary) {
-            if (!c.rational && (h[0] == largest || h[1] == largest || h[2] == largest))
-                continue;
-            const double inverse = c.rational ? 1 / h[3] : 1;
-            for (unsigned k = 0; k < 3; ++k) {
-                p[k] = h[k] * inverse;
-                require(std::isfinite(p[k]), "native periodic seam range overflow");
-            }
-        } else
-            p = cartesian(h);
+        if (!c.rational && (h[0] == largest || h[1] == largest || h[2] == largest))
+            continue;
+        const double inverse = c.rational ? 1 / h[3] : 1;
+        for (unsigned k = 0; k < 3; ++k) {
+            p[k] = h[k] * inverse;
+            require(std::isfinite(p[k]), "native periodic seam range overflow");
+        }
         for (unsigned k = 0; k < 3; ++k) {
             low[k] = std::min(low[k], p[k]);
             high[k] = std::max(high[k], p[k]);
@@ -161,7 +158,7 @@ Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *repor
         const double span = c.knots[c.poles.size()] - c.knots[c.degree];
         require(span > 0 && std::isfinite(span), "native periodic opening output domain");
     };
-    if (source.periodic_pole_shift() != 0 && special_seam(c, boundary)) {
+    if (source.periodic_pole_shift() != 0 && special_seam(c)) {
         const auto first = std::size_t(source.order() / 2);
         c.knots = std::vector<double>(c.knots.begin() + first,
                                       c.knots.begin() + first + c.poles.size() + source.order());

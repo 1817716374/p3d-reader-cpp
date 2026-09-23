@@ -200,7 +200,10 @@ BsplineSurface patch(Curve bottom, Curve top, Curve left, Curve right, unsigned 
                                        (1 - u) * v * p01[k] + u * v * p11[k];
                 h[k] = (a0[k] * (1 - v) + a1[k] * v + b0[k] * (1 - u) + b1[k] * u - corners) * w;
             }
-            cartesian(h);
+            // Native Coons construction stores the product weight, including
+            // zero; it does not deweight the newly constructed control net.
+            for (double value : h)
+                require(std::isfinite(value), "nonfinite loft surface control");
             for (unsigned k = 0; k < 3; ++k)
                 xyz.push_back(h[k]);
             if (rational)
@@ -316,6 +319,7 @@ SectionLoft SectionLoft::from_bgfb(const Json &table, unsigned max_control_point
     out.report_ = {
         {"status", "valid"},
         {"representation", "derived_bspline_side_surfaces"},
+        {"denominator_status", "not_evaluated"},
         {"side_count", out.sides_.size()},
         {"control_point_count", total},
         {"loops", loop_notes},

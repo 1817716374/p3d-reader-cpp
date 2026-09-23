@@ -919,5 +919,191 @@ unsigned section_loft_tests() {
     check(task.get().sides()[0].surface.poles() == concurrent.sides()[0].surface.poles() &&
               input == saved,
           "source loft reconstruction is const and independent across concurrent calls");
+    // Signed homogeneous controls remain signed through native preparation.
+    for (unsigned order : {3u, 4u, 5u, 6u})
+        for (bool mixed : {false, true}) {
+            Json xyz = Json::array(), weights = Json::array();
+            for (unsigned i = 0; i < order; ++i) {
+                const double w = mixed ? (i == 1 ? -.07 : 1.) : -1. - .1 * i;
+                weights.push_back(w);
+                xyz.push_back(i * w);
+                xyz.push_back((i % 2 ? .4 : -.3) * w);
+                xyz.push_back(0);
+            }
+            const auto original = BsplineCurve::from_bgfb(curve(order, xyz, nullptr, weights));
+            auto prepared = Curve::from_bspline(original, 1000);
+            prepared.elevate(8, 1000);
+            prepared.insert(.37, 3, 1000);
+            const auto elevated = BsplineCurve::from_bgfb(prepared.table());
+            for (unsigned i = 0; i <= 80; ++i)
+                check(near(original.point_at(i / 80.), elevated.point_at(i / 80.)),
+                      "signed loft elevation and insertion preserve independent rational values");
+        }
+    auto weighted_profile = [&](double z, const Json &weights) {
+        const std::array<Point3, 4> points{{{0, 0, z}, {1, 1, z}, {2, -1, z}, {3, 0, z}}};
+        Json xyz = Json::array();
+        for (unsigned i = 0; i < 4; ++i)
+            for (double x : points[i])
+                xyz.push_back(x * weights[i].get<double>());
+        return curve(4, xyz, nullptr, weights);
+    };
+    for (const Json w : {Json{1, -.1, 1, 1}, Json{-1, .1, -1, -1}, Json{-1, -1, -1, -1}}) {
+        auto signed_source = source();
+        signed_source["section0"] = array({weighted_profile(0, w)});
+        signed_source["section1"] = array({weighted_profile(2, w)});
+        const auto signed_loft = SectionLoft::from_bgfb(signed_source);
+        const auto &surface = signed_loft.sides()[0].surface;
+        for (unsigned i = 0; i < 4; ++i)
+            check(surface.weights()[i] == w[i] && surface.weights()[i + 4] == w[i],
+                  "Coons preserves signed source weights without normalization or absolute values");
+        for (unsigned i = 0; i <= 50; ++i) {
+            const double t = i / 50., s0 = 1 - t;
+            const double basis[4]{s0 * s0 * s0, 3 * s0 * s0 * t, 3 * s0 * t * t, t * t * t};
+            double den = 0, x = 0, y = 0;
+            for (unsigned j = 0; j < 4; ++j) {
+                const double a = basis[j] * w[j].get<double>();
+                den += a;
+                x += j * a;
+                y += (j == 1 ? 1 : j == 2 ? -1 : 0) * a;
+            }
+            for (double v : {0., .23, .71, 1.})
+                check(near(surface.point_at(t, v), {x / den, y / den, 2 * v}),
+                      "signed native loft agrees with independent rational Bernstein extrusion");
+        }
+        const auto wire_loft =
+            SectionLoft::from_bgfb(decode_bgfb(Wire{}.encode(signed_source))["geometry"]);
+        check(wire_loft.sides()[0].surface.weights() == surface.weights() &&
+                  wire_loft.sides()[0].surface.poles() == surface.poles(),
+              "signed weights reach source loft construction through actual BGFB type 21");
+        LoftMeshOptions options;
+        options.max_uv_edge = .4;
+        const auto mesh = signed_loft.mesh(options);
+        check(mesh.report["status"] == "complete" && !mesh.faces.empty() &&
+                  mesh.report["side_denominators"][0]["status"] == "verified",
+              "signed loft meshing certifies the full rational denominator");
+        options.max_denominator_steps = 1;
+        if (w[0].get<double>() * w[1].get<double>() < 0) {
+            const auto limited = signed_loft.mesh(options);
+            check(limited.report["status"] == "incomplete" && limited.faces.empty() &&
+                      limited.vertices.empty(),
+                  "insufficient denominator budget cannot return a partial loft mesh");
+        }
+        options.max_denominator_steps = 0;
+        rejects([&] { signed_loft.mesh(options); }, "zero loft denominator budget is invalid");
+        check(signed_loft.source() == signed_source,
+              "signed loft retains exact source controls and weights");
+    }
+    // These source representations describe the same rectangular boundaries,
+    // but native product weights can introduce a singularity. Do not rescale
+    // the source controls to repair or conceal it.
+    for (double upper_weight : {-1., -2.}) {
+        auto singular_source = source();
+        singular_source["section0"] = array({curve(2, {0, 0, 0, 3, 0, 0}, nullptr, {1, 1})});
+        singular_source["section1"] =
+            array({curve(2, {0, 0, 2 * upper_weight, 3 * upper_weight, 0, 2 * upper_weight},
+                         nullptr, {upper_weight, upper_weight})});
+        Json rails = Json::array();
+        for (double x : {0., 3.})
+            rails.push_back(array({curve(5, {x, 0, 0, x, 0, .5, x, 0, 1, x, 0, 1.5, x, 0, 2})}));
+        singular_source["guide_groups"][0] = rails;
+        const auto singular = SectionLoft::from_bgfb(singular_source);
+        check(singular.report()["denominator_status"] == "not_evaluated",
+              "constructed native controls do not claim the rational denominator is regular");
+        const auto &surface = singular.sides()[0].surface;
+        check(surface.weights()[4] == (1 + upper_weight) / 2,
+              "native generated zero or negative product weight is preserved");
+        LoftMeshOptions sparse;
+        sparse.max_uv_edge = 4; // Only endpoints: point sampling alone misses the pole.
+        const auto mesh = singular.mesh(sparse);
+        check(mesh.report["status"] == "incomplete" && mesh.faces.empty() &&
+                  mesh.vertices.empty() &&
+                  mesh.report["side_denominators"][0]["status"] == "unverified",
+              "loft mesh rejects an interior rational singularity between finite sample vertices");
+        if (upper_weight == -1) {
+            check(surface.poles()[4] == Point3{0, 0, 0},
+                  "zero product weight retains weighted zero XYZ");
+            rejects([&] { surface.point_at(.5, .5); },
+                    "singular native surface is not reported as finite");
+        }
+    }
+    for (bool mixed : {false, true}) {
+        Json xyz = Json::array(), weights = Json::array();
+        for (unsigned i = 0; i < 6; ++i) {
+            const double w = mixed ? (i == 3 ? -.1 : 1.) : -1.;
+            weights.push_back(w);
+            xyz.push_back(std::cos(i * pi / 3) * w);
+            xyz.push_back(std::sin(i * pi / 3) * w);
+            xyz.push_back(0);
+        }
+        auto cyclic = curve(3, xyz, nullptr, weights);
+        cyclic["closed"] = true;
+        const auto original = BsplineCurve::from_bgfb(cyclic);
+        const auto opened = BsplineCurve::from_bgfb(Curve::from_bspline(original, 1000).table());
+        for (unsigned i = 0; i <= 80; ++i)
+            check(near(original.point_at(i / 80.), opened.point_at(i / 80.)),
+                  "periodic signed loft opening preserves independently evaluated source geometry");
+    }
+    {
+        auto special_negative = curve(3, {0, 0, 0, .1, .2, 0, .2, .1, 0, .0001, 0, 0},
+                                      {-1, 0, 0, 0, 1, 2, 2, 2, 3}, {-1, -1, -1, -1});
+        special_negative["closed"] = true;
+        Json method;
+        const auto opened =
+            loft_detail::open_periodic(BsplineCurve::from_bgfb(special_negative), 100, &method);
+        check(method["method"] == "cyclic_seam_fallback" && opened.poles[0][0] == .1,
+              "negative controls contribute to special seam range and select the native fallback");
+        special_negative["poles"][9] = 0;
+        const auto stripped =
+            loft_detail::open_periodic(BsplineCurve::from_bgfb(special_negative), 100, &method);
+        check(method["method"] == "strip_exterior_knots" &&
+                  stripped.knots == std::vector<double>{0, 0, 0, .5, 1, 1, 1},
+              "matching negative special seam retains controls and prepares normalized loft knots");
+        auto original =
+            Curve::from_bspline(BsplineCurve::from_bgfb(curve(2, {0, 0, 0, -1, 0, 0, 0, 0, 0},
+                                                              {0, 0, .3, 1, 1}, {-1, -1, -1})),
+                                100);
+        const auto reopened = loft_detail::close_reopen(original, 100, method);
+        check(method["method"] == "linear_periodic_reopened" && reopened.poles == original.poles &&
+                  reopened.knots == original.knots,
+              "native closure and reopening preserve a negative homogeneous closed guide");
+    }
+    rejects(
+        [&] {
+            auto c = Curve::from_bspline(BsplineCurve::from_bgfb(curve(
+                                             3, {0, 0, 0, -1, 0, 0, 2, 0, 0}, nullptr, {1, -1, 1})),
+                                         100);
+            c.elevate(4, 100);
+        },
+        "zero working weight produced by elevation cannot be deweighted for native Coons "
+        "construction");
+    // A fully negative representation must retain the same planar cap hull.
+    {
+        const std::array<Point3, 4> p{{{0, 0, 0}, {3, 0, 0}, {3, 2, 0}, {0, 2, 0}}};
+        std::vector<Json> low, high;
+        Json rails = Json::array();
+        for (unsigned i = 0; i < 4; ++i) {
+            auto a = p[i], b = p[(i + 1) % 4], c = a, d = b;
+            c[2] = d[2] = 2;
+            auto negative_line = [&](Point3 first, Point3 last) {
+                return curve(2, {-first[0], -first[1], -first[2], -last[0], -last[1], -last[2]},
+                             nullptr, {-1, -1});
+            };
+            low.push_back(negative_line(a, b));
+            high.push_back(negative_line(c, d));
+            rails.push_back(array({line(a, c)}));
+        }
+        const Json capped{{"_type", "P3DSectionLoft"},
+                          {"capped", true},
+                          {"section0", array(low, 2)},
+                          {"section1", array(high, 2)},
+                          {"guide_groups", Json::array({rails})}};
+        const auto negative = SectionLoft::from_bgfb(capped);
+        LoftMeshOptions options;
+        options.max_uv_edge = .5;
+        const auto mesh = negative.mesh(options);
+        check(negative.cap_regions().report["status"] == "complete" &&
+                  mesh.report["status"] == "complete",
+              "negative same-sign rational caps retain the Cartesian control hull and closed mesh");
+    }
     return checks;
 }

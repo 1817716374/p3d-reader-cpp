@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "bspline_denominator.hpp"
 #include "glu/sk_glu.h"
 #include <deque>
 
@@ -207,16 +208,21 @@ std::vector<Triangle> cap_faces(const std::vector<Ring> &rings, const std::vecto
                 "loft cap boundary is not planar within tolerance");
         max_plane_error = std::max(max_plane_error, d);
     };
-    // Positive-weight cap curves lie in their Cartesian control hull. Check
+    // Same-sign weight cap curves lie in their Cartesian control hull. Check
     // the full curves, not just the chosen mesh samples.
     std::function<void(const Json &)> check_curves = [&](const Json &j) {
         if (j.is_object()) {
             if (j.value("_type", std::string()) == "BsplineCurve") {
                 const auto curve = BsplineCurve::from_bgfb(j);
+                if (curve.rational()) {
+                    const bool positive = curve.weights().front() > 0;
+                    for (double w : curve.weights())
+                        require(w != 0 && (w > 0) == positive,
+                                "loft cap plane requires nonzero same-sign weights");
+                }
                 for (std::size_t i = 0; i < curve.poles().size(); ++i) {
                     auto p = curve.poles()[i];
                     if (curve.rational()) {
-                        require(curve.weights()[i] > 0, "loft cap plane requires positive weights");
                         for (auto &x : p)
                             x /= curve.weights()[i];
                     }
@@ -345,7 +351,7 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
                 std::isfinite(options.join_tolerance) && options.join_tolerance >= 0 &&
                 std::isfinite(options.planarity_tolerance) && options.planarity_tolerance >= 0 &&
                 options.max_vertices >= 3 && options.max_triangles > 0 &&
-                options.max_cap_control_points > 0,
+                options.max_cap_control_points > 0 && options.max_denominator_steps > 0,
             "invalid loft mesh options");
     LoftMesh out;
     out.report = {{"status", "incomplete"},
@@ -355,6 +361,7 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
                   {"max_side_uv_edge", options.max_uv_edge},
                   {"join_tolerance", options.join_tolerance},
                   {"planarity_tolerance", options.planarity_tolerance}};
+    out.report["side_denominators"] = Json::array();
     try {
         const bool capped = source_.at("capped").get<bool>();
         const auto caps = cap_regions(options.max_cap_control_points);
@@ -398,6 +405,12 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
             std::array<Ring, 2> boundary;
             for (std::size_t segment = 0; segment < count; ++segment, ++side_index) {
                 const auto &surface = sides_[side_index].surface;
+                auto denominator =
+                    certify_surface_denominator(surface, options.max_denominator_steps);
+                denominator["side_index"] = side_index;
+                out.report["side_denominators"].push_back(denominator);
+                require(denominator.at("status") == "verified",
+                        "loft side denominator sign not established for mesh");
                 require(surface.v().knots() == sides_[side_index - segment].surface.v().knots(),
                         "loft guides have incompatible sample parameters");
                 const auto u = parameters(surface.u(), step, options.max_vertices);
