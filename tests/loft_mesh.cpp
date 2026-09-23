@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "bspline_denominator.hpp"
 #include <future>
 using namespace p3d;
 namespace {
@@ -294,5 +295,170 @@ unsigned loft_mesh_tests() {
     check(repeat.vertices == simple.vertices && repeat.faces == simple.faces &&
               repeat.report == simple.report,
           "loft mesh repeatable and concurrent");
+    // A mixed-sign control polygon is not a Cartesian convex hull. The
+    // rational quadratic at t=.5 has Z=-99*height, although its Cartesian
+    // middle control has Z=height and both endpoints have Z=0.
+    auto rational_quadratic = [](double height, double sign = 1.) {
+        return BsplineCurve::from_bgfb(
+            {{"_type", "BsplineCurve"},
+             {"order", 3},
+             {"closed", false},
+             {"poles", {0., 0., 0., -.99 * sign, 0., -.99 * height * sign, 2 * sign, 0., 0.}},
+             {"weights", {sign, -.99 * sign, sign}},
+             {"knots", {2, 2, 2, 7, 7, 7}}});
+    };
+    constexpr double plane_tolerance = 1e-5;
+    for (double sign : {1., -1.}) {
+        const auto outside = rational_quadratic(.5 * plane_tolerance, sign);
+        check(std::abs(outside.point_at(.5)[2] + 49.5 * plane_tolerance) < 1e-15,
+              "independent rational quadratic exposes control-hull planarity error");
+        const auto rejected =
+            certify_curve_plane(outside, {0, 0, 0}, {0, 0, 1}, plane_tolerance, 100000);
+        check(rejected["status"] == "unverified" && rejected["distance_bound"].is_null(),
+              "all controls within tolerance do not certify a mixed-sign curve within tolerance");
+        const auto inside = rational_quadratic(.005 * plane_tolerance, sign);
+        const auto proof =
+            certify_curve_plane(inside, {0, 0, 0}, {0, 0, 7}, plane_tolerance, 100000);
+        check(proof["status"] == "verified" && proof["visited_cells"] > 1 &&
+                  proof["distance_bound"].get<double>() >= .495 * plane_tolerance &&
+                  proof["distance_bound"].get<double>() <= plane_tolerance,
+              "adaptive rational plane bound accepts a finite mixed-sign curve and normalizes the "
+              "plane normal");
+        for (unsigned i = 0; i <= 100; ++i)
+            check(std::abs(inside.point_at(i / 100.)[2]) <= proof["distance_bound"].get<double>(),
+                  "certified plane bound encloses independent curve evaluations");
+        check(certify_curve_plane(inside, {0, 0, 0}, {0, 0, 1}, plane_tolerance, 1)["status"] ==
+                  "unverified",
+              "plane proof cannot ignore a depleted work budget");
+        const auto exact_plane = rational_quadratic(0, sign);
+        const auto exact_proof = certify_curve_plane(exact_plane, {0, 0, 0}, {0, 0, 1}, 0, 100000);
+        check(exact_proof["status"] == "verified" && exact_proof["distance_bound"] == 0,
+              "exact zero residual still proves the mixed-sign denominator before accepting zero "
+              "tolerance");
+    }
+    {
+        auto table = line({0, 0, 0}, {4, 0, 0});
+        table["order"] = 3;
+        table["knots"] = {2, 2, 2, 3, 3, 7, 7, 7};
+        table["poles"] = {0, 0, 0, -.99, 0, 0, 2, 0, 0, -2.7, 0, 0, 4, 0, 0};
+        table["weights"] = {1, -.99, 1, -.9, 1};
+        const auto proof =
+            certify_curve_plane(BsplineCurve::from_bgfb(table), {0, 0, 0}, {0, 0, 1}, 0, 100000);
+        check(proof["status"] == "verified" && proof["verified_knot_spans"] == 2,
+              "plane proof covers every nonuniform repeated-knot span in the original domain");
+        table["knots"] = nullptr;
+        table["poles"] = {0, 0, 0, 0, 0, 0, 2, 0, 0};
+        table["weights"] = {1, 0, 1};
+        check(certify_curve_plane(BsplineCurve::from_bgfb(table), {0, 0, 0}, {0, 0, 1}, 0,
+                                  100000)["status"] == "verified",
+              "plane proof uses homogeneous controls without dividing a zero control weight");
+        table["weights"] = {1, -1, 1};
+        check(certify_curve_plane(BsplineCurve::from_bgfb(table), {0, 0, 0}, {0, 0, 1}, 0,
+                                  100000)["status"] == "unverified",
+              "zero residual cannot conceal a rational singularity in the boundary");
+    }
+    auto signed_prism = prism();
+    for (const auto name : {"section0", "section1"}) {
+        const double z = std::string(name) == "section0" ? 0 : 3;
+        auto &c = signed_prism[name]["curves"][0]["geometry"];
+        c["order"] = 4;
+        c["poles"] = {0, 0, z, 0, 0, -.1 * z, 4. / 3, 0, z, 2, 0, z};
+        c["weights"] = {1, -.1, 1, 1};
+    }
+    const auto signed_loft = SectionLoft::from_bgfb(signed_prism);
+    const auto signed_mesh = verify(signed_prism, true);
+    check(std::abs(volume(signed_mesh) - 12) < 1e-9,
+          "mixed-sign cap mesh retains independently known prism volume and closed topology");
+    unsigned proof_steps = 0, adaptive_curves = 0;
+    for (const auto &cap : signed_mesh.report["cap_planarity"])
+        for (const auto &proof : cap) {
+            check(proof["status"] == "verified", "every completed cap boundary is plane-verified");
+            if (proof["method"] == "rational_bernstein_plane_bound") {
+                ++adaptive_curves;
+                proof_steps += proof["work_steps"].get<unsigned>();
+                check(proof["distance_bound"].get<double>() <= options.planarity_tolerance,
+                      "cap reports the full-curve distance bound");
+            }
+        }
+    check(adaptive_curves == 2 && proof_steps > 1,
+          "both caps use their mixed-sign source boundary");
+    std::function<void(Json &)> flip_weights = [&](Json &j) {
+        if (j.is_object() && j.value("_type", std::string()) == "BsplineCurve") {
+            if (j["weights"].is_null())
+                j["weights"] = std::vector<double>(j["poles"].size() / 3, 1.);
+            for (auto &x : j["poles"])
+                x = -x.get<double>();
+            for (auto &w : j["weights"])
+                w = -w.get<double>();
+        } else if (j.is_structured())
+            for (auto &child : j)
+                if (child.is_structured())
+                    flip_weights(child);
+    };
+    auto inverse_source = signed_prism;
+    flip_weights(inverse_source["section0"]);
+    flip_weights(inverse_source["section1"]);
+    check(std::abs(volume(verify(inverse_source, true)) - 12) < 1e-9,
+          "negating source homogeneous sections preserves mixed-sign cap geometry and orientation");
+    std::function<void(Json &)> rotate_weighted = [&](Json &j) {
+        if (j.is_object() && j.value("_type", std::string()) == "BsplineCurve") {
+            for (std::size_t i = 0; i < j["poles"].size() / 3; ++i) {
+                const double w = j["weights"].is_null() ? 1 : j["weights"][i].get<double>();
+                const double x = j["poles"][3 * i].get<double>() / w,
+                             y = j["poles"][3 * i + 1].get<double>() / w,
+                             z = j["poles"][3 * i + 2].get<double>() / w;
+                j["poles"][3 * i] = (1234 + .6 * x - .8 * z) * w;
+                j["poles"][3 * i + 1] = (-2345 + .64 * x + .6 * y + .48 * z) * w;
+                j["poles"][3 * i + 2] = (3456 + .48 * x - .8 * y + .36 * z) * w;
+            }
+        } else if (j.is_structured())
+            for (auto &child : j)
+                if (child.is_structured())
+                    rotate_weighted(child);
+    };
+    auto oblique_source = signed_prism;
+    rotate_weighted(oblique_source);
+    check(
+        std::abs(volume(verify(oblique_source, true)) - 12) < 1e-8,
+        "translated oblique mixed-sign caps verify homogeneous plane residuals in all coordinates");
+    auto plane_limited = options;
+    plane_limited.max_planarity_steps = proof_steps - 1;
+    const auto depleted = signed_loft.mesh(plane_limited);
+    check(depleted.report["status"] == "incomplete" && depleted.vertices.empty() &&
+              depleted.faces.empty() && depleted.parts.empty() && depleted.face_parameters.empty(),
+          "plane work budget is shared by both caps and failure clears all partial geometry");
+    plane_limited.max_planarity_steps = proof_steps;
+    const auto exact_budget = signed_loft.mesh(plane_limited);
+    check(exact_budget.report["status"] == "complete" &&
+              exact_budget.vertices == signed_mesh.vertices &&
+              exact_budget.faces == signed_mesh.faces,
+          "exact combined plane budget gives identical complete geometry");
+    auto sparse_source = prism();
+    for (const auto name : {"section0", "section1"}) {
+        const double z = std::string(name) == "section0" ? 0 : 3;
+        auto &c = sparse_source[name]["curves"][0]["geometry"];
+        c["order"] = 3;
+        c["poles"] = {0, 0, z, -.99, 0, -.99 * (z + .5 * plane_tolerance), 2, 0, z};
+        c["weights"] = {1, -.99, 1};
+    }
+    auto sparse_options = options;
+    sparse_options.max_uv_edge = 4; // Boundary samples alone see only planar endpoints.
+    sparse_options.planarity_tolerance = plane_tolerance;
+    const auto sparse = SectionLoft::from_bgfb(sparse_source).mesh(sparse_options);
+    check(sparse.report["status"] == "incomplete" && sparse.vertices.empty() &&
+              sparse.faces.empty() &&
+              sparse.report["reason"] == "loft cap plane bound not established",
+          "cap proof rejects nonplanarity between otherwise planar mesh samples");
+    plane_limited.max_planarity_steps = 0;
+    threw = false;
+    try {
+        signed_loft.mesh(plane_limited);
+    } catch (const std::exception &) {
+        threw = true;
+    }
+    check(threw, "zero plane work budget is an invalid mesh option");
+    auto signed_task = std::async(std::launch::async, [&] { return signed_loft.mesh(options); });
+    check(signed_task.get().report == signed_mesh.report && signed_loft.source() == signed_prism,
+          "mixed-sign plane proofs are deterministic and do not mutate source data");
     return checks;
 }

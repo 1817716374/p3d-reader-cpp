@@ -187,7 +187,8 @@ std::vector<Triangle> restore_boundary_samples(const std::vector<Triangle> &face
 }
 std::vector<Triangle> cap_faces(const std::vector<Ring> &rings, const std::vector<Point3> &vertices,
                                 const Json &region, const LoftMeshOptions &options, unsigned budget,
-                                double &max_plane_error, double &max_collinear_distance) {
+                                double &max_plane_error, double &max_collinear_distance,
+                                unsigned &plane_budget, Json &plane_reports) {
     require(!rings.empty() && rings[0].size() >= 3, "loft cap boundary vertex count");
     const auto origin = vertices[rings[0][0]];
     Point3 normal{};
@@ -214,12 +215,27 @@ std::vector<Triangle> cap_faces(const std::vector<Ring> &rings, const std::vecto
         if (j.is_object()) {
             if (j.value("_type", std::string()) == "BsplineCurve") {
                 const auto curve = BsplineCurve::from_bgfb(j);
+                bool same_sign = true;
                 if (curve.rational()) {
                     const bool positive = curve.weights().front() > 0;
                     for (double w : curve.weights())
-                        require(w != 0 && (w > 0) == positive,
-                                "loft cap plane requires nonzero same-sign weights");
+                        same_sign &= w != 0 && (w > 0) == positive;
                 }
+                if (!same_sign) {
+                    auto proof = certify_curve_plane(curve, origin, normal,
+                                                     options.planarity_tolerance, plane_budget);
+                    const auto used = proof.at("work_steps").get<unsigned>();
+                    require(used <= plane_budget, "loft cap plane work accounting");
+                    plane_budget -= used;
+                    proof["curve_index"] = plane_reports.size();
+                    plane_reports.push_back(proof);
+                    require(proof.at("status") == "verified",
+                            "loft cap plane bound not established");
+                    max_plane_error =
+                        std::max(max_plane_error, proof.at("distance_bound").get<double>());
+                    return;
+                }
+                double curve_bound = 0;
                 for (std::size_t i = 0; i < curve.poles().size(); ++i) {
                     auto p = curve.poles()[i];
                     if (curve.rational()) {
@@ -227,7 +243,13 @@ std::vector<Triangle> cap_faces(const std::vector<Ring> &rings, const std::vecto
                             x /= curve.weights()[i];
                     }
                     check_plane(p);
+                    curve_bound =
+                        std::max(curve_bound, std::abs(dot_product(difference(p, origin), normal)));
                 }
+                plane_reports.push_back({{"curve_index", plane_reports.size()},
+                                         {"status", "verified"},
+                                         {"method", "control_hull"},
+                                         {"distance_bound", curve_bound}});
             } else
                 for (const auto &v : j)
                     if (v.is_structured())
@@ -351,7 +373,8 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
                 std::isfinite(options.join_tolerance) && options.join_tolerance >= 0 &&
                 std::isfinite(options.planarity_tolerance) && options.planarity_tolerance >= 0 &&
                 options.max_vertices >= 3 && options.max_triangles > 0 &&
-                options.max_cap_control_points > 0 && options.max_denominator_steps > 0,
+                options.max_cap_control_points > 0 && options.max_denominator_steps > 0 &&
+                options.max_planarity_steps > 0,
             "invalid loft mesh options");
     LoftMesh out;
     out.report = {{"status", "incomplete"},
@@ -362,6 +385,7 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
                   {"join_tolerance", options.join_tolerance},
                   {"planarity_tolerance", options.planarity_tolerance}};
     out.report["side_denominators"] = Json::array();
+    out.report["cap_planarity"] = {{"bottom", Json::array()}, {"top", Json::array()}};
     try {
         const bool capped = source_.at("capped").get<bool>();
         const auto caps = cap_regions(options.max_cap_control_points);
@@ -370,6 +394,7 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
         const auto step = options.max_uv_edge / std::sqrt(2.0);
         require(step > 0, "loft mesh parameter step underflow");
         double max_join = 0, max_plane = 0, max_collinear = 0;
+        unsigned plane_budget = options.max_planarity_steps;
         auto add_vertex = [&](Point3 p) {
             require(out.vertices.size() < options.max_vertices, "loft mesh vertex budget");
             for (double x : p)
@@ -468,7 +493,8 @@ LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
                 const auto start = out.faces.size();
                 auto faces = cap_faces(rings[end], out.vertices, end ? caps.top : caps.bottom,
                                        options, options.max_triangles - unsigned(out.faces.size()),
-                                       max_plane, max_collinear);
+                                       max_plane, max_collinear, plane_budget,
+                                       out.report["cap_planarity"][end ? "top" : "bottom"]);
                 for (auto face : faces)
                     emit(face, {});
                 out.parts.push_back(

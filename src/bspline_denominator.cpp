@@ -176,7 +176,126 @@ std::size_t source_index(const BsplineDirection &d, std::size_t span, std::size_
     require(i >= 0 && std::uint64_t(i) < d.pole_count(), "surface denominator pole index");
     return std::size_t(i);
 }
+struct PlaneProof {
+    Proof work;
+    Interval normal_length;
+    double tolerance, distance_bound = 0;
+
+    double bound(Interval distance, Interval weight, bool upper) const {
+        const double numerator = upper ? std::max(std::abs(distance.lo), std::abs(distance.hi))
+                                 : distance.lo > 0 ? distance.lo
+                                 : distance.hi < 0 ? -distance.hi
+                                                   : 0;
+        if (numerator == 0)
+            return 0;
+        const double denominator = upper ? (weight.lo > 0 ? weight.lo : -weight.hi)
+                                         : std::max(std::abs(weight.lo), std::abs(weight.hi));
+        require(denominator > 0, "curve plane denominator sign is unresolved");
+        const double direction = upper ? std::numeric_limits<double>::infinity() : 0;
+        double value = std::nextafter(numerator / denominator, direction);
+        value = std::nextafter(value / (upper ? normal_length.lo : normal_length.hi), direction);
+        require(std::isfinite(value), "curve plane distance bound overflow");
+        return value;
+    }
+    std::pair<std::vector<Interval>, std::vector<Interval>> split(std::vector<Interval> row) {
+        work.charge(2 * row.size());
+        std::vector<Interval> left(row.size()), right(row.size());
+        left.front() = row.front();
+        right.back() = row.back();
+        for (std::size_t level = 1; level < row.size(); ++level) {
+            for (std::size_t i = 0; i < row.size() - level; ++i)
+                row[i] = work.blend(row[i], row[i + 1], exact(.5));
+            left[level] = row.front();
+            right[row.size() - level - 1] = row[row.size() - level - 1];
+        }
+        return {std::move(left), std::move(right)};
+    }
+    void verify(const std::vector<Interval> &distances, const std::vector<Interval> &weights,
+                unsigned depth = 0) {
+        work.charge(2 * weights.size());
+        ++work.cells;
+        bool positive = true, negative = true;
+        for (const auto w : weights) {
+            positive &= w.lo > 0;
+            negative &= w.hi < 0;
+        }
+        if (positive || negative) {
+            double maximum = 0;
+            for (std::size_t i = 0; i < weights.size(); ++i)
+                maximum = std::max(maximum, bound(distances[i], weights[i], true));
+            // Once all Bernstein weights have one strict sign, the rational
+            // residual is a convex combination of these coefficient ratios.
+            if (maximum <= tolerance) {
+                distance_bound = std::max(distance_bound, maximum);
+                return;
+            }
+        }
+        const auto first = weights.front(), last = weights.back();
+        require(!(first.lo > 0 && last.hi < 0) && !(first.hi < 0 && last.lo > 0),
+                "curve plane denominator crosses zero");
+        for (const auto i : {std::size_t(0), weights.size() - 1}) {
+            const auto w = weights[i];
+            require(w.lo != 0 || w.hi != 0, "curve plane denominator zero at interval endpoint");
+            if (w.lo > 0 || w.hi < 0)
+                require(bound(distances[i], w, false) <= tolerance,
+                        "curve boundary exceeds plane tolerance");
+        }
+        require(depth < 64, "curve plane bound unresolved at subdivision depth");
+        const auto d = split(distances), w = split(weights);
+        verify(d.first, w.first, depth + 1);
+        verify(d.second, w.second, depth + 1);
+    }
+};
 } // namespace
+
+Json certify_curve_plane(const BsplineCurve &curve, Point3 origin, Point3 normal, double tolerance,
+                         unsigned max_steps) {
+    Json result = {{"status", "unverified"},
+                   {"method", "rational_bernstein_plane_bound"},
+                   {"distance_bound", nullptr}};
+    PlaneProof proof{{0, 0, 0, max_steps}, {}, tolerance};
+    try {
+        require(std::isfinite(tolerance) && tolerance >= 0, "curve plane tolerance");
+        Interval norm2 = exact(0);
+        for (unsigned k = 0; k < 3; ++k) {
+            require(std::isfinite(origin[k]) && std::isfinite(normal[k]), "nonfinite curve plane");
+            norm2 = add(norm2, multiply(exact(normal[k]), exact(normal[k])));
+        }
+        require(norm2.lo > 0, "curve plane normal is degenerate");
+        proof.normal_length = outward(std::sqrt(norm2.lo), std::sqrt(norm2.hi));
+        require(proof.normal_length.lo > 0, "curve plane normal below interval precision");
+        const auto &direction = curve.direction();
+        const auto spans = proof.work.active_spans(direction);
+        for (const auto span : spans) {
+            proof.work.charge(2 * std::size_t(curve.order()));
+            std::vector<Interval> distances(curve.order()), weights(curve.order());
+            for (std::size_t i = 0; i < curve.order(); ++i) {
+                const auto index = source_index(direction, span, i);
+                const auto w = exact(curve.rational() ? curve.weights()[index] : 1);
+                weights[i] = w;
+                auto distance = exact(0);
+                for (unsigned k = 0; k < 3; ++k) {
+                    const auto shifted =
+                        subtract(exact(curve.poles()[index][k]), multiply(exact(origin[k]), w));
+                    distance = add(distance, multiply(exact(normal[k]), shifted));
+                }
+                distances[i] = distance;
+            }
+            distances = proof.work.extract(direction, span, std::move(distances));
+            weights = proof.work.extract(direction, span, std::move(weights));
+            proof.verify(distances, weights);
+            ++proof.work.spans;
+        }
+        result["status"] = "verified";
+        result["distance_bound"] = proof.distance_bound;
+    } catch (const std::exception &e) {
+        result["reason"] = e.what();
+    }
+    result["verified_knot_spans"] = proof.work.spans;
+    result["visited_cells"] = proof.work.cells;
+    result["work_steps"] = proof.work.steps;
+    return result;
+}
 
 Json certify_surface_denominator(const BsplineSurface &surface, unsigned max_steps) {
     if (!surface.rational())
