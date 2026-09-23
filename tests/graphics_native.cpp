@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "graphics_native.hpp"
 
 unsigned graphics_native_tests() {
     using namespace p3d;
@@ -522,5 +522,182 @@ unsigned graphics_native_tests() {
     check(with_project(packet(6, loft({}, {}, {{unsupported_guide}}))).at("status") ==
               "not_evaluated",
           "unknown guide construction cannot be replaced by an empty guide to accept a loft");
+    auto prefixed_footer = [&](const Bytes &material, unsigned marker = 3) {
+        Bytes footer(5);
+        footer[0] = std::uint8_t(marker);
+        write(footer, 1, material.size(), 4);
+        footer.insert(footer.end(), material.begin(), material.end());
+        return footer;
+    };
+    auto restore_footer = [&](const Bytes &footer, std::int32_t type = 3) {
+        auto source = packet(type, polyface());
+        source.insert(source.end(), footer.begin(), footer.end());
+        return with_project(source).at("entry_restore");
+    };
+    result = restore_footer({});
+    check(result.at("status") == "retained" && result.at("footer").at("status") == "not_present" &&
+              result.at("footer").at("line_style_scale") == 1.0 &&
+              result.at("footer").at("layer_id") == UINT32_MAX &&
+              result.at("footer").at("view_flag") == UINT32_MAX,
+          "a constructed Entry survives absent footer with constructor defaults");
+    check(graphics_native_footer({}, 0, false).at("line_style_scale") == 0.0,
+          "zeroed container does not inherit the Entry constructor line scale");
+    for (unsigned marker = 0; marker <= 255; ++marker) {
+        auto footer = prefixed_footer({}, marker);
+        const auto native = graphics_native_footer(footer, 0, true);
+        const bool prefixed = marker > 1 && marker < 128;
+        check(native.at("format") ==
+                  (prefixed ? "length_prefixed_material" : "legacy_inline_material"),
+              "all marker bytes follow the signed native comparison");
+        check(restore_footer(footer).at("status") == "retained",
+              "a null material result or nonpositive length does not reject the Entry");
+    }
+    for (unsigned n = 1; n < 5; ++n) {
+        Bytes short_prefix(n);
+        short_prefix[0] = 3;
+        check(restore_footer(short_prefix).at("status") == "not_evaluated",
+              "unsafe truncated length prefix is not reclassified as retained or rejected");
+    }
+    auto style = prefixed_footer({});
+    style.resize(33);
+    write(style, 5, UINT64_C(0x4000000000000000), 8);  // scale 2
+    write(style, 13, UINT64_C(0x4008000000000000), 8); // start 3
+    write(style, 21, UINT64_C(0x4010000000000000), 8); // end 4
+    write(style, 29, 19, 4);
+    for (unsigned n = 5; n <= 33; ++n) {
+        result = restore_footer(Bytes(style.begin(), style.begin() + n));
+        const auto &footer = result.at("footer");
+        check(result.at("status") == "retained" &&
+                  footer.at("line_style_scale") == (n == 33 ? 2.0 : 1.0) &&
+                  footer.at("start_width") == (n == 33 ? 3.0 : 0.0) &&
+                  footer.at("end_width") == (n == 33 ? 4.0 : 0.0) &&
+                  footer.at("layer_id") == (n == 33 ? 19u : UINT32_MAX),
+              "partial style extensions leave all four fields at constructor defaults");
+    }
+    for (auto length : {0u, UINT32_MAX, UINT32_C(0x80000000)}) {
+        write(style, 1, length, 4);
+        result = restore_footer(style);
+        check(result.at("status") == "retained" &&
+                  result.at("footer").at("line_style_scale") == 2.0 &&
+                  result.at("footer").at("material_input").at("status") == "not_called",
+              "negative material size neither rewinds nor consumes material bytes");
+    }
+    write(style, 1, 0, 4);
+    const auto container_style = graphics_native_footer(style, 0, false);
+    check(container_style.at("line_style_scale") == 2.0 &&
+              container_style.at("unread_suffix_bytes") == 20 &&
+              !container_style.contains("start_width"),
+          "container consumes only its own eight-byte style extension");
+    style.push_back(0xef);
+    check(restore_footer(style).at("footer").at("unread_suffix_bytes") == 1,
+          "extra Entry suffix bytes do not discard otherwise restored geometry");
+    write(style, 5, UINT64_C(0x7ff8000000000001), 8);
+    result = restore_footer(style);
+    check(result.at("status") == "retained" &&
+              std::isnan(result.at("footer").at("line_style_scale").get<double>()) &&
+              result.at("footer").at("style_extension_hex").get<std::string>().substr(0, 16) ==
+                  "010000000000f87f",
+          "native footer copies nonfinite double bits without rejecting the Entry");
+    auto bad_range = prefixed_footer({});
+    write(bad_range, 1, INT32_MAX, 4);
+    check(restore_footer(bad_range).at("status") == "not_evaluated",
+          "unbounded native material copy is not treated as a normal null factory result");
+
+    // Mandatory material fields with three empty source strings, followed by
+    // independent display-name and extended-data records.
+    Bytes material_bytes(229);
+    material_bytes[0] = 1;
+    for (std::size_t n = 1; n < material_bytes.size(); ++n) {
+        result = restore_footer(
+            prefixed_footer(Bytes(material_bytes.begin(), material_bytes.begin() + n)));
+        check(result.at("status") == "retained" &&
+                  result.at("footer").at("material_input").at("status") == "rejected" &&
+                  result.at("footer").at("material_pointer") == "null",
+              "every bounded short mandatory material returns null without dropping its Entry");
+    }
+    auto material_result = [&](const Bytes &material) {
+        return restore_footer(prefixed_footer(material)).at("footer").at("material_input");
+    };
+    result = material_result(material_bytes);
+    check(result.at("status") == "material_constructed" && result.at("mandatory_bytes") == 229 &&
+              result.at("current_project_material_resolution") == "not_evaluated",
+          "material allocation does not claim project-catalog resolution is complete");
+    for (unsigned valid : {0u, 2u, 128u, 255u}) {
+        material_bytes[0] = std::uint8_t(valid);
+        check(material_result(material_bytes).at("status") == "material_constructed",
+              "native material validity byte is copied rather than used as a success gate");
+    }
+    material_bytes[0] = 1;
+    auto odd_name = material_bytes;
+    write(odd_name, 1, 1, 8);
+    odd_name.insert(odd_name.begin() + 9, 0xff);
+    check(material_result(odd_name).at("mandatory_bytes") == 230,
+          "odd source name length advances all bytes while UTF16 copy rounds down");
+    auto overflow_name = material_bytes;
+    write(overflow_name, 1, UINT64_MAX, 8);
+    check(material_result(overflow_name).at("status") == "not_evaluated",
+          "native string extent overflow is not interpreted as a confirmed length rejection");
+    auto extended = material_bytes;
+    extended.resize(241);
+    write(extended, 229, 0xabcd, 4);
+    check(material_result(extended).at("display_name_block") == "read",
+          "empty display-name block is a valid twelve-byte optional record");
+    for (unsigned n = 230; n < 241; ++n) {
+        const auto short_display = Bytes(extended.begin(), extended.begin() + n);
+        result = material_result(short_display);
+        check(result.at("status") == (n <= 233 ? "material_constructed" : "rejected"),
+              "exactly four optional marker bytes are ignored; longer truncated record rejects");
+    }
+    extended.resize(255);
+    write(extended, 241, 0xabce, 4);
+    write(extended, 245, 2, 8);
+    write(extended, 253, 0x1234, 2);
+    check(material_result(extended).at("extended_data_block") == "read",
+          "native extension discards the last UTF16 unit without checking a null terminator");
+    for (auto n : {0u, 1u, 3u}) {
+        auto unsafe = extended;
+        unsafe.resize(256);
+        write(unsafe, 245, n, 8);
+        check(material_result(unsafe).at("status") == "not_evaluated",
+              "extension underflow and odd-byte allocation are unsafe, not native rejection");
+    }
+    auto short_extension = extended;
+    write(short_extension, 245, 3, 8);
+    check(material_result(short_extension).at("status") == "rejected",
+          "extension range guard returns null before an otherwise unsafe odd-byte copy");
+    extended.erase(extended.begin() + 229, extended.begin() + 241);
+    check(material_result(extended).at("extended_data_block") == "not_read" &&
+              material_result(extended).at("extended_data_probe_offset") == 0,
+          "without display-name marker native extension probe uses zero, not mandatory end");
+    check(restore_footer(prefixed_footer({}), 8).at("status") == "retained" &&
+              restore_footer(prefixed_footer({}), 6).at("status") == "rejected",
+          "retained unknown geometry type and typed-reader rejection remain distinct");
+    auto empty_geometry = packet(3, {});
+    empty_geometry.push_back(3); // would be an unsafe footer if it were read
+    check(with_project(empty_geometry).at("entry_restore").at("status") == "retained" &&
+              with_project(empty_geometry).at("entry_restore").at("footer").at("status") ==
+                  "not_read",
+          "early geometry-length return bypasses even an unsafe material footer");
+    for (unsigned marker : {2u, 3u, 4u, 127u}) {
+        auto footer = prefixed_footer({}, marker);
+        write(footer, 1, UINT32_MAX, 4);
+        auto entry = packet(3, polyface());
+        entry.insert(entry.end(), footer.begin(), footer.end());
+        Bytes container(150); // 142-byte header followed by first entry's length
+        write(container, 0, 1, 8);
+        write(container, 134, 1, 8);
+        write(container, 142, entry.size(), 8);
+        container.insert(container.end(), entry.begin(), entry.end());
+        container.insert(container.end(), footer.begin(), footer.end());
+        result = decode_graphics_bytes(container);
+        const auto &p = result.at("geometry_packets").at(0);
+        check(
+            result.at("footer_version") == marker && result.at("material_size_signed") == -1 &&
+                p.at("footer_version") == marker && p.at("material_size_signed") == -1 &&
+                p.at("native_geometry_input").at("with_project").at("entry_restore").at("status") ==
+                    "retained" &&
+                !p.contains("decode_error") && p.at("geometry_status") == "decoded",
+            "public graphics decoder preserves geometry and native signed footer framing");
+    }
     return checks;
 }

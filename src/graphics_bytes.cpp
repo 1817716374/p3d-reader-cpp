@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "graphics_native.hpp"
 #include "text_bytes.hpp"
 
 namespace p3d {
@@ -41,22 +41,22 @@ void material(Reader &r, std::size_t size, Json &out) {
 }
 void footer(Reader &r, Json &out, bool entry) {
     const auto start = r.p;
+    out["native_footer_input"] = graphics_native_footer(r.b, start, entry);
     out["inline_material"] = nullptr;
     if (!r.left()) {
         out["footer_status"] = "not_present";
         return;
     }
     const auto marker = r.b[r.p];
-    if (marker <= 1) {
+    if (marker <= 1 || marker >= 128) {
         // Legacy form starts with BPMaterial::is_valid, without a length prefix.
         material(r, r.left(), out);
         out["footer_format"] = "legacy_inline_material";
     } else {
-        require(marker == 2 || marker == 3, "graphics footer marker");
         out["footer_version"] = r.u8();
         const auto size = r.i32();
-        require(size >= 0, "graphics material byte count");
-        material(r, std::size_t(size), out);
+        out["material_size_signed"] = size;
+        material(r, static_cast<std::size_t>(std::max(0, size)), out);
         out["footer_format"] = "length_prefixed_material";
         const auto extension_size = entry ? 28u : 8u;
         if (r.left() >= extension_size) {

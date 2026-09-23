@@ -1,7 +1,114 @@
-#include "internal.hpp"
+#include "graphics_native.hpp"
 
 namespace p3d {
 namespace {
+// Track the byte reader's return value separately from the material's validity
+// flag and the subsequent current-project material lookup. Neither determines
+// whether the enclosing Entry is returned.
+Json material_input(const Bytes &bytes, std::size_t start, std::size_t size) {
+    Json out = {{"status", "not_evaluated"}, {"material_pointer", "unknown"}};
+    try {
+        require(start <= bytes.size() && size <= bytes.size() - start && size > 0,
+                "native_material_input_unavailable");
+        require(size <= INT32_MAX, "native_material_signed_cursor_limit");
+        std::size_t p = 0;
+        auto advance = [&](std::uint64_t n) {
+            require(n <= UINT64_MAX - p, "native_material_range_addition_overflow");
+            if (n > size - p) {
+                out.update({{"status", "rejected"},
+                            {"material_pointer", "null"},
+                            {"reason", "native_material_length_guard"},
+                            {"guard_offset", p}});
+                return false;
+            }
+            p += static_cast<std::size_t>(n);
+            return true;
+        };
+        auto string = [&]() {
+            const auto at = p;
+            if (!advance(8))
+                return false;
+            // Native strings consume all bytes, but copy floor(n / 2) UTF-16
+            // characters. Odd lengths are not an input rejection here.
+            return advance(Reader(bytes, start + at).u64());
+        };
+        advance(1); // The validity byte is copied, not validated.
+        if (!string())
+            return out;
+        for (auto n : {1u, 24u, 1u, 8u, 1u, 4u, 4u})
+            if (!advance(n))
+                return out;
+        if (!string() || !advance(16) || !advance(16) || !advance(8) || !string() || !advance(8))
+            return out;
+        for (auto components : {3u, 1u, 3u, 1u, 1u, 1u, 1u, 1u, 1u})
+            if (!advance(1) || !advance(8 * components))
+                return out;
+        out["mandatory_bytes"] = p;
+        // The second optional-marker cursor starts at zero. It is advanced to
+        // the display-name end only when the first marker is actually consumed.
+        std::size_t extension = 0;
+        if (size - p > 4 && Reader(bytes, start + p).u32() == 0xabcd) {
+            p += 4;
+            if (!string())
+                return out;
+            extension = p;
+            out["display_name_block"] = "read";
+        } else
+            out["display_name_block"] = "not_read";
+        out["extended_data_probe_offset"] = extension;
+        if (size - extension > 4 && Reader(bytes, start + extension).u32() == 0xabce) {
+            p = extension + 4;
+            const auto at = p;
+            if (!advance(8))
+                return out;
+            const auto count = Reader(bytes, start + at).u64();
+            if (!advance(count))
+                return out;
+            // Allocation rounds down to an even byte count, but memcpy uses
+            // the original count. Do not emulate that unsafe native operation.
+            require(count >= 2 && count % 2 == 0, "native_material_extension_unsafe_string_width");
+            out["extended_data_block"] = "read";
+        } else
+            out["extended_data_block"] = "not_read";
+        out.update({{"status", "material_constructed"},
+                    {"material_pointer", "non_null"},
+                    {"allocation_assumption", "successful"},
+                    {"service_return_assumption", "normal"},
+                    {"current_project_material_resolution", "not_evaluated"}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json entry_restore(const Bytes &bytes, const Json &geometry) {
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "entry_reader_return_before_container_finish"},
+                {"model_context_assumption", "valid"},
+                {"allocation_assumption", "successful"},
+                {"service_return_assumption", "normal"}};
+    const auto status = geometry.at("status");
+    if (status == "rejected") {
+        out.update({{"status", "rejected"}, {"entry_pointer", "null"}});
+        return out;
+    }
+    if (status != "geometry_constructed" && status != "geometry_not_read")
+        return out;
+    if (geometry.value("material_footer", std::string()) == "not_read") {
+        out["footer"] = {{"status", "not_read"}};
+        out.update({{"status", "retained"}, {"entry_pointer", "non_null"}});
+        return out;
+    }
+    const auto start = geometry.at("geometry_offset").get<std::size_t>();
+    const auto count = Reader(bytes, start - 8).u64();
+    // The geometry reader already established a non-wrapping, bounded range.
+    auto footer = graphics_native_footer(bytes, start + static_cast<std::size_t>(count), true);
+    if (footer.at("status") == "read" || footer.at("status") == "not_present")
+        out.update({{"status", "retained"}, {"entry_pointer", "non_null"}});
+    out["footer"] = std::move(footer);
+    return out;
+}
+
 struct GeometryBytes {
     const Bytes &entry;
     std::size_t start;
@@ -397,12 +504,78 @@ Json native_input(const Bytes &entry, bool model_has_project) {
 }
 } // namespace
 
+Json graphics_native_footer(const Bytes &bytes, std::size_t offset, bool entry) {
+    Json out = {{"status", "not_evaluated"},
+                {"source_offset", offset},
+                {"material_pointer", "null"},
+                // The container factory zeroes its object; only Entry's
+                // constructor explicitly initializes its line scale to one.
+                {"line_style_scale", entry ? 1.0 : 0.0}};
+    if (entry)
+        out.update({{"start_width", 0.0},
+                    {"end_width", 0.0},
+                    {"layer_id", UINT32_MAX},
+                    {"view_flag", UINT32_MAX}});
+    try {
+        require(offset <= bytes.size(), "native_footer_offset_unavailable");
+        require(bytes.size() <= INT32_MAX, "native_footer_signed_cursor_limit");
+        Reader r(bytes, offset);
+        if (!r.left()) {
+            out["status"] = "not_present";
+            return out;
+        }
+        const auto marker = bytes[offset];
+        out["marker"] = marker;
+        // The native branch uses a signed-byte comparison, with no version switch.
+        const bool prefixed = marker > 1 && marker < 128;
+        out["format"] = prefixed ? "length_prefixed_material" : "legacy_inline_material";
+        std::size_t material_size = r.left();
+        if (prefixed) {
+            r.u8();
+            require(r.left() >= 4, "native_footer_length_unavailable");
+            const auto size = r.i32();
+            out["material_size_signed"] = size;
+            material_size = static_cast<std::size_t>(std::max(0, size));
+            require(material_size <= r.left(), "native_footer_material_range_unavailable");
+        }
+        if (material_size) {
+            auto material = material_input(bytes, r.p, material_size);
+            out["material_pointer"] = material.at("material_pointer");
+            out["material_input"] = std::move(material);
+            if (out.at("material_input").at("status") == "not_evaluated")
+                return out;
+            r.p += material_size;
+        } else
+            out["material_input"] = {{"status", "not_called"}};
+        const auto extension = entry ? 28u : 8u;
+        out["style_extension"] = "not_read";
+        if (prefixed && r.left() >= extension) {
+            const auto begin = r.p;
+            out["line_style_scale"] = r.f64();
+            if (entry) {
+                out["start_width"] = r.f64();
+                out["end_width"] = r.f64();
+                out["layer_id"] = r.u32();
+            }
+            out["style_extension"] = "read";
+            out["style_extension_hex"] = hex(slice(bytes, begin, extension));
+        }
+        out["unread_suffix_bytes"] = r.left();
+        out["status"] = "read";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
 Json graphics_entry_native_input(const Bytes &entry) {
     Json out = {{"scope", "entry_geometry_reader_before_material_footer"},
                 {"project_context", "not_provided"},
                 {"status", "not_evaluated"},
                 {"with_project", native_input(entry, true)},
                 {"without_project", native_input(entry, false)}};
+    for (const auto *context : {"with_project", "without_project"})
+        out[context]["entry_restore"] = entry_restore(entry, out.at(context));
     const auto &with = out.at("with_project").at("status");
     const auto &without = out.at("without_project").at("status");
     if (with == without && (with == "rejected" || with == "geometry_not_read"))
