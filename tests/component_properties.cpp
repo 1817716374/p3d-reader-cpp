@@ -838,5 +838,80 @@ unsigned component_property_tests() {
     check(unit(frame(FEATURE, stack({string("z"), string("y"), string("x")}))).at("status") ==
               "invalid",
           "feature point requires saved snap mode");
+    constexpr std::uint64_t OBJECT_PTR = 0x2535517421726859ULL;
+    constexpr std::uint64_t ENTITY_ATTRIBUTE = 0x1395755514661840ULL;
+    root = unit(frame(OBJECT_PTR, integer(UINT64_MAX))).at("root");
+    check(root.at("kind") == "runtime_object_reference" && root.at("address") == UINT64_MAX &&
+              root.at("address_source").at("type_id") == U,
+          "runtime object reference preserves entire uint64 address and source frame");
+    check(root.at("reference_scope") == "originating_process" &&
+              root.at("target_status") == "runtime_registry_required" &&
+              !root.contains("object_id") && !root.contains("target_object"),
+          "process address cannot be reinterpreted as a persistent object identifier");
+    check(root.at("native_registry").at("registration") == "on_serialization" &&
+              root.at("native_registry").at("removal") == "on_object_destruction" &&
+              root.at("native_registry").at("missing_address_result") == "null",
+          "runtime pointer restoration follows registered live object lifetime");
+    check(unit(frame(OBJECT_PTR, integer(0))).at("root").at("target_status") == "null",
+          "zero pointer is always null independently of registry");
+    check(unit(frame(OBJECT_PTR, integer(50))).at("root").at("target_status") ==
+              "runtime_registry_required",
+          "small address matching a sample object ID is not accidentally resolved");
+    check(unit(frame(OBJECT_PTR, integer(1, I))).at("status") == "invalid",
+          "runtime reference requires unsigned frame rather than signed numeric lookalike");
+    check(unit(frame(OBJECT_PTR, {})).at("status") == "invalid", "runtime pointer frame required");
+    check(one(frame(OBJECT_PTR, integer(7))).at("status") == "decoded",
+          "runtime object reference can occur in nested component property");
+    Bytes attribute_wire;
+    // Native writer order: int32@8, bits64@18, uint32@20, uint32@24,
+    // int32@28, string@30, string@70, string@50. Offsets are in the
+    // native object and intentionally distinct from the wire positions.
+    for (const auto n : std::array<std::uint64_t, 5>{0x100000008ULL, UINT64_MAX, 0x100000003ULL,
+                                                     0xffffffffULL, 0x80000000ULL})
+        append(attribute_wire, integer(n, I));
+    append(attribute_wire, string(std::string("first\0tail", 10)));
+    append(attribute_wire, frame(S, {0x81, 0x40}));
+    append(attribute_wire, string("third"));
+    root = unit(frame(ENTITY_ATTRIBUTE, attribute_wire)).at("root");
+    check(root.at("kind") == "entity_attribute" && root.at("status") == "decoded" &&
+              root.at("semantics_status") == "partial" && root.at("members").size() == 8,
+          "entity attribute structure decoded separately from unresolved member meaning");
+    const auto &members = root.at("members");
+    check(members[0].at("native_member_offset") == 0x50 &&
+              members[0].at("source").at("text") == "third" &&
+              members[1].at("native_member_offset") == 0x70 &&
+              unbase64(members[1].at("source").at("bytes_base64")) == Bytes({0x81, 0x40}) &&
+              members[2].at("native_member_offset") == 0x30 &&
+              members[2].at("source").at("text") == std::string("first\0tail", 10),
+          "entity attribute string read order and full arbitrary bytes preserved");
+    check(members[3].at("native_member_offset") == 0x28 &&
+              members[3].at("native_value") == -2147483648LL &&
+              members[7].at("native_member_offset") == 8 && members[7].at("native_value") == 8,
+          "entity attribute signed members follow native low32 conversion");
+    check(members[4].at("native_member_offset") == 0x24 &&
+              members[4].at("native_value") == 0xffffffffULL &&
+              members[5].at("native_member_offset") == 0x20 && members[5].at("native_value") == 3,
+          "entity attribute unsigned32 members retain high bit and truncate excess upper bits");
+    check(members[6].at("native_member_offset") == 0x18 && members[6].at("storage") == "bits64" &&
+              members[6].at("native_bits_uint64") == UINT64_MAX &&
+              members[6].at("source").at("value") == -1,
+          "entity attribute 64-bit storage does not invent its logical signedness or identity");
+    check(members[7].at("source").at("offset") == 0 && members[7].at("native_member_offset") == 8,
+          "runtime member offset is never substituted for wire source position");
+    check(one(frame(ENTITY_ATTRIBUTE, attribute_wire)).at("status") == "decoded",
+          "entity attribute value nested in arbitrary property");
+    auto truncated_attribute = attribute_wire;
+    truncated_attribute.erase(truncated_attribute.begin(), truncated_attribute.begin() + 24);
+    check(unit(frame(ENTITY_ATTRIBUTE, truncated_attribute)).at("status") == "invalid",
+          "entity attribute requires all five numeric members");
+    auto wrong_attribute = attribute_wire;
+    const auto wrong_first = integer(8);
+    std::copy(wrong_first.begin(), wrong_first.end(), wrong_attribute.begin());
+    check(unit(frame(ENTITY_ATTRIBUTE, wrong_attribute)).at("status") == "invalid",
+          "entity attribute numeric source always uses signed64 wire type");
+    Bytes extra_attribute{0};
+    append(extra_attribute, attribute_wire);
+    check(unit(frame(ENTITY_ATTRIBUTE, extra_attribute)).at("status") == "partial",
+          "extra entity attribute bytes remain explicitly unconsumed");
     return checks;
 }

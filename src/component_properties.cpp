@@ -33,6 +33,8 @@ constexpr std::uint64_t vec2_id = 0x0059485042476852ULL;
 constexpr std::uint64_t vec3_id = 0x0005485042476852ULL;
 constexpr std::uint64_t transform_id = 0x6239225542517109ULL;
 constexpr std::uint64_t feature_point_id = 0x1353014302071873ULL;
+constexpr std::uint64_t object_pointer_id = 0x2535517421726859ULL;
+constexpr std::uint64_t entity_attribute_id = 0x1395755514661840ULL;
 
 std::int64_t signed_low32(std::int64_t value) {
     const auto low = std::uint32_t(value);
@@ -193,6 +195,48 @@ struct StackDecoder {
                                            {"duplicate_rule", "last_in_native_read_order"},
                                            {"value_assignment", "replace_noumenon"}};
                 }
+            } else if (id == object_pointer_id) {
+                out["kind"] = "runtime_object_reference";
+                out["address_source"] = child(uint_id);
+                out["address"] = out.at("address_source").at("value");
+                out["target_type"] = "BIMBase::Data::BPObject";
+                out["reference_scope"] = "originating_process";
+                out["target_status"] =
+                    out.at("address") == 0 ? "null" : "runtime_registry_required";
+                out["native_registry"] = {{"registration", "on_serialization"},
+                                          {"removal", "on_object_destruction"},
+                                          {"missing_address_result", "null"}};
+                finish();
+            } else if (id == entity_attribute_id) {
+                out["kind"] = "entity_attribute";
+                out["semantics_status"] = "partial";
+                out["unresolved_semantics"] = "member_names_and_application";
+                out["members"] = Json::array();
+                out["member_order"] = "native_read_order";
+                // These are native object member offsets, not wire offsets or
+                // guessed engineering attribute IDs. The reader and writer
+                // establish storage conversions but do not name these members.
+                for (const auto offset : {0x50, 0x70, 0x30})
+                    out["members"].push_back({{"native_member_offset", offset},
+                                              {"storage", "string"},
+                                              {"source", child(string_id)}});
+                for (const auto offset : {0x28, 0x24, 0x20, 0x18, 0x08}) {
+                    auto member = child(int_id);
+                    const auto value = member.at("value").get<std::int64_t>();
+                    Json entry = {{"native_member_offset", offset}, {"source", std::move(member)}};
+                    if (offset == 0x18) {
+                        entry["storage"] = "bits64";
+                        entry["native_bits_uint64"] = std::uint64_t(value);
+                    } else if (offset == 0x20 || offset == 0x24) {
+                        entry["storage"] = "uint32";
+                        entry["native_value"] = std::uint32_t(value);
+                    } else {
+                        entry["storage"] = "int32";
+                        entry["native_value"] = signed_low32(value);
+                    }
+                    out["members"].push_back(std::move(entry));
+                }
+                finish();
             } else if (id == vec2_id || id == vec3_id) {
                 out.update(coordinates(id == vec2_id ? 2 : 3));
                 out["kind"] = id == vec2_id ? "vector2" : "vector3";
