@@ -276,5 +276,251 @@ unsigned graphics_native_tests() {
     check(graphics_entry_native_input(projectless).at("without_project").at("status") ==
               "geometry_constructed",
           "construction proof uses the project-dependent source geometry boundary");
+
+    auto point_curve = [&](unsigned tag, unsigned count, unsigned stored) {
+        auto b = bgfb(tag);
+        b.resize(68 + 8 * stored);
+        write(b, 28, 20, 4);
+        write(b, 40, 6, 2);
+        write(b, 42, 8, 2);
+        write(b, 44, 4, 2);
+        write(b, 48, 8, 4);
+        write(b, 52, 12, 4);
+        write(b, 64, count, 4);
+        return b;
+    };
+    auto collection = [&](unsigned tag, const std::vector<Bytes> &members) {
+        auto b = bgfb(tag);
+        b.resize(68 + 4 * members.size());
+        write(b, 28, 20, 4);
+        write(b, 40, 8, 2);
+        write(b, 42, 12, 2);
+        write(b, 44, 4, 2);
+        write(b, 46, 8, 2);
+        write(b, 48, 8, 4);
+        write(b, 52, tag == 5 ? 2 : 12, 4);
+        write(b, 56, tag == 5 ? 8 : 1, tag == 5 ? 4 : 1);
+        write(b, 64, members.size(), 4);
+        for (std::size_t i = 0; i < members.size(); ++i) {
+            const auto start = b.size();
+            b.insert(b.end(), members[i].begin(), members[i].end());
+            // CurveVector stores VariantGeometry; RuledSweep stores CurveVector tables.
+            write(b, 68 + 4 * i, start + (tag == 5 ? 20 : 48) - (68 + 4 * i), 4);
+        }
+        return b;
+    };
+    auto extrusion = [&](const Bytes &base, bool include_base) {
+        auto b = bgfb(10);
+        b.resize(88);
+        write(b, 28, 20, 4);
+        // A ten-byte vtable at 36 precedes the child at 48.
+        write(b, 36, 10, 2);
+        write(b, 38, 40, 2);
+        write(b, 40, include_base ? 4 : 0, 2);
+        write(b, 42, 8, 2);
+        write(b, 44, 32, 2);
+        write(b, 48, 12, 4);
+        write(b, 52, 88 + 48 - 52, 4);
+        write(b, 80, 1, 1);
+        if (include_base)
+            b.insert(b.end(), base.begin(), base.end());
+        return b;
+    };
+    for (auto tag : {1u, 2u}) {
+        auto source = scalar_solid(tag, tag == 1 ? 48 : 88);
+        result = with_project(packet(1, source));
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("geometry_kind") == "curve",
+              "line and ellipse constructors accept complete inline records");
+        write(source, 56, UINT64_C(0x7ff0000000000000), 8);
+        check(with_project(packet(1, source)).at("status") == "geometry_constructed",
+              "curve construction does not substitute a geometric validity test");
+        source.pop_back();
+        check(with_project(packet(1, source)).at("status") == "not_evaluated",
+              "truncated curve detail is not a successfully constructed object");
+    }
+    for (auto tag : {4u, 18u}) {
+        for (unsigned count = 0; count < 10; ++count) {
+            auto source = point_curve(tag, count, count / 3 * 3);
+            result = with_project(packet(1, source));
+            check(result.at("status") == "geometry_constructed" &&
+                      result.at("construction").at("point_count") == count / 3 &&
+                      result.at("construction").at("ignored_tail_scalars") == count % 3,
+                  "point curves retain empty and short input objects and discard scalar remainder");
+            if (count >= 3) {
+                source.pop_back();
+                check(with_project(packet(1, source)).at("status") == "not_evaluated",
+                      "point curve must contain every copied coordinate");
+            }
+        }
+        auto missing_points = point_curve(tag, 0, 0);
+        write(missing_points, 44, 0, 2);
+        check(with_project(packet(1, missing_points)).at("status") == "not_evaluated",
+              "absent point vector differs from present empty vector");
+    }
+    const auto line = scalar_solid(1, 48);
+    const auto ellipse = scalar_solid(2, 88);
+    const auto polyline = point_curve(4, 6, 6);
+    const auto empty_group = collection(5, {});
+    auto missing_group = empty_group;
+    write(missing_group, 46, 0, 2);
+    check(with_project(packet(2, empty_group)).at("status") == "geometry_constructed" &&
+              with_project(packet(2, missing_group)).at("status") == "not_evaluated",
+          "curve collection requires a stored member vector, including when empty");
+    auto null_group = bgfb(5);
+    write(null_group, 18, 0, 2);
+    const auto nested_group = collection(5, {line, ellipse});
+    const auto mixed_group = collection(5, {line, bgfb(255), scalar_solid(6, 120), nested_group,
+                                            polyline, null_group, empty_group});
+    result = with_project(packet(2, mixed_group));
+    const auto &group = result.at("construction");
+    check(result.at("status") == "geometry_constructed" && group.at("source_member_count") == 7 &&
+              group.at("output_member_count") == 4,
+          "native group filters null and non-curve variants without flattening nested groups");
+    const auto &members = group.at("members");
+    check(members.at(1).at("action") == "skip_null" &&
+              members.at(2).at("action") == "skip_non_curve" &&
+              members.at(3).at("action") == "wrap_nested_curve_vector" &&
+              members.at(3).at("output_member_index") == 1 &&
+              members.at(4).at("output_member_index") == 2 &&
+              members.at(5).at("action") == "skip_null" &&
+              members.at(6).at("output_member_index") == 3,
+          "source-to-output member indices follow native filtering in source order");
+    check(members.at(3).at("output_member_count") == 2,
+          "nested collection retains its own member order and boundary");
+    for (auto tag : {0u, 15u, 22u, 255u}) {
+        auto ignored_member = bgfb(tag);
+        write(ignored_member, 28, UINT32_MAX, 4);
+        result = with_project(packet(2, collection(5, {ignored_member})));
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("output_member_count") == 0,
+              "generic member default branch never reads an ignored data pointer");
+    }
+    check(with_project(packet(2, collection(5, {bgfb(3)}))).at("status") == "not_evaluated",
+          "unsupported known curve cannot be mistaken for an ignored generic union tag");
+    check(with_project(packet(2, collection(5, {bgfb(6)}))).at("status") == "not_evaluated",
+          "non-curve members still run their native constructor before being filtered");
+    for (const auto &base : {empty_group, mixed_group}) {
+        result = with_project(packet(6, extrusion(base, true)));
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("capped") == true &&
+                  result.at("construction").at("base_curve").at("geometry_pointer") == "non_null",
+              "extrusion stores its constructed base even for an empty curve collection");
+    }
+    result = with_project(packet(6, extrusion({}, false)));
+    check(result.at("status") == "geometry_constructed" &&
+              result.at("construction").at("base_curve").at("geometry_pointer") == "null",
+          "native extrusion constructor can retain a missing base without rejecting the solid");
+    auto missing_direction = extrusion(empty_group, true);
+    write(missing_direction, 42, 0, 2);
+    check(with_project(packet(6, missing_direction)).at("status") == "not_evaluated",
+          "missing inline extrusion direction is unsafe and not treated like a null base");
+    result = with_project(packet(6, collection(12, {empty_group, mixed_group, nested_group})));
+    check(result.at("status") == "geometry_constructed" &&
+              result.at("construction").at("section_count") == 3 &&
+              result.at("construction").at("sections").at(1).at("output_member_count") == 4 &&
+              result.at("construction").at("sections").at(2).at("source_section_index") == 2,
+          "ruled sweep preserves empty and nonempty section order without validity filtering");
+    auto ruled = collection(12, {});
+    write(ruled, 64, UINT32_MAX, 4);
+    result = with_project(packet(6, ruled));
+    check(result.at("status") == "geometry_constructed" &&
+              result.at("construction").at("source_count_signed") == -1 &&
+              result.at("construction").at("section_count") == 0,
+          "ruled section loop uses signed count and skips negative values");
+    auto huge_group = empty_group;
+    write(huge_group, 64, UINT32_MAX, 4);
+    check(with_project(packet(2, huge_group)).at("status") == "not_evaluated",
+          "curve member loop instead uses the full unsigned count");
+    auto deep = empty_group;
+    for (unsigned i = 0; i < 42; ++i)
+        deep = collection(5, {deep});
+    result = with_project(packet(2, deep));
+    check(result.at("status") == "not_evaluated" &&
+              result.at("reason") == "native_geometry_construction_depth_limit",
+          "nested construction has an explicit bounded work depth");
+
+    auto loft = [&](const Bytes &bottom, const Bytes &top,
+                    const std::vector<std::vector<Bytes>> &groups) {
+        auto b = bgfb(21);
+        b.resize(76 + 4 * groups.size());
+        write(b, 28, 20, 4);
+        write(b, 36, 12, 2);
+        write(b, 38, 24, 2);
+        write(b, 40, bottom.empty() ? 0 : 4, 2);
+        write(b, 42, top.empty() ? 0 : 8, 2);
+        write(b, 44, 12, 2);
+        write(b, 46, 16, 2);
+        write(b, 48, 12, 4);
+        write(b, 60, 12, 4);
+        write(b, 64, 1, 1);
+        write(b, 72, groups.size(), 4);
+        auto append_curve_vector = [&](const Bytes &source, std::size_t pointer) {
+            const auto start = b.size();
+            b.insert(b.end(), source.begin(), source.end());
+            write(b, pointer, start + 48 - pointer, 4);
+        };
+        if (!bottom.empty())
+            append_curve_vector(bottom, 52);
+        if (!top.empty())
+            append_curve_vector(top, 56);
+        for (std::size_t i = 0; i < groups.size(); ++i) {
+            const auto group = b.size();
+            b.resize(group + 4 + 4 * groups[i].size());
+            write(b, 76 + 4 * i, group - (76 + 4 * i), 4);
+            write(b, group, groups[i].size(), 4);
+            for (std::size_t j = 0; j < groups[i].size(); ++j)
+                append_curve_vector(groups[i][j], group + 4 + 4 * j);
+        }
+        return b;
+    };
+    auto loft_source =
+        loft(empty_group, nested_group, {{mixed_group, empty_group}, {}, {nested_group}});
+    result = with_project(packet(6, loft_source));
+    const auto &loft_result = result.at("construction");
+    check(result.at("status") == "geometry_constructed" &&
+              loft_result.at("section0").at("output_member_count") == 0 &&
+              loft_result.at("section1").at("output_member_count") == 2 &&
+              loft_result.at("capped") == true && loft_result.at("group_count") == 3,
+          "native loft stores both section results and the original guide group count");
+    const auto &groups = loft_result.at("guide_groups");
+    check(groups.at(0).at("guide_count") == 2 && groups.at(1).at("guide_count") == 0 &&
+              groups.at(2).at("guides").at(0).at("source_guide_index") == 0 &&
+              groups.at(0).at("guides").at(0).at("output_member_count") == 4,
+          "guide arrays retain both levels and empty groups without collapsing their order");
+    for (unsigned mask = 0; mask < 4; ++mask) {
+        result = with_project(packet(
+            6, loft(mask & 1 ? empty_group : Bytes{}, mask & 2 ? nested_group : Bytes{}, {})));
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("section0").at("geometry_pointer") ==
+                      (mask & 1 ? "non_null" : "null") &&
+                  result.at("construction").at("section1").at("geometry_pointer") ==
+                      (mask & 2 ? "non_null" : "null"),
+              "loft factory retains null section pointers without claiming usable geometry");
+    }
+    auto empty_loft = loft({}, {}, {});
+    write(empty_loft, 44, 0, 2);
+    check(with_project(packet(6, empty_loft)).at("status") == "not_evaluated",
+          "absent guide group vector is an unsafe dereference, not an empty guide list");
+    empty_loft = loft({}, {}, {});
+    write(empty_loft, 72, UINT32_MAX, 4);
+    result = with_project(packet(6, empty_loft));
+    check(result.at("status") == "not_evaluated" &&
+              result.at("reason") == "native_section_loft_negative_group_allocation",
+          "negative outer count cannot skip the allocation that precedes native iteration");
+    auto negative_inner = loft({}, {}, {{}});
+    write(negative_inner, 80, UINT32_MAX, 4);
+    result = with_project(packet(6, negative_inner));
+    check(result.at("status") == "geometry_constructed" &&
+              result.at("construction").at("guide_groups").at(0).at("guide_count") == 0 &&
+              result.at("construction").at("guide_groups").at(0).at("source_count_signed") == -1,
+          "negative inner count skips its signed loop while retaining the outer group");
+    write(loft_source, 46, 0, 2);
+    check(with_project(packet(6, loft_source)).at("construction").at("capped") == false,
+          "omitted loft cap flag keeps the native reader default");
+    auto unsupported_guide = collection(5, {bgfb(3)});
+    check(with_project(packet(6, loft({}, {}, {{unsupported_guide}}))).at("status") ==
+              "not_evaluated",
+          "unknown guide construction cannot be replaced by an empty guide to accept a loft");
     return checks;
 }

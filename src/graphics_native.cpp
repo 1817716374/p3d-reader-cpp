@@ -47,7 +47,7 @@ struct GeometryBytes {
 // These readers copy their inputs without geometric validity checks. This is
 // evidence for a non-null geometry object, not for its topology, displayability,
 // material footer or eventual insertion in the owning element's graphics.
-Json construction(const GeometryBytes &b, std::size_t root, unsigned tag) {
+Json leaf_construction(const GeometryBytes &b, std::size_t root, unsigned tag) {
     const auto pointer = b.field(root, 1, 4);
     require(pointer.has_value(), "bgfb_geometry_union_data_unavailable");
     const auto table = b.indirect(*pointer);
@@ -113,6 +113,178 @@ Json construction(const GeometryBytes &b, std::size_t root, unsigned tag) {
     }
     return out;
 }
+
+struct GeometryConstruction {
+    const GeometryBytes &b;
+    std::size_t remaining = 1000000;
+    void visit(unsigned depth) {
+        require(depth <= 80, "native_geometry_construction_depth_limit");
+        require(remaining > 0, "native_geometry_construction_work_limit");
+        --remaining;
+    }
+    Json object(const char *type, const char *kind, bool present = true) const {
+        return {{"geometry_type", type},
+                {"geometry_kind", kind},
+                {"geometry_pointer", present ? "non_null" : "null"},
+                {"allocation_assumption", "successful"},
+                {"geometry_validity", "not_checked_by_reader"}};
+    }
+    std::optional<std::size_t> child(std::size_t table, unsigned field) const {
+        const auto p = b.field(table, field, 4);
+        return p ? std::optional<std::size_t>(b.indirect(*p)) : std::nullopt;
+    }
+    bool flag(std::size_t table, unsigned field) const {
+        const auto p = b.field(table, field, 1);
+        return p && b.at<std::uint8_t>(*p) != 0;
+    }
+    Json curve_vector(std::optional<std::size_t> table, unsigned depth) {
+        visit(depth);
+        auto out = object("CurveVector", "curve_vector", table.has_value());
+        if (!table)
+            return out;
+        const auto type = b.field(*table, 0, 4);
+        out["boundary_type"] = type ? b.at<std::int32_t>(*type) : 0;
+        const auto vector = child(*table, 1);
+        require(vector.has_value(), "native_curve_vector_requires_member_vector");
+        const auto count = b.at<std::uint32_t>(*vector);
+        require(count <= b.size / 4, "native_curve_vector_member_extent_unavailable");
+        b.range(*vector + 4, std::size_t(count) * 4);
+        out["source_member_count"] = count;
+        out["members"] = Json::array();
+        std::size_t appended = 0;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            auto member = variant(b.indirect(*vector + 4 + std::size_t(i) * 4), depth + 1);
+            member["source_member_index"] = i;
+            if (member.at("geometry_pointer") == "null")
+                member["action"] = "skip_null";
+            else if (member.at("geometry_kind") == "curve" ||
+                     member.at("geometry_kind") == "curve_vector") {
+                member["action"] = member.at("geometry_kind") == "curve"
+                                       ? "append_curve"
+                                       : "wrap_nested_curve_vector";
+                member["output_member_index"] = appended++;
+            } else
+                member["action"] = "skip_non_curve";
+            out["members"].push_back(std::move(member));
+        }
+        out["output_member_count"] = appended;
+        return out;
+    }
+    Json variant(std::size_t root, unsigned depth = 0) {
+        visit(depth);
+        const auto tag_field = b.field(root, 0, 1);
+        const auto tag = tag_field ? b.at<std::uint8_t>(*tag_field) : 0;
+        // The generic member reader does not inspect the union data for these tags.
+        if (!tag || tag == 15 || tag > 21)
+            return object("unselected_union_tag", "none", false);
+        if ((tag >= 6 && tag <= 9) || tag == 13) {
+            auto out = leaf_construction(b, root, tag);
+            out["geometry_kind"] = tag == 13 ? "polyface" : "solid";
+            out["geometry_pointer"] = "non_null";
+            return out;
+        }
+        require(tag == 1 || tag == 2 || tag == 4 || tag == 5 || tag == 10 || tag == 12 ||
+                    tag == 18 || tag == 21,
+                "native_geometry_construction_not_supported");
+        const auto table = child(root, 1);
+        if (tag == 5)
+            return curve_vector(table, depth + 1);
+        require(table.has_value(), "native_geometry_reader_requires_union_data");
+        if (tag == 1 || tag == 2) {
+            const auto bytes = tag == 1 ? 48u : 88u;
+            const auto detail = b.field(*table, 0, bytes);
+            require(detail.has_value(), "native_curve_reader_requires_detail_pointer");
+            auto out = object(tag == 1 ? "LineSegment" : "EllipticArc", "curve");
+            out.update({{"operation", "copy_fixed_detail"},
+                        {"detail_offset", *detail},
+                        {"detail_bytes", bytes}});
+            return out;
+        }
+        if (tag == 4 || tag == 18) {
+            const auto vector = child(*table, 0);
+            require(vector.has_value(), "native_point_curve_requires_vector");
+            const auto count = b.at<std::uint32_t>(*vector);
+            const auto copied = std::uint64_t(count / 3) * 24;
+            require(copied <= b.size, "native_point_curve_extent_unavailable");
+            b.range(*vector + 4, static_cast<std::size_t>(copied));
+            auto out = object(tag == 4 ? "LineString" : "PointString", "curve");
+            out.update({{"operation", "copy_point_tuples"},
+                        {"source_scalar_count", count},
+                        {"point_count", count / 3},
+                        {"ignored_tail_scalars", count % 3},
+                        {"data_offset", *vector + 4},
+                        {"copied_bytes", copied}});
+            return out;
+        }
+        if (tag == 10) {
+            auto out = object("DgnExtrusion", "solid");
+            out["base_curve"] = curve_vector(child(*table, 0), depth + 1);
+            const auto vector = b.field(*table, 1, 24);
+            require(vector.has_value(), "native_extrusion_requires_vector_detail");
+            out.update({{"operation", "retain_base_curve_and_copy_extrusion"},
+                        {"extrusion_vector_offset", *vector},
+                        {"capped", flag(*table, 2)}});
+            return out;
+        }
+        if (tag == 21) {
+            auto out = object("P3DSectionLoft", "solid");
+            out["section0"] = curve_vector(child(*table, 0), depth + 1);
+            out["section1"] = curve_vector(child(*table, 1), depth + 1);
+            const auto vector = child(*table, 2);
+            require(vector.has_value(), "native_section_loft_requires_guide_groups");
+            const auto count = b.at<std::int32_t>(*vector);
+            // The outer vector is resized before the signed loop guard. A negative
+            // size cannot be interpreted as the empty-loop behavior of inner groups.
+            require(count >= 0, "native_section_loft_negative_group_allocation");
+            require(std::size_t(count) <= b.size / 4,
+                    "native_section_loft_group_extent_unavailable");
+            b.range(*vector + 4, std::size_t(count) * 4);
+            out.update({{"operation", "retain_sections_and_nested_guide_groups"},
+                        {"capped", flag(*table, 3)},
+                        {"group_count", count},
+                        {"guide_groups", Json::array()}});
+            for (std::int32_t i = 0; i < count; ++i) {
+                visit(depth + 1);
+                const auto group = b.indirect(*vector + 4 + std::size_t(i) * 4);
+                const auto source_count = b.at<std::int32_t>(group);
+                const auto read_count = static_cast<std::uint32_t>(std::max(0, source_count));
+                require(read_count <= b.size / 4, "native_section_loft_guide_extent_unavailable");
+                b.range(group + 4, std::size_t(read_count) * 4);
+                Json item = {{"source_group_index", i},
+                             {"source_count_signed", source_count},
+                             {"guide_count", read_count},
+                             {"guides", Json::array()}};
+                for (std::uint32_t j = 0; j < read_count; ++j) {
+                    auto guide =
+                        curve_vector(b.indirect(group + 4 + std::size_t(j) * 4), depth + 2);
+                    guide["source_guide_index"] = j;
+                    item["guides"].push_back(std::move(guide));
+                }
+                out["guide_groups"].push_back(std::move(item));
+            }
+            return out;
+        }
+        auto out = object("DgnRuledSweep", "solid");
+        const auto vector = child(*table, 0);
+        require(vector.has_value(), "native_ruled_sweep_requires_section_vector");
+        // This reader, unlike CurveVector, interprets the vector count as signed.
+        const auto count = b.at<std::int32_t>(*vector);
+        const auto read_count = static_cast<std::uint32_t>(std::max(0, count));
+        require(read_count <= b.size / 4, "native_ruled_sweep_section_extent_unavailable");
+        b.range(*vector + 4, std::size_t(read_count) * 4);
+        out.update({{"operation", "retain_ordered_sections"},
+                    {"source_count_signed", count},
+                    {"section_count", read_count},
+                    {"capped", flag(*table, 1)},
+                    {"sections", Json::array()}});
+        for (std::uint32_t i = 0; i < read_count; ++i) {
+            auto section = curve_vector(b.indirect(*vector + 4 + std::size_t(i) * 4), depth + 1);
+            section["source_section_index"] = i;
+            out["sections"].push_back(std::move(section));
+        }
+        return out;
+    }
+};
 Json native_input(const Bytes &entry, bool model_has_project) {
     const std::size_t geometry_start = model_has_project ? 36 : 32;
     Json out = {{"status", "not_evaluated"},
@@ -211,8 +383,8 @@ Json native_input(const Bytes &entry, bool model_has_project) {
             reject("bgfb_type_not_accepted_by_entry_reader");
             return out;
         }
-        if ((type == 6 && tag >= 6 && tag <= 9) || type == 3) {
-            out["construction"] = construction(b, root, tag);
+        if (type != 4) {
+            out["construction"] = GeometryConstruction{b}.variant(root);
             out["status"] = "geometry_constructed";
             out["geometry_pointer"] = "non_null";
         }
