@@ -1064,10 +1064,11 @@ static void material_index_tests() {
     for (auto &e : j["entries"])
         if (e["status"] == "recognized") {
             ++valid;
-            check(e["part_index"] == -2147483648ll || e["part_index"] == 2147483647,
+            check(e["part_index"] == -2147483648ll || e["part_index"] == 2147483647 ||
+                      (e["part_index"] == 2 && e["source_value"] == 17 && e["material_name"] == "17"),
                   "part key uses exact signed int32 decimal formatting");
         }
-    check(valid == 2 && j["geometry_mapping_status"] == "not_established",
+    check(valid == 3 && j["geometry_mapping_status"] == "not_established",
           "part indices neither accept aliases nor imply geometric mapping");
     j = decode(u8R"({"木":{"19":"19","2":"3","-1":"-1"},"钢":[19]})", 2);
     check(j["entries"].size() == 3 && j["unrecognized_material_groups"].size() == 1 &&

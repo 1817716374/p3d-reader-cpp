@@ -140,12 +140,148 @@ unsigned graphics_material_tests() {
     result = resolve_rebuilt_graphics_materials(entries,
                                                 Json::array({attribute(4, 1, narrow("null"))}), c);
     check(result.at("entries")[0].at("material_index") == 20, "null JSON has no member assignment");
-    for (const auto *bad : {"{", "[]", R"({"0":3})", "{/*native extension*/}"}) {
+    for (const auto *bad : {"{", "[]", R"({"0":3.0})", R"({"0":{}})", R"({"0":[]})"}) {
         result = resolve_rebuilt_graphics_materials(entries,
                                                     Json::array({attribute(4, 1, narrow(bad))}), c);
         check(result.at("entries")[0].at("status") == "unresolved",
               "unsupported JSON parse or string conversion cannot silently fall back");
     }
+    // Check the actual lookup strings, not just a successful fallback. In
+    // particular, null converts to an empty name, rejected by the native loader.
+    const std::vector<std::pair<std::string, std::u16string>> scalar_cases = {
+        {"null", u""},
+        {"true", u"true"},
+        {"false", u"false"},
+        {"0", u"0"},
+        {"-0", u"0"},
+        {"-1", u"-1"},
+        {"2147483648", u"2147483648"},
+        {"9007199254740993", u"9007199254740993"},
+        {"9223372036854775807", u"9223372036854775807"},
+        {"9223372036854775808", u"9223372036854775808"},
+        {"18446744073709551615", u"18446744073709551615"},
+        {"-9223372036854775808", u"-9223372036854775808"}};
+    for (const auto &test : scalar_cases) {
+        auto scalar_context = c;
+        unsigned name_calls = 0;
+        scalar_context.lookup_name = [&](const auto &name, auto query) {
+            ++name_calls;
+            check(name == test.second && query == GraphicsMaterialNameQuery::advanced_part,
+                  "native scalar name conversion preserves exact text and lookup scope");
+            return GraphicsMaterialResult{true, name.empty() ? std::optional<std::size_t>()
+                                                             : std::optional<std::size_t>(77)};
+        };
+        result = resolve_rebuilt_graphics_materials(
+            entries, Json::array({attribute(4, 1, narrow("{\"0\":" + test.first + "}"))}),
+            scalar_context);
+        const bool empty_name = test.second.empty();
+        check(name_calls == 1 &&
+                  result.at("entries")[0].at("material_index") == (empty_name ? 20 : 77) &&
+                  result.at("entries")[1].at("material_index") == 20,
+              "scalar assignment overrides its own part without affecting other entries");
+        const auto source = narrow("{\"0\":" + test.first + "}");
+        const auto view = decode_material_assignment(1, source);
+        const auto &item = view.at("entries")[0];
+        check(item.at("status") == "recognized" && item.at("material_name").is_string() &&
+                  item.at("source_value") == Json::parse(test.first) &&
+                  bytesof(view.at("source_bytes")) == source,
+              "source assignment view preserves scalar value and exposes its converted name");
+    }
+    for (const auto *unhandled : {"18446744073709551616", "-9223372036854775809", "1e2"}) {
+        const auto before = calls.size();
+        result = resolve_rebuilt_graphics_materials(
+            entries,
+            Json::array({attribute(4, 1, narrow(std::string("{\"0\":") + unhandled + "}"))}), c);
+        check(calls.size() == before && result.at("entries")[0].at("status") == "unresolved" &&
+                  result.at("entries")[1].at("material_index") == 20,
+              "floating or overflowing integer syntax cannot become an invented material name");
+        const auto view = decode_material_assignment(
+            1, narrow(std::string("{\"0\":") + unhandled + ",\"1\":\"A\"}"));
+        check(view.at("entries")[0].contains("name_conversion_error") &&
+                  view.at("entries")[1].at("material_name") == "A",
+              "unsupported numeric name leaves other source assignments usable");
+    }
+    for (const auto *commented : {"/*before*/{\"0\"/*key*/:/*value*/\"A\"}/*after*/",
+                                  "//before\r\n{\"0\":\"A\"//value\n}//after",
+                                  "{\"0\":\"Missing\",/*later wins*/\"0\":\"A\"}"}) {
+        auto bytes = narrow(commented);
+        result =
+            resolve_rebuilt_graphics_materials(entries, Json::array({attribute(4, 1, bytes)}), c);
+        check(result.at("entries")[0].at("material_index") == 0 &&
+                  result.at("part_name_table").at("status") == "parsed",
+              "native line and block comments do not obscure the material assignment");
+        const auto decoded = decode_material_assignment(1, bytes);
+        check(decoded.at("json_status") == "parsed" && decoded.at("value").at("0") == "A" &&
+                  bytesof(decoded.at("source_bytes")) == bytes,
+              "attribute view supports comments while preserving all original source bytes");
+    }
+    auto literal = c;
+    std::u16string literal_name;
+    literal.lookup_name = [&](const auto &name, auto) {
+        literal_name = name;
+        return GraphicsMaterialResult{true, 77};
+    };
+    result = resolve_rebuilt_graphics_materials(
+        entries, Json::array({attribute(4, 1, narrow(R"({"0":"a/*b*/c//d"})"))}), literal);
+    check(literal_name == u"a/*b*/c//d" && result.at("entries")[0].at("material_index") == 77,
+          "comment markers within quoted names remain literal");
+    auto null_missing =
+        Json::array({attribute(4, 1, narrow(R"({"0":null})")), attribute(2, 0, wide(u"Legacy"))});
+    result = resolve_rebuilt_graphics_materials(entries, null_missing, c);
+    check(result.at("entries")[0].at("source") == "legacy_part_name" &&
+              result.at("entries")[0].at("lookups")[0].at("lookup_name_utf16_code_units").empty(),
+          "a confirmed empty-name miss reaches legacy part material");
+    auto null_unknown = c;
+    null_unknown.lookup_name = {};
+    result = resolve_rebuilt_graphics_materials(entries, null_missing, null_unknown);
+    check(result.at("entries")[0].at("status") == "unresolved" &&
+              result.at("entries")[0].at("lookups").size() == 1 &&
+              result.at("entries")[0].at("source") == "advanced_part_name",
+          "unknown empty-name project preparation does not silently become a completed lookup");
+    for (const auto *empty_value : {"null", "\"\"", "\"\\u0000ignored\""}) {
+        unsigned calls_for_empty = 0;
+        auto empty_context = c;
+        empty_context.lookup_name = [&](const auto &name, auto) {
+            ++calls_for_empty;
+            check(name.empty(), "empty name reaches complete native query callback");
+            return GraphicsMaterialResult{true, {}};
+        };
+        result = resolve_rebuilt_graphics_materials(
+            entries,
+            Json::array({attribute(4, 1, narrow(std::string("{\"0\":") + empty_value + "}"))}),
+            empty_context);
+        check(calls_for_empty == 1 && result.at("entries")[0].at("material_index") == 20 &&
+                  result.at("entries")[0].at("lookups")[0].at("status") == "not_found",
+              "empty advanced name miss falls back after project preparation callback");
+        empty_context.lookup_name = [](const auto &, auto) {
+            return GraphicsMaterialResult{true, 77};
+        };
+        result = resolve_rebuilt_graphics_materials(
+            entries,
+            Json::array({attribute(4, 1, narrow(std::string("{\"0\":") + empty_value + "}"))}),
+            empty_context);
+        check(result.at("entries")[0].at("status") == "unresolved" &&
+                  !result.at("entries")[0].contains("material_index"),
+              "contradictory empty-name material hit is not accepted as a native result");
+    }
+    auto empty_layers = null_unknown;
+    empty_layers.native_entity_material = {true, {}};
+    unsigned empty_layer_calls = 0;
+    empty_layers.lookup_name = [&](const auto &name, auto) {
+        ++empty_layer_calls;
+        check(name.empty(), "empty legacy and entity names retain project query boundary");
+        return GraphicsMaterialResult{true, {}};
+    };
+    result = resolve_rebuilt_graphics_materials(
+        entries, Json::array({attribute(4, 0, {}), attribute(2, 0, wide(u""))}), empty_layers);
+    check(result.at("entries")[0].at("material_index") == 7 &&
+              result.at("entity_material").at("status") == "not_found" && empty_layer_calls == 2,
+          "empty legacy and advanced entity names fall through after confirmed native misses");
+    result = resolve_rebuilt_graphics_materials(
+        entries, Json::array({attribute(4, 1, narrow("{\"0\":\"A\",/*unterminated"))}), c);
+    check(result.at("part_name_table").at("status") == "unresolved" &&
+              result.at("entries")[0].at("status") == "unresolved",
+          "unterminated comment cannot yield a partially accepted name table");
     auto throwing = c;
     throwing.lookup_name = [](const auto &, auto) -> GraphicsMaterialResult {
         throw std::runtime_error("loader failed");

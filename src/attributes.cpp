@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "material_json_name.hpp"
 #include <charconv>
 
 namespace p3d {
@@ -22,8 +23,8 @@ void material_index_entries(Json &out, unsigned index) {
         return;
     auto add = [&](const std::string &key, const Json &source, const Json &name, bool reverse) {
         auto number = material_part_number(key);
-        const bool recognized =
-            !number.is_null() && source.is_string() && (!reverse || source == key);
+        const bool recognized = !number.is_null() &&
+                                (reverse ? source.is_string() && source == key : name.is_string());
         if (!recognized)
             out["index_shape_status"] = "unexpected_entries";
         Json entry = {{"source_key", key},
@@ -36,8 +37,17 @@ void material_index_entries(Json &out, unsigned index) {
         out["entries"].push_back(std::move(entry));
     };
     if (index == 1) {
-        for (auto i = value.begin(); i != value.end(); ++i)
-            add(i.key(), i.value(), i.value().is_string() ? i.value() : Json(), false);
+        for (auto i = value.begin(); i != value.end(); ++i) {
+            Json name, error;
+            try {
+                name = detail::material_json_name(i.value());
+            } catch (const std::exception &e) {
+                error = e.what();
+            }
+            add(i.key(), i.value(), name, false);
+            if (!error.is_null())
+                out["entries"].back()["name_conversion_error"] = std::move(error);
+        }
     } else {
         out["unrecognized_material_groups"] = Json::array();
         for (auto i = value.begin(); i != value.end(); ++i) {
@@ -84,7 +94,7 @@ Json decode_material_assignment(unsigned index, const Bytes &b) {
     auto text = utf8(b);
     out["text"] = text;
     try {
-        out["value"] = Json::parse(text);
+        out["value"] = Json::parse(text, nullptr, true, true);
         out["json_status"] = "parsed";
     } catch (const std::exception &) {
         out["json_status"] = "invalid_json";

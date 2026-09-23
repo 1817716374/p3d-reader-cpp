@@ -1,5 +1,7 @@
 #include "internal.hpp"
+#include "material_json_name.hpp"
 #include <p3d/graphics_material.hpp>
+#include <charconv>
 #include <codecvt>
 #include <locale>
 
@@ -35,6 +37,35 @@ std::u16string utf8_name(std::string text) {
     return out;
 }
 } // namespace
+namespace detail {
+std::string material_json_name(const Json &value) {
+    if (value.is_string())
+        return value.get<std::string>();
+    if (value.is_null())
+        return {};
+    if (value.is_boolean())
+        return value.get<bool>() ? "true" : "false";
+    // JsonCpp uses integer division, including a separate INT64_MIN branch.
+    // Keep the full unsigned range and avoid a double or locale conversion.
+    char buffer[32];
+    if (value.is_number_unsigned()) {
+        const auto result =
+            std::to_chars(buffer, buffer + sizeof(buffer), value.get<std::uint64_t>());
+        require(result.ec == std::errc(), "material_name_integer_conversion_failed");
+        return {buffer, result.ptr};
+    }
+    if (value.is_number_integer()) {
+        const auto result =
+            std::to_chars(buffer, buffer + sizeof(buffer), value.get<std::int64_t>());
+        require(result.ec == std::errc(), "material_name_integer_conversion_failed");
+        return {buffer, result.ptr};
+    }
+    // Floating values use the native CRT's %.17g, not JSON serialization or
+    // shortest-roundtrip formatting. Its exact rounding profile is not modeled.
+    require(!value.is_number_float(), "part_material_float_requires_native_string_conversion");
+    throw std::runtime_error("part_material_value_not_convertible_to_string");
+}
+} // namespace detail
 
 Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attributes,
                                         const GraphicsMaterialContext &context) {
@@ -69,8 +100,14 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                                        : "current_project_update_true"}};
             if (!context.lookup_name)
                 step["reason"] = "material_name_loader_unavailable";
-            else
-                step.update(binding(context.lookup_name(name, query)));
+            else {
+                // Even an empty name enters native project/catalog preparation.
+                // Keep the callback; the subsequent name search cannot match it.
+                const auto loaded = context.lookup_name(name, query);
+                require(!name.empty() || !loaded.material_index,
+                        "native_empty_material_name_cannot_match");
+                step.update(binding(loaded));
+            }
             return step;
         };
         auto wide_lookup = [&](unsigned group, std::uint32_t index,
@@ -101,14 +138,15 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
         out["entity_material"] = element;
 
         // Parse once. A rejected input stays unknown: JsonCpp also accepts syntax
-        // outside the strict JSON subset, so our parse failure is not a native miss.
+        // outside the supported JSON-with-comments subset, so our parse failure
+        // is not a native miss. The native default Reader enables comments.
         Json part_names, part_table = {{"status", "absent"}};
         if (const auto *a = attribute(4, 1)) {
             part_table["attribute_ordinal"] = selected.at({4, 1});
             try {
                 const auto bytes = bytesof(a->at("payload"));
                 const auto end = std::find(bytes.begin(), bytes.end(), std::uint8_t(0));
-                part_names = Json::parse(bytes.begin(), end);
+                part_names = Json::parse(bytes.begin(), end, nullptr, true, true);
                 require(part_names.is_object() || part_names.is_null(),
                         "part_material_json_not_object_or_null");
                 part_table["status"] = "parsed";
@@ -140,10 +178,7 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                 require(part_table.at("status") != "unresolved", "part_name_table_unresolved");
                 auto name = part_names.find(std::to_string(i));
                 if (part_names.is_object() && name != part_names.end()) {
-                    // Other JsonCpp asString conversions require their native numeric profile.
-                    require(name->is_string(),
-                            "part_material_value_requires_native_string_conversion");
-                    advanced = name_lookup(utf8_name(name->get<std::string>()),
+                    advanced = name_lookup(utf8_name(detail::material_json_name(*name)),
                                            GraphicsMaterialNameQuery::advanced_part);
                 }
             } catch (const std::exception &e) {

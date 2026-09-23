@@ -33,6 +33,10 @@ struct GraphicsMaterialContext {
 // Serialized geometry_packets are suitable ONLY when they are independently known
 // to be exactly this builder's input sequence. Empty/non-emitting entries still count.
 // Unknown higher-priority choices stop that entry's fallback. Inputs are not changed.
+// Advanced names accept JSON comments and string, int64/uint64, bool and null
+// values; floats and non-scalar values remain unresolved. Empty names (including
+// converted null) still invoke the callback for native project preparation;
+// the native catalog search cannot match them.
 Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attributes,
                                         const GraphicsMaterialContext &context);
 } // namespace p3d
