@@ -15,6 +15,9 @@ constexpr std::uint64_t files_id = 0x0181635124290115ULL;
 constexpr std::uint64_t function_id = 0x4827000104282422ULL;
 constexpr std::uint64_t property_id = 0x0141762724222207ULL;
 constexpr std::uint64_t noumenon_id = 0x0260975554222207ULL;
+constexpr std::uint64_t data_key_id = 0x1395017306582671ULL;
+constexpr std::uint64_t data_string_map_id = 0x4809735200591395ULL;
+constexpr std::uint64_t data_uint_map_id = 0x1311011548825714ULL;
 
 struct StackDecoder {
     const Bytes &source;
@@ -103,6 +106,37 @@ struct StackDecoder {
                 else
                     out["bytes_base64"] = base64(slice(source, start, size));
                 cursor = start;
+            } else if (id == data_key_id) {
+                out["kind"] = "data_key";
+                out["object_id_source"] = child(int_id);
+                out["class_id_source"] = child(int_id);
+                out["object_id"] = out.at("object_id_source").at("value");
+                out["class_id"] = out.at("class_id_source").at("value");
+                finish();
+            } else if (id == data_string_map_id || id == data_uint_map_id) {
+                out["kind"] =
+                    id == data_string_map_id ? "data_key_string_map" : "data_key_uint64_map";
+                const auto n = count();
+                out["entries"] = Json::array();
+                out["entry_order"] = "native_read_order";
+                std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> selected;
+                for (std::uint64_t i = 0; i < n; ++i) {
+                    auto key = child(data_key_id);
+                    auto value = child(id == data_string_map_id ? string_id : uint_id);
+                    selected[{key.at("class_id").get<std::int64_t>(),
+                              key.at("object_id").get<std::int64_t>()}] = std::size_t(i);
+                    out["entries"].push_back(
+                        {{"key", std::move(key)}, {"value", std::move(value)}});
+                }
+                finish();
+                if (out.at("status") == "decoded") {
+                    Json indices = Json::array();
+                    for (const auto &entry : selected)
+                        indices.push_back(entry.second);
+                    out["native_index"] = {{"selected_entry_indices", std::move(indices)},
+                                           {"key_order", "signed_class_id_then_signed_object_id"},
+                                           {"duplicate_rule", "last_in_native_read_order"}};
+                }
             } else if (id == noumenon_id || id == vector_id || id == map_id) {
                 out["kind"] = id == noumenon_id ? "noumenon" : id == vector_id ? "vector" : "map";
                 const auto n = count();
@@ -219,20 +253,39 @@ Json source_input(const Json &root, const std::string &key, const std::string &k
 }
 } // namespace
 
-Json decode_component_properties(const Bytes &bytes) {
+static Json decode_stack(const Bytes &bytes, std::uint64_t expected, const char *scope) {
     require(bytes.size() <= 64 * 1024 * 1024, "component property input limit");
     StackDecoder decoder{bytes};
     std::size_t end = bytes.size();
-    Json out = {{"scope", "stored_component_properties"}};
+    Json out = {{"scope", scope}};
     try {
-        out["root"] = decoder.read(0, end, 0, noumenon_id);
+        out["root"] = decoder.read(0, end, 0, expected);
         out["status"] = decoder.complete ? "decoded" : "partial";
         if (out.at("root").at("status") == "invalid")
             out["status"] = "invalid";
         out["consumed_bytes"] = bytes.size() - end;
-        if (end)
+        if (end) {
             out["leading_bytes"] = {{"bytes", end},
                                     {"binary_base64", base64(slice(bytes, 0, end))}};
+            if (out.at("status") == "decoded")
+                out["status"] = "partial";
+        }
+    } catch (const std::exception &e) {
+        out["status"] = "invalid";
+        out["decode_error"] = e.what();
+    }
+    return out;
+}
+
+Json decode_data_unit(const Bytes &bytes) {
+    return decode_stack(bytes, 0, "stored_data_unit");
+}
+
+Json decode_component_properties(const Bytes &bytes) {
+    auto out = decode_stack(bytes, noumenon_id, "stored_component_properties");
+    try {
+        if (!out.contains("root"))
+            return out;
         out["component_graphics_input"] =
             source_input(out.at("root"), "componentGraphics", "bytes");
         out["component_material_input"] =

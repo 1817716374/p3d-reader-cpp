@@ -146,10 +146,10 @@ static Json extension(const Bytes &b) {
 Json decode_binary_field(const std::string &name, const Bytes &b, const std::string &cl,
                          const Json &roots) {
     Json out = {{"binary_base64", base64(b)}, {"bytes", b.size()}};
-    if (name == "ParaCmptProperty") {
-        out["encoding"] = "component_property_stack";
+    if (name == "ParaCmptProperty" || name == "DataUnit") {
+        out["encoding"] = name == "DataUnit" ? "registered_value_stack" : "component_property_stack";
         try {
-            out["decoded"] = decode_component_properties(b);
+            out["decoded"] = name == "DataUnit" ? decode_data_unit(b) : decode_component_properties(b);
         } catch (const std::exception &e) {
             out["field_decode_error"] = e.what();
         }
@@ -166,7 +166,7 @@ Json decode_binary_field(const std::string &name, const Bytes &b, const std::str
     static const std::map<std::string, std::string> apps = {
         {"Parameter", "grouped_design_parameters"}, {"GroupInfoBinary", "named_group_tree"},
         {"ExtendPro", "appearance_extension_json"}, {"ModelIdMap", "model_id_map"},
-        {"DataIdMap", "parameter_handle_data_ids"}, {"DataUnit", "postfix_typed_associations"}};
+        {"DataIdMap", "parameter_handle_data_ids"}};
     if (apps.count(name))
         apply(apps.at(name), [&]() { return application_blob(name, b, cl); });
     static const std::set<std::string> enums = {"type",

@@ -100,56 +100,6 @@ static Json group_info(Reader &r) {
     };
     return {{"version", version}, {"nodes", collect(r, [&]() { return node(0); }, 'I', 16)}};
 }
-static Json data_unit(const Bytes &b) {
-    std::function<std::pair<Json, std::size_t>(const Bytes &, std::size_t, unsigned)> value =
-        [&](const Bytes &data, std::size_t end, unsigned depth) -> std::pair<Json, std::size_t> {
-        require(depth <= 64 && end >= 16 && end <= data.size(), "DataUnit frame");
-        Reader r(data, end - 16);
-        auto size = r.u64();
-        auto tag = hex(r.take(8));
-        require(size <= end - 16, "DataUnit size");
-        auto start = end - 16 - size;
-        auto body = slice(data, start, size);
-        Reader br(body);
-        Json v = {{"type_token", tag}, {"bytes", size}};
-        if (tag == "1924227014576945" || tag == "9200192422707724") {
-            require(size == 8, "DataUnit integer width");
-            v.update({{"kind", "uint64"}, {"value", br.u64()}});
-        } else if (tag == "9200527369451613")
-            v.update({{"kind", "string"}, {"value", utf8(body)}});
-        else if (tag == "7126580673019513") {
-            auto second = value(body, body.size(), depth + 1);
-            auto first = value(body, second.second, depth + 1);
-            require(first.second == 0, "DataUnit pair extent");
-            v.update({{"kind", "pair"}, {"first", first.first}, {"second", second.first}});
-        } else if (tag == "9513590052730948" || tag == "1457824815011113") {
-            auto count = value(body, body.size(), depth + 1);
-            require(count.first["type_token"] == "9200192422707724", "DataUnit count tag");
-            auto n = count.first["value"].get<std::uint64_t>();
-            require(n <= body.size() / 16, "DataUnit count");
-            auto pos = count.second;
-            Json entries = Json::array();
-            for (std::uint64_t i = 0; i < n; ++i) {
-                auto val = value(body, pos, depth + 1);
-                auto key = value(body, val.second, depth + 1);
-                if (tag == "1457824815011113")
-                    require(key.first["type_token"] == "9200192422707724",
-                            "DataUnit association key");
-                entries.push_back({{"key", key.first}, {"value", val.first}});
-                pos = key.second;
-            }
-            require(pos == 0, "DataUnit container extent");
-            std::reverse(entries.begin(), entries.end());
-            v.update({{"kind", tag == "9513590052730948" ? "map" : "association_sequence"},
-                      {"entries", entries}});
-        } else
-            throw std::runtime_error("DataUnit type token");
-        return {v, start};
-    };
-    auto out = value(b, b.size(), 0);
-    require(out.second == 0, "DataUnit leading bytes");
-    return out.first;
-}
 static Json secondary(Reader &r) {
     auto ver = r.expect("I", 1);
     auto cats = collect(r, [&]() { return Json(packed_string(r)); }, 'I', 4);
@@ -983,9 +933,7 @@ Json application_blob(const std::string &name, const Bytes &b, const std::string
             if (cl == "BPParaHandleAndBfaDataMap")
                 v["native_lookup"]["target_field"] = "BfaTree";
         }
-    } else if (name == "DataUnit")
-        return data_unit(b);
-    else if (name == "SecondaryDevelopmentProperty")
+    } else if (name == "SecondaryDevelopmentProperty")
         v = secondary(r);
     else if (name == "CustomExtensionProperty")
         v = corridor(r);

@@ -188,5 +188,70 @@ unsigned component_property_tests() {
     for (unsigned i = 0; i < 100; ++i)
         deep = frame(V, stack({integer(1), deep}));
     check(one(deep).at("status") == "partial", "recursive input budget produces incomplete result");
+
+    constexpr std::uint64_t I = 0x4569571470222419ULL, K = 0x1395017306582671ULL;
+    constexpr std::uint64_t KS = 0x4809735200591395ULL, KU = 0x1311011548825714ULL;
+    auto data_key = [&](std::int64_t cl, std::int64_t object_id) {
+        return frame(K,
+                     stack({integer(std::uint64_t(object_id), I), integer(std::uint64_t(cl), I)}));
+    };
+    auto unit = [&](const Bytes &b) { return decode_binary_field("DataUnit", b).at("decoded"); };
+    auto key = value(data_key(-2, INT64_MIN));
+    check(key.at("kind") == "data_key" && key.at("class_id") == -2 &&
+              key.at("object_id").get<std::int64_t>() == INT64_MIN,
+          "DataKey class and object roles retain signed width");
+    check(key.at("object_id_source").at("offset") > key.at("class_id_source").at("offset"),
+          "DataKey native object-first reading reverses physical stack order");
+    const auto keyed =
+        frame(KU, stack({integer(5), data_key(2, 3), integer(8), data_key(-1, 4), integer(9),
+                         data_key(2, -5), integer(UINT64_MAX), data_key(2, 3), integer(10),
+                         data_key(-1, INT64_MIN), integer(11)}));
+    auto root = unit(keyed).at("root");
+    check(root.at("kind") == "data_key_uint64_map" && root.at("entries").size() == 5,
+          "typed DataKey map preserves duplicates");
+    check(root.at("entries")[0].at("key").at("object_id") == 3 &&
+              root.at("entries")[0].at("value").at("value") == 8,
+          "DataUnit map key and value follow native read order");
+    check(root.at("entries")[2].at("value").at("value").get<std::uint64_t>() == UINT64_MAX,
+          "DataUnit map values remain unsigned");
+    check(root.at("native_index").at("selected_entry_indices") == Json::array({4, 1, 2, 3}),
+          "DataKey map uses signed class/object ordering and last duplicate");
+    check(value(keyed) == unit(keyed).at("root") ||
+              value(keyed).at("native_index") == root.at("native_index"),
+          "component properties share registered DataKey map semantics");
+    root = unit(frame(KS, stack({integer(2), data_key(1195, 49), string("first"),
+                                 data_key(1195, 49), string(std::string("last\0x", 6))})))
+               .at("root");
+    check(root.at("entries")[0].at("key").at("class_id") == 1195 &&
+              root.at("entries")[0].at("value").at("text") == "first",
+          "DataKey-to-string roles are not reversed");
+    check(root.at("native_index").at("selected_entry_indices") == Json::array({1}) &&
+              root.at("entries")[1].at("value").at("text") == std::string("last\0x", 6),
+          "string assignment uses last value including embedded NUL");
+    check(unit(integer(UINT64_MAX, I)).at("root").at("value") == -1,
+          "DataUnit signed root is not coerced to uint64");
+    for (auto id : {KS, KU}) {
+        check(unit(frame(id, integer(0)))
+                  .at("root")
+                  .at("native_index")
+                  .at("selected_entry_indices")
+                  .empty(),
+              "empty typed DataKey map");
+        result = unit(frame(id, stack({integer(1), string("wrong-key"), integer(0)})));
+        check(result.at("status") == "invalid" && !result.at("root").contains("native_index"),
+              "wrong typed map key cannot produce a native index");
+        result = unit(frame(id, stack({integer(1), data_key(1, 2), frame(V, integer(0))})));
+        check(result.at("status") == "invalid" && !result.at("root").contains("native_index"),
+              "wrong typed map value cannot produce a native index");
+    }
+    check(unit(frame(K, stack({integer(1), integer(2, I)}))).at("status") == "invalid",
+          "DataKey requires signed object ID type");
+    check(unit(frame(K, stack({integer(1, I), integer(2)}))).at("status") == "invalid",
+          "DataKey requires signed class ID type");
+    auto extra = keyed;
+    extra.insert(extra.begin(), 0xaa);
+    check(unit(extra).at("status") == "partial",
+          "DataUnit leading bytes are not complete decoding");
+    check(unit(frame(0x1234, {1})).at("status") == "partial", "unknown DataUnit type retained");
     return checks;
 }
