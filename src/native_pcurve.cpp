@@ -196,9 +196,10 @@ struct Stroke {
 };
 } // namespace
 
-PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
-                                   const PCurveStrokeOptions &options,
-                                   const std::optional<PCurveSample> &previous) {
+static PCurveStrokes
+sample_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
+              const PCurveStrokeOptions &options, const std::optional<PCurveSample> &previous,
+              const std::array<std::vector<double>, 2> *split_knots = nullptr) {
     require(std::isfinite(options.uv_tolerance) && std::isfinite(options.spatial_tolerance),
             "native PCurve tolerances must be finite");
     require(std::isfinite(options.start_fraction) && std::isfinite(options.end_fraction),
@@ -236,7 +237,12 @@ PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineC
             stroke.points.push_back(*previous);
         }
         if (curve.order() == 2) {
-            const auto u = high_knots(stroke.surface->u()), v = high_knots(stroke.surface->v());
+            std::array<std::vector<double>, 2> local_knots;
+            if (!split_knots) {
+                local_knots = {high_knots(stroke.surface->u()), high_knots(stroke.surface->v())};
+                split_knots = &local_knots;
+            }
+            const auto &u = (*split_knots)[0], &v = (*split_knots)[1];
             result.report["surface_split_knots"] = {{"u", u}, {"v", v}};
             result.report["interval_parameter"] = "linear_subsegment_fraction";
             const auto &poles = curve.poles();
@@ -311,6 +317,141 @@ PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineC
         result.report["status"] == "complete" &&
         std::all_of(result.report["intervals"].begin(), result.report["intervals"].end(),
                     [](const Json &v) { return v.at("sampled_tolerances_met").get<bool>(); });
+    return result;
+}
+PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
+                                   const PCurveStrokeOptions &options,
+                                   const std::optional<PCurveSample> &previous) {
+    return sample_pcurve(surface, curve, options, previous);
+}
+PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
+                                             const std::vector<std::vector<BsplineCurve>> &loops,
+                                             const PCurveLoopStrokeOptions &options) {
+    require(std::isfinite(options.uv_tolerance) && std::isfinite(options.spatial_tolerance),
+            "native PCurve loop tolerances must be finite");
+    require(options.max_points && options.max_evaluations && options.max_loops &&
+                options.max_curves,
+            "native PCurve loop budgets must be positive");
+    PCurveLoopStrokes result;
+    result.report = {{"status", "incomplete"},
+                     {"algorithm", "native_restroke_prepared_pcurve_loops"},
+                     {"parameter_coordinates", "surface_fractions"},
+                     {"source_region_conversion", "caller_prepared"},
+                     {"implicit_closure", "not_performed"},
+                     {"continuous_error_bound", nullptr},
+                     {"loops", Json::array()}};
+    unsigned points = 0, evaluations = 0, curves = 0, omitted = 0;
+    bool tolerances_met = true;
+    std::optional<std::size_t> failed_loop, failed_curve;
+    try {
+        require(loops.size() <= options.max_loops, "native PCurve loop count budget exhausted");
+        for (const auto &loop : loops) {
+            require(loop.size() <= options.max_curves - curves,
+                    "native PCurve curve count budget exhausted");
+            curves += unsigned(loop.size());
+        }
+        double uv = options.uv_tolerance, spatial = options.spatial_tolerance;
+        if (uv < 0 && spatial < 0) {
+            const double largest = std::numeric_limits<double>::max();
+            Point3 low{largest, largest, largest}, high{-largest, -largest, -largest};
+            unsigned skipped = 0;
+            for (std::size_t i = 0; i < surface.poles().size(); ++i) {
+                auto p = surface.poles()[i];
+                if (surface.rational()) {
+                    // This native range path divides every weighted pole; it does
+                    // not filter zero, negative or small positive weights.
+                    require(surface.weights()[i] != 0,
+                            "native PCurve automatic range has a zero-weight pole");
+                    for (double &x : p)
+                        x /= surface.weights()[i];
+                }
+                finite(p);
+                if (std::find(p.begin(), p.end(), largest) != p.end()) {
+                    ++skipped; // Native range extension ignores a disconnect point.
+                    continue;
+                }
+                for (unsigned k = 0; k < 3; ++k) {
+                    low[k] = std::min(low[k], p[k]);
+                    high[k] = std::max(high[k], p[k]);
+                }
+            }
+            const double diagonal = distance(low, high);
+            uv = .01;
+            spatial = diagonal * .0001;
+            result.report["tolerance_selection"] = "control_range";
+            result.report["control_range"] = {{"low", low},
+                                              {"high", high},
+                                              {"diagonal", diagonal},
+                                              {"skipped_disconnect_poles", skipped}};
+        } else
+            result.report["tolerance_selection"] = "individual_tolerances";
+        PCurveStrokeOptions member_options;
+        member_options.uv_tolerance = uv > 0 ? uv : .001;
+        member_options.spatial_tolerance = spatial > 0 ? spatial : 1e-7;
+        result.report["uv_tolerance"] = member_options.uv_tolerance;
+        result.report["spatial_tolerance"] = member_options.spatial_tolerance;
+        const Point2 unit{0, 1};
+        std::optional<BsplineSurface> prepared;
+        if (surface.u().knot_domain() != unit || surface.v().knot_domain() != unit)
+            prepared = normalized_surface(surface);
+        result.report["surface_knot_preparation"] =
+            prepared ? "normalized_copy" : "already_normalized";
+        const auto &evaluation_surface = prepared ? *prepared : surface;
+        const std::array<std::vector<double>, 2> split_knots{high_knots(evaluation_surface.u()),
+                                                             high_knots(evaluation_surface.v())};
+        result.report["surface_split_knots"] = {{"u", split_knots[0]}, {"v", split_knots[1]}};
+        for (std::size_t i = 0; i < loops.size(); ++i) {
+            failed_loop = i;
+            failed_curve.reset();
+            result.loops.emplace_back();
+            auto &stream = result.loops.back();
+            result.report["loops"].push_back({{"loop_index", i}, {"members", Json::array()}});
+            auto &loop_report = result.report["loops"].back();
+            for (std::size_t j = 0; j < loops[i].size(); ++j) {
+                failed_curve = j;
+                const auto &curve = loops[i][j];
+                require(!curve.closed() && curve.knot_domain() == unit,
+                        "native PCurve loop member must already be opened and knot-normalized");
+                require(points < options.max_points, "native PCurve global point budget exhausted");
+                require(evaluations < options.max_evaluations,
+                        "native PCurve global evaluation budget exhausted");
+                std::optional<PCurveSample> previous;
+                if (!stream.empty())
+                    previous = stream.back();
+                // The retained previous sample is already charged to the global
+                // point budget, but occupies one slot in the single-curve worker.
+                member_options.max_points = options.max_points - points + (previous ? 1u : 0u);
+                member_options.max_evaluations = options.max_evaluations - evaluations;
+                auto member = sample_pcurve(evaluation_surface, curve, member_options, previous,
+                                            &split_knots);
+                evaluations += member.report.at("evaluations").get<unsigned>();
+                omitted += member.report.at("omitted_starts").get<unsigned>();
+                tolerances_met =
+                    tolerances_met && member.report.at("sampled_tolerances_met").get<bool>();
+                loop_report["members"].push_back({{"curve_index", j},
+                                                  {"sample_offset", stream.size()},
+                                                  {"sample_count", member.samples.size()},
+                                                  {"sampling", member.report}});
+                require(member.report.at("status") == "complete",
+                        member.report.value("reason", "native PCurve member incomplete"));
+                points += unsigned(member.samples.size());
+                stream.insert(stream.end(), std::make_move_iterator(member.samples.begin()),
+                              std::make_move_iterator(member.samples.end()));
+            }
+            loop_report["sample_count"] = stream.size();
+        }
+        result.report["status"] = "complete";
+    } catch (const std::exception &e) {
+        result.loops.clear();
+        result.report["reason"] = e.what();
+        result.report["failed_loop"] = failed_loop ? Json(*failed_loop) : Json(nullptr);
+        result.report["failed_curve"] = failed_curve ? Json(*failed_curve) : Json(nullptr);
+    }
+    result.report["evaluations"] = evaluations;
+    result.report["omitted_starts"] = omitted;
+    result.report["sample_count"] = result.report["status"] == "complete" ? points : 0;
+    result.report["sampled_tolerances_met"] =
+        result.report["status"] == "complete" && tolerances_met;
     return result;
 }
 } // namespace p3d

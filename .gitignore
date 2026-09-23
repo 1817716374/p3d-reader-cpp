@@ -10,6 +10,7 @@
 !/tests/bspline_denominator.cpp
 !/tests/bspline_periodic_trim.cpp
 !/tests/native_pcurve.cpp
+!/tests/native_pcurve_loops.cpp
 !/tests/loft_caps.cpp
 !/tests/loft_mesh.cpp
 !/tests/akima.cpp
