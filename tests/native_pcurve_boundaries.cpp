@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "loft_curve.hpp"
 #include "p3d/pcurve.hpp"
 using namespace p3d;
 namespace {
@@ -153,11 +154,119 @@ unsigned native_pcurve_boundary_tests() {
               std::abs(r.loops[0].front().parameter[1] - r.loops[0].back().parameter[1]) < 1e-14 &&
               r.report["boundary_sources"][0]["members"][0]["source_curve_closed"] == true,
           "closed B-spline is opened at the native seam before sampling");
-    auto bad_cycle = cyclic;
-    bad_cycle["weights"] = {1, -1, 1};
-    r = sample(array(5, {boundary, array(2, {bad_cycle})}));
+    auto signed_cycle = cyclic;
+    signed_cycle["weights"] = {1, -1, 1};
+    r = sample(array(5, {boundary, array(2, {signed_cycle})}));
+    check(r.report["status"] == "complete" && r.loops.size() == 2,
+          "mixed-weight periodic opening keeps both source boundaries");
+    const auto polynomial_cycle = sample(array(2, {cyclic}));
+    check(r.loops[1].size() == polynomial_cycle.loops[0].size(),
+          "opened linear native sampler still ignores signed weights");
+    for (std::size_t i = 0; i < r.loops[1].size(); ++i)
+        check(r.loops[1][i].parameter == polynomial_cycle.loops[0][i].parameter,
+              "signed linear cycle keeps native stored-XYZ sampling");
+    auto zero_cycle = signed_cycle;
+    zero_cycle["weights"][1] = 0;
+    r = sample(array(5, {boundary, array(2, {zero_cycle})}));
     check(r.report["status"] == "incomplete" && r.loops.empty(),
-          "unsupported mixed-weight periodic opening never drops a later boundary silently");
+          "generic periodic opening requiring zero-weight division fails atomically");
+
+    // A clamped-like closed quadratic opens by stripping one exterior knot at
+    // each end. This branch neither deweights controls nor normalizes [0,2].
+    auto special =
+        spline(3, {0, 0, 0, .5, .8, 0, .8, .5, 0, 0, 0, 0}, Json::array({-1, .5, -.5, -1}), true,
+               Json::array({-1, 0, 0, 0, 1, 2, 2, 2, 3}));
+    Json opening;
+    auto source = BsplineCurve::from_bgfb(special);
+    auto opened = loft_detail::open_periodic_boundary(source, 100, &opening);
+    check(opening["method"] == "strip_exterior_knots" &&
+              opened.knots == std::vector<double>{0, 0, 0, 1, 2, 2, 2},
+          "special periodic opening retains nonunit knot domain");
+    check(opened.table()["poles"] == special["poles"] &&
+              opened.table()["weights"] == special["weights"] &&
+              source.knots() == special["knots"].get<std::vector<double>>(),
+          "special signed opening copies controls and leaves source intact");
+    special["weights"][1] = 0;
+    opened = loft_detail::open_periodic_boundary(BsplineCurve::from_bgfb(special), 100, &opening);
+    check(opening["method"] == "strip_exterior_knots" && opened.poles[1][3] == 0 &&
+              opened.poles[1][0] == .5,
+          "special seam may retain zero-weight homogeneous controls without division");
+    for (auto &w : special["weights"])
+        w = 0;
+    special["poles"][9] = .5;
+    opened = loft_detail::open_periodic_boundary(BsplineCurve::from_bgfb(special), 100, &opening);
+    check(opening["method"] == "strip_exterior_knots" && opened.poles.back()[0] == .5,
+          "empty weighted range yields native capped seam tolerance one");
+    special["weights"] = {-1, -1, -1, -1};
+    special["poles"] = {0, 0, 0, .1, .2, 0, .2, .1, 0, .0001, 0, 0};
+    opened = loft_detail::open_periodic_boundary(BsplineCurve::from_bgfb(special), 100, &opening);
+    check(opening["method"] == "cyclic_seam_fallback",
+          "negative weights contribute to seam range instead of being skipped");
+    special["poles"] = {-.1, -.1, 0, -.9, -.1, 0, -.9, -.9, 0, -.1, -.1, 0};
+    r = sample(array(2, {special}));
+    check(r.report["status"] == "complete" &&
+              r.report["boundary_sources"][0]["members"][0]["prepared_curve_knot_domain"] ==
+                  Json::array({0, 2}),
+          "source boundary API reports the retained special-seam domain");
+    special["weights"][1] = 0;
+    for (unsigned k = 3; k < 6; ++k)
+        special["poles"][k] = 0;
+    r = sample(array(2, {special}));
+    check(r.report["status"] == "complete" && r.loops.size() == 1,
+          "finite special-seam curve with an internal zero weight can be sampled");
+
+    const auto mixed_quadratic =
+        spline(3, {.1, .2, 0, .3, .7, 0, -.05, -.08, 0, .7, .3, 0, .9, .1, 0},
+               Json::array({1, 1, -.1, 1, 1}), true);
+    source = BsplineCurve::from_bgfb(mixed_quadratic);
+    opened = loft_detail::open_periodic_boundary(source, 100, &opening);
+    const auto mixed_opened = BsplineCurve::from_bgfb(opened.table());
+    for (unsigned i = 0; i <= 100; ++i) {
+        const auto a = source.point_at(i / 100.), b = mixed_opened.point_at(i / 100.);
+        for (unsigned k = 0; k < 3; ++k)
+            check(std::abs(a[k] - b[k]) < 1e-12,
+                  "cyclic homogeneous insertion preserves mixed-weight quadratic geometry");
+    }
+    r = sample(array(2, {mixed_quadratic}));
+    check(r.report["status"] == "complete" && r.loops.size() == 1,
+          "mixed-weight quadratic source boundary reaches the public sampling API");
+
+    const auto discontinuous =
+        spline(3, {.1, .2, 0, .2, .4, 0, .3, .6, 0, .7, .8, 0, .8, .6, 0, .9, .4, 0}, nullptr, true,
+               Json::array({-.25, -.1, 0, .5, .5, .5, .75, .9, 1, 1.5, 1.5}));
+    source = BsplineCurve::from_bgfb(discontinuous);
+    opened = loft_detail::open_periodic_boundary(source, 100, &opening);
+    const auto independent = BsplineCurve::from_bgfb(opened.table());
+    check(std::count(opened.knots.begin(), opened.knots.end(), .5) == 3,
+          "periodic opening retains full internal knot multiplicity");
+    for (double f : {0., .125, .49, .49999999, .5, .50000001, .625, .9, 1.}) {
+        const auto a = source.point_at(f), b = independent.point_at(f);
+        for (unsigned k = 0; k < 3; ++k)
+            check(std::abs(a[k] - b[k]) < 1e-13,
+                  "opened discontinuous periodic curve agrees on both sides of the break");
+    }
+    r = sample(array(2, {discontinuous}));
+    check(r.report["status"] == "complete" && r.loops.size() == 1,
+          "full internal knot multiplicity no longer triggers a loft-only rejection");
+    auto rounded = cyclic;
+    rounded["weights"] = {7, -3, 11};
+    rounded["poles"][0] = .1;
+    source = BsplineCurve::from_bgfb(rounded);
+    opened = loft_detail::open_periodic_boundary(source, 100, &opening);
+    const double roundtrip = (.1 * (1. / 7)) * 7;
+    check(roundtrip != .1 && opened.poles.front()[0] == roundtrip &&
+              source.poles().front()[0] == .1,
+          "native reciprocal-weight roundtrip is observable only in the working copy");
+    for (double w : {0., std::numeric_limits<double>::denorm_min()}) {
+        rounded["weights"][0] = w;
+        bool failed = false;
+        try {
+            loft_detail::open_periodic_boundary(BsplineCurve::from_bgfb(rounded), 100);
+        } catch (const std::exception &) {
+            failed = true;
+        }
+        check(failed, "generic periodic opening rejects nonfinite reciprocal preprocessing");
+    }
 
     constexpr double pi = 3.141592653589793;
     r = sample(array(2, {arc(pi / 4, pi / 2)}));

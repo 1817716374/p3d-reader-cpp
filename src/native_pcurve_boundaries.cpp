@@ -283,7 +283,8 @@ struct Boundaries {
             Json opening = nullptr;
             auto table =
                 source->closed()
-                    ? loft_detail::open_periodic(*source, options.max_controls, &opening).table()
+                    ? loft_detail::open_periodic_boundary(*source, options.max_controls, &opening)
+                          .table()
                     : curve_table(*source);
             const auto count = table.at("poles").size() / 3;
             require(count <= options.max_controls - opened_controls,
@@ -308,6 +309,7 @@ struct Boundaries {
                                   {"source_type", value.at("_type")},
                                   {"source_curve_knot_domain", source->knot_domain()},
                                   {"source_curve_closed", source->closed()},
+                                  {"prepared_curve_knot_domain", loop.back().knot_domain()},
                                   {"prepared_poles", count},
                                   {"opening", opening}});
         }
