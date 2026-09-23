@@ -112,3 +112,4 @@
 !/tests/cache_hash.cpp
 !/tests/cache_associations.cpp
 !/tests/native_metadata.cpp
+!/tests/component_properties.cpp

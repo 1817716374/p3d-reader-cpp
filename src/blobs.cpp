@@ -1,4 +1,5 @@
 #include "blob_internal.hpp"
+#include "component_properties.hpp"
 namespace p3d {
 Json text_json(const Bytes &b) {
     auto first = std::find_if(
@@ -145,6 +146,15 @@ static Json extension(const Bytes &b) {
 Json decode_binary_field(const std::string &name, const Bytes &b, const std::string &cl,
                          const Json &roots) {
     Json out = {{"binary_base64", base64(b)}, {"bytes", b.size()}};
+    if (name == "ParaCmptProperty") {
+        out["encoding"] = "component_property_stack";
+        try {
+            out["decoded"] = decode_component_properties(b);
+        } catch (const std::exception &e) {
+            out["field_decode_error"] = e.what();
+        }
+        return out;
+    }
     auto apply = [&](const std::string &encoding, std::function<Json()> fn) {
         try {
             auto val = fn();
