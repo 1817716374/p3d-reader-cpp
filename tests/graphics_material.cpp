@@ -48,6 +48,10 @@ unsigned graphics_material_tests() {
     const auto original_entries = entries.dump(), original_attributes = attributes.dump();
     auto result = resolve_rebuilt_graphics_materials(entries, attributes, c);
     check(result.at("status") == "resolved", "rebuilt material sequence resolved");
+    check(result.at("selection_phase") == "before_symbology_resolution" &&
+              result.at("draw_material_status") == "not_evaluated" &&
+              result.at("entries")[0].at("selected_material_pointer") == "non_null",
+          "a successful selection does not certify downstream draw material application");
     for (unsigned i = 0; i < 3; ++i)
         check(result.at("entries")[i].at("material_index") == i,
               "part overrides precede element material and index zero remains valid");
@@ -64,6 +68,9 @@ unsigned graphics_material_tests() {
               result.at("entries")[1].at("material_index") == 8 &&
               result.at("entries")[2].at("status") == "unassigned",
           "known misses reach per-entry materials and confirmed null remains unassigned");
+    check(result.at("entries")[2].at("selected_material_pointer") == "null" &&
+              result.at("draw_material_status") == "not_evaluated",
+          "null selection remains eligible for later native symbology material lookup");
     auto entity_attrs = Json::array({attribute(4, 0, wide(u"Entity"))});
     result = resolve_rebuilt_graphics_materials(entries, entity_attrs, c);
     check(result.at("entity_material").at("source") == "advanced_entity_name" &&
@@ -82,6 +89,9 @@ unsigned graphics_material_tests() {
               result.at("entries")[1].at("status") == "resolved" &&
               result.at("entries")[2].at("status") == "unresolved",
           "part hits remain usable even with unresolved element material");
+    check(result.at("entries")[0].at("selected_material_pointer") == "non_null" &&
+              result.at("entries")[2].at("selected_material_pointer") == "unknown",
+          "unknown material selection is distinct from a confirmed null pointer");
     auto unknown = c;
     unknown.lookup_name = {};
     unknown.native_entity_material = {true, 20};

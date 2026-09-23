@@ -70,7 +70,9 @@ std::string material_json_name(const Json &value) {
 Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attributes,
                                         const GraphicsMaterialContext &context) {
     Json out = {{"status", "unresolved"},
-                {"scope", "rebuilt_graphics_entries_with_available_builder"},
+                {"scope", "rebuilt_graphics_material_selection"},
+                {"selection_phase", "before_symbology_resolution"},
+                {"draw_material_status", "not_evaluated"},
                 {"part_index_basis", "zero_based_rebuilt_graphics_entry_order"},
                 {"geometry_mapping_status", "caller_supplied_rebuilt_entry_sequence"},
                 {"entries", Json::array()}};
@@ -166,6 +168,7 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                 if (state == "not_found")
                     return false;
                 item["status"] = state == "matched" ? "resolved" : "unresolved";
+                item["selected_material_pointer"] = state == "matched" ? "non_null" : "unknown";
                 item["source"] = source;
                 if (state == "matched")
                     item["material_index"] = step.at("material_index");
@@ -204,6 +207,7 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                 }
                 if (!apply(inline_result, "graphics_entry_material")) {
                     item["status"] = "unassigned";
+                    item["selected_material_pointer"] = "null";
                     item["source"] = nullptr;
                 }
             }

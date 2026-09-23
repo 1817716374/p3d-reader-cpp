@@ -28,11 +28,15 @@ struct GraphicsMaterialContext {
 // entries is the ordered, already rebuilt BPGraphics Entry array, each containing
 // inline_material (null means absent). attributes is the complete selected native
 // attribute collection, in source order, with group/key/index/payload fields.
-// Models the material choices of the ordinary graphics builder when it is present
-// for every entry. It neither reconstructs Entry order nor maps triangles to parts.
+// Models material selection before the ordinary draw context resolves symbology.
+// Its symbology state is embedded in the context; it is not an optional per-entry
+// builder. This neither reconstructs Entry order nor maps triangles to parts.
 // Serialized geometry_packets are suitable ONLY when they are independently known
 // to be exactly this builder's input sequence. Empty/non-emitting entries still count.
 // Unknown higher-priority choices stop that entry's fallback. Inputs are not changed.
+// unassigned means that this selection writes a null material, not that the final
+// draw has no material. Later symbology resolution may perform another lookup;
+// draw_material_status remains not_evaluated, including for resolved selections.
 // Advanced names accept JSON comments and string, int64/uint64, bool and null
 // values; floats and non-scalar values remain unresolved. Empty names (including
 // converted null) still invoke the callback for native project preparation;
