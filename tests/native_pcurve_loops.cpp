@@ -169,8 +169,8 @@ unsigned native_pcurve_loop_tests() {
                                                {"knots", {2, 2, 4, 4}},
                                                {"weights", nullptr}});
     t = sample_native_pcurve_loops(surface, {{a, unprepared}});
-    check(t.report["status"] == "incomplete" && t.loops.empty() && t.report["failed_curve"] == 1,
-          "loop sampler refuses to silently normalize unprepared curve knots");
+    check(t.report["status"] == "complete" && t.loops.size() == 1 && t.loops[0].size() == 10,
+          "already-open curves retain their nonunit knot domain as native opening copies them");
     auto closed = BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
                                            {"order", 2},
                                            {"closed", true},

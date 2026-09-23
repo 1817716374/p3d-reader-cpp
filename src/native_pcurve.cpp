@@ -410,8 +410,7 @@ PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
             for (std::size_t j = 0; j < loops[i].size(); ++j) {
                 failed_curve = j;
                 const auto &curve = loops[i][j];
-                require(!curve.closed() && curve.knot_domain() == unit,
-                        "native PCurve loop member must already be opened and knot-normalized");
+                require(!curve.closed(), "native PCurve loop member must already be opened");
                 require(points < options.max_points, "native PCurve global point budget exhausted");
                 require(evaluations < options.max_evaluations,
                         "native PCurve global evaluation budget exhausted");

@@ -48,7 +48,8 @@ struct PCurveLoopStrokes {
     Json report;
 };
 // Input loops explicitly identify their ordered members. Each curve must already
-// be converted to an open B-spline with knot domain [0,1] and XY surface fractions.
+// be converted to an open B-spline with XY surface fractions. Open curve knot
+// domains are preserved; they need not be [0,1].
 // Reconstructs the restroke stage, not source region conversion or mesh closure.
 // Stream state is shared within each loop and reset between loops. No deduplication,
 // gap repair, implicit closing edge or reordering is performed. Budgets are global;
@@ -56,4 +57,18 @@ struct PCurveLoopStrokes {
 PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
                                              const std::vector<std::vector<BsplineCurve>> &loops,
                                              const PCurveLoopStrokeOptions &options = {});
+
+struct PCurveBoundaryStrokeOptions {
+    PCurveLoopStrokeOptions sampling;
+    unsigned max_controls = 200000;
+    unsigned max_tree_visits = 100000;
+    unsigned max_tree_depth = 80;
+    unsigned max_integration_intervals = 100000;
+};
+// Selects and converts the surface's stored CurveVector boundaries, opens closed
+// members at native knot zero, maps source UV to surface fractions, then restrokes.
+// This is normalized boundary restroking, not the reader's initial raw-UV cache
+// or mesh input closure. The original surface and boundary tree are unchanged.
+PCurveLoopStrokes sample_native_surface_boundaries(const BsplineSurface &surface,
+                                                   const PCurveBoundaryStrokeOptions &options = {});
 } // namespace p3d
