@@ -19,7 +19,7 @@ target_sources(p3d_reader PRIVATE src/bfa_driven.cpp src/bfa_sources.cpp src/bfa
 target_sources(p3d_reader PRIVATE src/loft_curve.cpp src/loft_open.cpp src/loft_close.cpp src/section_loft.cpp)
 target_sources(p3d_reader PRIVATE src/loft_caps.cpp src/graphics_bytes.cpp)
 target_sources(p3d_reader PRIVATE src/graphics_native.cpp)
-target_sources(p3d_reader PRIVATE src/component_properties.cpp)
+target_sources(p3d_reader PRIVATE src/component_properties.cpp src/persistent_data.cpp)
 target_sources(p3d_reader PRIVATE src/proxy_cache.cpp)
 target_sources(p3d_reader PRIVATE src/proxy_cache_fields.cpp)
 target_sources(p3d_reader PRIVATE src/cache_hash.cpp)

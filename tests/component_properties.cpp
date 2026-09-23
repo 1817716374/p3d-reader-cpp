@@ -1,4 +1,5 @@
 #include "component_properties.hpp"
+#include <p3d/persistent_data.hpp>
 #include <cstring>
 
 unsigned component_property_tests() {
@@ -550,5 +551,189 @@ unsigned component_property_tests() {
                                                       .size() == 5,
           "earlier incomplete sibling does not invalidate independent named map index");
     check(one(named_map).at("status") == "decoded", "named Noumenon map in component property");
+
+    auto data_object = [&](Json identifier, std::uint64_t id, const Bytes &payload) {
+        return Json{
+            {"class_id", 1215},
+            {"object_id", id},
+            {"offset", 0},
+            {"stream", Json::array({"objects"})},
+            {"root",
+             {{"name", "DataUnit"},
+              {"attributes", {{"xmlns", "PBM_CoreModel.01.00"}}},
+              {"children",
+               Json::array({{{"name", "Identifier"}, {"value", identifier}},
+                            {{"name", "DataUnit"}, {"value", {{"binary_base64", base64(payload)}}}},
+                            {{"name", "MD5Code"}, {"value", "saved-marker"}}})}}}};
+    };
+    PersistentDataIndexOptions index_options;
+    index_options.complete_project = true;
+    auto name_ref = [&](const std::string &name) {
+        return unit(frame(REF, string(name))).at("root");
+    };
+    auto id_ref = [&](std::uint64_t id) { return unit(frame(REF, integer(id))).at("root"); };
+    const std::string id_prefix("\x07_", 2);
+    auto objects = Json::array({data_object("shared", 50, integer(123)),
+                                data_object(id_prefix + "50", 60, string("number")),
+                                data_object("50", 70, integer(456))});
+    auto index = persistent_data_index(objects, index_options);
+    result = resolve_persistent_data_reference(name_ref("shared"), index);
+    check(result.at("status") == "resolved" && result.at("target").at("object_id") == 50 &&
+              result.at("value").at("root").at("value") == 123 &&
+              result.at("md5_code") == "saved-marker",
+          "saved persistent reference reaches original target and registered value");
+    result = resolve_persistent_data_reference(id_ref(50), index);
+    check(result.at("target").at("object_id") == 60 &&
+              result.at("value").at("root").at("text") == "number",
+          "persistent number is Identifier suffix not DataUnit object ID");
+    check(resolve_persistent_data_reference(name_ref("50"), index).at("target").at("object_id") ==
+              70,
+          "numeric-looking name and numeric identifier use distinct indices");
+    check(resolve_persistent_data_reference(id_ref(60), index).at("status") == "missing",
+          "object ID is never substituted as reference ID");
+    check(resolve_persistent_data_reference(name_ref("missing"), index).at("status") == "missing",
+          "complete dataset can prove reference absence");
+    check(resolve_persistent_data_reference(name_ref("shared"), persistent_data_index(objects))
+                  .at("status") == "not_evaluated",
+          "partial project cannot establish a final target");
+    objects.push_back(data_object("shared", 80, integer(789)));
+    index = persistent_data_index(objects, index_options);
+    check(resolve_persistent_data_reference(name_ref("shared"), index).at("status") == "ambiguous",
+          "file traversal order cannot silently select duplicate dataset names");
+    index_options.native_enumeration_order = true;
+    index = persistent_data_index(objects, index_options);
+    result = resolve_persistent_data_reference(name_ref("shared"), index);
+    check(
+        result.at("target").at("object_id") == 80 && result.at("candidates").size() == 2 &&
+            result.at("value").at("root").at("value") == 789,
+        "native dataset replaces duplicate entries in enumeration order and preserves candidates");
+    auto single = [&](Json identifier, const Bytes &payload = Bytes{}) {
+        return persistent_data_index(Json::array({data_object(identifier, 99, payload)}),
+                                     index_options);
+    };
+    index = single(std::string("shared\0tail", 11), integer(42));
+    check(resolve_persistent_data_reference(name_ref("shared"), index).at("status") == "resolved" &&
+              index.at("entries")[0].at("identifier").get<std::string>().size() == 11,
+          "Identifier uses C-string conversion while retaining full source string");
+    check(resolve_persistent_data_reference(name_ref(std::string("shared\0tail", 11)), index)
+                  .at("status") == "missing",
+          "reference name itself is not NUL truncated");
+    check(single("").at("entries")[0].at("status") == "ignored_empty", "empty identifier skipped");
+    check(single(std::string("\x07", 1)).at("status") == "partial",
+          "short numeric prefix stays unknown");
+    for (const auto &tail :
+         {"", "+", "-", " text", "18446744073709551616", "-18446744073709551616"})
+        check(single(id_prefix + tail).at("status") == "native_failure",
+              "native numeric identifier conversion failure retained");
+    for (const auto &tail : {"18446744073709551615", "-1", " +18446744073709551615junk"}) {
+        index = single(id_prefix + tail, integer(7));
+        check(resolve_persistent_data_reference(id_ref(UINT64_MAX), index).at("status") ==
+                  "resolved",
+              "native unsigned identifier accepts sign whitespace full width and ignored suffix");
+    }
+    index = single(std::string("\x07x", 2) + "00042tail", integer(8));
+    check(resolve_persistent_data_reference(id_ref(42), index).at("status") == "resolved",
+          "numeric marker second byte is skipped without underscore validation");
+    check(single(id_prefix + "0x10").at("entries")[0].at("key").at("id") == 0,
+          "numeric identifier uses base ten and permits trailing text");
+    check(single(id_prefix + "-18446744073709551615").at("entries")[0].at("key").at("id") == 1,
+          "negative full unsigned magnitude wraps rather than clamps");
+    check(single(id_prefix + std::string(1, char(0xa0)) + "1").at("status") == "partial",
+          "non-ASCII numeric leading whitespace needs native locale");
+    objects =
+        Json::array({data_object(u8"名称", 90, integer(7)), data_object("shared", 91, integer(8))});
+    index = persistent_data_index(objects, index_options);
+    check(index.at("status") == "partial" &&
+              resolve_persistent_data_reference(name_ref("shared"), index).at("status") ==
+                  "not_evaluated",
+          "unknown ANSI conversion could collide with an otherwise known key");
+    index_options.encode_name = [](const std::string &text) -> std::optional<Bytes> {
+        if (text == u8"名称")
+            return Bytes{0x81, 0x40};
+        return Bytes(text.begin(), text.end());
+    };
+    index = persistent_data_index(objects, index_options);
+    check(resolve_persistent_data_reference(name_ref(std::string("\x81\x40", 2)), index)
+                  .at("target")
+                  .at("object_id") == 90,
+          "explicit originating code page maps non-ASCII name");
+    check(resolve_persistent_data_reference(name_ref(u8"名称"), index).at("status") == "missing",
+          "UTF-8 bytes are not silently treated as originating ANSI bytes");
+    index_options.encode_name = {};
+    objects = Json::array({data_object("ignored", 1, integer(1))});
+    objects[0]["root"]["attributes"]["xmlns"] = "Other.01.00";
+    check(persistent_data_index(objects, index_options).at("entries").empty(),
+          "same class name in another schema is not a dataset record");
+    objects[0]["root"]["attributes"]["xmlns"] = "PBM_CoreModel.01.00";
+    objects[0]["root"]["children"].erase(0);
+    check(persistent_data_index(objects, index_options).at("entries")[0].at("status") ==
+              "ignored_missing_identifier",
+          "missing identifier does not fabricate empty name");
+    check(single(3).at("status") == "partial", "wrong identifier type is not stringified");
+    objects = Json::array({data_object("cycle", 1, frame(REF, string("cycle")))});
+    result = resolve_persistent_data_reference(name_ref("cycle"),
+                                               persistent_data_index(objects, index_options));
+    check(result.at("status") == "resolved" &&
+              result.at("value").at("root").at("kind") == "persistent_data_reference",
+          "cyclic reference resolves one hop without recursive copying");
+    objects[0]["root"]["children"].erase(1);
+    check(resolve_persistent_data_reference(name_ref("cycle"),
+                                            persistent_data_index(objects, index_options))
+                  .at("status") == "missing_value",
+          "target identity survives missing DataUnit field");
+    result = resolve_persistent_data_reference(name_ref("bad"), single("bad", {1, 2}));
+    check(result.at("status") == "resolved" && result.at("value_status") == "invalid",
+          "target resolution and target payload decoding have independent status");
+    result = resolve_persistent_data_reference(name_ref("unknown"),
+                                               single("unknown", frame(0x12345, {1})));
+    check(result.at("status") == "resolved" && result.at("value_status") == "partial",
+          "unsupported target value is retained after successful lookup");
+    objects = Json::array({data_object("dup", 1, integer(1))});
+    objects[0]["root"]["children"].push_back({{"name", "Identifier"}, {"value", "other"}});
+    check(persistent_data_index(objects, index_options).at("status") == "partial",
+          "duplicate Identifier fields do not invent BPData property selection");
+    objects = Json::array({data_object("value", 1, integer(1))});
+    objects[0]["root"]["children"][1]["value"] = "not binary";
+    result = resolve_persistent_data_reference(name_ref("value"),
+                                               persistent_data_index(objects, index_options));
+    check(result.at("status") == "resolved" && result.at("value_status") == "invalid" &&
+              result.at("target").at("object_id") == 1,
+          "wrong target field type cannot erase successful target identity resolution");
+    objects[0]["root"]["children"][1]["value"] = {{"binary_base64", "!!!!"}};
+    result = resolve_persistent_data_reference(name_ref("value"),
+                                               persistent_data_index(objects, index_options));
+    check(result.at("status") == "resolved" && result.at("value_status") == "invalid",
+          "bad base64 is a target value error");
+    objects = Json::array({data_object(id_prefix + "3", 10, integer(1)),
+                           data_object(id_prefix + "+03junk", 11, integer(2))});
+    result =
+        resolve_persistent_data_reference(id_ref(3), persistent_data_index(objects, index_options));
+    check(result.at("target").at("object_id") == 11 && result.at("candidates").size() == 2,
+          "different numeric Identifier spellings collide in native uint64 index");
+    objects.push_back(data_object(id_prefix + "bad", 12, integer(3)));
+    check(
+        resolve_persistent_data_reference(id_ref(3), persistent_data_index(objects, index_options))
+                .at("status") == "native_failure",
+        "bad numeric record prevents dataset opening");
+    index_options.encode_name = [](const std::string &text) -> std::optional<Bytes> {
+        if (text == "unknown")
+            return std::nullopt;
+        if (text == "localized_numeric")
+            return Bytes{7, '_', 0xa0, '1'};
+        return Bytes{'x', 0, 'y'};
+    };
+    check(single("localized_numeric").at("entries")[0].at("key").at("reason") ==
+              "numeric_identifier_locale",
+          "encoded numeric whitespace does not assume C locale");
+    check(single("unknown").at("status") == "partial", "encoder can explicitly decline conversion");
+    index = single("converted", integer(9));
+    check(resolve_persistent_data_reference(name_ref("x"), index).at("status") == "resolved",
+          "native narrow conversion output is also terminated at first NUL");
+    index_options.encode_name = {};
+    root = name_ref("value");
+    root["status"] = "partial";
+    check(resolve_persistent_data_reference(root, single("value", integer(1))).at("status") ==
+              "not_evaluated",
+          "incomplete reference cannot claim final lookup");
     return checks;
 }
