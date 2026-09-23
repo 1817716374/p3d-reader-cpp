@@ -278,6 +278,7 @@ unsigned model_edge_cache_tests() {
     set(metadata, 4, std::uint32_t(248));
     set(metadata, 8, std::uint32_t(248));
     set(metadata, 12, std::uint32_t(32));
+    set(metadata, 24, 1700000000123.25);
     set(metadata, 32, std::uint16_t(8));
     set(metadata, 64, std::uint32_t(17));
     set(metadata, 68, std::uint32_t(0xc00)); // Drawing compatibility + current-model-last.
@@ -317,6 +318,12 @@ unsigned model_edge_cache_tests() {
           "optional object is native type47/subtype32 model header");
     check(meta.at("semantics_status") == "partial", "remaining header semantics stay explicit");
     const auto &record = meta.at("record");
+    check(record.at("modification_time").at("source_offset") == 24 &&
+              record.at("modification_time").at("source_offsets_include_stream_prefix") == false &&
+              record.at("modification_time").at("milliseconds") == 1700000000123.25 &&
+              bytesof(record.at("modification_time").at("source_storage")) ==
+                  slice(metadata, 24, 8),
+          "cached common-header timestamp rebases its offset without synthetic stream framing");
     check(record.at("length") == metadata.size() && record.at("base_length") == 496 &&
               bytesof(record.at("data")) == Bytes(metadata.begin(), metadata.begin() + 496),
           "synthetic framing never escapes as source bytes or lengths");

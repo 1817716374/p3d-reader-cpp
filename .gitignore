@@ -111,3 +111,4 @@
 !/tests/model_edge_cache.cpp
 !/tests/cache_hash.cpp
 !/tests/cache_associations.cpp
+!/tests/native_metadata.cpp

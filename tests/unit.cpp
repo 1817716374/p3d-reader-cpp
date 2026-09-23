@@ -18,6 +18,7 @@ unsigned proxy_cache_tests();
 unsigned model_edge_cache_tests();
 unsigned cache_hash_tests();
 unsigned cache_association_tests();
+unsigned native_metadata_tests();
 unsigned material_resource_input_tests();
 unsigned bfa_tests();
 unsigned bspline_trim_tests();
@@ -2789,6 +2790,7 @@ int main() {
         checks += model_edge_cache_tests();
         checks += cache_hash_tests();
         checks += cache_association_tests();
+        checks += native_metadata_tests();
         checks += material_resource_input_tests();
         checks += mesh_normal_tests();
         checks += mesh_tessellation_tests();

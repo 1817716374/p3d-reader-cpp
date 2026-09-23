@@ -65,7 +65,7 @@ Json cached_model_metadata(const Bytes &bytes) {
         // Only these decoders use offsets into the framed model record.
         // Linkage decoders may instead use offsets local to their payload.
         for (const auto *key : {"model_unit_state", "model_coordinate_state", "model_view_state",
-                                "model_layer_group_reference"})
+                                "model_layer_group_reference", "modification_time"})
             if (record.contains(key))
                 native_offsets(record[key]);
         record["length"] = record.at("length").get<std::size_t>() - 4;

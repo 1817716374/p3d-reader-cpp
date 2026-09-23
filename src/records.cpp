@@ -3,6 +3,7 @@
 #include "material_catalog_read.hpp"
 #include <lz4/lz4.h>
 #include <miniz/miniz_tinfl.h>
+#include <p3d/native_metadata.hpp>
 namespace p3d {
 class Dex : public Reader {
   public:
@@ -312,6 +313,10 @@ Json parse_native(const Bytes &b) {
                        {"data", rawbytes(slice(b, pos, attr - pos))},
                        {"zero_padding", pad},
                        {"base_boundary_adjustment", adjustment}});
+        auto modification = decode_native_modification_time(slice(b, pos + 28, 8));
+        modification["source_offset"] = 28;
+        modification["source_offsets_include_stream_prefix"] = true;
+        out.back()["modification_time"] = std::move(modification);
         if (type == 47 && attr - pos >= 38 && r.at<std::uint32_t>(pos + 16) == 20 &&
             r.at<std::uint16_t>(pos + 36) == 0x56e6)
             out.back()["owner_reference_path"] =

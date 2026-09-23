@@ -2,6 +2,7 @@
 #include "proxy_cache_fields.hpp"
 #include <lz4/lz4.h>
 #include <p3d/proxy_cache.hpp>
+#include <p3d/native_metadata.hpp>
 
 namespace p3d {
 namespace {
@@ -87,16 +88,14 @@ struct ProxyReader {
                 const auto state = take(8, association_end);
                 Reader value(state);
                 const auto number = value.f64();
+                auto modification = decode_native_modification_time(state);
+                modification["source_offset"] = offset + 8;
                 item["entities"].push_back(
                     {{"source_offset", offset},
                      {"entity_id", entity_id},
                      {"source_state_value", std::isfinite(number) ? Json(number) : Json(nullptr)},
                      {"source_state_storage", rawbytes(state)},
-                     {"modification_time",
-                      {{"milliseconds", std::isfinite(number) ? Json(number) : Json(nullptr)},
-                       {"epoch", "1970-01-01T00:00:00"},
-                       {"time_basis", "local"},
-                       {"source_offset", offset + 8}}}});
+                     {"modification_time", std::move(modification)}});
             }
             const auto links = word(association_end);
             for (std::uint32_t j = 0; j < links; ++j) {
