@@ -28,6 +28,13 @@ struct ModelEdgeCacheLimits {
 // explicitly unevaluated. Truncated/unsafe source extents are rejected.
 Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits = {});
 
+// Reads the separately compressed index-65535 association attribute from the
+// same complete attribute collection. Paths are ordered from the actual host
+// toward descendant references; entity IDs are local to that resolved model.
+// Association links address source entry ordinals, not model or entity IDs.
+// This preserves associations without inventing runtime targets or validity.
+Json decode_native_edge_cache_associations(const Json &attributes, ModelEdgeCacheLimits = {});
+
 // A native cache hash occupies exactly 32 bytes. Exported mode 0 uses MD5;
 // nonzero modes select SHA-1. The source marker does not prove hash success.
 Json decode_native_cache_hash(const Bytes &);

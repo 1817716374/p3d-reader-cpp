@@ -35,6 +35,87 @@ struct ProxyReader {
         ++entries;
     }
 
+    Json associations() {
+        const auto end = reader.b.size();
+        const auto hash = take(32, end);
+        Json out = {{"cache_state_hash", decode_native_cache_hash(hash)},
+                    {"reference_directory", Json::array()},
+                    {"associations", Json::array()}};
+        out["cache_state_hash"]["source_offset"] = 0;
+        const auto directory_end = block_end(end);
+        const auto reference_count = word(directory_end);
+        for (std::uint32_t i = 0; i < reference_count; ++i) {
+            count_entry();
+            const auto start = reader.p;
+            need(2, directory_end);
+            const auto count = reader.u16();
+            require(count <= limits.max_depth, "edge_cache_reference_path_depth_limit");
+            Json path = Json::array();
+            for (std::uint16_t j = 0; j < count; ++j) {
+                count_entry();
+                path.push_back(id(directory_end));
+            }
+            const auto hash_offset = reader.p;
+            auto state = decode_native_cache_hash(take(32, directory_end));
+            state["source_offset"] = hash_offset;
+            out["reference_directory"].push_back({{"source_offset", start},
+                                                  {"directory_index", i},
+                                                  {"reference_link_path", std::move(path)},
+                                                  {"reference_state_hash", std::move(state)},
+                                                  {"runtime_target_status", "not_evaluated"}});
+        }
+        require(reader.p == directory_end, "edge_cache_reference_directory_length_mismatch");
+        out["reference_directory_end_offset"] = directory_end;
+        const auto association_end = block_end(end);
+        const auto count = word(association_end);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            count_entry();
+            Json item = {{"source_offset", reader.p},
+                         {"association_index", i},
+                         {"entities", Json::array()},
+                         {"links", Json::array()},
+                         {"runtime_target_status", "not_evaluated"}};
+            const auto directory = word(association_end);
+            item["reference_directory_index"] = directory;
+            item["reference_directory_entry_present"] = directory < reference_count;
+            need(2, association_end);
+            const auto entities = reader.u16();
+            for (std::uint16_t j = 0; j < entities; ++j) {
+                count_entry();
+                const auto offset = reader.p;
+                const auto entity_id = id(association_end);
+                const auto state = take(8, association_end);
+                Reader value(state);
+                const auto number = value.f64();
+                item["entities"].push_back(
+                    {{"source_offset", offset},
+                     {"entity_id", entity_id},
+                     {"source_state_value", std::isfinite(number) ? Json(number) : Json(nullptr)},
+                     {"source_state_storage", rawbytes(state)}});
+            }
+            const auto links = word(association_end);
+            for (std::uint32_t j = 0; j < links; ++j) {
+                count_entry();
+                const auto offset = reader.p;
+                const auto target = word(association_end);
+                item["links"].push_back({{"source_offset", offset},
+                                         {"association_index", target},
+                                         {"source_entry_present", target < count},
+                                         {"self_reference", target == i}});
+            }
+            item["end_offset"] = reader.p;
+            out["associations"].push_back(std::move(item));
+        }
+        // Unlike the reference directory, the native association reader does
+        // not require the count to exhaust its declared section length.
+        out["consumed_bytes"] = reader.p;
+        out["association_section_end_offset"] = association_end;
+        out["ignored_section_storage"] =
+            rawbytes(take(association_end - reader.p, association_end));
+        out["trailing_storage"] = rawbytes(take(end - reader.p, end));
+        return out;
+    }
+
     Json graphics(std::size_t end, std::uint32_t inherited_graphics_word) {
         Json groups = Json::array();
         while (reader.p < end) {
@@ -259,6 +340,17 @@ struct EdgeCacheReader {
     EdgeCacheReader(const Json &input, ModelEdgeCacheLimits bounds)
         : attributes(input), limits(bounds) {}
 
+    Json select_sources() {
+        require(attributes.is_array(), "edge_cache_attributes_must_be_array");
+        const auto lookup = native_attribute_lookup(attributes);
+        require(lookup.at("status") == "resolved", "edge_cache_attribute_lookup_failed");
+        for (const auto &key : lookup.at("keys"))
+            if (key.at("group") == 21 && key.at("key") == 22762)
+                sources.emplace(key.at("index").get<std::uint32_t>(),
+                                key.at("selected_source_ordinal").get<std::size_t>());
+        return lookup;
+    }
+
     const Json *attribute(std::uint32_t index) {
         const auto it = sources.find(index);
         if (it == sources.end())
@@ -296,6 +388,36 @@ struct EdgeCacheReader {
         return bytes;
     }
 
+    Json associations() {
+        Json out = {{"status", "not_evaluated"},
+                    {"scope", "native_edge_cache_associations"},
+                    {"semantics_status", "partial"},
+                    {"runtime_attachment_status", "not_evaluated"},
+                    {"remaining_semantics",
+                     {"entity_state_value_meaning", "runtime_targets_and_validity",
+                      "runtime_association_set_selection"}}};
+        try {
+            const auto *a = attribute(65535);
+            if (!a) {
+                out["status"] = "absent";
+                return out;
+            }
+            out["source_ordinal"] = sources.at(65535);
+            const auto input = bytesof(a->at("payload"));
+            out["source_storage"] = rawbytes(input);
+            Json envelope;
+            const auto bytes = decompress(input, envelope);
+            out["envelope"] = std::move(envelope);
+            ProxyReader parser{Reader(bytes), limits.proxies, entries};
+            out.update(parser.associations());
+            entries = parser.entries;
+            out["status"] = "decoded";
+        } catch (const std::exception &e) {
+            out["reason"] = e.what();
+        }
+        return out;
+    }
+
     std::size_t model(std::size_t depth, Json parent) {
         require(depth < limits.proxies.max_depth, "edge_cache_model_depth_limit");
         require(models.size() < limits.max_models, "edge_cache_model_count_limit");
@@ -326,6 +448,18 @@ struct EdgeCacheReader {
 };
 } // namespace
 
+Json decode_native_edge_cache_associations(const Json &attributes, ModelEdgeCacheLimits limits) {
+    try {
+        EdgeCacheReader parser{attributes, limits};
+        const auto lookup = parser.select_sources();
+        auto out = parser.associations();
+        out["attribute_lookup"] = lookup;
+        return out;
+    } catch (const std::exception &e) {
+        return {{"status", "not_evaluated"}, {"reason", e.what()}};
+    }
+}
+
 Json decode_native_proxy_registry(const Bytes &bytes, ProxyCacheLimits limits) {
     Json out = {{"status", "not_evaluated"},
                 {"scope", "decompressed_native_proxy_registry"},
@@ -347,24 +481,17 @@ Json decode_native_proxy_registry(const Bytes &bytes, ProxyCacheLimits limits) {
 }
 
 Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits limits) {
-    Json out = {
-        {"status", "not_evaluated"},
-        {"scope", "native_model_edge_cache"},
-        {"semantics_status", "partial"},
-        {"runtime_attachment_status", "not_evaluated"},
-        {"remaining_semantics",
-         {"cache_header_fields", "model_source_fields", "model_metadata_remaining_fields",
-          "proxy_display_parameters", "runtime_targets_and_final_display", "index_65535_payload"}}};
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "native_model_edge_cache"},
+                {"semantics_status", "partial"},
+                {"runtime_attachment_status", "not_evaluated"},
+                {"remaining_semantics",
+                 {"cache_header_fields", "model_source_fields", "model_metadata_remaining_fields",
+                  "proxy_display_parameters", "runtime_targets_and_final_display",
+                  "association_runtime_rules"}}};
     try {
-        require(attributes.is_array(), "edge_cache_attributes_must_be_array");
-        const auto lookup = native_attribute_lookup(attributes);
-        require(lookup.at("status") == "resolved", "edge_cache_attribute_lookup_failed");
         EdgeCacheReader parser{attributes, limits};
-        for (const auto &key : lookup.at("keys"))
-            if (key.at("group") == 21 && key.at("key") == 22762)
-                parser.sources.emplace(key.at("index").get<std::uint32_t>(),
-                                       key.at("selected_source_ordinal").get<std::size_t>());
-        out["attribute_lookup"] = lookup;
+        out["attribute_lookup"] = parser.select_sources();
         const auto *header_source = parser.attribute(0);
         if (!header_source) {
             out.update({{"status", "absent"}, {"reason", "cache_header_attribute_not_found"}});
@@ -428,6 +555,10 @@ Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits
         out["display_parameter_lookup"] = std::move(display);
         out["next_model_attribute_index"] = parser.next_index;
         out["total_decoded_model_bytes"] = parser.decoded_bytes;
+        // The association cache is independently optional. A bad association
+        // payload must not discard a successfully decoded model tree.
+        out["association_cache"] = parser.associations();
+        out["total_decoded_cache_bytes"] = parser.decoded_bytes;
         out["unconsumed_cache_source_ordinals"] = Json::array();
         for (std::size_t i = 0; i < attributes.size(); ++i)
             if (attributes[i].at("group") == 21 && attributes[i].at("key") == 22762 &&

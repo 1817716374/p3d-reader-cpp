@@ -165,8 +165,10 @@ unsigned model_edge_cache_tests() {
                   .at("decoded")
                   .at("points")[0] == Json({10., 20., 30.}),
           "outer attribute connects to proxy geometry");
-    check(decoded.at("unconsumed_cache_source_ordinals") == Json({0, 7}),
-          "special payload and unused source preserved by occurrence");
+    check(decoded.at("unconsumed_cache_source_ordinals") == Json({7}) &&
+              decoded.at("association_cache").at("status") == "not_evaluated" &&
+              bytesof(decoded.at("association_cache").at("source_storage")) == Bytes({1, 2}),
+          "bad optional associations retain their source without discarding models");
     check(decoded.at("display_parameter_lookup").at("status") == "source_available",
           "80-byte separate display parameters accepted");
     check(models[0].at("envelope").at("source_flags") == 0x1234 &&
@@ -404,5 +406,170 @@ unsigned model_edge_cache_tests() {
         check(cached_reference_parameters(Bytes(parameters.begin(), parameters.begin() + n))
                       .at("status") == "not_evaluated",
               "truncated packed reference field block rejected");
+    // The association attribute is independent of the model attribute tree.
+    Bytes directory;
+    put(directory, 3, 4);
+    for (const auto &path : std::vector<std::vector<std::uint64_t>>{{}, {11, UINT64_MAX}, {11}}) {
+        put(directory, path.size(), 2);
+        for (const auto id : path)
+            put(directory, id, 8);
+        append(directory, Bytes(32));
+    }
+    Bytes groups;
+    put(groups, 3, 4);
+    const auto group = [&](std::uint32_t reference, const std::vector<std::uint64_t> &states,
+                           const std::vector<std::uint32_t> &links) {
+        put(groups, reference, 4);
+        put(groups, states.size(), 2);
+        for (const auto bits : states) {
+            put(groups, UINT64_MAX, 8);
+            put(groups, bits, 8);
+        }
+        put(groups, links.size(), 4);
+        for (const auto link : links)
+            put(groups, link, 4);
+    };
+    group(1, {0x3ff0000000000000ULL, 0x7ff8000000001234ULL}, {1, 1, 0, UINT32_MAX});
+    group(0, {0x7ff0000000000000ULL}, {2});
+    group(99, {0x8000000000000000ULL}, {});
+    Bytes association_bytes(32);
+    append(association_bytes, block(directory));
+    const auto association_section = association_bytes.size();
+    append(association_bytes, block(groups));
+    const auto associations = [&](const Bytes &b, unsigned codec = 1,
+                                  ModelEdgeCacheLimits bound = {}) {
+        return decode_native_edge_cache_associations(
+            Json::array({attribute(65535, envelope(b, codec))}), bound);
+    };
+    const auto assoc = associations(association_bytes);
+    check(assoc.at("status") == "decoded" && assoc.at("semantics_status") == "partial" &&
+              assoc.at("runtime_attachment_status") == "not_evaluated",
+          "standalone associations decoded without an invented runtime attachment");
+    const auto &refs = assoc.at("reference_directory");
+    check(refs[0].at("reference_link_path").empty() &&
+              refs[1].at("reference_link_path") == Json({std::uint64_t(11), UINT64_MAX}) &&
+              refs[2].at("reference_link_path") == Json({11}),
+          "root and descendant paths retain order and model-local IDs");
+    check(refs[0].at("reference_state_hash").at("source_offset") == 42 &&
+              assoc.at("reference_directory_end_offset") == association_section,
+          "directory offsets address the decompressed payload");
+    const auto &records = assoc.at("associations");
+    check(records.size() == 3 && records[0].at("entities").size() == 2 &&
+              records[0].at("entities")[0].at("entity_id") == UINT64_MAX &&
+              records[0].at("entities")[1].at("entity_id") == UINT64_MAX,
+          "duplicate full-width entity IDs are not merged");
+    check(records[0].at("entities")[0].at("source_state_value") == 1. &&
+              records[0].at("entities")[1].at("source_state_value").is_null() &&
+              records[1].at("entities")[0].at("source_state_value").is_null(),
+          "nonfinite state values use null with original bytes preserved");
+    const auto state_offset =
+        records[0].at("entities")[1].at("source_offset").get<std::size_t>() + 8;
+    check(bytesof(records[0].at("entities")[1].at("source_state_storage")) ==
+                  slice(association_bytes, state_offset, 8) &&
+              std::signbit(records[2].at("entities")[0].at("source_state_value").get<double>()),
+          "NaN payload and negative zero remain lossless");
+    check(records[0].at("links").size() == 4 &&
+              records[0].at("links")[0].at("association_index") == 1 &&
+              records[0].at("links")[1].at("association_index") == 1 &&
+              records[0].at("links")[2].at("self_reference") == true &&
+              records[0].at("links")[3].at("source_entry_present") == false &&
+              records[1].at("links")[0].at("source_entry_present") == true &&
+              records[2].at("reference_directory_entry_present") == false,
+          "forward, repeated, self and missing links stay source associations");
+    for (unsigned codec : {1u, 2u, 3u}) {
+        const auto value = associations(association_bytes, codec);
+        check(value.at("status") == "decoded" && value.at("associations") == records &&
+                  value.at("reference_directory") == refs,
+              "all native codecs produce identical association content");
+    }
+    for (std::size_t n = 0; n < association_bytes.size(); ++n)
+        check(associations(Bytes(association_bytes.begin(), association_bytes.begin() + n))
+                      .at("status") == "not_evaluated",
+              "every truncated association payload rejected");
+    auto padded_groups = groups;
+    append(padded_groups, Bytes{4, 5});
+    Bytes padded(32);
+    append(padded, block(directory));
+    append(padded, block(padded_groups));
+    append(padded, Bytes{6, 7, 8});
+    const auto padding = associations(padded);
+    check(padding.at("status") == "decoded" && padding.at("associations") == records &&
+              padding.at("consumed_bytes") == association_bytes.size() &&
+              bytesof(padding.at("ignored_section_storage")) == Bytes({4, 5}) &&
+              bytesof(padding.at("trailing_storage")) == Bytes({6, 7, 8}),
+          "unread association section and outside tail have separate native extents");
+    auto padded_directory = directory;
+    padded_directory.push_back(0);
+    Bytes invalid_directory(32);
+    append(invalid_directory, block(padded_directory));
+    append(invalid_directory, block(groups));
+    check(associations(invalid_directory).at("reason") ==
+              "edge_cache_reference_directory_length_mismatch",
+          "reference directory requires exact count and length agreement");
+    for (const auto offset : {std::size_t(32), association_section}) {
+        auto huge = association_bytes;
+        set(huge, offset, UINT32_MAX);
+        check(associations(huge).at("status") == "not_evaluated",
+              "oversized section cannot escape decoded payload");
+        set(huge, offset, std::uint32_t(4));
+        check(associations(huge).at("status") == "not_evaluated",
+              "count cannot consume bytes from the next section");
+    }
+    limits = {};
+    limits.proxies.max_entries = 17;
+    check(associations(association_bytes, 1, limits).at("reason") == "proxy_cache_entry_limit",
+          "one shared budget covers directory, path, entities and links");
+    limits.proxies.max_entries = 18;
+    check(associations(association_bytes, 1, limits).at("status") == "decoded",
+          "exact entry budget accepted");
+    limits.proxies.max_depth = 1;
+    check(associations(association_bytes, 1, limits).at("reason") ==
+              "edge_cache_reference_path_depth_limit",
+          "reference path depth is bounded");
+    limits = {};
+    limits.max_total_model_bytes = association_bytes.size() - 1;
+    check(associations(association_bytes, 3, limits).at("reason") ==
+              "edge_cache_decompressed_byte_limit",
+          "association decompression obeys total byte limit");
+    auto combined = single(leaf);
+    combined.push_back(attribute(65535, envelope(association_bytes, 3)));
+    const auto full = decode_native_model_edge_cache(combined);
+    check(full.at("status") == "decoded" &&
+              full.at("association_cache").at("associations") == records &&
+              full.at("total_decoded_model_bytes") == leaf.size() &&
+              full.at("total_decoded_cache_bytes") == leaf.size() + association_bytes.size() &&
+              full.at("unconsumed_cache_source_ordinals").empty(),
+          "model and association stages share sources and distinguish byte totals");
+    limits = {};
+    limits.max_total_model_bytes = leaf.size() + association_bytes.size() - 1;
+    const auto limited = decode_native_model_edge_cache(combined, limits);
+    check(limited.at("status") == "decoded" && limited.at("models").size() == 1 &&
+              limited.at("association_cache").at("reason") == "edge_cache_decompressed_byte_limit",
+          "association byte budget includes previously decoded models without erasing them");
+    limits = {};
+    limits.proxies.max_entries = 20; // The model already consumed 3 string entries.
+    check(decode_native_model_edge_cache(combined, limits).at("association_cache").at("reason") ==
+              "proxy_cache_entry_limit",
+          "association entry budget includes previously decoded model entries");
+    check(decode_native_edge_cache_associations(Json::array()).at("status") == "absent" &&
+              decode_native_edge_cache_associations(Json::object()).at("status") == "not_evaluated",
+          "absent attribute and invalid collection are distinct");
+    for (unsigned count : {5u, 19u, 20u, 21u, 30u, 65u}) {
+        Json attrs = Json::array();
+        attrs.push_back(attribute(65535, envelope(association_bytes)));
+        for (unsigned i = 0; i < count; ++i)
+            attrs.push_back(
+                {{"group", i % 25}, {"key", i}, {"index", 0}, {"payload", rawbytes({})}});
+        attrs.push_back(attribute(65535, envelope(padded)));
+        const auto selected = decode_native_edge_cache_associations(attrs);
+        std::size_t ordinal = 0;
+        const auto lookup = native_attribute_lookup(attrs);
+        for (const auto &key : lookup.at("keys"))
+            if (key.at("group") == 21 && key.at("key") == 22762)
+                ordinal = key.at("selected_source_ordinal").get<std::size_t>();
+        check(selected.at("status") == "decoded" && selected.at("source_ordinal") == ordinal &&
+                  selected.at("source_storage") == attrs[ordinal].at("payload"),
+              "association selection uses the complete collection across native sort thresholds");
+    }
     return checks;
 }
