@@ -35,6 +35,36 @@ Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits
 // This preserves associations without inventing runtime targets or validity.
 Json decode_native_edge_cache_associations(const Json &attributes, ModelEdgeCacheLimits = {});
 
+struct EdgeCacheEntityStateContext {
+    std::optional<bool> entity_found;
+    std::optional<std::uint32_t> runtime_flags;
+    std::optional<double> last_modified_milliseconds;
+};
+// Tests the entity-existence/flags/modification-time gate, before the native
+// display callback. Saved time is exactly eight bytes of IEEE-754 binary64.
+// Flags are from the resolved runtime entity, not a persisted record header.
+Json compare_native_edge_cache_entity_state(const Bytes &saved_modification_time,
+                                            const EdgeCacheEntityStateContext &);
+
+struct EdgeCacheAssociationTarget {
+    // Whether the actual reference/model lookup and ALL entity state/display
+    // checks created this source association. Unknown is not false.
+    std::optional<bool> created;
+    // Caller tokens identifying actual resolved objects. Equal objects require
+    // equal tokens; unrelated objects require distinct tokens. File IDs alone
+    // are not suitable. Tokens are never dereferenced or persisted as pointers.
+    std::optional<std::uint64_t> reference_identity;
+    std::vector<std::uint64_t> entity_identities;
+    bool entity_identities_complete = false;
+};
+// Applies native link-set cardinality and group equivalence to the decoded
+// association result and actual targets in matching source order. Returns
+// selected/retained SOURCE ordinals; does not invent native pointer ordering,
+// regenerate hashes, resolve targets, merge geometry or evaluate display.
+Json select_native_edge_cache_associations(const Json &decoded,
+                                           const std::vector<EdgeCacheAssociationTarget> &targets,
+                                           ProxyCacheLimits = {});
+
 // A native cache hash occupies exactly 32 bytes. Exported mode 0 uses MD5;
 // nonzero modes select SHA-1. The source marker does not prove hash success.
 Json decode_native_cache_hash(const Bytes &);

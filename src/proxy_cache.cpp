@@ -91,7 +91,12 @@ struct ProxyReader {
                     {{"source_offset", offset},
                      {"entity_id", entity_id},
                      {"source_state_value", std::isfinite(number) ? Json(number) : Json(nullptr)},
-                     {"source_state_storage", rawbytes(state)}});
+                     {"source_state_storage", rawbytes(state)},
+                     {"modification_time",
+                      {{"milliseconds", std::isfinite(number) ? Json(number) : Json(nullptr)},
+                       {"epoch", "1970-01-01T00:00:00"},
+                       {"time_basis", "local"},
+                       {"source_offset", offset + 8}}}});
             }
             const auto links = word(association_end);
             for (std::uint32_t j = 0; j < links; ++j) {
@@ -389,13 +394,12 @@ struct EdgeCacheReader {
     }
 
     Json associations() {
-        Json out = {{"status", "not_evaluated"},
-                    {"scope", "native_edge_cache_associations"},
-                    {"semantics_status", "partial"},
-                    {"runtime_attachment_status", "not_evaluated"},
-                    {"remaining_semantics",
-                     {"entity_state_value_meaning", "runtime_targets_and_validity",
-                      "runtime_association_set_selection"}}};
+        Json out = {
+            {"status", "not_evaluated"},
+            {"scope", "native_edge_cache_associations"},
+            {"semantics_status", "partial"},
+            {"runtime_attachment_status", "not_evaluated"},
+            {"remaining_semantics", {"runtime_targets_and_validity", "native_display_callbacks"}}};
         try {
             const auto *a = attribute(65535);
             if (!a) {

@@ -462,6 +462,13 @@ unsigned model_edge_cache_tests() {
               records[0].at("entities")[1].at("source_state_value").is_null() &&
               records[1].at("entities")[0].at("source_state_value").is_null(),
           "nonfinite state values use null with original bytes preserved");
+    const auto &modification = records[0].at("entities")[0].at("modification_time");
+    check(
+        modification.at("milliseconds") == 1. && modification.at("time_basis") == "local" &&
+            modification.at("epoch") == "1970-01-01T00:00:00" &&
+            modification.at("source_offset") ==
+                records[0].at("entities")[0].at("source_offset").get<std::size_t>() + 8,
+        "SDK-identified modification time retains units, local basis and original source position");
     const auto state_offset =
         records[0].at("entities")[1].at("source_offset").get<std::size_t>() + 8;
     check(bytesof(records[0].at("entities")[1].at("source_state_storage")) ==
