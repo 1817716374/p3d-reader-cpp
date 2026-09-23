@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include <lz4/lz4.h>
 #include <p3d/proxy_cache.hpp>
 
 namespace p3d {
@@ -143,6 +144,172 @@ struct ProxyReader {
         out["end_offset"] = reader.p;
         return out;
     }
+
+    Json source_string(std::size_t end) {
+        const auto start = reader.p;
+        const auto units = word(end);
+        require(units <= 2048, "edge_cache_string_length_limit");
+        const auto bytes = take(std::size_t(units) * 2, end);
+        std::size_t n = 0;
+        while (n + 1 < bytes.size() && (bytes[n] || bytes[n + 1]))
+            n += 2;
+        // Native construction scans for NUL independently of the length. Do
+        // not reproduce its unbounded read for malformed string fields.
+        require(bytes.empty() || n + 1 < bytes.size(), "unterminated_edge_cache_string");
+        return {{"source_offset", start},
+                {"storage", rawbytes(bytes)},
+                {"text", utf16(slice(bytes, 0, n))}};
+    }
+
+    Json model(std::size_t depth) {
+        const auto end = block_end(reader.b.size());
+        const auto header_end = block_end(end);
+        const auto version = word(end);
+        require(version == 51, "unsupported_edge_cache_model_version");
+        Json out = {{"declared_end_offset", end},
+                    {"declared_header_end_offset", header_end},
+                    {"version", version},
+                    {"source_word", word(end)},
+                    {"source_link_id", id(end)}};
+        out["source_block_96"] = rawbytes(take(96, end));
+        out["source_strings"] = Json::array({source_string(end), source_string(end)});
+        out["reference_parameters_storage"] = rawbytes(take(328, end));
+        out["source_block_32"] = rawbytes(take(32, end));
+        out["child_model_count"] = word(end);
+        const auto optional_size = word(end);
+        out["optional_object_storage"] = rawbytes(take(optional_size, end));
+
+        // The native reader validates the header/table extents, but keeps the
+        // consumed cursor: neither extent implies a seek past unread bytes.
+        const auto table_end = block_end(end);
+        const auto count = word(table_end);
+        require(count <= limits.max_entries - entries, "proxy_cache_entry_limit");
+        out["string_table"] = {{"declared_end_offset", table_end}, {"entries", Json::array()}};
+        auto &table = out["string_table"];
+        std::map<std::uint32_t, std::size_t> selected_strings;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            count_entry();
+            const auto key = word(table_end);
+            table["entries"].push_back({{"key", key}, {"value", source_string(table_end)}});
+            selected_strings[key] = i;
+        }
+        table["selected_entries"] = Json::array();
+        for (const auto &[key, index] : selected_strings)
+            table["selected_entries"].push_back({{"key", key}, {"source_entry_index", index}});
+        table["end_offset"] = reader.p;
+        using Key = std::pair<std::int32_t, std::uint32_t>;
+        const auto less = [](const Key &a, const Key &b) {
+            return a.first != b.first ? a.first < b.first : a.first != 0 && a.second < b.second;
+        };
+        std::map<Key, std::pair<std::size_t, std::size_t>, decltype(less)> selected(less);
+        out["sections"] = Json::array();
+        while (reader.p < end) {
+            count_entry();
+            const auto start = reader.p;
+            const auto section_end = block_end(end);
+            need(4, section_end);
+            const auto first = reader.i32();
+            const auto second = word(section_end);
+            auto value = registry(section_end, depth);
+            const auto index = out["sections"].size();
+            auto [it, inserted] =
+                selected.emplace(Key{first, second}, std::make_pair(index, index));
+            it->second.second = index;
+            out["sections"].push_back({{"source_offset", start},
+                                       {"declared_end_offset", section_end},
+                                       {"first_key", first},
+                                       {"second_key", second},
+                                       {"registry", std::move(value)},
+                                       {"end_offset", reader.p}});
+        }
+        out["selected_sections"] = Json::array();
+        for (const auto &[key, indices] : selected)
+            out["selected_sections"].push_back({{"first_key", key.first},
+                                                {"second_key", key.second},
+                                                {"key_source_section_index", indices.first},
+                                                {"value_source_section_index", indices.second}});
+        out["consumed_bytes"] = reader.p;
+        out["trailing_storage"] = rawbytes(reader.take(reader.left()));
+        return out;
+    }
+};
+
+struct EdgeCacheReader {
+    const Json &attributes;
+    ModelEdgeCacheLimits limits;
+    std::map<std::uint32_t, std::size_t> sources;
+    std::set<std::size_t> used;
+    std::size_t entries = 0, decoded_bytes = 0;
+    std::uint32_t next_index = 1;
+    Json models = Json::array();
+
+    EdgeCacheReader(const Json &input, ModelEdgeCacheLimits bounds)
+        : attributes(input), limits(bounds) {}
+
+    const Json *attribute(std::uint32_t index) {
+        const auto it = sources.find(index);
+        if (it == sources.end())
+            return nullptr;
+        used.insert(it->second);
+        return &attributes.at(it->second);
+    }
+
+    Bytes decompress(const Bytes &input, Json &metadata) {
+        Reader r(input);
+        const auto codec = r.u16(), flags = r.u16();
+        const auto size = r.u32();
+        require(size <= limits.max_model_bytes &&
+                    size <= limits.max_total_model_bytes - decoded_bytes,
+                "edge_cache_decompressed_byte_limit");
+        metadata = {{"codec_id", codec}, {"source_flags", flags}, {"decoded_bytes", size}};
+        Bytes bytes;
+        if (codec == 1 || codec == 2) {
+            bytes = r.take(size);
+            metadata["codec"] = "stored";
+            metadata["ignored_suffix"] = rawbytes(r.take(r.left()));
+        } else {
+            require(codec == 3, "unsupported_edge_cache_codec");
+            require(size <= INT32_MAX && r.left() <= INT32_MAX, "edge_cache_codec_size_limit");
+            bytes.resize(size);
+            const auto got =
+                LZ4_decompress_safe(reinterpret_cast<const char *>(input.data() + r.p),
+                                    reinterpret_cast<char *>(bytes.data()),
+                                    static_cast<int>(r.left()), static_cast<int>(size));
+            require(got >= 0 && static_cast<std::uint32_t>(got) == size,
+                    "edge_cache_lz4_size_or_framing_mismatch");
+            metadata["codec"] = "lz4";
+        }
+        decoded_bytes += size;
+        return bytes;
+    }
+
+    std::size_t model(std::size_t depth, Json parent) {
+        require(depth < limits.proxies.max_depth, "edge_cache_model_depth_limit");
+        require(models.size() < limits.max_models, "edge_cache_model_count_limit");
+        const auto source_index = next_index++;
+        const auto *a = attribute(source_index);
+        require(a != nullptr, "missing_edge_cache_model_attribute_" + std::to_string(source_index));
+        Json envelope;
+        const auto bytes = decompress(bytesof(a->at("payload")), envelope);
+        ProxyReader reader{Reader(bytes), limits.proxies, entries};
+        auto value = reader.model(depth);
+        entries = reader.entries;
+        const auto children = value.at("child_model_count").get<std::uint32_t>();
+        require(children <= limits.max_models - models.size() - 1, "edge_cache_model_count_limit");
+        const auto index = models.size();
+        value.update({{"attribute_index", source_index},
+                      {"source_ordinal", sources.at(source_index)},
+                      {"envelope", std::move(envelope)},
+                      {"parent_model_index", std::move(parent)},
+                      {"children", Json::array()},
+                      {"runtime_target_status", "not_evaluated"}});
+        models.push_back(std::move(value));
+        for (std::uint32_t i = 0; i < children; ++i) {
+            const auto child = model(depth + 1, index);
+            models[index]["children"].push_back(child);
+        }
+        return index;
+    }
 };
 } // namespace
 
@@ -160,6 +327,97 @@ Json decode_native_proxy_registry(const Bytes &bytes, ProxyCacheLimits limits) {
                     {"registry", std::move(registry)},
                     {"consumed_bytes", parser.reader.p},
                     {"trailing_storage", rawbytes(parser.reader.take(parser.reader.left()))}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits limits) {
+    Json out = {
+        {"status", "not_evaluated"},
+        {"scope", "native_model_edge_cache"},
+        {"semantics_status", "partial"},
+        {"runtime_attachment_status", "not_evaluated"},
+        {"remaining_semantics",
+         {"cache_header_fields", "model_source_fields", "optional_model_object",
+          "proxy_display_parameters", "runtime_targets_and_final_display", "index_65535_payload"}}};
+    try {
+        require(attributes.is_array(), "edge_cache_attributes_must_be_array");
+        const auto lookup = native_attribute_lookup(attributes);
+        require(lookup.at("status") == "resolved", "edge_cache_attribute_lookup_failed");
+        EdgeCacheReader parser{attributes, limits};
+        for (const auto &key : lookup.at("keys"))
+            if (key.at("group") == 21 && key.at("key") == 22762)
+                parser.sources.emplace(key.at("index").get<std::uint32_t>(),
+                                       key.at("selected_source_ordinal").get<std::size_t>());
+        out["attribute_lookup"] = lookup;
+        const auto *header_source = parser.attribute(0);
+        if (!header_source) {
+            out.update({{"status", "absent"}, {"reason", "cache_header_attribute_not_found"}});
+            return out;
+        }
+        const auto bytes = bytesof(header_source->at("payload"));
+        ProxyReader reader{Reader(bytes), limits.proxies};
+        const auto version = reader.word(bytes.size()), source_word = reader.word(bytes.size());
+        Json header = {{"source_ordinal", parser.sources.at(0)},
+                       {"version", version},
+                       {"source_word", source_word}};
+        if (version < 15) {
+            out.update({{"status", "ignored"},
+                        {"reason", "cache_version_below_15"},
+                        {"header", std::move(header)}});
+            return out;
+        }
+        header["source_block_32"] = rawbytes(reader.take(32, bytes.size()));
+        header["source_uint64_at_40"] = reader.id(bytes.size());
+        header["source_uint64_at_48"] = reader.id(bytes.size());
+        header["display_parameters_storage"] = rawbytes(reader.take(80, bytes.size()));
+        header["source_word_at_136"] = reader.word(bytes.size());
+        header["source_uint64_at_140"] = reader.id(bytes.size());
+        header["source_bits_at_148"] = reader.id(bytes.size());
+        header["native_version_mismatch"] = version != 51;
+        header["native_secondary_mismatch"] = version == 51 && source_word != 1;
+        if (version == 51) {
+            header["skipped_sections"] = Json::array();
+            for (unsigned i = 0; i < 4; ++i) {
+                const auto end = reader.block_end(bytes.size());
+                header["skipped_sections"].push_back(
+                    rawbytes(reader.take(end - reader.reader.p, end)));
+            }
+        }
+        header["consumed_bytes"] = reader.reader.p;
+        header["trailing_storage"] = rawbytes(reader.reader.take(reader.reader.left()));
+        out["header"] = std::move(header);
+        if (version == 51) {
+            parser.model(0, nullptr);
+            out["models"] = std::move(parser.models);
+            out["root_model_index"] = 0;
+            out["model_read_status"] = "decoded";
+        } else {
+            out["models"] = Json::array();
+            out["root_model_index"] = nullptr;
+            out["model_read_status"] = "skipped_version_mismatch";
+        }
+        // This is a separate native display-parameter lookup, not a substitute
+        // for the 80 bytes stored in index 0. Missing/wrong length uses the host.
+        Json display = {{"status", "host_fallback_required"}};
+        if (const auto *a = parser.attribute(65534)) {
+            const auto data = bytesof(a->at("payload"));
+            display["source_ordinal"] = parser.sources.at(65534);
+            display["storage"] = rawbytes(data);
+            if (data.size() == 80)
+                display["status"] = "source_available";
+        }
+        out["display_parameter_lookup"] = std::move(display);
+        out["next_model_attribute_index"] = parser.next_index;
+        out["total_decoded_model_bytes"] = parser.decoded_bytes;
+        out["unconsumed_cache_source_ordinals"] = Json::array();
+        for (std::size_t i = 0; i < attributes.size(); ++i)
+            if (attributes[i].at("group") == 21 && attributes[i].at("key") == 22762 &&
+                parser.used.count(i) == 0)
+                out["unconsumed_cache_source_ordinals"].push_back(i);
+        out["status"] = "decoded";
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }

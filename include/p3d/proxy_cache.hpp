@@ -12,4 +12,19 @@ struct ProxyCacheLimits {
 // Decoded command streams use the same schema as parse_commands(). Some
 // component fields and display flags retain explicitly unnamed source values.
 Json decode_native_proxy_registry(const Bytes &, ProxyCacheLimits = {});
+
+struct ModelEdgeCacheLimits {
+    ProxyCacheLimits proxies;
+    std::size_t max_models = 10000;
+    std::size_t max_model_bytes = 64u * 1024 * 1024;
+    std::size_t max_total_model_bytes = 256u * 1024 * 1024;
+};
+// Input is the complete, actually attached attribute collection, using the
+// group/key/index/payload schema of graphics_records(). The native duplicate
+// lookup depends on the entire collection; do not prefilter it.
+// Reads index 0 and the version-51 model tree in preorder starting at index 1.
+// Models retain source link IDs, not resolved runtime model identities.
+// A decoded result is structural: runtime attachment and some fields remain
+// explicitly unevaluated. Truncated/unsafe source extents are rejected.
+Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits = {});
 } // namespace p3d
