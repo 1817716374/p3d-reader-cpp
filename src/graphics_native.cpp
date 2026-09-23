@@ -392,6 +392,88 @@ struct GeometryConstruction {
         return out;
     }
 };
+void copy_curve_vector_input(const Json &source, bool nullable = false) {
+    if (source.at("geometry_pointer") == "null") {
+        require(nullable, "native_curve_vector_copy_requires_non_null_source");
+        return;
+    }
+    // Only members actually stored by the geometry constructor are cloned.
+    // Nested vectors stay wrapped as one curve and are recursively copied.
+    for (const auto &member : source.at("members")) {
+        const auto action = member.at("action");
+        if (action == "wrap_nested_curve_vector")
+            copy_curve_vector_input(member);
+        else if (action == "append_curve") {
+            const auto type = member.at("geometry_type");
+            require(type == "LineSegment" || type == "EllipticArc" || type == "LineString" ||
+                        type == "PointString",
+                    "native_curve_copy_not_supported");
+        }
+    }
+}
+
+Json parametric_append_input(const Json &input) {
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "single_entry_append_in_parametric_cache_merge"},
+                {"source_container_assumption", "restored_with_original_entry_sequence"},
+                {"destination_assumption", "unfinished_graphics_without_transform"},
+                {"allocation_assumption", "successful"},
+                {"service_return_assumption", "normal"}};
+    if (input.at("entry_restore").at("status") != "retained") {
+        out["reason"] = "source_entry_not_retained";
+        return out;
+    }
+    const auto type = input.at("entry_geometry_type").get<std::int32_t>();
+    if (!((type >= 1 && type <= 7) || type == 10)) {
+        out.update({{"status", "skipped"}, {"output_count", 0}});
+        return out;
+    }
+    if (input.at("status") != "geometry_constructed") {
+        out["reason"] = "source_geometry_not_constructed";
+        return out;
+    }
+    try {
+        const auto &source = input.at("construction");
+        const auto name = source.at("geometry_type");
+        std::string operation;
+        if (name == "DgnCone" || name == "DgnSphere" || name == "DgnTorusPipe" ||
+            name == "DgnBox" || name == "LineSegment" || name == "EllipticArc")
+            operation = "copy_fixed_detail";
+        else if (name == "LineString" || name == "PointString")
+            operation = "copy_point_storage";
+        else if (name == "Polyface")
+            operation = "copy_polyface_channels";
+        else if (name == "CurveVector") {
+            copy_curve_vector_input(source);
+            operation = "copy_nested_curve_vectors";
+        } else if (name == "DgnExtrusion") {
+            // Unlike the initial reader, this copy path dereferences its base.
+            copy_curve_vector_input(source.at("base_curve"));
+            operation = "copy_base_curves_and_extrusion";
+        } else if (name == "DgnRuledSweep") {
+            for (const auto &section : source.at("sections"))
+                copy_curve_vector_input(section);
+            operation = "copy_ordered_sections";
+        } else if (name == "P3DSectionLoft") {
+            copy_curve_vector_input(source.at("section0"), true);
+            copy_curve_vector_input(source.at("section1"), true);
+            for (const auto &group : source.at("guide_groups"))
+                for (const auto &guide : group.at("guides"))
+                    copy_curve_vector_input(guide);
+            operation = "copy_sections_and_nested_guides";
+        } else
+            require(false, "native_geometry_copy_not_supported");
+        out.update({{"status", "appended"},
+                    {"output_count", 1},
+                    {"geometry_operation", operation},
+                    {"source_geometry_reused", false},
+                    {"geometry_validity", "not_checked_by_copy"}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
 Json native_input(const Bytes &entry, bool model_has_project) {
     const std::size_t geometry_start = model_has_project ? 36 : 32;
     Json out = {{"status", "not_evaluated"},
@@ -574,8 +656,10 @@ Json graphics_entry_native_input(const Bytes &entry) {
                 {"status", "not_evaluated"},
                 {"with_project", native_input(entry, true)},
                 {"without_project", native_input(entry, false)}};
-    for (const auto *context : {"with_project", "without_project"})
+    for (const auto *context : {"with_project", "without_project"}) {
         out[context]["entry_restore"] = entry_restore(entry, out.at(context));
+        out[context]["parametric_append_input"] = parametric_append_input(out.at(context));
+    }
     const auto &with = out.at("with_project").at("status");
     const auto &without = out.at("without_project").at("status");
     if (with == without && (with == "rejected" || with == "geometry_not_read"))

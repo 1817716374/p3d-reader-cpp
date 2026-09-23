@@ -699,5 +699,71 @@ unsigned graphics_native_tests() {
                 !p.contains("decode_error") && p.at("geometry_status") == "decoded",
             "public graphics decoder preserves geometry and native signed footer framing");
     }
+    auto append_input = [&](std::int32_t type, const Bytes &shape) {
+        return with_project(packet(type, shape)).at("parametric_append_input");
+    };
+    for (const auto &shape : {line, ellipse, point_curve(4, 0, 0), point_curve(18, 6, 6)}) {
+        result = append_input(1, shape);
+        check(result.at("status") == "appended" && result.at("output_count") == 1 &&
+                  result.at("source_geometry_reused") == false,
+              "native basic-curve clone creates one new Entry even for empty point storage");
+    }
+    for (const auto &shape : {empty_group, nested_group, mixed_group}) {
+        result = append_input(2, shape);
+        check(result.at("status") == "appended" &&
+                  result.at("geometry_operation") == "copy_nested_curve_vectors",
+              "curve-array append recursively copies retained members without flattening");
+        result = append_input(6, extrusion(shape, true));
+        check(result.at("status") == "appended" &&
+                  result.at("geometry_operation") == "copy_base_curves_and_extrusion",
+              "extrusion copy accepts present empty or nested base arrays");
+    }
+    result = with_project(packet(6, extrusion({}, false)));
+    check(result.at("status") == "geometry_constructed" &&
+              result.at("entry_restore").at("status") == "retained" &&
+              result.at("parametric_append_input").at("status") == "not_evaluated" &&
+              result.at("parametric_append_input").at("reason") ==
+                  "native_curve_vector_copy_requires_non_null_source",
+          "reader-retained null extrusion base is not safe for the later native clone");
+    for (unsigned mask = 0; mask < 4; ++mask) {
+        result =
+            append_input(6, loft(mask & 1 ? empty_group : Bytes{}, mask & 2 ? mixed_group : Bytes{},
+                                 {{empty_group, nested_group}, {}, {mixed_group}}));
+        check(result.at("status") == "appended" && result.at("output_count") == 1 &&
+                  result.at("geometry_operation") == "copy_sections_and_nested_guides",
+              "loft copy preserves optional null end sections and copies ordered guide groups");
+    }
+    for (const auto &sections :
+         {std::vector<Bytes>{}, std::vector<Bytes>{empty_group, mixed_group, nested_group}}) {
+        result = append_input(6, collection(12, sections));
+        check(result.at("status") == "appended" && result.at("output_count") == 1,
+              "ruled-sweep clone does not reject an empty section list");
+    }
+    for (unsigned tag = 6; tag <= 9; ++tag) {
+        const unsigned sizes[] = {120, 120, 104, 136};
+        result = append_input(6, scalar_solid(tag, sizes[tag - 6]));
+        check(result.at("status") == "appended" &&
+                  result.at("geometry_operation") == "copy_fixed_detail",
+              "fixed-detail solid clone does not add a geometric validity gate");
+    }
+    result = append_input(3, polyface());
+    check(result.at("status") == "appended" &&
+              result.at("geometry_operation") == "copy_polyface_channels",
+          "empty polyface gets its own copied native object and one Entry");
+    for (const auto type : {0, 8, 9, -1, INT32_MAX}) {
+        result = append_input(type, line);
+        check(result.at("status") == "skipped" && result.at("output_count") == 0,
+              "cache merge skips native unhandled Entry types without reading geometry");
+    }
+    for (const auto type : {1, 2, 3, 4, 5, 6, 7, 10})
+        check(append_input(type, {}).at("status") == "not_evaluated",
+              "retained Entry with no geometry is not a safe typed append or a known skip");
+    check(append_input(6, bgfb(13)).at("status") == "not_evaluated" &&
+              append_input(2, collection(5, {bgfb(3)})).at("status") == "not_evaluated",
+          "rejected source or unconfirmed child construction cannot yield an append count");
+    auto unsafe_tail = packet(6, scalar_solid(6, 120));
+    unsafe_tail.push_back(3);
+    check(with_project(unsafe_tail).at("parametric_append_input").at("status") == "not_evaluated",
+          "successful geometry copy cannot bypass an unconfirmed source Entry footer");
     return checks;
 }
