@@ -41,6 +41,7 @@
 !/tests/reference_graph.cpp
 !/tests/component_material.cpp
 !/tests/graphics_material.cpp
+!/tests/entity_material.cpp
 !/tests/material_lookup.cpp
 !/tests/material_resource_inputs.cpp
 !/tests/graphics_native.cpp
