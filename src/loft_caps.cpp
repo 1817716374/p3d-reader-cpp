@@ -1,4 +1,5 @@
 #include "loft_curve.hpp"
+#include "native_pcurve_points.hpp"
 
 namespace p3d {
 namespace {
@@ -24,10 +25,16 @@ loft_detail::Curve endpoint_curve(const BsplineSurface &surface, bool top, unsig
     const auto row = top ? v.pole_count() - 1 : 0;
     for (std::size_t i = 0; i < u.pole_count(); ++i) {
         const auto index = row * u.pole_count() + i;
-        const auto p = surface.poles()[index];
-        curve.poles.push_back({p[0], p[1], p[2], curve.rational ? surface.weights()[index] : 1});
+        auto p = surface.poles()[index];
+        const double weight = curve.rational ? surface.weights()[index] : 1;
+        // Native isocurve evaluation returns the original W separately from
+        // its curve-point zero-W fallback, then multiplies the point by W.
+        if (curve.rational && weight == 0)
+            for (auto &x : p)
+                x *= weight;
+        curve.poles.push_back({p[0], p[1], p[2], weight});
     }
-    curve.check(limit);
+    curve.check(limit, false);
     return curve;
 }
 bool closed(Point3 a, Point3 b) {
@@ -74,7 +81,7 @@ LoftCapRegions SectionLoft::cap_regions(unsigned max_control_points) const {
         }
         std::array<Json, 2> caps{region(4), region(4)};
         Json links = Json::array();
-        std::size_t total = 0;
+        std::size_t total = 0, zero_controls = 0, endpoint_fallbacks = 0;
         for (std::size_t loop = 0; loop < groups.size(); ++loop) {
             const auto &indices = groups[loop];
             for (unsigned end = 0; end < 2; ++end) {
@@ -85,10 +92,23 @@ LoftCapRegions SectionLoft::cap_regions(unsigned max_control_points) const {
                     require(curve.poles.size() <= max_control_points - total,
                             "loft cap total control budget");
                     total += curve.poles.size();
+                    for (const auto &h : curve.poles)
+                        zero_controls += curve.rational && h[3] == 0;
                     curves.push_back(std::move(curve));
                 }
-                if (!closed(loft_detail::cartesian(curves.front().poles.front()),
-                            loft_detail::cartesian(curves.back().poles.back()))) {
+                Point3 first{}, last{};
+                for (std::size_t i = 0; i < curves.size(); ++i) {
+                    const auto boundary = BsplineCurve::from_bgfb(curves[i].table());
+                    const auto a = detail::pcurve_point(boundary, 0);
+                    const auto b = detail::pcurve_point(boundary, 1);
+                    if (i == 0)
+                        first = a.point;
+                    last = b.point;
+                    endpoint_fallbacks += a.zero_weight_fallback + b.zero_weight_fallback;
+                }
+                out.report["zero_weight_control_count"] = zero_controls;
+                out.report["endpoint_zero_weight_fallbacks"] = endpoint_fallbacks;
+                if (!closed(first, last)) {
                     out.report["status"] = "native_failure";
                     out.report["reason"] = "loft cap boundary endpoints do not coincide";
                     out.report["failed_loop"] = loop;

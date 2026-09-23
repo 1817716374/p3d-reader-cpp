@@ -456,5 +456,87 @@ unsigned loft_caps_tests() {
     check(future.get().bottom == caps.bottom && loft.source() == input &&
               loft.cap_regions().report == caps.report,
           "cap reconstruction is immutable and concurrent");
+    // Alternating guide representations and section signs make native Coons
+    // weights [1,1,0,1,1]. No source control has zero W; the derived zero is
+    // an interior homogeneous control, not a singularity of the surface.
+    auto zero_input = source();
+    for (unsigned side = 0; side < 4; ++side) {
+        const double left_sign = side % 2 ? -1 : 1;
+        for (const auto name : {"section0", "section1"}) {
+            auto &c = zero_input[name]["curves"][side]["geometry"];
+            const Point3 a{c["poles"][0], c["poles"][1], c["poles"][2]},
+                b{c["poles"][3], c["poles"][4], c["poles"][5]};
+            Json poles = Json::array(), weights = Json::array();
+            for (unsigned i = 0; i < 5; ++i) {
+                const double w = i < 3 ? left_sign : -left_sign;
+                weights.push_back(w);
+                for (unsigned axis = 0; axis < 3; ++axis)
+                    poles.push_back((a[axis] + (b[axis] - a[axis]) * (i / 4.)) * w);
+            }
+            c["order"] = 5;
+            c["poles"] = poles;
+            c["weights"] = weights;
+        }
+        auto &guide = zero_input["guide_groups"][0][side]["curves"][0]["geometry"];
+        for (auto &x : guide["poles"])
+            x = x.get<double>() * left_sign;
+        guide["weights"] = {left_sign, left_sign};
+    }
+    const auto zero_loft = SectionLoft::from_bgfb(zero_input);
+    const auto zero_caps = verify(zero_loft);
+    check(zero_caps.report["zero_weight_control_count"] == 8 &&
+              zero_caps.report["endpoint_zero_weight_fallbacks"] == 0,
+          "interior zero-weight cap controls are retained without inventing endpoint fallbacks");
+    for (const auto &cap : {zero_caps.bottom, zero_caps.top})
+        for (const auto &entry : cap["curves"]) {
+            const auto &c = entry["geometry"];
+            check(c["weights"] == Json{1, 1, 0, 1, 1} && c["poles"][6] == 0 && c["poles"][7] == 0 &&
+                      c["poles"][8] == 0,
+                  "native isocurve retains original zero W and its reweighted zero XYZ");
+        }
+    LoftMeshOptions mesh_options;
+    mesh_options.max_uv_edge = .3;
+    const auto zero_mesh = zero_loft.mesh(mesh_options);
+    check(zero_mesh.report["status"] == "complete" &&
+              zero_mesh.report["indexed_edge_topology"]["closed_oriented_edges"] == true &&
+              zero_loft.face_indices().indices.size() == 6,
+          "regular zero-control-weight side and cap geometry form one closed indexed mesh");
+    double signed_volume = 0;
+    for (const auto &f : zero_mesh.faces) {
+        const auto a = zero_mesh.vertices[f[0]], b = zero_mesh.vertices[f[1]],
+                   c = zero_mesh.vertices[f[2]];
+        signed_volume += a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) +
+                         a[2] * (b[0] * c[1] - b[1] * c[0]);
+    }
+    check(std::abs(signed_volume / 6 - 12) < 1e-10,
+          "zero-control-weight caps preserve independently known rectangular prism volume");
+    // Native point evaluation substitutes one only for division; the
+    // isocurve's saved evaluated weight remains zero. Closure can therefore
+    // succeed for an entirely singular region without making it meshable.
+    auto underflow_input = source();
+    std::function<void(Json &)> tiny_weights = [&](Json &j) {
+        if (j.is_object() && j.value("_type", std::string()) == "BsplineCurve") {
+            j["weights"] = std::vector<double>(j["poles"].size() / 3, 1e-200);
+            for (auto &x : j["poles"])
+                x = x.get<double>() * 1e-200;
+        } else if (j.is_structured())
+            for (auto &child : j)
+                if (child.is_structured())
+                    tiny_weights(child);
+    };
+    tiny_weights(underflow_input);
+    const auto singular_loft = SectionLoft::from_bgfb(underflow_input);
+    const auto singular_caps = singular_loft.cap_regions();
+    check(singular_caps.report["status"] == "complete" &&
+              singular_caps.report["zero_weight_control_count"] == 16 &&
+              singular_caps.report["endpoint_zero_weight_fallbacks"] == 16,
+          "native endpoint fallback preserves zero isocurve weights and reports all endpoint uses");
+    const auto singular_mesh = singular_loft.mesh(mesh_options);
+    check(singular_mesh.report["status"] == "incomplete" && singular_mesh.faces.empty() &&
+              singular_mesh.vertices.empty() && singular_mesh.parts.empty(),
+          "native closed-region status does not turn an all-zero rational surface into valid "
+          "geometry");
+    check(zero_loft.source() == zero_input && singular_loft.source() == underflow_input,
+          "zero-weight cap handling never modifies the source representations");
     return checks;
 }

@@ -50,7 +50,7 @@ std::vector<H> polynomial(const Curve &c, double t) {
     return d[p];
 }
 } // namespace
-void Curve::check(unsigned limit) const {
+void Curve::check(unsigned limit, bool require_cartesian) const {
     require(degree >= 1 && degree <= 25 && poles.size() >= degree + 1 && poles.size() <= limit,
             "loft curve degree/control budget");
     require(knots.size() == poles.size() + degree + 1 && std::is_sorted(knots.begin(), knots.end()),
@@ -64,7 +64,11 @@ void Curve::check(unsigned limit) const {
     for (std::size_t i = 1; i + 1 < g.size(); ++i)
         require(g[i].count <= degree, "discontinuous loft curve is not supported");
     for (auto h : poles)
-        cartesian(h);
+        if (require_cartesian)
+            cartesian(h);
+        else
+            for (double value : h)
+                require(std::isfinite(value), "nonfinite homogeneous loft control");
 }
 Curve Curve::from_bspline(const BsplineCurve &b, unsigned limit) {
     if (b.closed())

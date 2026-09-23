@@ -9,7 +9,8 @@ struct Curve {
     std::vector<double> knots;
     std::vector<H> poles;
     static Curve from_bspline(const BsplineCurve &, unsigned limit);
-    void check(unsigned limit) const;
+    // Isocurve storage can retain zero W; Coons working curves must deweight.
+    void check(unsigned limit, bool require_cartesian = true) const;
     void insert(double t, unsigned multiplicity, unsigned limit);
     void elevate(unsigned degree, unsigned limit);
     double polygon_length() const;
