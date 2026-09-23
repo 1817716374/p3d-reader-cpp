@@ -6,13 +6,113 @@ struct GeometryBytes {
     const Bytes &entry;
     std::size_t start;
     std::size_t size;
+    void range(std::size_t offset, std::size_t count) const {
+        require(offset <= size && count <= size - offset, "bgfb_geometry_field_unavailable");
+    }
     template <class T> T at(std::size_t offset) const {
-        require(offset <= size && sizeof(T) <= size - offset, "bgfb_geometry_field_unavailable");
+        range(offset, sizeof(T));
         T value;
         std::memcpy(&value, entry.data() + start + offset, sizeof(T));
         return value;
     }
+    std::size_t indirect(std::size_t offset) const {
+        const auto relative = at<std::uint32_t>(offset);
+        require(relative >= 4, "bgfb_geometry_relative_pointer_unavailable");
+        range(offset, relative);
+        const auto target = offset + relative;
+        range(target, 4);
+        return target;
+    }
+    std::optional<std::size_t> field(std::size_t table, unsigned index, std::size_t width) const {
+        const auto vt64 = static_cast<std::int64_t>(table) - at<std::int32_t>(table);
+        require(vt64 >= 0 && std::uint64_t(vt64) <= size, "bgfb_geometry_vtable_unavailable");
+        const auto vt = static_cast<std::size_t>(vt64);
+        const auto bytes = at<std::uint16_t>(vt), object_size = at<std::uint16_t>(vt + 2);
+        require(bytes >= 4 && bytes % 2 == 0 && object_size >= 4,
+                "bgfb_geometry_table_extent_unavailable");
+        range(vt, bytes);
+        range(table, object_size);
+        const auto slot = 4u + 2u * index;
+        const auto offset = slot < bytes ? at<std::uint16_t>(vt + slot) : 0;
+        if (!offset)
+            return std::nullopt;
+        require(offset >= 4 && offset <= object_size &&
+                    width <= static_cast<std::size_t>(object_size - offset),
+                "bgfb_geometry_field_extent_unavailable");
+        range(table + offset, width);
+        return table + offset;
+    }
 };
+
+// These readers copy their inputs without geometric validity checks. This is
+// evidence for a non-null geometry object, not for its topology, displayability,
+// material footer or eventual insertion in the owning element's graphics.
+Json construction(const GeometryBytes &b, std::size_t root, unsigned tag) {
+    const auto pointer = b.field(root, 1, 4);
+    require(pointer.has_value(), "bgfb_geometry_union_data_unavailable");
+    const auto table = b.indirect(*pointer);
+    Json out = {{"allocation_assumption", "successful"},
+                {"geometry_validity", "not_checked_by_reader"}};
+    if (tag >= 6 && tag <= 9) {
+        const std::size_t sizes[] = {120, 120, 104, 136};
+        const char *names[] = {"DgnCone", "DgnSphere", "DgnTorusPipe", "DgnBox"};
+        const auto size = sizes[tag - 6];
+        const auto detail = b.field(table, 0, size);
+        require(detail.has_value(), "native_solid_reader_requires_detail_pointer");
+        out.update({{"geometry_type", names[tag - 6]},
+                    {"operation", "copy_fixed_detail"},
+                    {"detail_offset", *detail},
+                    {"detail_bytes", size}});
+        return out;
+    }
+    require(tag == 13, "native_geometry_construction_not_supported");
+    auto scalar = [&](unsigned index) {
+        const auto p = b.field(table, index, 4);
+        return p ? b.at<std::int32_t>(*p) : 0;
+    };
+    const auto num_per_face = scalar(10), num_per_row = scalar(11), mesh_style = scalar(12);
+    const auto sided = b.field(table, 13, 1);
+    out.update({{"geometry_type", "Polyface"},
+                {"operation", "copy_native_channels"},
+                {"num_per_face", num_per_face},
+                {"num_per_row", num_per_row},
+                {"mesh_style", mesh_style},
+                {"source_two_sided", sided ? b.at<std::uint8_t>(*sided) != 0 : false},
+                // Layout initialization follows the source flag assignment.
+                {"two_sided", true},
+                {"index_block_size", std::max(std::uint32_t(1), std::uint32_t(num_per_face))},
+                {"channels", Json::object()},
+                {"unread_fields",
+                 {"faceIndex", "faceData", "auxData", "expectedClosure", "taggedNumericData",
+                  "edgeMateIndex"}}});
+    const char *names[] = {"point",      "param",      "normal",      "doubleColor", "intColor",
+                           "pointIndex", "paramIndex", "normalIndex", "colorIndex",  "colorTable"};
+    const unsigned components[] = {3, 2, 3, 3, 1, 1, 1, 1, 1, 1};
+    for (unsigned i = 0; i < 10; ++i) {
+        const auto p = b.field(table, i, 4);
+        Json channel = {{"source_present", p.has_value()},
+                        {"active", p.has_value() || i == 0 || (i == 5 && mesh_style == 1)},
+                        {"components", components[i]},
+                        {"source_scalar_count", 0},
+                        {"element_count", 0},
+                        {"ignored_tail_scalars", 0}};
+        if (p) {
+            const auto vector = b.indirect(*p);
+            const auto count = b.at<std::uint32_t>(vector);
+            const auto elements = count / components[i];
+            const auto copied = std::uint64_t(elements) * components[i] * (i < 4 ? 8 : 4);
+            require(copied <= b.size, "bgfb_native_channel_extent_unavailable");
+            b.range(vector + 4, static_cast<std::size_t>(copied));
+            channel.update({{"source_scalar_count", count},
+                            {"element_count", elements},
+                            {"ignored_tail_scalars", count % components[i]},
+                            {"data_offset", vector + 4},
+                            {"copied_bytes", copied}});
+        }
+        out["channels"][names[i]] = std::move(channel);
+    }
+    return out;
+}
 Json native_input(const Bytes &entry, bool model_has_project) {
     const std::size_t geometry_start = model_has_project ? 36 : 32;
     Json out = {{"status", "not_evaluated"},
@@ -107,8 +207,15 @@ Json native_input(const Bytes &entry, bool model_has_project) {
             break;
         }
         out["root_dispatch"] = selected ? "selected" : "rejected";
-        if (!selected)
+        if (!selected) {
             reject("bgfb_type_not_accepted_by_entry_reader");
+            return out;
+        }
+        if ((type == 6 && tag >= 6 && tag <= 9) || type == 3) {
+            out["construction"] = construction(b, root, tag);
+            out["status"] = "geometry_constructed";
+            out["geometry_pointer"] = "non_null";
+        }
         // Selection is not construction: child validity, native geometry creation,
         // color/model context and the material footer still need their own checks.
     } catch (const std::exception &e) {
