@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "proxy_cache_fields.hpp"
 #include <lz4/lz4.h>
 #include <p3d/proxy_cache.hpp>
 
@@ -173,11 +174,19 @@ struct ProxyReader {
                     {"source_link_id", id(end)}};
         out["source_block_96"] = rawbytes(take(96, end));
         out["source_strings"] = Json::array({source_string(end), source_string(end)});
-        out["reference_parameters_storage"] = rawbytes(take(328, end));
+        const auto reference_start = reader.p;
+        const auto reference_bytes = take(328, end);
+        out["reference_parameters_storage"] = rawbytes(reference_bytes);
+        out["reference_parameters"] = cached_reference_parameters(reference_bytes);
+        out["reference_parameters"]["model_source_offset"] = reference_start;
         out["source_block_32"] = rawbytes(take(32, end));
         out["child_model_count"] = word(end);
         const auto optional_size = word(end);
-        out["optional_object_storage"] = rawbytes(take(optional_size, end));
+        const auto metadata_start = reader.p;
+        const auto metadata_bytes = take(optional_size, end);
+        out["optional_object_storage"] = rawbytes(metadata_bytes);
+        out["model_metadata"] = cached_model_metadata(metadata_bytes);
+        out["model_metadata"]["model_source_offset"] = metadata_start;
 
         // The native reader validates the header/table extents, but keeps the
         // consumed cursor: neither extent implies a seek past unread bytes.
@@ -340,7 +349,7 @@ Json decode_native_model_edge_cache(const Json &attributes, ModelEdgeCacheLimits
         {"semantics_status", "partial"},
         {"runtime_attachment_status", "not_evaluated"},
         {"remaining_semantics",
-         {"cache_header_fields", "model_source_fields", "optional_model_object",
+         {"cache_header_fields", "model_source_fields", "model_metadata_remaining_fields",
           "proxy_display_parameters", "runtime_targets_and_final_display", "index_65535_payload"}}};
     try {
         require(attributes.is_array(), "edge_cache_attributes_must_be_array");

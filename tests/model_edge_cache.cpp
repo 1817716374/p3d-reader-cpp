@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "proxy_cache_fields.hpp"
 #include <lz4/lz4.h>
 #include <p3d/proxy_cache.hpp>
 
@@ -58,7 +59,8 @@ unsigned model_edge_cache_tests() {
     auto attribute = [](unsigned index, const Bytes &b) {
         return Json{{"group", 21}, {"key", 22762}, {"index", index}, {"payload", rawbytes(b)}};
     };
-    auto model = [&](unsigned children, bool with_sections = false) {
+    auto model = [&](unsigned children, bool with_sections = false, const Bytes &metadata = Bytes{},
+                     const Bytes &parameters = Bytes(328, 9)) {
         Bytes h;
         put(h, 51, 4);
         put(h, 0x87654321, 4);
@@ -66,9 +68,10 @@ unsigned model_edge_cache_tests() {
         h.resize(h.size() + 96, 7);
         append(h, string(Bytes{'A', 0, 0, 0}));
         append(h, string({}));
-        h.resize(h.size() + 328 + 32, 9);
+        append(h, parameters);
+        h.resize(h.size() + 32, 9);
         put(h, children, 4);
-        append(h, block({}));
+        append(h, block(metadata));
         auto b = block(h);
         Bytes table;
         put(table, 3, 4);
@@ -254,5 +257,142 @@ unsigned model_edge_cache_tests() {
     check(decode_native_model_edge_cache(display).at("display_parameter_lookup").at("status") ==
               "host_fallback_required",
           "wrong-length display field needs actual host fallback");
+    Bytes metadata(496, 0), parameters(328, 0);
+    auto set = [](Bytes &data, std::size_t offset, auto value) {
+        require(offset + sizeof(value) <= data.size(), "cache test fixture extent");
+        std::memcpy(data.data() + offset, &value, sizeof(value));
+    };
+    set(metadata, 0, std::uint16_t(47));
+    set(metadata, 4, std::uint32_t(248));
+    set(metadata, 8, std::uint32_t(248));
+    set(metadata, 12, std::uint32_t(32));
+    set(metadata, 32, std::uint16_t(8));
+    set(metadata, 64, std::uint32_t(17));
+    set(metadata, 68, std::uint32_t(0xc00)); // Drawing compatibility + current-model-last.
+    set(metadata, 72, std::uint32_t(17));
+    set(metadata, 76, std::uint32_t(9));
+    set(metadata, 80, 1000.);
+    set(metadata, 88, 1.);
+    set(metadata, 96, 100.);
+    set(metadata, 104, 1.);
+    set(metadata, 224, 1.);
+    set(metadata, 232, 1000.);
+    set(metadata, 240, 1.);
+    set(metadata, 400, 1.);
+    set(metadata, 408, 2.);
+    set(metadata, 416, 3.);
+    set(metadata, 488, UINT64_MAX);
+    // One preserved generic linkage, located after the prefix-free model base.
+    put(metadata, 0x1003, 2);
+    put(metadata, 0x1234, 2);
+    put(metadata, 0x12345678, 4);
+    set(metadata, 4, std::uint32_t(252));
+    set(parameters, 0, std::uint32_t(0x12348000));
+    set(parameters, 4, std::uint32_t(0x80400000));
+    for (unsigned i = 0; i < 3; ++i) {
+        set(parameters, 104 + i * 8, double((i + 1) * 10));
+        set(parameters, 128 + i * 8, double(i + 1));
+        set(parameters, 168 + (3 * i + i) * 8, double(i + 3));
+    }
+    set(parameters, 160, 2.);
+    const auto source_metadata = metadata, source_parameters = parameters;
+    const auto extended =
+        decode_native_model_edge_cache(single(model(0, false, metadata, parameters)));
+    check(extended.at("status") == "decoded", "metadata and reference fields decode within cache");
+    const auto &cache_model = extended.at("models")[0];
+    const auto &meta = cache_model.at("model_metadata");
+    check(meta.at("status") == "decoded",
+          "optional object is native type47/subtype32 model header");
+    check(meta.at("semantics_status") == "partial", "remaining header semantics stay explicit");
+    const auto &record = meta.at("record");
+    check(record.at("length") == metadata.size() && record.at("base_length") == 496 &&
+              bytesof(record.at("data")) == Bytes(metadata.begin(), metadata.begin() + 496),
+          "synthetic framing never escapes as source bytes or lengths");
+    check(record.at("links")[0].at("offset") == 496 && record.at("links")[0].at("app") == 0x1234,
+          "linkages retain native offsets and source bytes");
+    const auto &units = record.at("model_unit_state");
+    check(units.at("factors").at("meters_per_data_unit").at("value") == .001 &&
+              units.at("factors").at("material_projection_unit_factor").at("value") == 1.,
+          "cache model units reuse confirmed rational conversion");
+    check(units.at("data_units_per_storage_unit").at("source_offset") == 224 &&
+              units.at("storage_unit").at("source_offsets").at("packed_flags") == 64 &&
+              units.at("factors").at("data_units_per_meter").at("source_offsets") ==
+                  Json({224, 232, 240}) &&
+              !units.at("source_offsets_include_stream_prefix").get<bool>(),
+          "scalar, named and list source offsets all refer to prefix-free metadata");
+    const auto &coordinates = record.at("model_coordinate_state");
+    check(coordinates.at("model_kind").at("value") == 2 &&
+              coordinates.at("reference_origin").at("value") == Json({1., 2., 0.}) &&
+              coordinates.at("reference_origin").at("source_value") == Json({1., 2., 3.}),
+          "cache model kind compatibility and disabled Z match native load");
+    check(coordinates.at("flags_source_offset") == 68 &&
+              record.at("model_view_state").at("flags_source_offset") == 68 &&
+              record.at("model_view_state").at("current_model_last") == true &&
+              record.at("model_layer_group_reference").at("source_offset") == 488 &&
+              record.at("model_layer_group_reference").at("table_id") == UINT64_MAX,
+          "view flag and layer-group reference retain native meaning and full ID width");
+    const auto &reference = cache_model.at("reference_parameters");
+    check(reference.at("status") == "decoded" &&
+              reference.at("target_application_status") == "not_evaluated",
+          "decoded saved parameters do not assert a target was constructed");
+    check(reference.at("origin_inputs").at("primary_flags") == 0x12348000u &&
+              reference.at("origin_inputs").at("secondary_flags") == 0x80400000u,
+          "reference flags are directly restored without ordinary-loader filtering");
+    check(reference.at("affine_inputs").at("reference_point").at("source_offset") == 128 &&
+              reference.at("affine_inputs").at("translation_point").at("source_offset") == 104,
+          "reference points map through verified runtime slots");
+    check(reference.at("transform").at("matrix") ==
+                  Json({{3., 0., 0.}, {0., 4., 0.}, {0., 0., 5.}}) &&
+              reference.at("transform").at("scale") == 2. &&
+              reference.at("transform").at("normalization_applied") == false,
+          "nonunit cached matrix is copied without type13 column normalization");
+    ReferenceAffineContext context;
+    context.force_z_scale = true;
+    context.provider_id = 0;
+    context.origin.model_attached = false;
+    const auto affine = reference_affine_transform(reference, context);
+    check(affine.at("status") == "computed" &&
+              affine.at("matrix") ==
+                  Json({{6., 0., 0., 4.}, {0., 8., 0., 4.}, {0., 0., 10., 0.}, {0., 0., 0., 1.}}),
+          "explicitly selected cached input feeds existing affine query without renormalization");
+    check(metadata == source_metadata && parameters == source_parameters &&
+              bytesof(cache_model.at("optional_object_storage")) == metadata &&
+              bytesof(cache_model.at("reference_parameters_storage")) == parameters,
+          "source and retained bytes remain unchanged");
+    const auto metadata_offset = meta.at("model_source_offset").get<std::size_t>();
+    const auto parameters_offset = reference.at("model_source_offset").get<std::size_t>();
+    const auto model_data = model(0, false, metadata, parameters);
+    check(slice(model_data, metadata_offset, metadata.size()) == metadata &&
+              slice(model_data, parameters_offset, parameters.size()) == parameters,
+          "local semantic offsets can be resolved into decompressed model input");
+    check(cached_model_metadata({}).at("status") == "absent",
+          "empty optional metadata stays absent");
+    for (std::size_t n = 1; n < metadata.size(); ++n)
+        check(cached_model_metadata(Bytes(metadata.begin(), metadata.begin() + n)).at("status") ==
+                  "not_evaluated",
+              "all truncated optional records rejected independently");
+    auto unsupported = metadata;
+    set(unsupported, 12, std::uint32_t(8));
+    const auto partial =
+        decode_native_model_edge_cache(single(model(0, false, unsupported, parameters)));
+    check(partial.at("status") == "decoded" &&
+              partial.at("models")[0].at("model_metadata").at("reason") ==
+                  "unsupported_cached_model_header_type",
+          "unknown optional record does not erase other cache fields or claim complete metadata");
+    set(parameters, 160, 0.);
+    auto zero = cached_reference_parameters(parameters);
+    check(zero.at("transform").at("scale") == 0. &&
+              zero.at("transform").at("zero_scale_default_applied") == false,
+          "zero cache scale is not replaced by one");
+    set(parameters, 168, std::uint64_t(0x7ff8000000001234));
+    auto nonfinite = cached_reference_parameters(parameters);
+    check(nonfinite.at("status") == "decoded" &&
+              nonfinite.at("transform").at("status") == "not_evaluated" &&
+              nonfinite.at("transform").at("matrix")[0][0].at("ieee754_hex") == "7ff8000000001234",
+          "nonfinite cached transform preserves bits without computed affine claims");
+    for (std::size_t n = 0; n < 328; ++n)
+        check(cached_reference_parameters(Bytes(parameters.begin(), parameters.begin() + n))
+                      .at("status") == "not_evaluated",
+              "truncated packed reference field block rejected");
     return checks;
 }
