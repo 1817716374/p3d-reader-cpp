@@ -346,5 +346,69 @@ unsigned component_property_tests() {
     material_extra.insert(material_extra.begin(), 0xff);
     check(unit(frame(MAT, material_extra)).at("status") == "partial",
           "registered material does not ignore unexplained prefix");
+
+    constexpr std::uint64_t MODEL = 0x0956146148825714ULL, ENTITY = 0x1395755506582671ULL;
+    constexpr std::uint64_t COLOR = 0x4767484556636631ULL;
+    const std::pair<std::uint64_t, std::int64_t> model_cases[] = {
+        {0, 0},
+        {1, 1},
+        {0xfffffffffffffffeULL, -2},
+        {0x180000000ULL, INT32_MIN},
+        {0xffffffff7fffffffULL, INT32_MAX},
+        {0x10000002aULL, 42}};
+    for (const auto &item : model_cases) {
+        root = unit(frame(MODEL, integer(item.first, I))).at("root");
+        check(root.at("kind") == "model_id" && root.at("model_id") == item.second,
+              "registered model ID uses signed low32");
+    }
+    const auto entity_bytes =
+        frame(ENTITY, stack({integer(UINT64_MAX, I), integer(0x100000007ULL, I)}));
+    root = unit(entity_bytes).at("root");
+    check(root.at("model_id") == 7 && root.at("entity_id").get<std::uint64_t>() == UINT64_MAX,
+          "entity ID stores unsigned64 and model ID signed32");
+    check(root.at("entity_id_source").at("value") == -1 &&
+              root.at("model_id_source").at("value") == 0x100000007LL,
+          "entity ID preserves distinct signed wire values");
+    check(root.at("entity_id_source").at("offset") > root.at("model_id_source").at("offset"),
+          "entity ID read before model ID on stack");
+    check(one(entity_bytes).at("status") == "decoded", "entity identifier in nested property");
+    check(unit(frame(MODEL, integer(1))).at("status") == "invalid",
+          "model identifier rejects unsigned wire type");
+    check(unit(frame(ENTITY, stack({integer(1), integer(2, I)}))).at("status") == "invalid",
+          "entity identifier requires signed wire type despite unsigned runtime storage");
+    check(unit(frame(ENTITY, integer(1, I))).at("status") == "invalid",
+          "entity identifier requires both source members");
+
+    const auto color_bytes = frame(COLOR, stack({real(.5), real(1), real(.25), real(0)}));
+    root = unit(color_bytes).at("root");
+    check(root.at("kind") == "color" && root.at("rgba_uint8") == Json::array({0, 63, 255, 127}),
+          "color ABGR native read order becomes RGBA without rounding");
+    check(root.at("components")[0].at("value") == 0 && root.at("components")[3].at("value") == .5 &&
+              root.at("components")[0].at("offset") < root.at("components")[3].at("offset"),
+          "color normalized sources and positions retain component association");
+    root = unit(frame(COLOR, stack({real(2), real(-1), real(-.5), real(0.5)}))).at("root");
+    check(root.at("rgba_uint8") == Json::array({127, 129, 1, 254}),
+          "native color conversion truncates toward zero then wraps low byte without clamping");
+    check(one(color_bytes).at("status") == "decoded", "color in nested component property");
+    const auto nan = frame(0x7175318778202422ULL, {0x42, 0, 0, 0, 0, 0, 0xf8, 0x7f});
+    const auto inf = frame(0x7175318778202422ULL, {0, 0, 0, 0, 0, 0, 0xf0, 0x7f});
+    for (const auto &bad_channel : {nan, inf, real(1e300), real(-1e300)}) {
+        result = unit(frame(COLOR, stack({real(1), real(0), real(0), bad_channel})));
+        root = result.at("root");
+        check(result.at("status") == "partial" && root.at("rgba_uint8")[0].is_null() &&
+                  root.at("rgba_uint8")[3] == 255,
+              "invalid int32 color conversion cannot fabricate a normal byte");
+        check(root.at("components")[0].contains("bits_hex") &&
+                  root.at("components")[0].at("conversion_status") == "invalid_int32_conversion",
+              "nonfinite color source bits and conversion reason retained");
+    }
+    for (unsigned count = 0; count < 4; ++count) {
+        std::vector<Bytes> parts(count, real(1));
+        check(unit(frame(COLOR, stack(parts))).at("status") == "invalid",
+              "color requires all four components");
+    }
+    check(unit(frame(COLOR, stack({real(1), real(0), integer(0, I), real(0)}))).at("status") ==
+              "invalid",
+          "color components require double wire type");
     return checks;
 }

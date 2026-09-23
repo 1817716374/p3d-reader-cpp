@@ -1,4 +1,5 @@
 #include "component_properties.hpp"
+#include <cmath>
 
 namespace p3d {
 namespace {
@@ -19,6 +20,14 @@ constexpr std::uint64_t data_key_id = 0x1395017306582671ULL;
 constexpr std::uint64_t data_string_map_id = 0x4809735200591395ULL;
 constexpr std::uint64_t data_uint_map_id = 0x1311011548825714ULL;
 constexpr std::uint64_t material_id = 0x2624634702211655ULL;
+constexpr std::uint64_t model_id = 0x0956146148825714ULL;
+constexpr std::uint64_t entity_id = 0x1395755506582671ULL;
+constexpr std::uint64_t color_id = 0x4767484556636631ULL;
+
+std::int64_t signed_low32(std::int64_t value) {
+    const auto low = std::uint32_t(value);
+    return low <= INT32_MAX ? std::int64_t(low) : std::int64_t(low) - 0x100000000LL;
+}
 
 struct StackDecoder {
     const Bytes &source;
@@ -107,6 +116,51 @@ struct StackDecoder {
                 else
                     out["bytes_base64"] = base64(slice(source, start, size));
                 cursor = start;
+            } else if (id == model_id || id == entity_id) {
+                out["kind"] = id == model_id ? "model_id" : "entity_id";
+                if (id == entity_id) {
+                    out["entity_id_source"] = child(int_id);
+                    out["entity_id"] =
+                        std::uint64_t(out.at("entity_id_source").at("value").get<std::int64_t>());
+                }
+                out["model_id_source"] = child(int_id);
+                out["model_id"] =
+                    signed_low32(out.at("model_id_source").at("value").get<std::int64_t>());
+                finish();
+            } else if (id == color_id) {
+                out["kind"] = "color";
+                Json components = Json::array(), channels = Json::array();
+                for (unsigned i = 0; i < 4; ++i)
+                    components.push_back(child(double_id));
+                std::reverse(components.begin(), components.end());
+                bool converted = true;
+                for (auto &component : components) {
+                    // Read the binary double directly: JSON may serialize NaN as null.
+                    Reader value(source, component.at("offset").get<std::size_t>());
+                    const double scaled = value.f64() * 255.0;
+                    const double truncated = std::trunc(scaled);
+                    if (std::isfinite(truncated) && truncated >= -2147483648.0 &&
+                        truncated <= 2147483647.0) {
+                        const auto byte = std::uint8_t(std::int64_t(truncated));
+                        channels.push_back(byte);
+                        component["conversion_status"] = "converted";
+                    } else {
+                        channels.push_back(nullptr);
+                        component["conversion_status"] = "invalid_int32_conversion";
+                        converted = false;
+                    }
+                }
+                out["components"] = std::move(components);
+                out["component_order"] = "rgba";
+                out["rgba_uint8"] = std::move(channels);
+                out["conversion"] = "multiply_255_truncate_int32_low_byte";
+                finish();
+                if (!converted) {
+                    // CVTTSD2SI invalid input depends on the native exception mask.
+                    // Retain the source and do not invent a normal color channel.
+                    out["status"] = "partial";
+                    complete = false;
+                }
             } else if (id == material_id) {
                 out["kind"] = "material";
                 out["fields"] = material(start, cursor, depth + 1);
@@ -241,9 +295,7 @@ struct StackDecoder {
         vector("uv_scale", 2, true);
         for (const auto *name : {"map_mode", "map_unit"}) {
             auto value = member(int_id);
-            const auto low = std::uint32_t(value.at("value").get<std::int64_t>());
-            value["runtime_value_int32"] =
-                low <= INT32_MAX ? std::int64_t(low) : std::int64_t(low) - 0x100000000LL;
+            value["runtime_value_int32"] = signed_low32(value.at("value").get<std::int64_t>());
             fields[name] = std::move(value);
         }
         for (const auto *name : {"map_file", "name"}) {
