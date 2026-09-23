@@ -14,6 +14,7 @@ unsigned native_text_character_tests();
 unsigned material_lookup_tests();
 unsigned material_id_lookup_tests();
 unsigned entity_material_tests();
+unsigned proxy_cache_tests();
 unsigned material_resource_input_tests();
 unsigned bfa_tests();
 unsigned bspline_trim_tests();
@@ -2781,6 +2782,7 @@ int main() {
         checks += material_lookup_tests();
         checks += material_id_lookup_tests();
         checks += entity_material_tests();
+        checks += proxy_cache_tests();
         checks += material_resource_input_tests();
         checks += mesh_normal_tests();
         checks += mesh_tessellation_tests();

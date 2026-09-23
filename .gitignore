@@ -106,3 +106,5 @@
 *.dll
 *.zip
 *.pyc
+
+!/tests/proxy_cache.cpp
