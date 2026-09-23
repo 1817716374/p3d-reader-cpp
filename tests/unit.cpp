@@ -21,6 +21,7 @@ unsigned bspline_periodic_trim_tests();
 unsigned native_pcurve_tests();
 unsigned native_pcurve_loop_tests();
 unsigned native_pcurve_boundary_tests();
+unsigned native_pcurve_initial_tests();
 unsigned loft_caps_tests();
 unsigned loft_mesh_tests();
 unsigned akima_tests();
@@ -2716,6 +2717,7 @@ int main() {
         checks += native_pcurve_tests();
         checks += native_pcurve_loop_tests();
         checks += native_pcurve_boundary_tests();
+        checks += native_pcurve_initial_tests();
         checks += loft_caps_tests();
         checks += loft_mesh_tests();
         checks += akima_tests();

@@ -1,5 +1,5 @@
 #pragma once
-#include "p3d/reader.hpp"
+#include "p3d/pcurve.hpp"
 namespace p3d::detail {
 struct NativePCurvePoint {
     Point3 point;
@@ -7,4 +7,7 @@ struct NativePCurvePoint {
 };
 NativePCurvePoint pcurve_point(const BsplineCurve &, double fraction);
 Point3 pcurve_surface_point(const BsplineSurface &, double u, double v);
+PCurveLoopStrokes sample_initial_pcurve_loops(const BsplineSurface &,
+                                              const std::vector<std::vector<BsplineCurve>> &,
+                                              const PCurveLoopStrokeOptions &);
 } // namespace p3d::detail

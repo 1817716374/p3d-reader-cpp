@@ -64,7 +64,7 @@ BsplineSurface normalized_surface(const BsplineSurface &source) {
 }
 // Native knot compression compares against the representative, preserving
 // the exact active endpoints when their source indices are encountered.
-std::vector<double> high_knots(const BsplineDirection &direction) {
+std::vector<double> high_knots(const BsplineDirection &direction, bool normalize = true) {
     const auto &knots = direction.knots();
     const auto domain = direction.knot_domain();
     const double span = domain[1] - domain[0];
@@ -72,7 +72,7 @@ std::vector<double> high_knots(const BsplineDirection &direction) {
     std::vector<unsigned> counts;
     std::size_t low = 0, high = 0;
     for (std::size_t i = 0; i < knots.size(); ++i) {
-        const double v = (knots[i] - domain[0]) / span;
+        const double v = normalize ? (knots[i] - domain[0]) / span : knots[i];
         require(std::isfinite(v), "native PCurve knot normalization overflow");
         if (!values.empty() &&
             std::abs(values.back() - v) < (std::abs(values.back()) + 1 + std::abs(v)) * 1e-14)
@@ -196,10 +196,11 @@ struct Stroke {
 };
 } // namespace
 
-static PCurveStrokes
-sample_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
-              const PCurveStrokeOptions &options, const std::optional<PCurveSample> &previous,
-              const std::array<std::vector<double>, 2> *split_knots = nullptr) {
+static PCurveStrokes sample_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
+                                   const PCurveStrokeOptions &options,
+                                   const std::optional<PCurveSample> &previous,
+                                   const std::array<std::vector<double>, 2> *split_knots = nullptr,
+                                   bool normalize = true) {
     require(std::isfinite(options.uv_tolerance) && std::isfinite(options.spatial_tolerance),
             "native PCurve tolerances must be finite");
     require(std::isfinite(options.start_fraction) && std::isfinite(options.end_fraction),
@@ -216,21 +217,24 @@ sample_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
                   options.uv_tolerance > 0 ? options.uv_tolerance : .001,
                   options.spatial_tolerance > 0 ? options.spatial_tolerance : 1e-7};
     PCurveStrokes result;
-    result.report = {{"status", "incomplete"},
-                     {"algorithm", "native_append_pcurve_strokes"},
-                     {"parameter_coordinates", "surface_fractions"},
-                     {"curve_order", curve.order()},
-                     {"continuous_error_bound", nullptr},
-                     {"uv_tolerance", stroke.uv_tolerance},
-                     {"spatial_tolerance", stroke.spatial_tolerance}};
+    result.report = {
+        {"status", "incomplete"},
+        {"algorithm", "native_append_pcurve_strokes"},
+        {"parameter_coordinates", normalize ? "surface_fractions" : "initial_cache_uv"},
+        {"curve_order", curve.order()},
+        {"continuous_error_bound", nullptr},
+        {"uv_tolerance", stroke.uv_tolerance},
+        {"spatial_tolerance", stroke.spatial_tolerance}};
     try {
         const Point2 unit_domain{0, 1};
-        if (surface.u().knot_domain() != unit_domain || surface.v().knot_domain() != unit_domain) {
+        if (normalize && (surface.u().knot_domain() != unit_domain ||
+                          surface.v().knot_domain() != unit_domain)) {
             prepared_surface = normalized_surface(surface);
             stroke.surface = &*prepared_surface;
         }
-        result.report["surface_knot_preparation"] =
-            prepared_surface ? "normalized_copy" : "already_normalized";
+        result.report["surface_knot_preparation"] = !normalize         ? "source_knots"
+                                                    : prepared_surface ? "normalized_copy"
+                                                                       : "already_normalized";
         if (previous) {
             finite(previous->parameter);
             finite(previous->position);
@@ -239,7 +243,8 @@ sample_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
         if (curve.order() == 2) {
             std::array<std::vector<double>, 2> local_knots;
             if (!split_knots) {
-                local_knots = {high_knots(stroke.surface->u()), high_knots(stroke.surface->v())};
+                local_knots = {high_knots(stroke.surface->u(), normalize),
+                               high_knots(stroke.surface->v(), normalize)};
                 split_knots = &local_knots;
             }
             const auto &u = (*split_knots)[0], &v = (*split_knots)[1];
@@ -324,22 +329,24 @@ PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineC
                                    const std::optional<PCurveSample> &previous) {
     return sample_pcurve(surface, curve, options, previous);
 }
-PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
+static PCurveLoopStrokes sample_pcurve_loops(const BsplineSurface &surface,
                                              const std::vector<std::vector<BsplineCurve>> &loops,
-                                             const PCurveLoopStrokeOptions &options) {
+                                             const PCurveLoopStrokeOptions &options,
+                                             bool normalize) {
     require(std::isfinite(options.uv_tolerance) && std::isfinite(options.spatial_tolerance),
             "native PCurve loop tolerances must be finite");
     require(options.max_points && options.max_evaluations && options.max_loops &&
                 options.max_curves,
             "native PCurve loop budgets must be positive");
     PCurveLoopStrokes result;
-    result.report = {{"status", "incomplete"},
-                     {"algorithm", "native_restroke_prepared_pcurve_loops"},
-                     {"parameter_coordinates", "surface_fractions"},
-                     {"source_region_conversion", "caller_prepared"},
-                     {"implicit_closure", "not_performed"},
-                     {"continuous_error_bound", nullptr},
-                     {"loops", Json::array()}};
+    result.report = {
+        {"status", "incomplete"},
+        {"algorithm", "native_restroke_prepared_pcurve_loops"},
+        {"parameter_coordinates", normalize ? "surface_fractions" : "initial_cache_uv"},
+        {"source_region_conversion", "caller_prepared"},
+        {"implicit_closure", "not_performed"},
+        {"continuous_error_bound", nullptr},
+        {"loops", Json::array()}};
     unsigned points = 0, evaluations = 0, curves = 0, omitted = 0;
     bool tolerances_met = true;
     std::optional<std::size_t> failed_loop, failed_curve;
@@ -392,13 +399,15 @@ PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
         result.report["spatial_tolerance"] = member_options.spatial_tolerance;
         const Point2 unit{0, 1};
         std::optional<BsplineSurface> prepared;
-        if (surface.u().knot_domain() != unit || surface.v().knot_domain() != unit)
+        if (normalize && (surface.u().knot_domain() != unit || surface.v().knot_domain() != unit))
             prepared = normalized_surface(surface);
-        result.report["surface_knot_preparation"] =
-            prepared ? "normalized_copy" : "already_normalized";
+        result.report["surface_knot_preparation"] = !normalize ? "source_knots"
+                                                    : prepared ? "normalized_copy"
+                                                               : "already_normalized";
         const auto &evaluation_surface = prepared ? *prepared : surface;
-        const std::array<std::vector<double>, 2> split_knots{high_knots(evaluation_surface.u()),
-                                                             high_knots(evaluation_surface.v())};
+        const std::array<std::vector<double>, 2> split_knots{
+            high_knots(evaluation_surface.u(), normalize),
+            high_knots(evaluation_surface.v(), normalize)};
         result.report["surface_split_knots"] = {{"u", split_knots[0]}, {"v", split_knots[1]}};
         for (std::size_t i = 0; i < loops.size(); ++i) {
             failed_loop = i;
@@ -422,7 +431,7 @@ PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
                 member_options.max_points = options.max_points - points + (previous ? 1u : 0u);
                 member_options.max_evaluations = options.max_evaluations - evaluations;
                 auto member = sample_pcurve(evaluation_surface, curve, member_options, previous,
-                                            &split_knots);
+                                            &split_knots, normalize);
                 evaluations += member.report.at("evaluations").get<unsigned>();
                 omitted += member.report.at("omitted_starts").get<unsigned>();
                 tolerances_met =
@@ -452,5 +461,16 @@ PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
     result.report["sampled_tolerances_met"] =
         result.report["status"] == "complete" && tolerances_met;
     return result;
+}
+PCurveLoopStrokes sample_native_pcurve_loops(const BsplineSurface &surface,
+                                             const std::vector<std::vector<BsplineCurve>> &loops,
+                                             const PCurveLoopStrokeOptions &options) {
+    return sample_pcurve_loops(surface, loops, options, true);
+}
+PCurveLoopStrokes
+detail::sample_initial_pcurve_loops(const BsplineSurface &surface,
+                                    const std::vector<std::vector<BsplineCurve>> &loops,
+                                    const PCurveLoopStrokeOptions &options) {
+    return sample_pcurve_loops(surface, loops, options, false);
 }
 } // namespace p3d

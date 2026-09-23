@@ -118,13 +118,14 @@ BsplineCurve ellipse(const Json &value) {
 struct Boundaries {
     const BsplineSurface &surface;
     const PCurveBoundaryStrokeOptions &options;
+    bool normalize;
     unsigned visits = 0, controls = 0, members = 0, opened_controls = 0;
     std::string active_path;
     Json sources = Json::array(), ignored = Json::array();
     std::map<const Json *, std::optional<BsplineCurve>> cache;
     std::vector<std::vector<BsplineCurve>> loops;
-    Boundaries(const BsplineSurface &s, const PCurveBoundaryStrokeOptions &o)
-        : surface(s), options(o) {}
+    Boundaries(const BsplineSurface &s, const PCurveBoundaryStrokeOptions &o, bool n)
+        : surface(s), options(o), normalize(n) {}
     void visit(unsigned depth) {
         require(depth <= options.max_tree_depth, "native boundary tree depth budget exhausted");
         require(visits < options.max_tree_visits, "native boundary tree visit budget exhausted");
@@ -293,7 +294,7 @@ struct Boundaries {
             const std::array<Point2, 2> domains{surface.u().knot_domain(),
                                                 surface.v().knot_domain()};
             for (unsigned k = 0; k < 2; ++k) {
-                if (domains[k] == Point2{0, 1})
+                if (!normalize || domains[k] == Point2{0, 1})
                     continue;
                 const double scale = 1 / (domains[k][1] - domains[k][0]),
                              shift = -domains[k][0] * scale;
@@ -325,8 +326,9 @@ struct Boundaries {
     }
 };
 } // namespace
-PCurveLoopStrokes sample_native_surface_boundaries(const BsplineSurface &surface,
-                                                   const PCurveBoundaryStrokeOptions &options) {
+static PCurveLoopStrokes sample_boundaries(const BsplineSurface &surface,
+                                           const PCurveBoundaryStrokeOptions &options,
+                                           bool normalize) {
     require(options.max_controls && options.max_tree_visits && options.max_tree_depth &&
                 options.max_integration_intervals,
             "native boundary preparation budgets must be positive");
@@ -335,11 +337,30 @@ PCurveLoopStrokes sample_native_surface_boundaries(const BsplineSurface &surface
                 options.sampling.max_evaluations && options.sampling.max_loops &&
                 options.sampling.max_curves,
             "native boundary sampling options are invalid");
-    Boundaries builder{surface, options};
+    Boundaries builder{surface, options, normalize};
     PCurveLoopStrokes result;
     try {
         builder.collect(surface.boundaries(), "");
-        result = sample_native_pcurve_loops(surface, builder.loops, options.sampling);
+        // The reader skips setTrim for absent boundaries; setTrim itself skips
+        // restroking when its root member array is empty.
+        const auto &root = surface.boundaries();
+        if (!normalize && (root.is_null() || root.at("curves").empty())) {
+            result.report = {{"status", "complete"},
+                             {"sample_count", 0},
+                             {"evaluations", 0},
+                             {"omitted_starts", 0},
+                             {"sampled_tolerances_met", true},
+                             {"continuous_error_bound", nullptr},
+                             {"loops", Json::array()},
+                             {"surface_knot_preparation", "not_needed"},
+                             {"sampling_performed", false}};
+        } else {
+            result =
+                normalize
+                    ? sample_native_pcurve_loops(surface, builder.loops, options.sampling)
+                    : detail::sample_initial_pcurve_loops(surface, builder.loops, options.sampling);
+            result.report["sampling_performed"] = true;
+        }
     } catch (const std::exception &e) {
         result.loops.clear();
         result.report = {{"status", "incomplete"},
@@ -349,9 +370,12 @@ PCurveLoopStrokes sample_native_surface_boundaries(const BsplineSurface &surface
                          {"sampled_tolerances_met", false},
                          {"continuous_error_bound", nullptr}};
     }
-    result.report["algorithm"] = "native_surface_boundary_restroke";
+    result.report["algorithm"] =
+        normalize ? "native_surface_boundary_restroke" : "native_initial_surface_boundary_cache";
     result.report["source_region_conversion"] = "surface_boundary_tree";
-    result.report["parameter_coordinates"] = "surface_fractions";
+    result.report["parameter_coordinates"] = normalize ? "surface_fractions" : "initial_cache_uv";
+    result.report["boundary_coordinate_preparation"] =
+        normalize ? "source_uv_to_fractions" : "source_uv_unchanged";
     result.report["implicit_closure"] = "not_performed";
     result.report["source_knot_domain"] = {surface.u().knot_domain(), surface.v().knot_domain()};
     result.report["outer_boundary_active"] = surface.outer_boundary_active();
@@ -361,5 +385,14 @@ PCurveLoopStrokes sample_native_surface_boundaries(const BsplineSurface &surface
     result.report["converted_controls"] = builder.controls;
     result.report["opened_controls"] = builder.opened_controls;
     return result;
+}
+PCurveLoopStrokes sample_native_surface_boundaries(const BsplineSurface &surface,
+                                                   const PCurveBoundaryStrokeOptions &options) {
+    return sample_boundaries(surface, options, true);
+}
+PCurveLoopStrokes
+sample_native_initial_surface_boundaries(const BsplineSurface &surface,
+                                         const PCurveBoundaryStrokeOptions &options) {
+    return sample_boundaries(surface, options, false);
 }
 } // namespace p3d

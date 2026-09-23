@@ -71,4 +71,12 @@ struct PCurveBoundaryStrokeOptions {
 // or mesh input closure. The original surface and boundary tree are unchanged.
 PCurveLoopStrokes sample_native_surface_boundaries(const BsplineSurface &surface,
                                                    const PCurveBoundaryStrokeOptions &options = {});
+// Reconstructs the initial reader cache before surface/boundary normalization.
+// Keeps source knots and boundary coordinates; the native sampling kernel still
+// clamps linear UV to [0,1] and uses its original surface-point parameter rule.
+// Returned positions describe that intermediate calculation, not a replacement
+// for mathematical source-knot surface evaluation. Does not modify the source.
+PCurveLoopStrokes
+sample_native_initial_surface_boundaries(const BsplineSurface &surface,
+                                         const PCurveBoundaryStrokeOptions &options = {});
 } // namespace p3d
