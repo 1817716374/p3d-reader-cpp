@@ -484,5 +484,71 @@ unsigned component_property_tests() {
           "connection geometry double type is checked");
     check(unit(frame(INFO, stack({real(1), real(2)}))).at("status") == "invalid",
           "viewport port information requires three doubles");
+
+    constexpr std::uint64_t REF = 0x2422220717143938ULL, NM = 0x7352099224222207ULL;
+    root = unit(frame(REF, integer(UINT64_MAX))).at("root");
+    check(root.at("kind") == "persistent_data_reference" && root.at("selector_kind") == "id" &&
+              root.at("id").get<std::uint64_t>() == UINT64_MAX,
+          "persistent data ID keeps unsigned width");
+    check(root.at("value_resolution") == "not_performed" &&
+              root.at("target").at("identifier_field") == "Identifier" &&
+              root.at("target").at("value_field") == "DataUnit",
+          "persistent reference does not fabricate its target value");
+    root = unit(frame(REF, string(std::string("data\0name", 9)))).at("root");
+    check(root.at("selector_kind") == "name" &&
+              root.at("selector").at("text") == std::string("data\0name", 9) &&
+              !root.contains("id"),
+          "persistent name is a complete byte string distinct from numeric ID");
+    root = unit(frame(REF, integer(UINT64_MAX, I))).at("root");
+    check(root.at("id") == 0 && root.at("selector").at("value") == -1 &&
+              root.at("selector_read_status") == "defaulted_wrong_type",
+          "native persistent reader resets wrong signed selector type to ID zero");
+    result = unit(frame(REF, frame(0x12345, {1})));
+    check(result.at("status") == "partial" &&
+              result.at("root").at("selector_kind") == "not_evaluated" &&
+              !result.at("root").contains("id"),
+          "unknown selector cannot claim native fallback");
+    check(unit(frame(REF, {})).at("status") == "invalid", "persistent selector frame required");
+    check(one(frame(REF, string("shared"))).at("status") == "decoded",
+          "persistent references in nested component property");
+
+    const auto old_object = object({{string("old"), property(integer(1))}});
+    const auto new_object = object({{string("new"), property(integer(2))}});
+    const auto named_map =
+        frame(NM, stack({integer(6), string("b"), old_object, frame(S, {0x80}), object({}),
+                         string("b"), new_object, string(std::string("a\0x", 3)), object({}),
+                         string("a"), object({}), string(""), object({})}));
+    root = unit(named_map).at("root");
+    check(root.at("kind") == "string_noumenon_map" && root.at("entries").size() == 6,
+          "named Noumenon map preserves every source entry");
+    check(root.at("native_index").at("selected_entry_indices") == Json::array({5, 4, 3, 2, 1}),
+          "named map byte ordering includes prefix NUL high-bit byte and last duplicate");
+    check(root.at("native_index").at("value_assignment") == "replace_noumenon" &&
+              root.at("entries")[0].at("value").at("entries")[0].at("key").at("text") == "old" &&
+              root.at("entries")[2].at("value").at("entries").size() == 1 &&
+              root.at("entries")[2].at("value").at("entries")[0].at("key").at("text") == "new",
+          "duplicate Noumenon replacement does not merge old property members");
+    check(unit(frame(NM, integer(0)))
+              .at("root")
+              .at("native_index")
+              .at("selected_entry_indices")
+              .empty(),
+          "empty named map has an empty native index");
+    check(unit(frame(NM, stack({integer(1), integer(0), object({})}))).at("status") == "invalid",
+          "named map requires a string key");
+    check(unit(frame(NM, stack({integer(1), string("key"), integer(0)}))).at("status") == "invalid",
+          "named map requires a Noumenon value");
+    const auto unresolved_object = object({{string("unknown"), property(frame(0x12345, {1}))}});
+    root = unit(frame(NM, stack({integer(1), string("key"), unresolved_object}))).at("root");
+    check(root.at("status") == "partial" && !root.contains("native_index"),
+          "incomplete nested map value cannot claim complete native restoration");
+    result = unit(frame(V, stack({integer(2), frame(0x12345, {1}), named_map})));
+    check(result.at("status") == "partial" && result.at("root")
+                                                      .at("entries")[1]
+                                                      .at("native_index")
+                                                      .at("selected_entry_indices")
+                                                      .size() == 5,
+          "earlier incomplete sibling does not invalidate independent named map index");
+    check(one(named_map).at("status") == "decoded", "named Noumenon map in component property");
     return checks;
 }

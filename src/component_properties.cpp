@@ -27,6 +27,8 @@ constexpr std::uint64_t terminal_port_id = 0x6647782002071873ULL;
 constexpr std::uint64_t callout_line_id = 0x2871484802071873ULL;
 constexpr std::uint64_t terminal_info_id = 0x6647782004452207ULL;
 constexpr std::uint64_t interact_point_id = 0x0074782073520992ULL;
+constexpr std::uint64_t persistent_data_id = 0x2422220717143938ULL;
+constexpr std::uint64_t named_noumenon_map_id = 0x7352099224222207ULL;
 
 std::int64_t signed_low32(std::int64_t value) {
     const auto low = std::uint32_t(value);
@@ -36,6 +38,7 @@ std::int64_t signed_low32(std::int64_t value) {
 struct StackDecoder {
     const Bytes &source;
     std::size_t visits = 0;
+    std::size_t incomplete_values = 0;
     bool complete = true;
 
     void budget(unsigned depth) {
@@ -120,6 +123,61 @@ struct StackDecoder {
                 else
                     out["bytes_base64"] = base64(slice(source, start, size));
                 cursor = start;
+            } else if (id == persistent_data_id) {
+                out["kind"] = "persistent_data_reference";
+                const auto before = incomplete_values;
+                out["selector"] = child();
+                const auto &selector = out.at("selector");
+                if (incomplete_values != before || selector.at("status") != "decoded") {
+                    out["selector_kind"] = "not_evaluated";
+                    out["status"] = "partial";
+                    complete = false;
+                } else if (selector.at("type_id") == string_id) {
+                    out["selector_kind"] = "name";
+                } else if (selector.at("type_id") == uint_id) {
+                    out["selector_kind"] = "id";
+                    out["id"] = selector.at("value");
+                } else {
+                    out["selector_kind"] = "id";
+                    out["id"] = std::uint64_t(0);
+                    out["selector_read_status"] = "defaulted_wrong_type";
+                }
+                out["target"] = {{"schema", "PBM_CoreModel"},
+                                 {"class", "DataUnit"},
+                                 {"identifier_field", "Identifier"},
+                                 {"value_field", "DataUnit"}};
+                out["project_selection"] = "not_performed";
+                out["value_resolution"] = "not_performed";
+                finish();
+            } else if (id == named_noumenon_map_id) {
+                out["kind"] = "string_noumenon_map";
+                const auto before = incomplete_values;
+                const auto n = count();
+                out["entries"] = Json::array();
+                out["entry_order"] = "native_read_order";
+                std::map<Bytes, std::size_t> selected;
+                for (std::uint64_t i = 0; i < n; ++i) {
+                    auto key = child(string_id);
+                    auto value = child(noumenon_id);
+                    selected[slice(source, key.at("offset").get<std::size_t>(),
+                                   key.at("bytes").get<std::size_t>())] = std::size_t(i);
+                    out["entries"].push_back(
+                        {{"key", std::move(key)}, {"value", std::move(value)}});
+                }
+                finish();
+                if (incomplete_values != before) {
+                    out["status"] = "partial";
+                    complete = false;
+                }
+                if (out.at("status") == "decoded") {
+                    Json indices = Json::array();
+                    for (const auto &entry : selected)
+                        indices.push_back(entry.second);
+                    out["native_index"] = {{"selected_entry_indices", std::move(indices)},
+                                           {"key_order", "unsigned_byte_lexicographic"},
+                                           {"duplicate_rule", "last_in_native_read_order"},
+                                           {"value_assignment", "replace_noumenon"}};
+                }
             } else if (id == terminal_info_id) {
                 out["kind"] = "terminal_port_info";
                 out["angle"] = child(double_id);
@@ -301,6 +359,8 @@ struct StackDecoder {
             // invalid payload at every level of a malformed recursive property.
             complete = false;
         }
+        if (out.at("status") != "decoded")
+            ++incomplete_values;
         return out;
     }
 
