@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "p3d/pcurve.hpp"
+#include "native_pcurve_points.hpp"
 using namespace p3d;
 namespace {
 Json plane() {
@@ -241,8 +242,157 @@ unsigned native_pcurve_tests() {
           "signed native parameter step stops reversed intervals without inventing refinement");
     auto nonlinear_outside =
         sample_native_pcurve(surface, curve(3, {-.1, 0, 0, .5, .5, 0, 1, 1, 0}), options);
-    check(nonlinear_outside.report["status"] == "incomplete" && nonlinear_outside.samples.empty(),
-          "unsupported out-of-domain nonlinear evaluation does not use linear endpoint clamping");
+    check(nonlinear_outside.report["status"] == "complete" &&
+              nonlinear_outside.samples.front().parameter[0] == -.1 &&
+              nonlinear_outside.samples.front().position[0] == 0 &&
+              nonlinear_outside.report["clamped_surface_evaluations"] > 0,
+          "nonlinear out-of-domain UV stays stored while surface evaluation clamps its parameters");
+    auto extended_options = options;
+    extended_options.start_fraction = -.25;
+    extended_options.end_fraction = 1.25;
+    auto extended = sample_native_pcurve(surface, quadratic, extended_options);
+    check(extended.report["status"] == "complete" &&
+              extended.samples.front().parameter == Point3{0, 0, 0} &&
+              extended.samples.back().parameter == Point3{1, 1, 0},
+          "finite curve fraction intervals can extend beyond native clamped endpoints");
+    const auto zero_curve = curve(3, {0, 0, 0, .5, 0, 0, 1, 1, 0}, false, Json::array({0, 0, 0}));
+    const auto zero_point = detail::pcurve_point(zero_curve, .25);
+    check(zero_point.zero_weight_fallback && zero_point.point == Point3{.25, .0625, 0},
+          "native curve zero evaluated weight returns the homogeneous numerator");
+    const auto zero_samples = sample_native_pcurve(surface, zero_curve, options);
+    check(zero_samples.report["status"] == "complete" &&
+              zero_samples.report["curve_zero_weight_fallbacks"] ==
+                  zero_samples.report["evaluations"] &&
+              zero_samples.report["curve_zero_weight_fallback_fractions"].size() ==
+                  zero_samples.report["curve_zero_weight_fallbacks"].get<unsigned>() &&
+              zero_curve.weights() == std::vector<double>({0, 0, 0}),
+          "zero-weight fallback is reported for every attempted sample without changing source "
+          "weights");
+    const auto isolated_zero =
+        curve(3, {.2, .2, 0, .4, .4, 0, .6, .6, 0}, false, Json::array({1, -1, 1}));
+    check(detail::pcurve_point(isolated_zero, .5).zero_weight_fallback &&
+              !detail::pcurve_point(isolated_zero, .25).zero_weight_fallback,
+          "native curve weight fallback tests the evaluated denominator rather than control signs");
+    auto zero_surface = plane();
+    zero_surface["weights"] = {0, 0, 0, 0};
+    const auto zero_mesh =
+        sample_native_pcurve(BsplineSurface::from_bgfb(zero_surface), line, options);
+    check(zero_mesh.report["status"] == "incomplete" && zero_mesh.samples.empty(),
+          "surface zero-weight failure must not inherit the distinct curve caller fallback");
+    const auto closed_curve = curve(3, {.2, .2, 0, .8, .2, 0, .8, .8, 0, .2, .8, 0}, true);
+    check(detail::pcurve_point(closed_curve, -.25).point ==
+                  detail::pcurve_point(closed_curve, 0).point &&
+              detail::pcurve_point(closed_curve, 1.25).point ==
+                  detail::pcurve_point(closed_curve, 1).point,
+          "native point caller clamps closed curve parameters instead of applying derivative "
+          "wrapping");
+    auto cancellation = plane();
+    cancellation["poles"] = {1e16, 0, 0, -1e16, 0, 0, 1, 0, 0, 1, 0, 0};
+    const auto cancellation_surface = BsplineSurface::from_bgfb(cancellation);
+    check(detail::pcurve_surface_point(cancellation_surface, .5, .5)[0] == .25 &&
+              cancellation_surface.point_at(.5, .5)[0] == .5,
+          "native surface sums U outside and V inside without changing general mathematical "
+          "evaluator");
+    const auto constant_curve = curve(3, {1, 1, 1, 1, 1, 1, 1, 1, 1});
+    const double expected_constant = (.7 * .7 + (.3 * .7 + .7 * .3)) + .3 * .3;
+    check(detail::pcurve_point(constant_curve, .3).point[0] == expected_constant,
+          "native polynomial curve does not renormalize the sum of blending coefficients");
+    Json tiny = {{"_type", "BsplineCurve"}, {"order", 3},
+                 {"closed", false},         {"poles", {0, 0, 0, .5, 0, 0, 1, 1, 0}},
+                 {"weights", nullptr},      {"knots", {0, 0, 0, 1e-310, 1e-310, 1e-310}}};
+    bool native_overflow = false;
+    try {
+        (void)detail::pcurve_point(BsplineCurve::from_bgfb(tiny), .5);
+    } catch (const std::exception &) {
+        native_overflow = true;
+    }
+    check(native_overflow,
+          "native divide-before-multiply overflow is not hidden by ratio-first evaluation");
+    std::vector<double> many_poles;
+    for (unsigned i = 0; i < 27; ++i) {
+        many_poles.push_back(double(i) / 26);
+        many_poles.push_back(0);
+        many_poles.push_back(0);
+    }
+    const auto excessive = sample_native_pcurve(surface, curve(27, many_poles), options);
+    check(excessive.report["status"] == "incomplete" && excessive.samples.empty(),
+          "fixed-size native point callers explicitly reject curve orders above 26");
+    // Independent de Casteljau reference: no knot-span or blending recurrence.
+    using H = std::array<double, 4>;
+    auto casteljau = [](std::vector<H> p, double t) {
+        t = std::clamp(t, 0., 1.);
+        for (std::size_t n = p.size(); n > 1; --n)
+            for (std::size_t i = 0; i + 1 < n; ++i)
+                for (unsigned k = 0; k < 4; ++k)
+                    p[i][k] = (1 - t) * p[i][k] + t * p[i + 1][k];
+        return p.front();
+    };
+    auto matches = [](Point3 p, H h) {
+        for (unsigned k = 0; k < 3; ++k)
+            if (std::abs(p[k] - h[k] / h[3]) > 1e-11)
+                return false;
+        return true;
+    };
+    for (unsigned order : {2u, 3u, 4u, 8u, 26u})
+        for (bool rational : {false, true}) {
+            std::vector<H> controls;
+            std::vector<double> coordinates, weights;
+            for (unsigned i = 0; i < order; ++i) {
+                const double w = rational ? 1 + double(i % 3) / 4 : 1;
+                H h{double(i) / (order - 1) * w, std::sin(double(i)) * w, .2 * i * w, w};
+                controls.push_back(h);
+                coordinates.insert(coordinates.end(), h.begin(), h.begin() + 3);
+                weights.push_back(w);
+            }
+            const auto bezier =
+                curve(order, coordinates, false, rational ? Json(weights) : Json(nullptr));
+            for (double t : {-.2, 0., .1, .3, .5, .9, 1., 1.2})
+                check(matches(detail::pcurve_point(bezier, t).point, casteljau(controls, t)),
+                      "native curve basis agrees with independent clamped homogeneous de Casteljau "
+                      "oracle");
+            auto patch = plane();
+            patch["orderU"] = order;
+            patch["numPolesU"] = order;
+            patch["orderV"] = 4;
+            patch["numPolesV"] = 4;
+            coordinates.clear();
+            weights.clear();
+            std::vector<std::vector<H>> rows;
+            for (unsigned j = 0; j < 4; ++j) {
+                std::vector<H> row;
+                for (unsigned i = 0; i < order; ++i) {
+                    const double w = rational ? 1 + double((i + 2 * j) % 3) / 4 : 1;
+                    H h{(i + .2 * j) / (order - 1) * w, (j + .1 * i) / 3 * w,
+                        (.07 * i * j - .2 * i) * w, w};
+                    row.push_back(h);
+                    coordinates.insert(coordinates.end(), h.begin(), h.begin() + 3);
+                    weights.push_back(w);
+                }
+                rows.push_back(row);
+            }
+            patch["poles"] = coordinates;
+            patch["weights"] = rational ? Json(weights) : Json(nullptr);
+            const auto tensor = BsplineSurface::from_bgfb(patch);
+            for (double u : {-.2, .1, .4, 1.2})
+                for (double v : {-.1, .2, .7, 1.1}) {
+                    std::vector<H> column;
+                    for (const auto &row : rows)
+                        column.push_back(casteljau(row, u));
+                    check(matches(detail::pcurve_surface_point(tensor, u, v), casteljau(column, v)),
+                          "native tensor basis agrees with independent two-direction homogeneous "
+                          "de Casteljau oracle");
+                }
+        }
+    Json discontinuous = {{"_type", "BsplineCurve"},
+                          {"order", 3},
+                          {"closed", false},
+                          {"poles", {0, 0, 0, .1, 0, 0, .2, 0, 0, .7, 0, 0, .8, 0, 0, 1, 0, 0}},
+                          {"weights", nullptr},
+                          {"knots", {0, 0, 0, .5, .5, .5, 1, 1, 1}}};
+    const auto jumped = BsplineCurve::from_bgfb(discontinuous);
+    check(detail::pcurve_point(jumped, .5).point[0] == .7 &&
+              std::abs(detail::pcurve_point(jumped, std::nextafter(.5, 0.)).point[0] - .2) < 1e-14,
+          "native basis chooses the right side of an exact full-multiplicity interior knot");
     bool threw = false;
     try {
         auto invalid = options;

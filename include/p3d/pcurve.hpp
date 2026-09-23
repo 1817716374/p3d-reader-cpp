@@ -10,6 +10,8 @@ struct PCurveStrokeOptions {
     double uv_tolerance = 0.001;
     double spatial_tolerance = 1e-7;
     unsigned minimum_points = 2;
+    // Finite higher-order curve fractions may extend beyond [0,1]; point
+    // evaluation clamps to the knot domain. Order two ignores this interval.
     double start_fraction = 0;
     double end_fraction = 1;
     unsigned max_points = 200000;
@@ -25,6 +27,8 @@ struct PCurveStrokes {
 // Nonunit surface knot domains are normalized in a private evaluation copy.
 // Only newly appended samples are returned; incomplete results contain none.
 // Native stopping tests concern sampled triples, not a continuous error bound.
+// Point kernels support orders up to 26. Curve zero-weight fallback and surface
+// parameter clamping are recorded separately; stored source data is not changed.
 PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineCurve &curve,
                                    const PCurveStrokeOptions &options = {},
                                    const std::optional<PCurveSample> &previous = std::nullopt);

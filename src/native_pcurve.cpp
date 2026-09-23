@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "p3d/pcurve.hpp"
+#include "native_pcurve_points.hpp"
 
 namespace p3d {
 namespace {
@@ -103,12 +104,16 @@ struct Stroke {
     Json intervals = Json::array();
     unsigned evaluations = 0, omitted_starts = 0;
     double uv_tolerance, spatial_tolerance;
+    unsigned curve_zero_weight_fallbacks = 0, clamped_surface_evaluations = 0;
+    Json curve_fallback_fractions = Json::array();
 
     PCurveSample evaluate(Point3 uv) {
         finite(uv);
         require(evaluations < options.max_evaluations, "native PCurve evaluation budget exhausted");
         ++evaluations;
-        return {uv, surface->point_at(uv[0], uv[1])};
+        if (uv[0] < 0 || uv[0] > 1 || uv[1] < 0 || uv[1] > 1)
+            ++clamped_surface_evaluations;
+        return {uv, detail::pcurve_surface_point(*surface, uv[0], uv[1])};
     }
     void append(const PCurveSample &p) {
         require(points.size() < options.max_points, "native PCurve point budget exhausted");
@@ -196,10 +201,8 @@ PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineC
                                    const std::optional<PCurveSample> &previous) {
     require(std::isfinite(options.uv_tolerance) && std::isfinite(options.spatial_tolerance),
             "native PCurve tolerances must be finite");
-    require(std::isfinite(options.start_fraction) && std::isfinite(options.end_fraction) &&
-                options.start_fraction >= 0 && options.start_fraction <= 1 &&
-                options.end_fraction >= 0 && options.end_fraction <= 1,
-            "native PCurve fraction interval must be in [0,1]");
+    require(std::isfinite(options.start_fraction) && std::isfinite(options.end_fraction),
+            "native PCurve fraction interval must be finite");
     require(options.max_points > 0 && options.max_evaluations > 0,
             "native PCurve budgets must be positive");
     std::optional<BsplineSurface> prepared_surface;
@@ -274,7 +277,14 @@ PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineC
             result.report["interval_parameter"] = "curve_fraction";
             const auto count = std::max(2u, options.minimum_points);
             require(count <= options.max_points, "native PCurve minimum points exceed budget");
-            const auto at = [&](double f) { return curve.point_at(f); };
+            const auto at = [&](double f) {
+                const auto p = detail::pcurve_point(curve, f);
+                if (p.zero_weight_fallback) {
+                    ++stroke.curve_zero_weight_fallbacks;
+                    stroke.curve_fallback_fractions.push_back(f);
+                }
+                return p.point;
+            };
             stroke.start(stroke.evaluate(at(options.start_fraction)), stroke.uv_tolerance * 1e-5);
             const double length = (options.end_fraction - options.start_fraction) / (count - 1);
             for (unsigned i = 0; i + 1 < count; ++i)
@@ -291,6 +301,11 @@ PCurveStrokes sample_native_pcurve(const BsplineSurface &surface, const BsplineC
     }
     result.report["evaluations"] = stroke.evaluations;
     result.report["omitted_starts"] = stroke.omitted_starts;
+    result.report["point_evaluation"] = "native_clamped_blending";
+    result.report["curve_zero_weight_fallbacks"] = stroke.curve_zero_weight_fallbacks;
+    result.report["curve_zero_weight_fallback_fractions"] =
+        std::move(stroke.curve_fallback_fractions);
+    result.report["clamped_surface_evaluations"] = stroke.clamped_surface_evaluations;
     result.report["intervals"] = std::move(stroke.intervals);
     result.report["sampled_tolerances_met"] =
         result.report["status"] == "complete" &&
