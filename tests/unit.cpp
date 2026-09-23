@@ -12,6 +12,7 @@ unsigned native_font_selection_tests();
 unsigned native_text_style_tests();
 unsigned native_text_character_tests();
 unsigned material_lookup_tests();
+unsigned material_id_lookup_tests();
 unsigned entity_material_tests();
 unsigned material_resource_input_tests();
 unsigned bfa_tests();
@@ -2778,6 +2779,7 @@ int main() {
         checks += native_text_style_tests();
         checks += native_text_character_tests();
         checks += material_lookup_tests();
+        checks += material_id_lookup_tests();
         checks += entity_material_tests();
         checks += material_resource_input_tests();
         checks += mesh_normal_tests();
