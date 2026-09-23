@@ -4,6 +4,7 @@
 #include <lz4/lz4.h>
 #include <miniz/miniz_tinfl.h>
 #include <p3d/native_metadata.hpp>
+#include <p3d/material_assignment_table.hpp>
 namespace p3d {
 class Dex : public Reader {
   public:
@@ -919,6 +920,8 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         result.update({{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
                        {"xml", s},
                        {"tree", tree}});
+        if (group == 0 && key == 20015)
+            result["material_assignment_table"] = decode_native_material_assignment_table(s);
         if (tree["tag"] == "ExtendedColors") {
             Json colors = Json::array();
             for (auto &c : tree["children"]) {
