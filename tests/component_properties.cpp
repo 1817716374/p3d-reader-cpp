@@ -1,4 +1,5 @@
 #include "component_properties.hpp"
+#include "geometry.hpp"
 #include <p3d/persistent_data.hpp>
 #include <cstring>
 
@@ -735,5 +736,107 @@ unsigned component_property_tests() {
     check(resolve_persistent_data_reference(root, single("value", integer(1))).at("status") ==
               "not_evaluated",
           "incomplete reference cannot claim final lookup");
+    constexpr std::uint64_t V2 = 0x0059485042476852ULL, V3 = 0x0005485042476852ULL;
+    constexpr std::uint64_t TRANS = 0x6239225542517109ULL, FEATURE = 0x1353014302071873ULL;
+    // Independently append native writer order: vectors push x, y, z.
+    auto append = [](Bytes &target, const Bytes &b) {
+        target.insert(target.end(), b.begin(), b.end());
+    };
+    Bytes vector_wire;
+    append(vector_wire, real(1.25));
+    append(vector_wire, real(-2.5));
+    root = unit(frame(V2, vector_wire)).at("root");
+    check(root.at("kind") == "vector2" && root.at("value") == Json::array({1.25, -2.5}) &&
+              root.at("component_order") == "xy",
+          "BPVec2 native writer order yields xy coordinates");
+    check(root.at("components")[0].at("offset") == 0 && root.at("components")[1].at("offset") == 24,
+          "vector source positions follow physical writer order");
+    append(vector_wire, real(6.75));
+    root = unit(frame(V3, vector_wire)).at("root");
+    check(root.at("kind") == "vector3" && root.at("value") == Json::array({1.25, -2.5, 6.75}),
+          "BPVec3 registered value preserves all source coordinates without unitizing");
+    check(one(frame(V3, vector_wire)).at("status") == "decoded",
+          "registered vector inside Property");
+    check(unit(frame(V2, vector_wire)).at("status") == "partial",
+          "vec2 does not consume a third double");
+    check(unit(frame(V3, real(1))).at("status") == "invalid", "truncated vector not zero-filled");
+    check(unit(frame(V2, stack({real(1), integer(2)}))).at("status") == "invalid",
+          "vector requires double components rather than numeric coercion");
+    const Matrix4 expected_matrix = {{{2, 3, 4, 10}, {5, 6, 7, 20}, {8, 9, -2, 30}, {0, 0, 0, 1}}};
+    Bytes matrix_wire;
+    for (int row = 2; row >= 0; --row)
+        for (int column = 3; column >= 0; --column)
+            append(matrix_wire, real(expected_matrix[row][column]));
+    root = unit(frame(TRANS, matrix_wire)).at("root");
+    check(root.at("kind") == "transform" && root.at("matrix") == Json(expected_matrix) &&
+              root.at("value").size() == 3 && root.at("components")[0].size() == 4,
+          "native matrix reverse push restores row-major 3x4 and derived affine last row");
+    check(root.at("matrix_last_row_origin") == "affine_convention" &&
+              root.at("components")[0][0].at("offset") == 264 &&
+              root.at("components")[2][3].at("offset") == 0,
+          "matrix source offsets distinguish stored coefficients from derived fourth row");
+    check(transform(root.at("matrix").get<Matrix4>(), {1, 2, 3}) == Point3{30, 58, 50},
+          "parsed matrix plugs into existing geometry point transform with native translation "
+          "column");
+    check(one(frame(TRANS, matrix_wire)).at("status") == "decoded",
+          "matrix is a general property value");
+    Bytes short_matrix(matrix_wire.begin(), matrix_wire.end() - 24);
+    check(unit(frame(TRANS, short_matrix)).at("status") == "invalid",
+          "all twelve matrix coefficients required");
+    Bytes long_matrix{1};
+    append(long_matrix, matrix_wire);
+    check(unit(frame(TRANS, long_matrix)).at("status") == "partial",
+          "matrix prefix not silently discarded");
+    Bytes nonfinite_matrix = matrix_wire;
+    const auto nan_value = real(std::numeric_limits<double>::quiet_NaN());
+    std::copy(nan_value.begin(), nan_value.end(), nonfinite_matrix.begin());
+    root = unit(frame(TRANS, nonfinite_matrix)).at("root");
+    check(root.at("status") == "decoded" && root.at("matrix_status") == "non_finite" &&
+              !root.contains("matrix") && root.at("components")[2][3].contains("bits_hex"),
+          "nonfinite matrix source bits retained without claiming usable affine matrix");
+    auto feature = [&](std::uint64_t mode, const std::string &x, const std::string &y,
+                       const std::string &z) {
+        Bytes bytes;
+        append(bytes, integer(mode, I));
+        append(bytes, string(x));
+        append(bytes, string(y));
+        append(bytes, string(z));
+        return frame(FEATURE, bytes);
+    };
+    root = unit(feature(1 | 4 | 0x80000000ULL, "width/2", std::string("Y\0tail", 6), "Z + 1"))
+               .at("root");
+    check(root.at("kind") == "parametric_feature_point" &&
+              root.at("formulas").at("x").at("text") == "width/2" &&
+              root.at("formulas").at("y").at("text") == std::string("Y\0tail", 6) &&
+              root.at("formulas").at("z").at("text") == "Z + 1",
+          "feature point stores xyz expression strings preserving NUL and source order");
+    check(root.at("snap_mode") == -2147483643LL && root.at("snap_mode_flags").size() == 2 &&
+              root.at("snap_mode_flags")[0].at("name") == "nearest" &&
+              root.at("snap_mode_flags")[1].at("name") == "midpoint" &&
+              root.at("snap_mode_unknown_bits") == 0x80000000ULL,
+          "snap flags keep unrecognized bits and signed low32 native enum");
+    check(root.at("formula_evaluation") == "not_performed" && !root.contains("value"),
+          "unevaluated feature formulas do not fabricate coordinates");
+    root = unit(feature(0x100000010ULL, "x", "y", "z")).at("root");
+    check(root.at("snap_mode") == 16 && root.at("snap_mode_source").at("value") == 0x100000010ULL,
+          "snap enum retains signed64 source independently of native low32");
+    root = unit(feature(UINT64_MAX, "", "", "")).at("root");
+    check(root.at("snap_mode_state") == "invalid" && root.at("snap_mode_flags").empty(),
+          "invalid snap sentinel is not expanded as all supported flags");
+    check(unit(feature(0, "0", "0", "0")).at("root").at("snap_mode_state") == "none",
+          "zero snap mode means no enabled flags");
+    check(unit(feature(0x00ffffff, "", "", "")).at("root").at("snap_mode_flags").size() == 21,
+          "every SDK defined snap bit is named without inventing meanings for reserved gaps");
+    check(one(feature(16, "x", "y", "z")).at("status") == "decoded",
+          "feature point nested in Property");
+    check(unit(frame(FEATURE, stack({string("z"), string("y"), string("x"), integer(16)})))
+                  .at("status") == "invalid",
+          "snap mode requires native signed integer frame");
+    check(unit(frame(FEATURE, stack({string("z"), real(1), string("x"), integer(16, I)})))
+                  .at("status") == "invalid",
+          "formula strings are not coerced from numeric values");
+    check(unit(frame(FEATURE, stack({string("z"), string("y"), string("x")}))).at("status") ==
+              "invalid",
+          "feature point requires saved snap mode");
     return checks;
 }

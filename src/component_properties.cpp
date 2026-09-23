@@ -29,6 +29,10 @@ constexpr std::uint64_t terminal_info_id = 0x6647782004452207ULL;
 constexpr std::uint64_t interact_point_id = 0x0074782073520992ULL;
 constexpr std::uint64_t persistent_data_id = 0x2422220717143938ULL;
 constexpr std::uint64_t named_noumenon_map_id = 0x7352099224222207ULL;
+constexpr std::uint64_t vec2_id = 0x0059485042476852ULL;
+constexpr std::uint64_t vec3_id = 0x0005485042476852ULL;
+constexpr std::uint64_t transform_id = 0x6239225542517109ULL;
+constexpr std::uint64_t feature_point_id = 0x1353014302071873ULL;
 
 std::int64_t signed_low32(std::int64_t value) {
     const auto low = std::uint32_t(value);
@@ -91,6 +95,17 @@ struct StackDecoder {
                     out["status"] = "partial";
                     complete = false;
                 }
+            };
+            auto coordinates = [&](unsigned dimensions) {
+                Json components = Json::array(), values = Json::array();
+                for (unsigned i = 0; i < dimensions; ++i)
+                    components.push_back(child(double_id));
+                std::reverse(components.begin(), components.end());
+                for (const auto &c : components)
+                    values.push_back(c.at("value"));
+                return Json{{"value", std::move(values)},
+                            {"components", std::move(components)},
+                            {"component_order", dimensions == 2 ? "xy" : "xyz"}};
             };
             if (id == none_id || id == bool_id) {
                 require(size >= 1, "component byte value is truncated");
@@ -178,6 +193,80 @@ struct StackDecoder {
                                            {"duplicate_rule", "last_in_native_read_order"},
                                            {"value_assignment", "replace_noumenon"}};
                 }
+            } else if (id == vec2_id || id == vec3_id) {
+                out.update(coordinates(id == vec2_id ? 2 : 3));
+                out["kind"] = id == vec2_id ? "vector2" : "vector3";
+                finish();
+            } else if (id == transform_id) {
+                out["kind"] = "transform";
+                out["components"] = Json::array();
+                out["value"] = Json::array();
+                out["component_order"] = "row_major_3x4";
+                bool finite = true;
+                for (unsigned row = 0; row < 3; ++row) {
+                    Json components = Json::array(), values = Json::array();
+                    for (unsigned column = 0; column < 4; ++column) {
+                        auto component = child(double_id);
+                        Reader raw_value(source, component.at("offset").get<std::size_t>());
+                        finite &= std::isfinite(raw_value.f64());
+                        values.push_back(component.at("value"));
+                        components.push_back(std::move(component));
+                    }
+                    out["value"].push_back(std::move(values));
+                    out["components"].push_back(std::move(components));
+                }
+                finish();
+                out["matrix_status"] = finite ? "available" : "non_finite";
+                if (finite) {
+                    out["matrix"] = out.at("value");
+                    out["matrix"].push_back(Json::array({0, 0, 0, 1}));
+                    out["matrix_last_row_origin"] = "affine_convention";
+                }
+            } else if (id == feature_point_id) {
+                out["kind"] = "parametric_feature_point";
+                out["formulas"] = Json::object();
+                for (const auto *name : {"z", "y", "x"})
+                    out["formulas"][name] = child(string_id);
+                out["snap_mode_source"] = child(int_id);
+                const auto mode =
+                    signed_low32(out.at("snap_mode_source").at("value").get<std::int64_t>());
+                out["snap_mode"] = mode;
+                out["formula_evaluation"] = "not_performed";
+                out["snap_mode_flags"] = Json::array();
+                out["snap_mode_state"] = mode == -1 ? "invalid" : mode == 0 ? "none" : "flags";
+                if (mode != -1) {
+                    const std::pair<unsigned, const char *> flags[] = {
+                        {0, "nearest"},
+                        {2, "midpoint"},
+                        {3, "center"},
+                        {4, "endpoint"},
+                        {6, "intersection"},
+                        {7, "tangency"},
+                        {8, "tangent_point"},
+                        {9, "perpendicular"},
+                        {10, "perpendicular_point"},
+                        {11, "parallel"},
+                        {12, "multi3"},
+                        {14, "multi1"},
+                        {15, "multi2"},
+                        {16, "geometric_center"},
+                        {17, "quadrant"},
+                        {18, "extension"},
+                        {19, "apparent_intersection"},
+                        {20, "insertion"},
+                        {21, "node"},
+                        {22, "get_base_curve"},
+                        {23, "divide"}};
+                    auto remaining = std::uint32_t(mode);
+                    for (const auto &flag : flags) {
+                        const auto bit = std::uint32_t(1) << flag.first;
+                        if (remaining & bit)
+                            out["snap_mode_flags"].push_back({{"bit", bit}, {"name", flag.second}});
+                        remaining &= ~bit;
+                    }
+                    out["snap_mode_unknown_bits"] = remaining;
+                }
+                finish();
             } else if (id == terminal_info_id) {
                 out["kind"] = "terminal_port_info";
                 out["angle"] = child(double_id);
@@ -189,17 +278,6 @@ struct StackDecoder {
                 out["distance"]["meaning"] = "mouse_to_port_on_viewport_projection_plane";
                 finish();
             } else if (id == terminal_port_id || id == callout_line_id || id == interact_point_id) {
-                auto point = [&]() {
-                    Json components = Json::array(), values = Json::array();
-                    for (unsigned i = 0; i < 3; ++i)
-                        components.push_back(child(double_id));
-                    std::reverse(components.begin(), components.end());
-                    for (const auto &c : components)
-                        values.push_back(c.at("value"));
-                    return Json{{"value", std::move(values)},
-                                {"components", std::move(components)},
-                                {"component_order", "xyz"}};
-                };
                 out["fields"] = Json::object();
                 auto &fields = out["fields"];
                 if (id == interact_point_id) {
@@ -207,11 +285,11 @@ struct StackDecoder {
                     fields["interaction_type"] = child(string_id);
                     for (const auto *name :
                          {"point", "end_b_point", "start_b_point", "end_a_point", "start_a_point"})
-                        fields[name] = point();
+                        fields[name] = coordinates(3);
                 } else {
                     out["kind"] = id == terminal_port_id ? "terminal_port" : "callout_line";
                     for (const auto *name : {"direction", "second", "center"})
-                        fields[name] = point();
+                        fields[name] = coordinates(3);
                 }
                 finish();
                 if (id == interact_point_id && out.at("status") == "decoded") {
