@@ -410,5 +410,79 @@ unsigned component_property_tests() {
     check(unit(frame(COLOR, stack({real(1), real(0), integer(0, I), real(0)}))).at("status") ==
               "invalid",
           "color components require double wire type");
+
+    constexpr std::uint64_t PORT = 0x6647782002071873ULL, CALLOUT = 0x2871484802071873ULL;
+    constexpr std::uint64_t INFO = 0x6647782004452207ULL, INTERACT = 0x0074782073520992ULL;
+    std::vector<Bytes> port_members;
+    for (int i = 9; i > 0; --i)
+        port_members.push_back(real(i));
+    for (auto id : {PORT, CALLOUT}) {
+        root = unit(frame(id, stack(port_members))).at("root");
+        check(root.at("kind") == (id == PORT ? "terminal_port" : "callout_line"),
+              "same point layout retains distinct registered classes");
+        const auto &f = root.at("fields");
+        check(f.at("center").at("value") == Json::array({1., 2., 3.}) &&
+                  f.at("second").at("value") == Json::array({4., 5., 6.}) &&
+                  f.at("direction").at("value") == Json::array({7., 8., 9.}),
+              "port and callout center second direction components");
+        check(f.at("direction").at("components")[0].at("offset") <
+                  f.at("direction").at("components")[2].at("offset"),
+              "port vector source coordinates remain associated");
+        check(one(frame(id, stack(port_members))).at("status") == "decoded",
+              "connection geometry in nested component property");
+        for (std::size_t n = 0; n < port_members.size(); ++n) {
+            auto short_members = port_members;
+            short_members.resize(n);
+            check(unit(frame(id, stack(short_members))).at("status") == "invalid",
+                  "connection geometry requires all nine doubles");
+        }
+    }
+    root = unit(frame(INFO, stack({real(7.5), real(-3), real(2.25)}))).at("root");
+    check(root.at("kind") == "terminal_port_info" && root.at("distance").at("value") == 2.25 &&
+              root.at("depth").at("value") == -3 && root.at("angle").at("value") == 7.5,
+          "viewport port information angle depth distance stack order");
+    check(root.at("angle").at("unit") == "radians",
+          "port angle unit follows native viewport calculation");
+
+    // Fixture assembled in physical writer order, not using the reader-order stack helper.
+    Bytes interaction;
+    for (auto n : {10, 11, 12, 20, 21, 22, 30, 31, 32, 40, 41, 42, 1, 2, 3}) {
+        auto bytes = real(n);
+        interaction.insert(interaction.end(), bytes.begin(), bytes.end());
+    }
+    auto type = string(std::string("line\0line", 9));
+    interaction.insert(interaction.end(), type.begin(), type.end());
+    root = unit(frame(INTERACT, interaction)).at("root");
+    check(root.at("kind") == "interact_point" && root.at("status") == "decoded",
+          "intersection record physical writer fixture");
+    auto points = root.at("fields");
+    check(points.at("point").at("value") == Json::array({1., 2., 3.}) &&
+              points.at("start_a_point").at("value") == Json::array({10., 11., 12.}) &&
+              points.at("end_a_point").at("value") == Json::array({20., 21., 22.}) &&
+              points.at("start_b_point").at("value") == Json::array({30., 31., 32.}) &&
+              points.at("end_b_point").at("value") == Json::array({40., 41., 42.}),
+          "all five saved points preserved independently of native reader overwrite");
+    check(points.at("interaction_type").at("text") == std::string("line\0line", 9),
+          "interaction narrow string does not use material NUL truncation");
+    auto effect = root.at("native_reader_effect");
+    check(effect.at("start_a_point").at("origin") == "constructor" &&
+              effect.at("start_a_point").at("value") == Json::array({0, 0, 0}) &&
+              effect.at("start_b_point").at("source_field") == "start_a_point" &&
+              effect.at("overwritten_source_field") == "start_b_point",
+          "native interaction reader overwrites B start and leaves A start default");
+    auto extra_interaction = interaction;
+    extra_interaction.insert(extra_interaction.begin(), 0xff);
+    root = unit(frame(INTERACT, extra_interaction)).at("root");
+    check(root.at("status") == "partial" && !root.contains("native_reader_effect"),
+          "incomplete interaction payload cannot claim native result");
+    for (std::size_t offset = 24; offset <= 15 * 24; offset += 24) {
+        Bytes missing(interaction.begin() + offset, interaction.end());
+        check(unit(frame(INTERACT, missing)).at("status") == "invalid",
+              "interaction record requires all five complete points");
+    }
+    check(unit(frame(PORT, stack({integer(0, I)}))).at("status") == "invalid",
+          "connection geometry double type is checked");
+    check(unit(frame(INFO, stack({real(1), real(2)}))).at("status") == "invalid",
+          "viewport port information requires three doubles");
     return checks;
 }

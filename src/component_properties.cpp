@@ -23,6 +23,10 @@ constexpr std::uint64_t material_id = 0x2624634702211655ULL;
 constexpr std::uint64_t model_id = 0x0956146148825714ULL;
 constexpr std::uint64_t entity_id = 0x1395755506582671ULL;
 constexpr std::uint64_t color_id = 0x4767484556636631ULL;
+constexpr std::uint64_t terminal_port_id = 0x6647782002071873ULL;
+constexpr std::uint64_t callout_line_id = 0x2871484802071873ULL;
+constexpr std::uint64_t terminal_info_id = 0x6647782004452207ULL;
+constexpr std::uint64_t interact_point_id = 0x0074782073520992ULL;
 
 std::int64_t signed_low32(std::int64_t value) {
     const auto low = std::uint32_t(value);
@@ -116,6 +120,51 @@ struct StackDecoder {
                 else
                     out["bytes_base64"] = base64(slice(source, start, size));
                 cursor = start;
+            } else if (id == terminal_info_id) {
+                out["kind"] = "terminal_port_info";
+                out["angle"] = child(double_id);
+                out["depth"] = child(double_id);
+                out["distance"] = child(double_id);
+                out["angle"]["meaning"] = "port_direction_to_viewport_z_axis";
+                out["angle"]["unit"] = "radians";
+                out["depth"]["meaning"] = "port_z_in_viewport_coordinates";
+                out["distance"]["meaning"] = "mouse_to_port_on_viewport_projection_plane";
+                finish();
+            } else if (id == terminal_port_id || id == callout_line_id || id == interact_point_id) {
+                auto point = [&]() {
+                    Json components = Json::array(), values = Json::array();
+                    for (unsigned i = 0; i < 3; ++i)
+                        components.push_back(child(double_id));
+                    std::reverse(components.begin(), components.end());
+                    for (const auto &c : components)
+                        values.push_back(c.at("value"));
+                    return Json{{"value", std::move(values)},
+                                {"components", std::move(components)},
+                                {"component_order", "xyz"}};
+                };
+                out["fields"] = Json::object();
+                auto &fields = out["fields"];
+                if (id == interact_point_id) {
+                    out["kind"] = "interact_point";
+                    fields["interaction_type"] = child(string_id);
+                    for (const auto *name :
+                         {"point", "end_b_point", "start_b_point", "end_a_point", "start_a_point"})
+                        fields[name] = point();
+                } else {
+                    out["kind"] = id == terminal_port_id ? "terminal_port" : "callout_line";
+                    for (const auto *name : {"direction", "second", "center"})
+                        fields[name] = point();
+                }
+                finish();
+                if (id == interact_point_id && out.at("status") == "decoded") {
+                    out["native_reader_effect"] = {
+                        {"profile", "bimbase_2025_registered_value_reader"},
+                        {"scope", "freshly_constructed_value"},
+                        {"start_a_point",
+                         {{"origin", "constructor"}, {"value", Json::array({0, 0, 0})}}},
+                        {"start_b_point", {{"source_field", "start_a_point"}}},
+                        {"overwritten_source_field", "start_b_point"}};
+                }
             } else if (id == model_id || id == entity_id) {
                 out["kind"] = id == model_id ? "model_id" : "entity_id";
                 if (id == entity_id) {
