@@ -253,5 +253,98 @@ unsigned component_property_tests() {
     check(unit(extra).at("status") == "partial",
           "DataUnit leading bytes are not complete decoding");
     check(unit(frame(0x1234, {1})).at("status") == "partial", "unknown DataUnit type retained");
+
+    constexpr std::uint64_t MAT = 0x2624634702211655ULL;
+    auto real = [&](double number) {
+        Bytes b(sizeof(number));
+        std::memcpy(b.data(), &number, sizeof(number));
+        return frame(0x7175318778202422ULL, b);
+    };
+    // Independent wire order: flags, six factors, RGB/factors, UV y/x, enums, strings.
+    std::vector<Bytes> material_members;
+    for (unsigned i = 0; i < 13; ++i)
+        material_members.push_back(frame(0x1580142273520992ULL, {std::uint8_t(i % 2)}));
+    for (unsigned i = 0; i < 23; ++i)
+        material_members.push_back(real(0.25 + i));
+    material_members.push_back(integer(0x100000006ULL, I));
+    material_members.push_back(integer(UINT64_MAX, I));
+    material_members.push_back(string(std::string("a.jpg\0trailing", 14)));
+    material_members.push_back(frame(S, {0xc4, 0xbe, 0, 'x'}));
+    const auto material_bytes = frame(MAT, stack(material_members));
+    result = unit(material_bytes);
+    root = result.at("root");
+    check(result.at("status") == "decoded" && root.at("kind") == "material",
+          "registered material complete stored payload");
+    auto fields = root.at("fields");
+    const char *flags[] = {"is_valid",
+                           "has_transparency",
+                           "has_specular_factor",
+                           "has_specular_color",
+                           "has_roughness_factor",
+                           "has_refract_factor",
+                           "has_reflect_factor",
+                           "has_map",
+                           "has_glow_factor",
+                           "has_glow_color",
+                           "has_diffuse_factor",
+                           "has_color",
+                           "has_ambient_factor"};
+    for (unsigned i = 0; i < 13; ++i)
+        check(fields.at(flags[i]).at("value") == bool(i % 2), "material flag wire order");
+    const char *factors[] = {"refract_factor", "reflect_factor", "roughness_factor",
+                             "diffuse_factor", "ambient_factor", "glow_factor"};
+    for (unsigned i = 0; i < 6; ++i)
+        check(fields.at(factors[i]).at("value") == 0.25 + i,
+              "material factors retained including disabled and out-of-range inputs");
+    check(fields.at("glow_color").at("value") == Json::array({6.25, 7.25, 8.25}),
+          "material glow RGB read order");
+    check(fields.at("specular_factor").at("value") == 9.25 &&
+              fields.at("specular_color").at("value") == Json::array({10.25, 11.25, 12.25}),
+          "material specular factor and RGB");
+    check(fields.at("transparency").at("value") == 13.25 &&
+              fields.at("color").at("value") == Json::array({14.25, 15.25, 16.25}),
+          "material transparency and RGB");
+    check(fields.at("bump_factor").at("value") == 17.25 &&
+              fields.at("w_rotation").at("value") == 18.25 &&
+              fields.at("w_rotation").at("unit") == "degrees",
+          "material bump and rotation");
+    check(fields.at("uv_offset").at("value") == Json::array({20.25, 19.25}) &&
+              fields.at("uv_scale").at("value") == Json::array({22.25, 21.25}),
+          "material UV read y before x");
+    check(fields.at("uv_scale").at("components")[0].at("offset") <
+              fields.at("uv_scale").at("components")[1].at("offset"),
+          "material vector components retain exact source positions");
+    check(fields.at("map_mode").at("value") == 0x100000006LL &&
+              fields.at("map_mode").at("runtime_value_int32") == 6 &&
+              fields.at("map_unit").at("runtime_value_int32") == -1,
+          "material enums retain int64 source and native signed low32");
+    check(fields.at("map_file").at("text") == std::string("a.jpg\0trailing", 14) &&
+              fields.at("map_file").at("native_string_input").at("text") == "a.jpg",
+          "material string source and native NUL termination differ");
+    check(fields.at("name").at("native_string_input").at("bytes") == 2 &&
+              !fields.at("name").at("native_string_input").contains("text") &&
+              fields.at("name").at("native_string_input").at("encoding") ==
+                  "windows_ansi_code_page",
+          "material ANSI text not guessed as UTF8");
+    check(root.at("not_serialized_fields").size() == 6 && fields.size() == 32 &&
+              !fields.contains("material_id") && !fields.contains("pbr_maps"),
+          "registered material does not invent omitted SDK members");
+    check(one(material_bytes).at("status") == "decoded", "material nested in component property");
+    for (std::size_t i = 0; i < material_members.size(); ++i) {
+        auto broken = material_members;
+        broken.resize(i);
+        check(unit(frame(MAT, stack(broken))).at("status") == "invalid",
+              "registered material missing trailing member rejected");
+    }
+    for (auto index : {0, 13, 36, 38}) {
+        auto wrong = material_members;
+        wrong[index] = frame(B, {1, 2, 3});
+        check(unit(frame(MAT, stack(wrong))).at("status") == "invalid",
+              "registered material rejects wrong flag, number, enum or string type");
+    }
+    auto material_extra = stack(material_members);
+    material_extra.insert(material_extra.begin(), 0xff);
+    check(unit(frame(MAT, material_extra)).at("status") == "partial",
+          "registered material does not ignore unexplained prefix");
     return checks;
 }

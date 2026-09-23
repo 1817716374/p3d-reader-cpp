@@ -18,6 +18,7 @@ constexpr std::uint64_t noumenon_id = 0x0260975554222207ULL;
 constexpr std::uint64_t data_key_id = 0x1395017306582671ULL;
 constexpr std::uint64_t data_string_map_id = 0x4809735200591395ULL;
 constexpr std::uint64_t data_uint_map_id = 0x1311011548825714ULL;
+constexpr std::uint64_t material_id = 0x2624634702211655ULL;
 
 struct StackDecoder {
     const Bytes &source;
@@ -106,6 +107,13 @@ struct StackDecoder {
                 else
                     out["bytes_base64"] = base64(slice(source, start, size));
                 cursor = start;
+            } else if (id == material_id) {
+                out["kind"] = "material";
+                out["fields"] = material(start, cursor, depth + 1);
+                out["not_serialized_fields"] =
+                    Json::array({"material_id", "display_name", "bump_map_file",
+                                 "use_image_alpha_channel", "extended_data_json", "pbr_maps"});
+                finish();
             } else if (id == data_key_id) {
                 out["kind"] = "data_key";
                 out["object_id_source"] = child(int_id);
@@ -191,6 +199,66 @@ struct StackDecoder {
             complete = false;
         }
         return out;
+    }
+
+    Json material(std::size_t begin, std::size_t &end, unsigned depth) {
+        Json fields = Json::object();
+        auto member = [&](std::uint64_t id) {
+            auto v = read(begin, end, depth, id);
+            require(v.at("status") == "decoded", "invalid registered material member");
+            return v;
+        };
+        for (const auto *name :
+             {"is_valid", "has_transparency", "has_specular_factor", "has_specular_color",
+              "has_roughness_factor", "has_refract_factor", "has_reflect_factor", "has_map",
+              "has_glow_factor", "has_glow_color", "has_diffuse_factor", "has_color",
+              "has_ambient_factor"})
+            fields[name] = member(bool_id);
+        for (const auto *name : {"refract_factor", "reflect_factor", "roughness_factor",
+                                 "diffuse_factor", "ambient_factor", "glow_factor"})
+            fields[name] = member(double_id);
+        auto vector = [&](const char *name, std::size_t count, bool reverse) {
+            Json components = Json::array(), values = Json::array();
+            for (std::size_t i = 0; i < count; ++i)
+                components.push_back(member(double_id));
+            if (reverse)
+                std::reverse(components.begin(), components.end());
+            for (const auto &component : components)
+                values.push_back(component.at("value"));
+            fields[name] = {{"value", std::move(values)},
+                            {"components", std::move(components)},
+                            {"component_order", count == 3 ? "rgb" : "xy"}};
+        };
+        vector("glow_color", 3, false);
+        fields["specular_factor"] = member(double_id);
+        vector("specular_color", 3, false);
+        fields["transparency"] = member(double_id);
+        vector("color", 3, false);
+        fields["bump_factor"] = member(double_id);
+        fields["w_rotation"] = member(double_id);
+        fields["w_rotation"]["unit"] = "degrees";
+        vector("uv_offset", 2, true);
+        vector("uv_scale", 2, true);
+        for (const auto *name : {"map_mode", "map_unit"}) {
+            auto value = member(int_id);
+            const auto low = std::uint32_t(value.at("value").get<std::int64_t>());
+            value["runtime_value_int32"] =
+                low <= INT32_MAX ? std::int64_t(low) : std::int64_t(low) - 0x100000000LL;
+            fields[name] = std::move(value);
+        }
+        for (const auto *name : {"map_file", "name"}) {
+            auto value = member(string_id);
+            const auto offset = value.at("offset").get<std::size_t>();
+            auto length = value.at("bytes").get<std::size_t>();
+            auto stop = std::find(source.begin() + offset, source.begin() + offset + length, 0);
+            length = std::size_t(stop - (source.begin() + offset));
+            auto input = text(offset, length);
+            input["encoding"] = "windows_ansi_code_page";
+            input["termination"] = "first_nul";
+            value["native_string_input"] = std::move(input);
+            fields[name] = std::move(value);
+        }
+        return fields;
     }
 
     Json folder(std::size_t begin, std::size_t &end, unsigned depth) {
