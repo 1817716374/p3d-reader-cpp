@@ -344,5 +344,353 @@
     "sha256": "991b73d89c6d0a3f7eba136791687907c0163fc98b01cc584be863423aa9b446",
     "bytes": 3558,
     "upstream_sha256": "f88da482f7bbc6f936782d75709c21c2a7c786c829088d00e05299f4105a9c78"
+  },
+  {
+    "file": "manifold/AUTHORS",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/AUTHORS",
+    "sha256": "074a43d4b1626a34a0a14a036d00100524dd463604b2570c4d76c7baa63608f3",
+    "bytes": 378
+  },
+  {
+    "file": "manifold/include/manifold/common.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/common.h",
+    "sha256": "c079ba01928e3b9ce4ea278f4d5b91e7d8f63a24a0491cfda0cd3140abc6130d",
+    "bytes": 22907
+  },
+  {
+    "file": "manifold/include/manifold/cross_section.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/cross_section.h",
+    "sha256": "6fe1b2cb63f77093c6b8c2d43ae75efd0d9cebeade2c81418b412055c1c734ae",
+    "bytes": 4272
+  },
+  {
+    "file": "manifold/include/manifold/linalg.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/linalg.h",
+    "sha256": "0a1ae64ec20c3e38f1f90d5d4a43942ea9a076fe91acaf0f9937404634858426",
+    "bytes": 79516
+  },
+  {
+    "file": "manifold/include/manifold/manifold.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/manifold.h",
+    "sha256": "daa869ce8d37aad1ae4ebb98e87827d4dfd717de0f1dc4ce0954e88467dcaf3f",
+    "bytes": 14177
+  },
+  {
+    "file": "manifold/include/manifold/math.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/math.h",
+    "sha256": "b2c9bcf8dc3db0e569a7f2c9fdc88aa6279c544a21274dedc1cd528f41a15b5c",
+    "bytes": 15491
+  },
+  {
+    "file": "manifold/include/manifold/mesh.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/mesh.h",
+    "sha256": "b729d5033ef5492fb990b95596b46a785f9a56f0da9e167dbf7e748eccf5302b",
+    "bytes": 12883
+  },
+  {
+    "file": "manifold/include/manifold/optional_assert.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/optional_assert.h",
+    "sha256": "0ee34e61e838a0d8f9c5600507067d486e68452be39b9f8b37e44458acf1e233",
+    "bytes": 2212
+  },
+  {
+    "file": "manifold/include/manifold/polygon.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/polygon.h",
+    "sha256": "763fea1260aa2fee3761da5a6345311f06d0647c32e4f0756b567ccba0d9e73a",
+    "bytes": 1912
+  },
+  {
+    "file": "manifold/include/manifold/vec_view.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/vec_view.h",
+    "sha256": "47dad88de84a0662b42473dc3ef1cce90ad316fa97c6075881e2196c5cc44c67",
+    "bytes": 4012
+  },
+  {
+    "file": "manifold/LICENSE",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/LICENSE",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "bytes": 11357
+  },
+  {
+    "file": "manifold/src/atomic_compat.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/atomic_compat.h",
+    "sha256": "3f055cc4f7b6c4e8c02b79e6bf71756c5ee1f41316cb212f7ad747f71fdcd2ac",
+    "bytes": 7526
+  },
+  {
+    "file": "manifold/src/boolean2.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean2.cpp",
+    "sha256": "e24e0165a2f84a71eaca195d2b509c9f2edc14c483ea3341a1d30d00f0089b59",
+    "bytes": 32315
+  },
+  {
+    "file": "manifold/src/boolean2.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean2.h",
+    "sha256": "d9adfeae5b1d0e70db30f3bd74f47750816963ee925d755a43b89ca73bbc1a28",
+    "bytes": 8478
+  },
+  {
+    "file": "manifold/src/boolean2_diagnostics.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean2_diagnostics.cpp",
+    "sha256": "ccde3b5e7c92244ee64593babc78fff091aefb14b96a19840dcdbc0267e25161",
+    "bytes": 4549
+  },
+  {
+    "file": "manifold/src/boolean2_diagnostics.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean2_diagnostics.h",
+    "sha256": "a7f0cb438d595fb7dbe767326f5377ac513351f02ef65ab3c21522d7d27148c8",
+    "bytes": 4570
+  },
+  {
+    "file": "manifold/src/boolean2_offset.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean2_offset.cpp",
+    "sha256": "f37cacddc4bb01db3db1248361698e89763af1ae70f7fbd220b441db8ec15ea4",
+    "bytes": 19011
+  },
+  {
+    "file": "manifold/src/boolean2_predicates.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean2_predicates.cpp",
+    "sha256": "684c65a18188023ae4b3f2167ba6f0bbd9711a5bdbbe1f837eab7da9f2cbe400",
+    "bytes": 1875
+  },
+  {
+    "file": "manifold/src/boolean2_sweep.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean2_sweep.cpp",
+    "sha256": "4b731d56378478283a43bc133331cf772483518bed9348d7564ff7e0f7b13a0f",
+    "bytes": 17562
+  },
+  {
+    "file": "manifold/src/boolean3.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean3.cpp",
+    "sha256": "b63edc43778975a5dacaa80e6542be775358058fc582caad46f589c9119e7fd3",
+    "bytes": 23254
+  },
+  {
+    "file": "manifold/src/boolean3.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean3.h",
+    "sha256": "b0af003ecf1e71453ee11e4862f5b185a001b293f4426cbeeec3eda0cda4a895",
+    "bytes": 2617
+  },
+  {
+    "file": "manifold/src/boolean_result.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/boolean_result.cpp",
+    "sha256": "3be67a330969fa5870640322d90ffb0ac7dd6a488379468e5d1dce1f8ecac1bf",
+    "bytes": 36491
+  },
+  {
+    "file": "manifold/src/collider.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/collider.h",
+    "sha256": "838d7d1dcfadf0f26f084a49b2dec197344e2c756105d56bc407a94e945b3f7b",
+    "bytes": 12448
+  },
+  {
+    "file": "manifold/src/constructors.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/constructors.cpp",
+    "sha256": "90f8f2d2c150b35d218376b9cb838ab45e2d6c2893814beac0447c80b098b894",
+    "bytes": 16220
+  },
+  {
+    "file": "manifold/src/cross_section.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/cross_section.cpp",
+    "sha256": "9321e3209899a7c92eee9c43d1937737d9a3ff5f8ed01d5f67e9a6d5d3ae41f1",
+    "bytes": 25705
+  },
+  {
+    "file": "manifold/src/csg_tree.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/csg_tree.cpp",
+    "sha256": "d9d4cf036dd5cbb0b40c56a26db41a52baf056492dc26ac782413888300a8955",
+    "bytes": 35604
+  },
+  {
+    "file": "manifold/src/csg_tree.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/csg_tree.h",
+    "sha256": "ebcec03aed52e3a05c7ff2ece61e4e547bcfc194339c88521c77bee58bf9741c",
+    "bytes": 3941
+  },
+  {
+    "file": "manifold/src/disjoint_sets.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/disjoint_sets.h",
+    "sha256": "850b1af57ee36d68a9d93b02438fbe505cecddf8ca5cd1e67e1e957dc9393f84",
+    "bytes": 4397
+  },
+  {
+    "file": "manifold/src/edge_op.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/edge_op.cpp",
+    "sha256": "c2edf72ff792eb1e9cf8cd71e63667a8278ec45c1eef2594e8b7cf2ecc73b83f",
+    "bytes": 43078
+  },
+  {
+    "file": "manifold/src/execution_impl.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/execution_impl.cpp",
+    "sha256": "cd96d0814a502cf567b3f9f5994979139db1cf6bb3e8795b23e29331a0845e95",
+    "bytes": 5047
+  },
+  {
+    "file": "manifold/src/execution_impl.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/execution_impl.h",
+    "sha256": "bf505f45ca50f42e28489b24ad21ab462f4ac78da5c297b969ed6a129531226a",
+    "bytes": 6321
+  },
+  {
+    "file": "manifold/src/face_op.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/face_op.cpp",
+    "sha256": "88a64640f701c49c67255ec7ad71d2bebb5e8619cd7ef58ff09669cc9be21a9e",
+    "bytes": 17473
+  },
+  {
+    "file": "manifold/src/hashtable.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/hashtable.h",
+    "sha256": "23cd6d3f119b7a137ba966dbb2f8dfd41bf2cde1c1f1052c7f870634fa9215b7",
+    "bytes": 5517
+  },
+  {
+    "file": "manifold/src/impl.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/impl.cpp",
+    "sha256": "59aa222667dcea5a27b8f36a38b8d2eeebdb297e67caf223528551a9ca7d6cc8",
+    "bytes": 30560
+  },
+  {
+    "file": "manifold/src/impl.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/impl.h",
+    "sha256": "36f1a1527ec1aa6a2c60099883aa120a9be974b19ef8a67e17d48513ee259fd6",
+    "bytes": 25227
+  },
+  {
+    "file": "manifold/src/iters.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/iters.h",
+    "sha256": "96721613142b489c4913cc06faf162779ca90a6c5e385faa9429fb55eeb3ad4d",
+    "bytes": 8518
+  },
+  {
+    "file": "manifold/src/manifold.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/manifold.cpp",
+    "sha256": "ecc1fc73f518816a8b092271664d82061b44e27e05b955e78e8a56638d399738",
+    "bytes": 45699
+  },
+  {
+    "file": "manifold/src/mesh_fixes.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/mesh_fixes.h",
+    "sha256": "647b00e298ed457d5208eef01035e402cd13a025812e2bb968ea97975baf473e",
+    "bytes": 2303
+  },
+  {
+    "file": "manifold/src/minkowski.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/minkowski.cpp",
+    "sha256": "46fc7cb3d69f158dc9adfea9bf7e52029979e85188df2609f4c049050d871faf",
+    "bytes": 8133
+  },
+  {
+    "file": "manifold/src/parallel.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/parallel.h",
+    "sha256": "85fc74de9b8b1f4b257eb4b5d505ce4fab2b0a1ebd3b7151d6c6e9aedf2aa603",
+    "bytes": 47212
+  },
+  {
+    "file": "manifold/src/polygon.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/polygon.cpp",
+    "sha256": "4077506a5e75727d0189a5a6cb3b619a60d0eb06eabd35bb3b2ead1cb1d2f58b",
+    "bytes": 38621
+  },
+  {
+    "file": "manifold/src/polygon_internal.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/polygon_internal.h",
+    "sha256": "a7853a38e6c592af9aa3480b78243bd73bd8fb7f4b4207d44125cddcd690364f",
+    "bytes": 5255
+  },
+  {
+    "file": "manifold/src/properties.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/properties.cpp",
+    "sha256": "00eceb1b848af478c11c69ee8fbae79b110d5028cc1d7aacad9e5f3e9dc94267",
+    "bytes": 17435
+  },
+  {
+    "file": "manifold/src/quickhull.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/quickhull.cpp",
+    "sha256": "7b8f5bf3573bf6774463bcaeb2423d7e9c835452214359910419dab427419d4e",
+    "bytes": 30652
+  },
+  {
+    "file": "manifold/src/quickhull.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/quickhull.h",
+    "sha256": "ff397d52d17679eb270f0b88f9b2f060ab3cf1de472d31678b2e54bd8ecc5a10",
+    "bytes": 9597
+  },
+  {
+    "file": "manifold/src/sdf.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/sdf.cpp",
+    "sha256": "04fcf4ded5a764d9068099bc1839dd361770039fd0e8ef33a38cb566cd110272",
+    "bytes": 22234
+  },
+  {
+    "file": "manifold/src/shared.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/shared.h",
+    "sha256": "d9c97e9ac26ba0c38b2e64b6400c288ef84bd35278bca032c7e99c7b70e17e34",
+    "bytes": 12897
+  },
+  {
+    "file": "manifold/src/smoothing.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/smoothing.cpp",
+    "sha256": "7846ec10b6afefba2f7feec72d936f6cdf74db7a3e438a7d3634ce1323f4ffa9",
+    "bytes": 34550
+  },
+  {
+    "file": "manifold/src/sort.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/sort.cpp",
+    "sha256": "8d0be763137153ab86ecee2c49602c5bdb228928c990b164c93d623c11fb2cf4",
+    "bytes": 23743
+  },
+  {
+    "file": "manifold/src/subdivision.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/subdivision.cpp",
+    "sha256": "d8d32537d2e64e9c60649ffe7d22768f3c32b2feefa8983a18035267a209a533",
+    "bytes": 31384
+  },
+  {
+    "file": "manifold/src/svd.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/svd.h",
+    "sha256": "da914ed23e11256460d7b356fdc4536edb82e8f64d38f3171e73da67637b7c2b",
+    "bytes": 11812
+  },
+  {
+    "file": "manifold/src/tree2d.cpp",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/tree2d.cpp",
+    "sha256": "93ed668c18c2dc908736fc719504d584338bac6a1cb5d394796bffc3d7687e7e",
+    "bytes": 1823
+  },
+  {
+    "file": "manifold/src/tree2d.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/tree2d.h",
+    "sha256": "80b1741bda162e7fc6f0f7014fd3baecddf8f77823ab2884eecda4f49aa98dba",
+    "bytes": 2645
+  },
+  {
+    "file": "manifold/src/tri_dist.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/tri_dist.h",
+    "sha256": "549ebdd4accdb3f4d49671039221f588cf92a293611df6748670576743982ef1",
+    "bytes": 6638
+  },
+  {
+    "file": "manifold/src/utils.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/utils.h",
+    "sha256": "dd254698e6b36f27f473d10bb986796c3b93306a221f293033c67e4a31e0e0f3",
+    "bytes": 4930
+  },
+  {
+    "file": "manifold/src/vec.h",
+    "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/src/vec.h",
+    "sha256": "240cc8f9511724b119ebb921e3a3cea1c706b8ed56f2d55349e230fcb7b6062b",
+    "bytes": 10385
+  },
+  {
+    "file": "manifold/LICENSE.NVIDIA",
+    "url": "https://raw.githubusercontent.com/NVIDIA-Omniverse/PhysX/main/LICENSE.md",
+    "sha256": "eb3e67b17b48c56ef26d8bf6634c0837503fefc28a916f98d4f02272eda50011",
+    "bytes": 1517
+  },
+  {
+    "file": "manifold/LICENSE.CLIPPER2",
+    "url": "https://raw.githubusercontent.com/AngusJohnson/Clipper2/main/LICENSE",
+    "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+    "bytes": 1338
   }
 ]

@@ -12,9 +12,12 @@
 | miniz | 3.1.0，仅链接 tinfl | zlib 属性载荷解压 | [许可证](third_party/miniz/LICENSE) |
 | Bentley BGFB 模式 | 模式快照，来源见 `src/data.cpp` | BGFB 结构解码 | [Apache-2.0](third_party/BGFB_LICENSE.txt) |
 | GDAL DGN 默认颜色表 | v3.10.0 | 默认索引颜色 | [MIT 与原版权声明](third_party/GDAL_PALETTE_LICENSE.txt) |
+| Manifold | `213b6557f28fd66f0e7fd44deb8531589fd288af`，3.5.1 源码快照 | 独立三角网格布尔求值 | [Apache-2.0](third_party/manifold/LICENSE)、[嵌入声明](third_party/manifold/LICENSE.EMBEDDED)、[NVIDIA BSD](third_party/manifold/LICENSE.NVIDIA)、[Clipper2 Boost](third_party/manifold/LICENSE.CLIPPER2) |
 
 依赖文件来源、字节数与 SHA-256 校验值见 [manifest.json](third_party/manifest.json)。BGFB 模式的源地址和快照校验值保存在 `src/data.cpp`。`miniz_export.h` 是本工程静态构建的导出宏配置；构建配置禁用未链接的 zlib 包装 API。
 
 使用 MinGW 构建的检查工具静态链接 GCC 运行时。GCC 16.1.0 的 [GPLv3](third_party/gcc-runtime/COPYING3)、[运行库例外](third_party/gcc-runtime/COPYING.RUNTIME)、[MinGW-w64 声明](third_party/gcc-runtime/MINGW_COPYING)及 [winpthreads 声明](third_party/gcc-runtime/WINPTHREADS_COPYING)随工程保留。源码构建不要求使用预编译检查工具。
 
 依赖的许可证正文和版权声明应随对应源码或二进制分发一并保留。
+
+Manifold 仅随库编译 C++ 核心，不下载依赖，也不要求额外运行时 DLL。上游源码保持原文，构建时将内部命名空间隔离为 `p3d_bundled_manifold` 和 `p3d_bundled_linalg`，避免与调用方自行链接的版本冲突；本库公开头文件不暴露其类型。当前内核使用串行后端，独立求值调用可并发执行。`LICENSE.EMBEDDED` 汇集上游头文件中的 MIT 和 Sun 声明，便于二进制分发时保留。

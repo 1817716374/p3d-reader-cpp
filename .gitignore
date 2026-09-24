@@ -49,6 +49,7 @@
 !/tests/graphics_native.cpp
 !/tests/text_bytes.cpp
 !/tests/csg.cpp
+!/tests/csg_mesh.cpp
 !/tests/native_font_selection.cpp
 !/tests/native_text_style.cpp
 !/tests/native_text_characters.cpp
