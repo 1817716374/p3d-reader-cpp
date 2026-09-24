@@ -580,5 +580,117 @@ unsigned loft_mesh_tests() {
     const auto after = SectionLoft::from_bgfb(scaled).sides()[0].surface.point_at(.5, .4);
     check(std::abs(after[0] - 3 * before[0]) > .05 || std::abs(after[2] - before[2]) > .05,
           "source loft reconstruction demonstrably differs from transforming cached surface");
+    Matrix4 placement{};
+    for (unsigned i = 0; i < 4; ++i)
+        placement[i][i] = 1;
+    const auto identity_matrix = placement;
+    placement[0][0] = 3;
+    const auto source_placed = transform_bgfb_section_loft(bent, placement);
+    check(source_placed.status == "transformed" && source_placed.transformed == scaled,
+          "loft source placement equals independently transformed sections and guides");
+    check(mesh_bgfb_solid(source_placed.transformed, {}, 4).derived.status == "meshed",
+          "placed bent guides reconstruct and mesh through the public solid entry");
+    auto weighted_source = source_loft;
+    auto &weighted = weighted_source["section0"]["curves"][0]["geometry"];
+    weighted["weights"] = {2., 0.};
+    weighted["poles"] = {2., 4., 6., 8., 10., 12.};
+    weighted["unknown_tag"] = {7, 8, 9};
+    placement[0] = {2, .5, 0, 7};
+    placement[1] = {0, -3, 1, -4};
+    placement[2] = {1, 0, 2, 5};
+    const auto rational = transform_bgfb_section_loft(weighted_source, placement);
+    check(rational.status == "transformed", "rational loft source transform succeeds");
+    const auto &rp = rational.transformed["section0"]["curves"][0]["geometry"];
+    check(rp["poles"] == Json({20., -14., 24., 21., -18., 32.}) &&
+              rp["weights"] == weighted["weights"] && rp["knots"] == weighted["knots"] &&
+              rp["unknown_tag"] == weighted["unknown_tag"],
+          "homogeneous translation handles unequal and zero weights without altering metadata");
+    auto repeated = transform_bgfb_section_loft(rational.transformed, placement);
+    check(repeated.status == "transformed" &&
+              repeated.transformed["section0"]["curves"][0]["geometry"]["poles"] ==
+                  Json({47., 58., 78., 33., 86., 85.}),
+          "repeated placement updates current homogeneous coordinates in native order");
+    auto tiny = identity_matrix;
+    tiny[0][3] = 5e-11;
+    const auto small = transform_bgfb_section_loft(bent, tiny);
+    check(small.status == "transformed" && small.report["bspline_skipped"] == 8 &&
+              small.transformed["section0"] == bent["section0"] &&
+              small.transformed["guide_groups"][0][0]["curves"][0]["geometry"]["points"][0] ==
+                  5e-11,
+          "native near-identity skips B-splines but still transforms line-string guides");
+    tiny[0][3] = 1e-10;
+    check(transform_bgfb_section_loft(bent, tiny).report["bspline_skipped"] == 0,
+          "native translation identity boundary is strict");
+    tiny = identity_matrix;
+    tiny[0][1] = 1e-12;
+    check(transform_bgfb_section_loft(bent, tiny).report["bspline_skipped"] == 8,
+          "native linear identity boundary is inclusive");
+    tiny[0][1] = std::nextafter(1e-12, 1.);
+    check(transform_bgfb_section_loft(bent, tiny).report["bspline_skipped"] == 0,
+          "one representable step above identity boundary applies B-spline placement");
+    auto arc_source = source_loft;
+    arc_source["section0"]["curves"][0]["geometry"] = {{"_type", "EllipticArc"},
+                                                       {"arc",
+                                                        {{"centerX", 1},
+                                                         {"centerY", 2},
+                                                         {"centerZ", 3},
+                                                         {"vector0X", 2},
+                                                         {"vector0Y", 0},
+                                                         {"vector0Z", 0},
+                                                         {"vector90X", 0},
+                                                         {"vector90Y", 3},
+                                                         {"vector90Z", 0},
+                                                         {"startRadians", .3},
+                                                         {"sweepRadians", -1.2}}}};
+    const auto arc_result = transform_bgfb_section_loft(arc_source, placement);
+    const auto &arc = arc_result.transformed["section0"]["curves"][0]["geometry"]["arc"];
+    check(arc_result.status == "transformed" && arc["centerX"] == 10. && arc["centerY"] == -7. &&
+              arc["centerZ"] == 12. && arc["vector0X"] == 4. && arc["vector0Z"] == 2. &&
+              arc["vector90X"] == 1.5 && arc["vector90Y"] == -9. && arc["startRadians"] == .3 &&
+              arc["sweepRadians"] == -1.2,
+          "ellipse center is a point, axes are vectors, angular parameters are retained");
+    auto singular = identity_matrix;
+    singular[0][0] = 0;
+    check(transform_bgfb_section_loft(source_loft, singular).status == "transformed",
+          "source placement can succeed even when later mesh reconstruction degenerates");
+    const auto collapsed = transform_bgfb_section_loft(arc_source, singular);
+    check(collapsed.status == "not_evaluated" && collapsed.transformed.is_null() &&
+              collapsed.report["source_path"] == "/section0/curves/0/geometry",
+          "collapsed ellipse replacement is explicit and never returns partial transformed data");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        LoftSourceTransformOptions limit;
+        if (mode == 0)
+            limit.max_points = 1;
+        if (mode == 1)
+            limit.max_curve_nodes = 1;
+        if (mode == 2)
+            limit.max_depth = 0;
+        const auto limited = transform_bgfb_section_loft(bent, placement, limit);
+        check(limited.status == "not_evaluated" && limited.transformed.is_null(),
+              "aggregate source transformation budgets clear partial work");
+    }
+    auto bad_matrix = placement;
+    bad_matrix[3][0] = .01;
+    check(transform_bgfb_section_loft(bent, bad_matrix).transformed.is_null(),
+          "projective matrix cannot be treated as native affine placement");
+    bad_matrix = placement;
+    bad_matrix[0][0] = std::numeric_limits<double>::infinity();
+    check(transform_bgfb_section_loft(bent, bad_matrix).transformed.is_null(),
+          "nonfinite placement is rejected");
+    auto parallel = std::async(std::launch::async, [&] {
+        return transform_bgfb_section_loft(weighted_source, placement);
+    });
+    check(parallel.get().transformed == rational.transformed &&
+              weighted_source["section0"]["curves"][0]["geometry"]["poles"] ==
+                  Json({2., 4., 6., 8., 10., 12.}),
+          "parallel source placement is deterministic and leaves caller input unchanged");
+    const auto nested = transform_bgfb_section_loft(prism(2), placement);
+    const auto nested_mesh = mesh_bgfb_solid(nested.transformed, {}, 4);
+    LoftMesh nested_shape;
+    nested_shape.vertices = nested_mesh.derived.geometry.vertices;
+    nested_shape.faces = nested_mesh.derived.geometry.faces;
+    check(nested.status == "transformed" && nested_mesh.derived.status == "meshed" &&
+              std::abs(std::abs(volume(nested_shape)) - 103.5) < 1e-8,
+          "nested parity sections and guide groups preserve independent transformed volume");
     return checks;
 }

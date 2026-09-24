@@ -65,4 +65,26 @@ Json native_bgfb_torus_parameters(const Json &table);
 // first transformed direction's length. The returned matrix maps the derived
 // rotational-sweep geometry, including its recomputed normal direction.
 SolidTransformResult transform_bgfb_torus(const Json &table, const Matrix4 &matrix);
+struct LoftSourceTransformOptions {
+    std::size_t max_points = 3000000;
+    std::size_t max_curve_nodes = 100000;
+    unsigned max_depth = 80; // Hard ceiling 80.
+};
+struct LoftSourceTransformResult {
+    std::string status = "not_evaluated";
+    Json transformed;
+    Json report = Json::object();
+};
+// Transform original sections and guide groups before reconstructing a loft.
+// Supports line segments/strings, B-splines and non-collapsed elliptic arcs,
+// including nested curve arrays. Rational poles receive weight*translation.
+// Native near-identity suppression applies to B-splines only. Arc axes shorter
+// than the native collapse threshold require a representation change and are
+// currently reported as not evaluated. Singular source transforms are allowed;
+// successful transformation does not prove that the new loft can be meshed.
+// This is a derived parameter table, not an edited/serializable source file.
+// No single matrix maps the old loft surface to the reconstructed new one.
+LoftSourceTransformResult
+transform_bgfb_section_loft(const Json &table, const Matrix4 &matrix,
+                            const LoftSourceTransformOptions &options = {});
 } // namespace p3d
