@@ -89,6 +89,92 @@ unsigned polyface_tests() {
     crossed["pointIndex"] = {1, 3, 2, 4, 0};
     check(mesh_bgfb_polyface(crossed).geometry.faces.empty(),
           "self-intersection cannot masquerade as a complete face");
+    auto retraced = quad();
+    retraced["point"] = {0., 0., 0., 4., 0., 0., 2., 0., 0., 2., 2., 0., 0., 2., 0.};
+    retraced["pointIndex"] = {1, -2, 3, 4, 5, 0};
+    retraced["param"] = {0., 0., 4., 0., 2., 0., 2., 2., 0., 2.};
+    retraced["paramIndex"] = {5, 4, 3, 2, 1, 0};
+    f = mesh_bgfb_polyface(retraced);
+    check(f.status == "meshed" && f.geometry.vertices.size() == 5 && area(f.geometry) == 4,
+          "collinear boundary overshoot cancels without welding or deleting source points");
+    check(f.source == retraced && f.report["polygons"][0]["source_corners"].size() == 5 &&
+              f.report["polygons"][0]["boundary_reductions"][0]["source_corner"] == 1,
+          "exact retrace records removed derived corner and preserves full source");
+    for (std::size_t i = 0; i < f.geometry.faces.size(); ++i)
+        for (unsigned k = 0; k < 3; ++k) {
+            const auto corner = f.face_source_corners[i][k];
+            check(corner != 1 && f.geometry.faces[i][k] == corner &&
+                      (*f.geometry.face_uv_indices[i])[k] == 4 - corner,
+                  "retained corner uses original point and independent attribute index");
+        }
+    retraced["pointIndex"] = {5, 4, 3, -2, 1, 0};
+    f = mesh_bgfb_polyface(retraced);
+    check(f.status == "meshed" && area(f.geometry) == -4,
+          "exact edge cancellation preserves reverse winding");
+    // A fully retraced spur produces an adjacent repeated point after its tip
+    // is removed. This is local boundary cancellation, not global deduplication.
+    retraced["pointIndex"] = {1, 2, 1, 3, 4, 5, 0};
+    f = mesh_bgfb_polyface(retraced);
+    check(f.status == "meshed" && area(f.geometry) == 4 && f.geometry.vertices.size() == 5,
+          "full retraced spur and resulting zero-length edge");
+    check(f.report["polygons"][0]["boundary_reduction_tests"].get<std::size_t>() <= 18,
+          "local boundary worklist has linear candidate count");
+    auto spatial = retraced;
+    spatial["pointIndex"] = {1, 2, 3, 4, 5, 0};
+    spatial["point"][5] = 0.001; // Only the XY projection is collinear.
+    f = mesh_bgfb_polyface(spatial);
+    check(f.report["polygons"][0]["boundary_reductions"].empty(),
+          "projected collinearity does not erase a three-dimensional feature");
+    check(f.status == "meshed" && f.geometry.faces.size() == 3 &&
+              f.report["polygons"][0]["projected_boundary_splits"][0]["reason"] ==
+                  "retained_spatial_triangle",
+          "projected fold retains its nonzero three-dimensional triangle");
+    check(f.geometry.faces[0] == Triangle{0, 1, 2} &&
+              f.face_source_corners[0] == std::array<std::size_t, 3>{0, 1, 2} &&
+              f.geometry.vertices[1][2] == 0.001,
+          "spatial fold keeps original coordinates, winding and source corner links");
+    PolyfaceMeshOptions fold_budget;
+    fold_budget.max_triangles = 2;
+    check(mesh_bgfb_polyface(spatial, fold_budget).geometry.faces.empty(),
+          "retained spatial triangles count against the triangle budget");
+    auto vertical = quad();
+    vertical["point"] = {0., 0., 0., 0., 0., 1., 0., 0., 2., 2., 0., 0., 2., 2., 0., 0., 2., 0.};
+    vertical["pointIndex"] = {2, 3, 4, 5, 6, 1, 0};
+    f = mesh_bgfb_polyface(vertical);
+    check(f.status == "meshed" &&
+              f.report["polygons"][0]["projected_boundary_splits"][0]["reason"] ==
+                  "exact_collinear_edge",
+          "forward collinear edge along projection normal produces no zero-area triangle");
+    for (const auto &t : f.geometry.faces) {
+        const auto &a = f.geometry.vertices[t[0]], &b = f.geometry.vertices[t[1]],
+                   &c = f.geometry.vertices[t[2]];
+        Point3 cross{};
+        for (unsigned k = 0; k < 3; ++k) {
+            const auto x = (k + 1) % 3, y = (k + 2) % 3;
+            cross[k] = (b[x] - a[x]) * (c[y] - a[y]) - (b[y] - a[y]) * (c[x] - a[x]);
+        }
+        check(cross != Point3{},
+              "projected edge handling never emits an exactly collinear triangle");
+    }
+    auto diagonal = retraced;
+    diagonal["pointIndex"] = {1, 2, 3, 4, 5, 0};
+    diagonal["point"] = {0., 0., 0., 4., 4., 4., 2., 2., 2., 0., 4., 2., -2., 2., 0.};
+    f = mesh_bgfb_polyface(diagonal);
+    check(f.status == "meshed" && f.report["polygons"][0]["boundary_reductions"].size() == 1,
+          "exact diagonal retrace in an oblique plane");
+    auto near_line = quad();
+    const double large = 134217728.;
+    near_line["point"] = {0.,        0.,        0., large, large - 1, 0.,
+                          large - 1, large - 2, 0., 0.,    large,     0.};
+    near_line["pointIndex"] = {1, 2, 3, 4, 0};
+    f = mesh_bgfb_polyface(near_line);
+    check(f.report["polygons"][0]["boundary_reductions"].empty(),
+          "nonzero exact determinant survives floating product cancellation");
+    auto collapsed = quad();
+    collapsed["pointIndex"] = {1, 2, 1, 0};
+    f = mesh_bgfb_polyface(collapsed);
+    check(f.status != "meshed" && f.geometry.vertices.empty() && f.source == collapsed,
+          "zero-area loop cannot become a successful missing face");
     auto bad = quad();
     bad["pointIndex"] = {1, 2, 5, 0};
     f = mesh_bgfb_polyface(bad);

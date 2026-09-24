@@ -1,5 +1,6 @@
 #include <p3d/polyface.hpp>
 #include "geometry.hpp"
+#include <cstring>
 
 namespace p3d {
 namespace {
@@ -41,6 +42,142 @@ std::uint32_t index(const Json &value, std::size_t count) {
     const auto absolute = std::uint64_t(signed_index < 0 ? -signed_index : signed_index);
     require(absolute <= count, "BGFB Polyface index outside source pool");
     return std::uint32_t(absolute - 1);
+}
+// Exact zero determinant for finite binary64 coordinates. Separate positive
+// and negative integer accumulators avoid deleting a tiny, nonzero feature
+// because a floating cross product rounded to zero. Product exponents span
+// -2148..2047; 132 base-2^32 words also cover the sum of six products.
+bool collinear_projection(const Point3 &a, const Point3 &b, const Point3 &c, unsigned x,
+                          unsigned y) {
+    if ((a[x] == b[x] && b[x] == c[x]) || (a[y] == b[y] && b[y] == c[y]))
+        return true;
+    static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
+    using Sum = std::array<std::uint32_t, 132>;
+    Sum positive{}, negative{};
+    auto product = [&](double u, double v, bool subtract) {
+        std::uint64_t ub, vb;
+        std::memcpy(&ub, &u, 8);
+        std::memcpy(&vb, &v, 8);
+        const auto ue = unsigned((ub >> 52) & 2047), ve = unsigned((vb >> 52) & 2047);
+        auto um = ub & ((UINT64_C(1) << 52) - 1);
+        auto vm = vb & ((UINT64_C(1) << 52) - 1);
+        if (ue)
+            um |= UINT64_C(1) << 52;
+        if (ve)
+            vm |= UINT64_C(1) << 52;
+        if (!um || !vm)
+            return;
+        const unsigned shift =
+            unsigned((ue ? int(ue) - 1075 : -1074) + (ve ? int(ve) - 1075 : -1074) + 2148);
+        auto &sum = ((ub >> 63) ^ (vb >> 63) ^ subtract) ? negative : positive;
+        auto add_word = [&](std::uint32_t word, unsigned bit) {
+            std::uint64_t carry = std::uint64_t(word) << (bit % 32);
+            for (std::size_t j = bit / 32; carry; ++j) {
+                require(j < sum.size(), "BGFB Polyface exact determinant capacity");
+                carry += sum[j];
+                sum[j] = std::uint32_t(carry);
+                carry >>= 32;
+            }
+        };
+        for (unsigned i = 0; i < 2; ++i)
+            for (unsigned j = 0; j < 2; ++j) {
+                const auto part =
+                    std::uint64_t(std::uint32_t(um >> (32 * i))) * std::uint32_t(vm >> (32 * j));
+                add_word(std::uint32_t(part), shift + 32 * (i + j));
+                add_word(std::uint32_t(part >> 32), shift + 32 * (i + j + 1));
+            }
+    };
+    product(a[x], b[y], false);
+    product(b[x], c[y], false);
+    product(c[x], a[y], false);
+    product(a[y], b[x], true);
+    product(b[y], c[x], true);
+    product(c[y], a[x], true);
+    return positive == negative;
+}
+// Cancel exact zero-area folds. In the projection pass, retain a non-collinear
+// spatial ear as a triangle. Original pools and source corners survive.
+// A linked ring plus local worklist bounds the candidate checks by 3*n.
+using BoundaryTriangle = std::pair<Triangle, std::array<std::size_t, 3>>;
+void reduce_retraced_edges(std::vector<Point3> &points, std::vector<std::uint32_t> &indices,
+                           std::vector<std::size_t> &corners, Json &report,
+                           std::optional<unsigned> projection_axis = {},
+                           std::vector<BoundaryTriangle> *split_triangles = nullptr) {
+    const auto n = points.size();
+    std::vector<std::size_t> previous(n), next(n), pending;
+    std::vector<bool> alive(n, true);
+    for (std::size_t i = 0; i < n; ++i) {
+        previous[i] = (i + n - 1) % n;
+        next[i] = (i + 1) % n;
+        pending.push_back(n - 1 - i);
+    }
+    std::size_t remaining = n, tests = 0;
+    const char *changes = projection_axis ? "projected_boundary_splits" : "boundary_reductions";
+    report[changes] = Json::array();
+    while (!pending.empty() && remaining >= 3) {
+        const auto i = pending.back();
+        pending.pop_back();
+        if (!alive[i])
+            continue;
+        ++tests;
+        const auto p = previous[i], q = next[i];
+        const auto &a = points[p], &b = points[i], &c = points[q];
+        const bool duplicate = a == b || b == c;
+        bool reversal = false;
+        for (unsigned k = 0; k < 3; ++k)
+            reversal |= (a[k] < b[k] && c[k] < b[k]) || (a[k] > b[k] && c[k] > b[k]);
+        bool exact = duplicate ||
+                     (reversal && collinear_projection(a, b, c, 0, 1) &&
+                      collinear_projection(a, b, c, 1, 2) && collinear_projection(a, b, c, 2, 0));
+        bool split = false;
+        if (!exact && projection_axis) {
+            const auto x = (*projection_axis + 1) % 3, y = (*projection_axis + 2) % 3;
+            bool projected_reversal = false;
+            for (auto k : {x, y})
+                projected_reversal |= (a[k] < b[k] && c[k] < b[k]) || (a[k] > b[k] && c[k] > b[k]);
+            const bool zero_edge = (a[x] == b[x] && a[y] == b[y]) || (b[x] == c[x] && b[y] == c[y]);
+            split = (projected_reversal || zero_edge) && collinear_projection(a, b, c, x, y);
+            if (split && collinear_projection(a, b, c, 0, 1) &&
+                collinear_projection(a, b, c, 1, 2) && collinear_projection(a, b, c, 2, 0)) {
+                // An edge along the projection normal can be forward-collinear
+                // in 3D. It has no spatial triangle to retain.
+                exact = true;
+                split = false;
+            }
+        }
+        if (!exact && !split)
+            continue;
+        if (split)
+            split_triangles->push_back(
+                {{indices[p], indices[i], indices[q]}, {corners[p], corners[i], corners[q]}});
+        report[changes].push_back({{"source_corner", corners[i]},
+                                   {"previous_source_corner", corners[p]},
+                                   {"next_source_corner", corners[q]},
+                                   {"reason", split       ? "retained_spatial_triangle"
+                                              : duplicate ? "zero_length_edge"
+                                              : reversal  ? "exact_collinear_retrace"
+                                                          : "exact_collinear_edge"}});
+        alive[i] = false;
+        --remaining;
+        next[p] = q;
+        previous[q] = p;
+        pending.push_back(p);
+        pending.push_back(q);
+    }
+    report[projection_axis ? "projected_boundary_tests" : "boundary_reduction_tests"] = tests;
+    std::size_t write = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (alive[i]) {
+            points[write] = points[i];
+            indices[write] = indices[i];
+            corners[write] = corners[i];
+            ++write;
+        }
+    points.resize(write);
+    indices.resize(write);
+    corners.resize(write);
+    report["triangulation_source_corners"] = corners;
+    require(write >= 3, "BGFB Polyface collapsed boundary after exact edge cancellation");
 }
 } // namespace
 PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptions &options) {
@@ -141,7 +278,7 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
             }
         };
         for (std::size_t f = 0; f < polygons.size(); ++f) {
-            const auto &corners = polygons[f];
+            auto corners = polygons[f];
             out.report["polygons"].push_back({{"source_polygon", f}, {"source_corners", corners}});
             if (corners.empty())
                 continue;
@@ -154,6 +291,7 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
                 indices.push_back(id);
                 points.push_back(g.vertices[id]);
             }
+            reduce_retraced_edges(points, indices, corners, out.report["polygons"].back());
             // Normalize the projection scale, retaining original 3D positions.
             double scale = 0;
             const auto origin = points.front();
@@ -179,6 +317,19 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
                 if (std::abs(normal[k]) > std::abs(normal[axis]))
                     axis = k;
             require(normal[axis] != 0, "BGFB Polyface degenerate projected area");
+            // A fold can be exactly collinear only in the chosen projection.
+            // Split its nonzero 3D triangle off instead of deleting that feature.
+            // Predicates use source binary64 coordinates, not normalized copies.
+            std::vector<Point3> spatial_points;
+            for (auto id : indices)
+                spatial_points.push_back(g.vertices[id]);
+            std::vector<BoundaryTriangle> boundary_triangles;
+            reduce_retraced_edges(spatial_points, indices, corners, out.report["polygons"].back(),
+                                  axis, &boundary_triangles);
+            points = std::move(spatial_points);
+            for (auto &point : points)
+                for (unsigned k = 0; k < 3; ++k)
+                    point[k] = (point[k] - origin[k]) / scale;
             const auto x = (axis + 1) % 3, y = (axis + 2) % 3;
             auto orient = [&](const Point3 &a, const Point3 &b, const Point3 &c) {
                 return (static_cast<long double>(b[x]) - a[x]) *
@@ -224,12 +375,19 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
             require(std::abs(area - normal[axis]) <=
                         1e-10 * std::abs(normal[axis]) * corners.size(),
                     "BGFB Polyface triangulation area mismatch");
-            require(triangles.size() <= options.max_triangles - g.faces.size(),
+            require(boundary_triangles.size() <= options.max_triangles - g.faces.size() &&
+                        triangles.size() <=
+                            options.max_triangles - g.faces.size() - boundary_triangles.size(),
                     "BGFB Polyface triangle budget");
             for (const auto &t : triangles) {
                 const std::array<std::size_t, 3> source{corners[t[0]], corners[t[1]],
                                                         corners[t[2]]};
-                g.faces.push_back({indices[t[0]], indices[t[1]], indices[t[2]]});
+                boundary_triangles.push_back(
+                    {{indices[t[0]], indices[t[1]], indices[t[2]]}, source});
+            }
+            for (const auto &triangle : boundary_triangles) {
+                const auto &source = triangle.second;
+                g.faces.push_back(triangle.first);
                 g.face_source_polygons.push_back(std::uint32_t(f));
                 out.face_source_corners.push_back(source);
                 g.face_normal_indices.push_back(binding("normalIndex", "normal", g.normals.size(),
