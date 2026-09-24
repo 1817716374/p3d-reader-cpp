@@ -3,6 +3,7 @@
 
 namespace p3d {
 SolidMeshResult mesh_bgfb_cone(const Json &, const PolyfaceMeshOptions &, unsigned);
+SolidMeshResult mesh_bgfb_sphere(const Json &, const PolyfaceMeshOptions &, unsigned);
 SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &options,
                                 unsigned circle_segments) {
     SolidMeshResult out;
@@ -10,6 +11,8 @@ SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &op
     try {
         if (table.at("_type") == "DgnCone")
             return mesh_bgfb_cone(table, options, circle_segments);
+        if (table.at("_type") == "DgnSphere")
+            return mesh_bgfb_sphere(table, options, circle_segments);
         require(table.at("_type") == "DgnBox", "BGFB solid tessellation type not supported");
         const auto &detail = table.at("detail");
         auto number = [&](const char *name) {

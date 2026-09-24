@@ -14,7 +14,7 @@ struct CsgMeshTreeOptions {
     std::size_t max_node_updates = 1000000;
     std::size_t max_geometry_visits = 1000000;
     std::size_t max_solid_triangles = 3000000; // Cumulative conversion output.
-    unsigned solid_circle_segments = 64;       // Derived cone mesh, not native angle_tolerance.
+    unsigned solid_circle_segments = 64;       // Derived solid mesh, not native angle_tolerance.
 };
 enum class CsgSourceKind { polyface, solid };
 struct CsgTreeTriangleSource {
