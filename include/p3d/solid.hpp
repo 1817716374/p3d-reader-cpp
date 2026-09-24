@@ -9,7 +9,7 @@ struct SolidMeshResult {
     // Native GeFaceIndices, indexed by derived.geometry.face_source_polygons.
     std::vector<std::array<std::int64_t, 3>> face_indices;
 };
-// Derived faces for DgnBox, DgnCone and DgnSphere, including uncapped solids.
+// Derived faces for DgnBox, DgnCone, DgnSphere and DgnTorusPipe.
 // Requires a nondegenerate frame. Boxes need nonzero widths with consistent
 // signs between the two ends. Other solids and collapsed/crossing boxes are reported
 // as not meshed. Cones use an explicit uniform angular segment count (>=3),
@@ -19,14 +19,17 @@ struct SolidMeshResult {
 // Spheres use the same longitude segment count, with uniform latitude bands no
 // larger than 2*pi/count. Raw latitudes must be distinct and within [-pi/2,pi/2].
 // The original affine frame is retained, including anisotropy, shear and reflection.
+// Torus meshing rotates the source start section; |majorRadius| must exceed
+// nonzero |minorRadius|. Native rotational sweeps are limited to one revolution.
 SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &options = {},
                                 unsigned circle_segments = 64);
-struct ConeTransformResult {
+struct SolidTransformResult {
     std::string status = "not_evaluated";
     Json transformed;
     Matrix4 geometry_transform{};
     Json report = Json::object();
 };
+using ConeTransformResult = SolidTransformResult;
 // Native GeConeInfo placement: normalize both transformed section vectors,
 // then scale BOTH radii by the first vector's length. geometry_transform maps
 // the original cone's points to those new parameters; it need not equal matrix.
@@ -38,4 +41,12 @@ ConeTransformResult transform_bgfb_cone(const Json &table, const Matrix4 &matrix
 // in source_latitudes. force_sweep_north orders only the reported clamped sweep.
 // Finite singular frames may be inspected even though meshing rejects them.
 Json native_bgfb_sphere_parameters(const Json &table, bool force_sweep_north = false);
+// Torus native parameter queries distinguish enumerated faces from actual caps.
+// Sweep meshing rotates the original start section about an orthogonal axis;
+// it does not treat the two stored directions as arbitrary affine torus axes.
+Json native_bgfb_torus_parameters(const Json &table);
+// Native placement normalizes both directions and scales both radii by the
+// first transformed direction's length. The returned matrix maps the derived
+// rotational-sweep geometry, including its recomputed normal direction.
+SolidTransformResult transform_bgfb_torus(const Json &table, const Matrix4 &matrix);
 } // namespace p3d

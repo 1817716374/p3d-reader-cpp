@@ -11,6 +11,7 @@ struct Object {
     std::shared_ptr<Runtime> nested;
     bool solid = false;
     std::shared_ptr<Json> cone;
+    std::shared_ptr<Json> torus;
     Object(Mesh value, bool is_solid = false) : mesh(std::move(value)), solid(is_solid) {}
     Object(std::shared_ptr<Runtime> value) : nested(std::move(value)) {}
 };
@@ -87,13 +88,14 @@ struct Runtime {
               "CSG geometry visit budget exceeded");
         ++work.geometry_visits;
         if (object.mesh) {
-            if (object.cone) {
-                auto placed = transform_bgfb_cone(*object.cone, m);
+            if (object.cone || object.torus) {
+                auto placed = object.cone ? transform_bgfb_cone(*object.cone, m)
+                                          : transform_bgfb_torus(*object.torus, m);
                 if (placed.status != "transformed")
                     throw std::runtime_error(
-                        placed.report.value("reason", std::string("CSG cone placement failed")));
+                        placed.report.value("reason", std::string("CSG solid placement failed")));
                 place({object.mesh}, placed.geometry_transform);
-                *object.cone = std::move(placed.transformed);
+                *(object.cone ? object.cone : object.torus) = std::move(placed.transformed);
             } else
                 place({object.mesh}, m);
         } else {
@@ -447,6 +449,8 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                     solid);
                 if (solid && table.at("_type") == "DgnCone")
                     pool.back().cone = std::make_shared<Json>(table);
+                if (solid && table.at("_type") == "DgnTorusPipe")
+                    pool.back().torus = std::make_shared<Json>(table);
             }
             if (std::string(list) == "node_caches")
                 runtime->state["node_caches"].push_back(nullptr);
