@@ -9,6 +9,9 @@ struct CsgMeshTreeOptions {
     std::size_t max_cached_triangles = 3000000;
     std::size_t max_cached_meshes = 100000;
     std::size_t max_vertex_transforms = 10000000;
+    std::size_t max_archive_depth = 32; // Root is depth zero; hard ceiling 128.
+    std::size_t max_node_updates = 1000000;
+    std::size_t max_geometry_visits = 1000000;
 };
 struct CsgTreeTriangleSource {
     std::size_t geometry_index = 0, face_index = 0;
@@ -47,9 +50,15 @@ struct CsgPolyfaceArchiveResult {
     // result face geometry_index/face_index. Binding status is independent of
     // geometry evaluation status; no final material selection is implied.
     std::vector<PolyfaceMeshResult> sources;
+    // One path per source: [{"list":"geometries"|"node_caches","index":N},...].
+    // Intermediate steps enter nested archives; the last step names the Polyface.
+    // Result geometry_index addresses the flattened sources vector, not the
+    // outer archive's geometry list. Without nesting these indices are unchanged.
+    std::vector<Json> source_paths;
 };
-// Reads and triangulates supported BGFB Polyface sources, then updates the tree.
-// Mesh point/corner/triangle budgets are shared across all original sources.
+// Reads supported BGFB Polyface sources and nested CSG archives. Nested objects
+// are placed, updated and expanded each time the native conversion visits them;
+// they are not precomputed once. Budgets are shared across the whole hierarchy.
 CsgPolyfaceArchiveResult
 evaluate_csg_polyface_archive(const Json &archive, const CsgMeshTreeOptions &tree_options = {},
                               const PolyfaceMeshOptions &mesh_options = {});

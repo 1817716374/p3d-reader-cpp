@@ -42,6 +42,29 @@ double volume(const CsgTreeMesh &g) {
     }
     return v / 6;
 }
+Json polyface_entry(const Geometry &g) {
+    Json points = Json::array(), indices = Json::array();
+    for (const auto &p : g.vertices)
+        for (double x : p)
+            points.push_back(x);
+    for (const auto &t : g.faces) {
+        for (auto i : t)
+            indices.push_back(i + 1);
+        indices.push_back(0);
+    }
+    return {{"status", "decoded"},
+            {"encoding", "bgfb"},
+            {"geometry",
+             {{"geometry",
+               {{"_type", "Polyface"},
+                {"meshStyle", 1},
+                {"numPerFace", 0},
+                {"point", points},
+                {"pointIndex", indices}}}}}};
+}
+Json nested_entry(const Json &child) {
+    return {{"status", "decoded"}, {"encoding", "csg_archive"}, {"geometry", child}};
+}
 } // namespace
 unsigned csg_mesh_tree_tests() {
     unsigned checks = 0;
@@ -198,5 +221,123 @@ unsigned csg_mesh_tree_tests() {
     check(evaluate_csg_polyface_tree(tree, {a, b}, options).status == "work_limit",
           "cache triangle budget");
     validate(evaluate_csg_polyface_tree(archive(Json::array(), 0), {}), {}, {});
+    // Outer +2 placement must happen BEFORE the inner leaf's own +1.
+    auto inner = archive({node(0, {0}, nullptr, nullptr, {0})}, 1);
+    inner["geometries"][0] = polyface_entry(a);
+    auto outer = archive({node(0, {0}, nullptr, nullptr, {1})}, 1);
+    outer["geometries"][0] = nested_entry(inner);
+    const auto immutable = outer;
+    auto automatic = evaluate_csg_polyface_archive(outer);
+    validate(automatic.result, {a}, {8});
+    check(automatic.result.meshes[0].vertices[0][0] == 3 && outer == immutable,
+          "nested object is placed before inner update; caller archive is immutable");
+    const Json nested_path = {{{"list", "geometries"}, {"index", 0}},
+                              {{"list", "geometries"}, {"index", 0}}};
+    check(automatic.sources.size() == 1 && automatic.source_paths[0] == nested_path,
+          "nested source path identifies original Polyface and its attribute pool");
+    // This is not equivalent to evaluating the inner tree once, then placing
+    // its result. On the second visit, geometry AND its aliased cache receive +2,
+    // followed by a fresh +1 inner leaf placement: 2+1+2+2+1 = 8.
+    outer["tree"]["nodes"][0]["geometry_indices"] = {0, 0};
+    automatic = evaluate_csg_polyface_archive(outer);
+    validate(automatic.result, {a}, {8});
+    check(automatic.result.meshes[0].face_sources[0].source_to_result[0][3] == 8,
+          "repeated nested source preserves cache alias and reruns inner update");
+    check(automatic.result.diagnostics["boolean_operations"] == 1 &&
+              automatic.result.diagnostics["generated_cache_count"] == 3,
+          "nested cache creation and Boolean work share global counters");
+    // Parent scale followed by inner translation is noncommutative.
+    outer["tree"]["nodes"][0]["geometry_indices"] = {0};
+    outer["transforms"][1]["matrix_3x4_rows"] = {
+        {2., 0., 0., 0.}, {0., 1., 0., 0.}, {0., 0., 1., 0.}};
+    automatic = evaluate_csg_polyface_archive(outer);
+    validate(automatic.result, {a}, {16});
+    check(automatic.result.meshes[0].vertices[0][0] == 1,
+          "nested node matrices are not transformed or hoisted above source placement");
+    // A third archive layer preserves original source coordinates and path.
+    auto wrapper = archive({node(4, {0})}, 1);
+    wrapper["geometries"][0] = nested_entry(outer);
+    automatic = evaluate_csg_polyface_archive(wrapper);
+    validate(automatic.result, {a}, {16});
+    check(automatic.source_paths[0].size() == 3,
+          "multiple archive levels retain each source path step");
+    // Child root emits two meshes, which become distinct parent Boolean inputs.
+    inner = archive({node(3, Json::array(), 1, 2), node(4, {0}), node(4, {1})}, 2);
+    inner["geometries"][0] = polyface_entry(a);
+    inner["geometries"][1] = polyface_entry(cube(10));
+    outer = archive({node(0, {0})}, 1);
+    outer["geometries"][0] = nested_entry(inner);
+    automatic = evaluate_csg_polyface_archive(outer);
+    validate(automatic.result, {a, cube(10)}, {16});
+    check(automatic.sources.size() == 2 && automatic.source_paths[1].back()["index"] == 1 &&
+              automatic.result.diagnostics["boolean_operations"] == 1,
+          "expanded nested groups participate individually in parent list operation");
+    options = {};
+    options.boolean.max_output_groups = 1;
+    validate(evaluate_csg_polyface_archive(outer, options).result, {a, cube(10)}, {16});
+    // A computed child cache does not alias either original source. On the
+    // second visit it receives the outer +10, but not the subsequent inner +1.
+    // First child result ends at x=[21,24], fresh result at x=[22,25].
+    auto recomputed = archive({node(0, {0, 1}, nullptr, nullptr, {0})}, 2);
+    recomputed["geometries"][0] = polyface_entry(a);
+    recomputed["geometries"][1] = polyface_entry(b);
+    auto repeated = archive({node(0, {0, 0}, nullptr, nullptr, {0})}, 1);
+    repeated["transforms"][0]["matrix_3x4_rows"][0][3] = 10.;
+    repeated["geometries"][0] = nested_entry(recomputed);
+    automatic = evaluate_csg_polyface_archive(repeated);
+    validate(automatic.result, {a, b}, {16});
+    bool earlier_cache = false, later_cache = false;
+    for (const auto &source : automatic.result.meshes[0].face_sources) {
+        earlier_cache |= source.source_to_result[0][3] == 21;
+        later_cache |= source.source_to_result[0][3] == 22;
+    }
+    check(earlier_cache && later_cache,
+          "retired derived cache keeps identity and its own accumulated placement");
+    // Stored child caches are transformed before being discarded, but never
+    // substituted for the fresh nested output. Root saved caches are discarded first.
+    inner["node_caches"] = {polyface_entry(cube(100))};
+    outer["geometries"][0] = nested_entry(inner);
+    outer["node_caches"] = {{{"opaque_old_cache", true}}};
+    automatic = evaluate_csg_polyface_archive(outer);
+    validate(automatic.result, {a, cube(10), cube(100)}, {16});
+    check(automatic.sources.size() == 3 &&
+              automatic.source_paths[2].back()["list"] == "node_caches",
+          "nested saved cache has a distinct source identity");
+    options = {};
+    options.max_archive_depth = 0;
+    check(evaluate_csg_polyface_archive(outer, options).result.status == "work_limit",
+          "nested archive depth budget");
+    options = {};
+    options.max_nodes = 3; // Outer one plus inner three exceeds total.
+    check(evaluate_csg_polyface_archive(outer, options).result.status == "work_limit",
+          "node budget spans nested archives");
+    options = {};
+    options.max_node_updates = 3;
+    auto exhausted = evaluate_csg_polyface_archive(outer, options);
+    check(exhausted.result.status == "work_limit" && exhausted.result.meshes.empty(),
+          "nested node visit limit is atomic");
+    options = {};
+    options.max_geometry_visits = 5;
+    check(evaluate_csg_polyface_archive(outer, options).result.status == "work_limit",
+          "loading and repeated nested traversal share geometry visit budget");
+    options = {};
+    options.max_cached_meshes = 0;
+    check(evaluate_csg_polyface_archive(outer, options).result.status == "work_limit",
+          "cache budget includes child and parent outputs");
+    PolyfaceMeshOptions source_limit;
+    source_limit.max_points = 20; // Three eight-point pools including saved child cache.
+    exhausted = evaluate_csg_polyface_archive(outer, {}, source_limit);
+    check(exhausted.result.status != "evaluated" && exhausted.result.meshes.empty(),
+          "source point budget includes nested saved caches");
+    outer["geometries"][0]["geometry"]["geometries"][0]["geometry"]["geometry"]["_type"] = "DgnBox";
+    exhausted = evaluate_csg_polyface_archive(outer);
+    check(exhausted.result.status != "evaluated" && exhausted.result.meshes.empty() &&
+              exhausted.result.diagnostics["source_path"] == nested_path,
+          "unsupported nested source reports its path without partial output");
+    auto empty_child = archive(Json::array(), 0);
+    outer = archive({node(0, {0})}, 1);
+    outer["geometries"][0] = nested_entry(empty_child);
+    automatic = evaluate_csg_polyface_archive(outer);
+    validate(automatic.result, {}, {});
     return checks;
 }
