@@ -12,6 +12,7 @@ unsigned csg_tests();
 unsigned csg_mesh_tests();
 unsigned csg_mesh_tree_tests();
 unsigned polyface_tests();
+unsigned solid_tests();
 unsigned native_font_selection_tests();
 unsigned native_text_style_tests();
 unsigned native_text_character_tests();
@@ -2781,6 +2782,7 @@ int main() {
         checks += csg_mesh_tests();
         checks += csg_mesh_tree_tests();
         checks += polyface_tests();
+        checks += solid_tests();
         checks += bfa_tests();
         checks += bspline_trim_tests();
         checks += bspline_mesh_tests();

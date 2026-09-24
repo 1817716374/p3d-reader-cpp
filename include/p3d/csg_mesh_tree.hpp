@@ -1,6 +1,7 @@
 #pragma once
 #include <p3d/csg_mesh.hpp>
 #include <p3d/polyface.hpp>
+#include <p3d/solid.hpp>
 
 namespace p3d {
 struct CsgMeshTreeOptions {
@@ -12,13 +13,16 @@ struct CsgMeshTreeOptions {
     std::size_t max_archive_depth = 32; // Root is depth zero; hard ceiling 128.
     std::size_t max_node_updates = 1000000;
     std::size_t max_geometry_visits = 1000000;
+    std::size_t max_solid_triangles = 3000000; // Cumulative conversion output.
 };
+enum class CsgSourceKind { polyface, solid };
 struct CsgTreeTriangleSource {
     std::size_t geometry_index = 0, face_index = 0;
     Matrix4 source_to_result{};
     bool backside = false; // Boolean reversal, excluding placement handedness.
     std::array<std::array<double, 3>, 3> corner_barycentric{};
     std::array<double, 3> corner_projection_distance{};
+    CsgSourceKind source_kind = CsgSourceKind::polyface;
 };
 struct CsgTreeMesh {
     std::vector<Point3> vertices;
@@ -53,10 +57,15 @@ struct CsgPolyfaceArchiveResult {
     // One path per source: [{"list":"geometries"|"node_caches","index":N},...].
     // Intermediate steps enter nested archives; the last step names the Polyface.
     // Result geometry_index addresses the flattened sources vector, not the
-    // outer archive's geometry list. Without nesting these indices are unchanged.
+    // outer archive's geometry list. Without nesting or solid entries these
+    // indices are unchanged. source_kind selects the Polyface or solid pool.
     std::vector<Json> source_paths;
+    // Solid inputs keep their original analytic table separately. Faces with
+    // source_kind==solid address these vectors with geometry_index.
+    std::vector<SolidMeshResult> solid_sources;
+    std::vector<Json> solid_source_paths;
 };
-// Reads supported BGFB Polyface sources and nested CSG archives. Nested objects
+// Reads supported BGFB Polyface/solid sources and nested CSG archives. Nested objects
 // are placed, updated and expanded each time the native conversion visits them;
 // they are not precomputed once. Budgets are shared across the whole hierarchy.
 CsgPolyfaceArchiveResult
