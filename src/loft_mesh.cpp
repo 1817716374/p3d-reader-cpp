@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "bspline_denominator.hpp"
+#include "planar_rings.hpp"
 #include "glu/sk_glu.h"
 #include <deque>
 
@@ -367,6 +368,17 @@ std::vector<Triangle> cap_faces(const std::vector<Ring> &rings, const std::vecto
     return faces;
 }
 } // namespace
+
+std::vector<Triangle> triangulate_planar_sample_rings(
+    const std::vector<std::vector<std::uint32_t>> &rings,
+    const std::vector<Point3> &vertices, unsigned triangle_budget) {
+    LoftMeshOptions options;
+    double plane_error = 0, collinear_distance = 0;
+    unsigned plane_budget = 0;
+    Json reports = Json::array();
+    return cap_faces(rings, vertices, Json(), options, triangle_budget,
+                     plane_error, collinear_distance, plane_budget, reports);
+}
 
 LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {
     require(std::isfinite(options.max_uv_edge) && options.max_uv_edge > 0 &&

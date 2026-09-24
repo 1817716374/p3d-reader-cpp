@@ -9,7 +9,8 @@ struct SolidMeshResult {
     // Native GeFaceIndices, indexed by derived.geometry.face_source_polygons.
     std::vector<std::array<std::int64_t, 3>> face_indices;
 };
-// Derived faces for DgnBox, DgnCone, DgnSphere and DgnTorusPipe.
+// Derived faces for DgnBox, DgnCone, DgnSphere, DgnTorusPipe,
+// DgnExtrusion and DgnRuledSweep.
 // Requires a nondegenerate frame. Boxes need nonzero widths with consistent
 // signs between the two ends. Other solids and collapsed/crossing boxes are reported
 // as not meshed. Cones use an explicit uniform angular segment count (>=3),
@@ -21,6 +22,12 @@ struct SolidMeshResult {
 // The original affine frame is retained, including anisotropy, shear and reflection.
 // Torus meshing rotates the source start section; |majorRadius| must exceed
 // nonzero |minorRadius|. Native rotational sweeps are limited to one revolution.
+// Extrusion/ruled profiles support line segments, line strings and elliptic arcs,
+// open chains without caps, closed loops, parity regions and union children.
+// Corresponding source primitive/component counts must agree. Closed profiles
+// currently require planar end regions; no missing boundary segment is invented.
+// circle_segments controls arc sampling and V bands for nonplanar ruled patches.
+// These derived meshes do not claim a world-space error bound or native UVs.
 SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &options = {},
                                 unsigned circle_segments = 64);
 struct SolidTransformResult {
