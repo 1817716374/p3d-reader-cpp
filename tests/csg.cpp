@@ -133,6 +133,99 @@ unsigned csg_tests() {
               q["matrix_indices"][0]["status"] == "out_of_range" &&
               q["matrix_indices"][1]["target_index"] == 0,
           "CSG native zero-based associations retain repeated targets and invalid source values");
+    auto input = csg_node_geometry_input(j, 0);
+    check(input["status"] == "source_selection_known" && input["selected_sources"].size() == 4 &&
+              input["skipped_sources"].size() == 2 &&
+              input["selected_sources"][0]["list"] == "node_caches" &&
+              input["selected_sources"][1]["target_index"] == 2 &&
+              input["selected_sources"][2]["target_index"] == 0 &&
+              input["selected_sources"][3]["target_index"] == 2,
+          "CSG result accessor preserves cache-first order and repeated valid geometry references");
+    check(input["node_transform"]["status"] == "identity_fallback" &&
+              input["node_transform"]["source_index"] == 1 &&
+              input["node_transform"]["ignored_later_indices"] == 1,
+          "CSG transform uses first source index without falling through to later valid index");
+    auto selected = j;
+    selected["tree"]["nodes"][0]["matrix_indices"] = {0, 99};
+    input = csg_node_geometry_input(selected, 0);
+    check(input["node_transform"]["matrix_3x4_rows"] == j["transforms"][0]["matrix_3x4_rows"] &&
+              input["node_transform"]["selected_transform_index"] == 0,
+          "CSG node accessor selects the persisted transform by native first index");
+    auto mesh_input = csg_mesh_input(selected);
+    check(mesh_input["conversion_matrix_3x4_rows"] ==
+                  Json({{1., 0., 0., 0.}, {0., 1., 0., 0.}, {0., 0., 1., 0.}}) &&
+              mesh_input["angle_tolerance"] == 36 &&
+              mesh_input["selected_sources"] == input["selected_sources"] &&
+              mesh_input["mesh_evaluation_status"] == "not_evaluated",
+          "root mesh conversion supplies identity rather than reapplying node transform");
+    for (const auto &indices : {Json::array(), Json({-1, 0})}) {
+        selected["tree"]["nodes"][0]["matrix_indices"] = indices;
+        check(csg_node_geometry_input(selected, 0)["node_transform"]["matrix_3x4_rows"] ==
+                  mesh_input["conversion_matrix_3x4_rows"],
+              "CSG empty or negative first transform index returns identity");
+    }
+    for (int operation : {-1, 0, 1, 2, 3, 4, 5, 99})
+        for (int old : {0, 1, 2}) {
+            auto state = j;
+            state["tree"]["nodes"][0]["operation"] = operation;
+            state["tree"]["nodes"][0]["is_old_value"] = old;
+            const auto value = csg_node_geometry_input(state, 0);
+            const bool included = operation != 0 && operation != 1 ? true : old != 0;
+            check(value["geometry_included"] == included &&
+                      value["selected_sources"].size() == (included ? 4u : 1u),
+                  "CSG stored leaf operation gate only suppresses geometry for operation 0/1 and "
+                  "zero isOld");
+        }
+    auto parent = decode_csg_bytes(archive(branch(1, leaf())));
+    parent["tree"]["nodes"][0]["operation"] = 0;
+    parent["tree"]["nodes"][0]["is_old_value"] = 0;
+    input = csg_node_geometry_input(parent, 0);
+    check(input["is_leaf"] == false && input["geometry_included"] == true,
+          "CSG nonleaf union keeps own stored geometry without recursively concatenating children");
+    parent["tree"]["nodes"][1]["status"] = "unsupported_version";
+    input = csg_node_geometry_input(parent, 0);
+    check(input["status"] == "partial" && input["geometry_included"].is_null(),
+          "CSG unknown child presence cannot prove leaf-dependent operand selection");
+    parent["tree"]["nodes"][0]["is_old_value"] = 1;
+    check(csg_node_geometry_input(parent, 0)["status"] == "source_selection_known",
+          "CSG state flag can settle selection independently of unresolved child presence");
+    parent["tree"]["nodes"][0]["status"] = "node_limit";
+    check(csg_mesh_input(parent)["status"] == "not_evaluated",
+          "CSG mesh input does not fabricate a selection from a deferred root");
+    auto subtree_only =
+        decode_csg_bytes(archive(branch(3, n, n), {line(), line(), line()}, {line()}, true));
+    check(subtree_only["mesh_input"]["selected_sources"].empty() &&
+              !csg_node_geometry_input(subtree_only, 1)["selected_sources"].empty(),
+          "CSG root mesh input does not substitute child geometry for empty stored root lists");
+    const auto nested_source = archive(leaf(), {line()}, {}, true);
+    const auto nested_bytes = archive(leaf(), {nested_source, line()}, {nested_source});
+    auto nested = decode_csg_bytes(nested_bytes);
+    check(nested["geometries"][0]["encoding"] == "csg_archive" &&
+              nested["geometries"][0]["geometry"]["_type"] == "GeCsgTree" &&
+              nested["node_caches"][0]["geometry"]["tree"]["nodes"].size() == 1 &&
+              nested["geometries"][1]["geometry"]["geometry"]["_type"] == "LineSegment",
+          "CSG geometry and cache lists dispatch nested archives as well as BGFB");
+    const auto inner = nested["geometries"][0]["geometry"];
+    check(inner["source_offset"] == 12 && inner["geometries"][0]["source_offset"] == 24 &&
+              !inner.contains("raw_base64") && nested["raw_base64"] == base64(nested_bytes),
+          "nested CSG source ranges share the outer archive without copying complete raw payloads");
+    nested = decode_csg_bytes(nested_bytes, 100000, 0);
+    check(nested["geometries"][0]["status"] == "archive_depth_limit" &&
+              nested["geometries"][1]["status"] == "decoded" &&
+              nested["tree"]["status"] == "decoded",
+          "nested CSG depth limit retains bounded source and independent siblings and root");
+    nested = decode_csg_bytes(archive(leaf(), {archive(leaf())}), 1);
+    check(nested["geometries"][0]["geometry"]["tree"]["status"] == "decoded" &&
+              nested["tree"]["nodes"][0]["status"] == "node_limit",
+          "nested CSG archives share one node budget instead of resetting it per payload");
+    nested = decode_csg_bytes(archive(leaf(), {Bytes{22, 0, 0, 0}, line()}));
+    check(nested["geometries"][0]["status"] == "not_decoded" &&
+              nested["geometries"][1]["status"] == "decoded" &&
+              nested["tree"]["status"] == "decoded",
+          "malformed nested CSG archive cannot consume next geometry or parent suffix");
+    nested = decode_csg_bytes(archive(leaf(), {archive(leaf(), {archive(leaf())})}), 100000, 1);
+    check(nested["geometries"][0]["geometry"]["geometries"][0]["status"] == "archive_depth_limit",
+          "CSG archive depth counts nested archives independently of binary tree depth");
     for (unsigned code : {1u, 2u, 3u, 4u, 255u}) {
         j = decode_csg_bytes(archive(branch(code, leaf(), leaf())));
         const auto &t = j["tree"];

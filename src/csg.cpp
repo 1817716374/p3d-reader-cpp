@@ -3,6 +3,11 @@
 
 namespace p3d {
 namespace {
+struct Budget {
+    std::size_t nodes;
+    std::size_t max_depth;
+};
+Json decode_archive(const Bytes &, std::size_t, std::size_t, Budget &, std::size_t);
 // A view into the archive: child lengths cannot expose a sibling's bytes.
 struct Cursor {
     Reader r;
@@ -50,7 +55,7 @@ Json indices(Cursor &r) {
         out.push_back(r.integer());
     return out;
 }
-Json nodes(const Bytes &b, std::size_t offset, std::size_t size, std::size_t max_nodes) {
+Json nodes(const Bytes &b, std::size_t offset, std::size_t size, Budget &budget) {
     Json out = {{"nodes", Json::array()}, {"root_index", nullptr}, {"status", "decoded"}};
     if (!size)
         return out;
@@ -67,7 +72,6 @@ Json nodes(const Bytes &b, std::size_t offset, std::size_t size, std::size_t max
         return id;
     };
     out["root_index"] = add(offset, size);
-    std::size_t decoded = 0;
     for (std::size_t i = 0; i < pending.size(); ++i) {
         const auto item = pending[i];
         Json node = range(item.offset, item.size);
@@ -76,10 +80,10 @@ Json nodes(const Bytes &b, std::size_t offset, std::size_t size, std::size_t max
         node["right_index"] = nullptr;
         node["status"] = "decoded";
         try {
-            if (decoded >= max_nodes) {
+            if (!budget.nodes) {
                 node["status"] = "node_limit";
             } else {
-                ++decoded;
+                --budget.nodes;
                 Cursor r(b, item.offset, item.size);
                 const auto version = r.integer();
                 node["version"] = version;
@@ -134,7 +138,7 @@ Json nodes(const Bytes &b, std::size_t offset, std::size_t size, std::size_t max
     }
     return out;
 }
-Json geometry_list(Cursor &r) {
+Json geometry_list(Cursor &r, Budget &budget, std::size_t depth) {
     const auto count = r.count(4);
     Json result = Json::array();
     for (std::size_t i = 0; i < count; ++i) {
@@ -143,7 +147,18 @@ Json geometry_list(Cursor &r) {
         item["source_index"] = i;
         item["status"] = "decoded";
         try {
-            item["geometry"] = decode_bgfb(slice(r.r.b, block.first, block.second));
+            if (block.second >= 4 && Reader(r.r.b, block.first).u32() == 22) {
+                item["encoding"] = "csg_archive";
+                if (depth >= budget.max_depth) {
+                    item["status"] = "archive_depth_limit";
+                } else {
+                    item["geometry"] =
+                        decode_archive(r.r.b, block.first, block.second, budget, depth + 1);
+                }
+            } else {
+                item["encoding"] = "bgfb";
+                item["geometry"] = decode_bgfb(slice(r.r.b, block.first, block.second));
+            }
         } catch (const std::exception &e) {
             item["status"] = "not_decoded";
             item["decode_error"] = e.what();
@@ -171,20 +186,22 @@ void references(Json &tree, std::size_t geometries, std::size_t caches, std::siz
         }
     }
 }
-} // namespace
-Json decode_csg_bytes(const Bytes &b, std::size_t max_nodes) {
-    Cursor r(b, 0, b.size());
+Json decode_archive(const Bytes &b, std::size_t offset, std::size_t size, Budget &budget,
+                    std::size_t depth) {
+    Cursor r(b, offset, size);
     const auto marker = r.integer();
     require(marker == 22, "CSG archive marker");
     Json out = {{"_type", "GeCsgTree"},
                 {"encoding", "csg_archive"},
                 {"marker", marker},
-                {"raw_base64", base64(b)},
+                {"source_offset", offset},
+                {"source_bytes", size},
+                {"source_offset_basis", "outermost_csg_archive"},
                 {"archive_status", "decoded"},
                 {"boolean_evaluation_status", "not_evaluated"},
                 {"native_restore_status", "not_evaluated"}};
-    out["geometries"] = geometry_list(r);
-    out["node_caches"] = geometry_list(r);
+    out["geometries"] = geometry_list(r, budget, depth);
+    out["node_caches"] = geometry_list(r, budget, depth);
     const auto count = r.count(96);
     out["transforms"] = Json::array();
     for (std::size_t i = 0; i < count; ++i) {
@@ -197,7 +214,7 @@ Json decode_csg_bytes(const Bytes &b, std::size_t max_nodes) {
     }
     out["angle_tolerance"] = r.integer();
     const auto tree = r.block();
-    out["tree"] = nodes(b, tree.first, tree.second, max_nodes);
+    out["tree"] = nodes(b, tree.first, tree.second, budget);
     out["tree"].update(range(tree.first, tree.second));
     references(out["tree"], out["geometries"].size(), out["node_caches"].size(), count);
     out["reference_index_basis"] = "zero_based_within_each_archive_list";
@@ -210,6 +227,17 @@ Json decode_csg_bytes(const Bytes &b, std::size_t max_nodes) {
         out["trailing_bytes"] = range(r.r.p, r.left());
         out["archive_status"] = "decoded_with_trailing_bytes";
     }
+    out["mesh_input"] = csg_mesh_input(out);
+    return out;
+}
+} // namespace
+Json decode_csg_bytes(const Bytes &b, std::size_t max_nodes, std::size_t max_archive_depth) {
+    // Bound the recursive JSON nesting even if the caller supplies an excessive
+    // depth. The binary node tree itself is decoded iteratively.
+    require(max_archive_depth <= 128, "CSG maximum archive depth exceeds 128");
+    Budget budget{max_nodes, max_archive_depth};
+    auto out = decode_archive(b, 0, b.size(), budget, 0);
+    out["raw_base64"] = base64(b);
     return out;
 }
 } // namespace p3d
