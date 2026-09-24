@@ -126,6 +126,109 @@ unsigned csg_mesh_tests() {
           "oversized result is not emitted as a partial mesh");
     check(evaluate_csg_mesh_boolean(a, b, 3).status == "invalid_input",
           "Compound is not silently treated as a Boolean union");
+    const std::vector<Geometry> list_left{cube(0), cube(.5)};
+    const std::vector<Geometry> list_right{cube(1), cube(1.5)};
+    auto validate_list = [&](const CsgMeshListResult &r, const std::vector<Geometry> &left,
+                             const std::vector<Geometry> &right, const std::vector<double> &volumes,
+                             std::size_t operations) {
+        check(r.status == "evaluated", r.diagnostics.dump().c_str());
+        check(r.groups.size() == volumes.size(), "CSG grouped output cardinality");
+        check(r.diagnostics.at("boolean_operations") == operations,
+              "CSG grouped operation count follows native order");
+        for (std::size_t n = 0; n < r.groups.size(); ++n) {
+            const auto &group = r.groups[n];
+            const auto &mesh = group.mesh;
+            check(mesh.status == "evaluated" && std::abs(volume(mesh) - volumes[n]) < 1e-9,
+                  "CSG group independently computed signed volume");
+            check(mesh.face_sources.size() == mesh.faces.size(), "CSG group source cardinality");
+            for (std::size_t f = 0; f < mesh.faces.size(); ++f) {
+                const auto &s = mesh.face_sources[f];
+                check(s.operand < 2, "CSG source operand range");
+                const auto &inputs = s.operand ? right : left;
+                const auto &members = s.operand ? group.right_indices : group.left_indices;
+                check(s.mesh_index < inputs.size() &&
+                          std::find(members.begin(), members.end(), s.mesh_index) != members.end(),
+                      "CSG source identifies original list entry within its output group");
+                const auto &g = inputs.at(s.mesh_index);
+                check(s.face_index < g.faces.size(), "CSG group source face range");
+                for (unsigned k = 0; k < 3; ++k) {
+                    check(s.corner_projection_distance[k] < 1e-9,
+                          "CSG grouped source displacement bounded");
+                    for (unsigned axis = 0; axis < 3; ++axis) {
+                        double coordinate = 0;
+                        for (unsigned j = 0; j < 3; ++j)
+                            coordinate += s.corner_barycentric[k][j] *
+                                          g.vertices[g.faces[s.face_index][j]][axis];
+                        check(std::abs(coordinate - mesh.vertices[mesh.faces[f][k]][axis]) < 1e-9,
+                              "CSG repeated operations retain original corner provenance");
+                    }
+                }
+            }
+        }
+    };
+    auto intersections = evaluate_csg_mesh_lists(list_left, list_right, 1);
+    validate_list(intersections, list_left, list_right, {4, 2, 6, 4}, 4);
+    for (std::size_t i = 0; i < 4; ++i)
+        check(intersections.groups[i].left_indices == std::vector<std::size_t>{i / 2} &&
+                  intersections.groups[i].right_indices == std::vector<std::size_t>{i % 2},
+              "CSG intersections preserve left-major pair order, including overlap");
+    validate_list(evaluate_csg_mesh_lists(list_left, list_right, 0), list_left, list_right, {14},
+                  3);
+    auto differences = evaluate_csg_mesh_lists(list_left, list_right, 2);
+    validate_list(differences, list_left, list_right, {4, 2}, 4);
+    for (const auto &group : differences.groups)
+        for (const auto &s : group.mesh.face_sources)
+            if (s.operand == 1)
+                check(s.backside,
+                      "list difference preserves cutter orientation through later cuts");
+    const std::vector<Geometry> series{cube(0), cube(.5), cube(1)};
+    validate_list(reduce_csg_mesh_list(series, 0), series, {}, {12}, 2);
+    validate_list(reduce_csg_mesh_list(series, 1), series, {}, {4}, 2);
+    validate_list(reduce_csg_mesh_list({}, 1), {}, {}, {}, 0);
+    const std::vector<Geometry> duplicates{a, a};
+    auto passed = evaluate_csg_mesh_lists({}, duplicates, 0);
+    validate_list(passed, {}, duplicates, {8, 8}, 0);
+    for (std::size_t i = 0; i < 2; ++i) {
+        check(passed.groups[i].mesh.vertices == a.vertices &&
+                  passed.groups[i].mesh.faces == a.faces,
+              "empty-list union preserves each duplicate mesh's exact topology");
+        check(passed.groups[i].mesh.face_sources[0].mesh_index == i,
+              "identical list entries retain separate identities");
+    }
+    validate_list(evaluate_csg_mesh_lists(duplicates, {}, 2), duplicates, {}, {8, 8}, 0);
+    validate_list(evaluate_csg_mesh_lists(duplicates, {}, 1), duplicates, {}, {}, 0);
+    validate_list(evaluate_csg_mesh_lists({}, duplicates, 2), {}, duplicates, {}, 0);
+    validate_list(evaluate_csg_mesh_lists(duplicates, {disjoint}, 1), duplicates, {disjoint},
+                  {0, 0}, 2);
+    validate_list(reduce_csg_mesh_list({a}, 1), {a}, {}, {8}, 0);
+    check(reduce_csg_mesh_list({a}, 2).status == "invalid_input",
+          "leaf difference is not invented");
+    CsgMeshListOptions list_options;
+    list_options.max_boolean_operations = 3;
+    auto limited = evaluate_csg_mesh_lists(list_left, list_right, 1, list_options);
+    check(limited.status == "work_limit" && limited.groups.empty() &&
+              limited.diagnostics.at("boolean_operations") == 0,
+          "Cartesian operation budget checked before any work");
+    list_options = {};
+    list_options.max_output_groups = 1;
+    limited = evaluate_csg_mesh_lists(duplicates, {}, 0, list_options);
+    check(limited.status == "work_limit" && limited.groups.empty(), "passthrough group budget");
+    list_options = {};
+    list_options.mesh.max_output_triangles = a.faces.size();
+    limited = evaluate_csg_mesh_lists(duplicates, {}, 0, list_options);
+    check(limited.status == "output_limit" && limited.groups.empty(),
+          "aggregate output triangle limit discards earlier successful groups");
+    list_options.mesh.max_output_triangles = 0;
+    limited = reduce_csg_mesh_list(series, 0, list_options);
+    check(limited.status == "output_limit" && limited.groups.empty(),
+          "intermediate triangle limit is enforced");
+    auto bad_list = list_left;
+    bad_list.back().unknown.push_back({{"reason", "unresolved"}});
+    limited = evaluate_csg_mesh_lists(bad_list, list_right, 1);
+    check(limited.status == "invalid_input" && limited.groups.empty() &&
+              limited.diagnostics.at("input_mesh_index") == 1 &&
+              limited.diagnostics.at("boolean_operations") == 0,
+          "late invalid list entry fails atomically with original input identity");
     std::vector<std::future<CsgMeshBooleanResult>> jobs;
     for (int i = 0; i < 4; ++i)
         jobs.push_back(
