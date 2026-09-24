@@ -150,10 +150,20 @@ Json decode_native_material_assignment_table(const std::string &xml,
     try {
         pugi::xml_document document;
         auto parsed = document.load_buffer(
-            xml.data(), xml.size(), pugi::parse_full | pugi::parse_ws_pcdata, pugi::encoding_utf8);
+            xml.data(), xml.size(), pugi::parse_full | pugi::parse_ws_pcdata | pugi::parse_fragment,
+            pugi::encoding_utf8);
         require(bool(parsed), "assignment_table_invalid_xml");
-        for (auto n : document.children())
+        unsigned roots = 0;
+        for (auto n : document.children()) {
             require(n.type() != pugi::node_doctype, "assignment_table_dtd_not_supported");
+            if (n.type() == pugi::node_element)
+                ++roots;
+            else if (n.type() == pugi::node_pcdata || n.type() == pugi::node_cdata)
+                require(std::string(n.value()).find_first_not_of(" \t\r\n") == std::string::npos,
+                        "assignment_table_text_outside_root");
+        }
+        require(roots == 1, "assignment_table_requires_one_root");
+        require(xml.find('\0') == std::string::npos, "assignment_xml_contains_nul");
         auto root = document.document_element();
         require(bool(root), "assignment_table_root_required");
         std::function<void(pugi::xml_node, unsigned)> inspect = [&](pugi::xml_node n,
@@ -296,6 +306,129 @@ Json lookup_native_material_assignment(const Json &table, const NativeAssignment
                 return out;
             }
         out["status"] = "not_found";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json select_native_material_assignment_table(const Json &attributes,
+                                             const std::u16string &requested_name,
+                                             const NativeAssignmentTextContext &text) {
+    Json out = {{"status", "unresolved"},
+                {"scope", "selected_model_head_attributes_without_runtime_callbacks"},
+                {"candidates", Json::array()},
+                {"model_selection", "caller_supplied"},
+                {"runtime_cache", "not_evaluated"}};
+    try {
+        require(attributes.is_array(), "assignment_attributes_must_be_array");
+        const auto lookup = native_attribute_lookup(attributes);
+        require(lookup.at("status") == "resolved", "assignment_attribute_order_unresolved");
+        out["sorted_source_ordinals"] = lookup.at("sorted_source_ordinals");
+        auto name = requested_name.substr(0, requested_name.find(u'\0'));
+        out["requested_name_utf16_code_units"] =
+            std::vector<std::uint16_t>(name.begin(), name.end());
+        // This native iterator visits every equal-key entry, unlike exact-index
+        // lookup, which selects one duplicate using its own small-list rule.
+        for (const auto &ordinal : lookup.at("sorted_source_ordinals")) {
+            const auto i = ordinal.get<std::size_t>();
+            const auto &attribute = attributes.at(i);
+            if (attribute.at("group") != 0 || attribute.at("key") != 20015)
+                continue;
+            Json candidate = {{"source_ordinal", i},
+                              {"attribute_index", attribute.at("index")},
+                              {"status", "unresolved"}};
+            out["candidates"].push_back(candidate);
+            auto decoded = decode_attribute(0, 20015, bytesof(attribute.at("payload")),
+                                            attribute.at("index").get<unsigned>());
+            require(decoded.contains("data"), "assignment_attribute_codec_unresolved");
+            const auto data = bytesof(decoded.at("data"));
+            std::size_t end = 0;
+            while (end + 1 < data.size() && (data[end] || data[end + 1]))
+                end += 2;
+            require(end + 1 < data.size(), "assignment_xml_terminator_outside_payload");
+            auto table = decode_native_material_assignment_table(utf16(slice(data, 0, end)), text);
+            require(table.contains("name"), "assignment_table_name_unresolved");
+            const auto table_name = wide(table.at("name"));
+            bool match = name.empty() || table_name == name;
+            if (!match) {
+                require(bool(text.compare), "assignment_table_name_comparison_required");
+                auto order = text.compare(table_name, name);
+                require(order.has_value(), "assignment_table_name_comparison_unknown");
+                match = *order == 0;
+            }
+            auto &step = out["candidates"].back();
+            step["table_name"] = table.at("name");
+            step["status"] = match ? "selected" : "name_mismatch";
+            if (!match)
+                continue;
+            out.update({{"status", "selected"},
+                        {"source_ordinal", i},
+                        {"attribute_index", attribute.at("index")},
+                        {"source_attribute", attribute},
+                        {"table", std::move(table)},
+                        {"terminator_byte_offset", end},
+                        {"ignored_suffix", rawbytes(slice(data, end + 2, data.size() - end - 2))}});
+            return out;
+        }
+        out["status"] = "not_found";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json resolve_native_assignment_material(const Json &table, const NativeAssignmentQuery &query,
+                                        const Json &catalog,
+                                        const NativeAssignmentMaterialContext &context) {
+    Json out = {{"status", "unresolved"},
+                {"scope", "selected_assignment_table_rule_loading"},
+                {"draw_material_status", "not_evaluated"},
+                {"loads", Json::array()}};
+    try {
+        const auto rule = lookup_native_material_assignment(table, query);
+        out["rule"] = rule;
+        if (rule.at("status") == "not_found") {
+            out["status"] = "rule_not_found";
+            return out;
+        }
+        require(rule.at("status") == "matched", "assignment_rule_unresolved");
+        const auto id = rule.at("material_id").get<std::uint64_t>();
+        if (id != UINT64_MAX) {
+            auto loaded = lookup_native_material_id(id, catalog, context.id);
+            loaded["query"] = "id";
+            out["loads"].push_back(loaded);
+            if (loaded.at("status") == "loaded" || loaded.at("status") == "load_failed") {
+                out["status"] = loaded.at("status");
+                out["native_diagnostic_code"] = loaded.at("native_diagnostic_code");
+                if (loaded.contains("material_index"))
+                    out["material_index"] = loaded.at("material_index");
+                return out;
+            }
+            require(loaded.at("status") == "not_found", "assignment_id_load_unresolved");
+        }
+        NativeMaterialNameContext names;
+        const auto name = wide(rule.at("material_name"));
+        // Empty names still enter the native name route, but its search cannot
+        // match. Catalog preparation is an explicit precondition of this API.
+        if (!name.empty()) {
+            require(catalog.at("status") == "resolved" || catalog.at("status") == "absent",
+                    "complete_prepared_material_catalog_required");
+            if (catalog.at("status") == "resolved")
+                for (const auto &entry : catalog.at("entries"))
+                    names.names.push_back(wide(entry.at("name")));
+        }
+        names.catalog_complete = true;
+        names.compare = context.compare_name;
+        names.load = context.load_name;
+        auto loaded = lookup_native_material_name(name, names);
+        loaded["query"] = "name";
+        out["loads"].push_back(loaded);
+        require(loaded.at("status") != "unresolved", "assignment_name_load_unresolved");
+        out["status"] = loaded.at("status");
+        out["native_diagnostic_code"] = loaded.at("native_diagnostic_code");
+        if (loaded.at("status") == "loaded")
+            out["material_index"] = loaded.at("first_material_index");
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }

@@ -158,5 +158,142 @@ unsigned material_assignment_table_tests() {
         }));
     for (auto &f : futures)
         check(f.get() == expected, "parallel lookups have no shared mutable parser state");
+
+    for (auto bad : {"<a/><b/>", "outside<a/>", "<a/>outside"})
+        check(decode_native_material_assignment_table(bad).at("status") == "unresolved",
+              "multiple roots and outer text cannot select the first XML fragment");
+    auto attribute = [&](unsigned index, const std::string &label, const std::string &rows) {
+        const auto s = "<t><name>" + label + "</name><assignments>" + rows + "</assignments></t>";
+        Bytes raw;
+        for (unsigned char c : s) {
+            raw.push_back(c);
+            raw.push_back(0);
+        }
+        raw.insert(raw.end(), {0, 0, 0xff}); // Invalid suffix lies AFTER native terminator.
+        Bytes b(8, 0);
+        b[0] = 1;
+        for (unsigned i = 0; i < 4; ++i)
+            b[4 + i] = (raw.size() >> (8 * i)) & 255;
+        b.insert(b.end(), raw.begin(), raw.end());
+        return Json{{"group", 0},
+                    {"key", 20015},
+                    {"index", index},
+                    {"payload", rawbytes(b)},
+                    {"decoded", {{"material_assignment_table", {{"name", "forged"}}}}}};
+    };
+    const std::string one = "<a id='9' materialName='Paint'><l cMsk0='1'>x</l></a>";
+    Json attributes = Json::array(
+        {attribute(8, "Late", one), attribute(2, "First", one), attribute(3, "First", one)});
+    const auto attribute_snapshot = attributes.dump();
+    auto selected = select_native_material_assignment_table(attributes, u"", text);
+    check(selected.at("status") == "selected" && selected.at("source_ordinal") == 1 &&
+              selected.at("attribute_index") == 2,
+          "empty table name selects first native index, not first source occurrence");
+    check(bytesof(selected.at("ignored_suffix")) == Bytes{0xff} &&
+              selected.at("table").at("name") == "First",
+          "table selector uses payload prefix and preserves invalid suffix after NUL");
+    auto raw = bytesof(attributes[1]["payload"]);
+    decoded = decode_attribute(0, 20015, raw, 2);
+    check(decoded.at("material_assignment_table").at("name") == "First" &&
+              bytesof(decoded.at("ignored_suffix")) == Bytes{0xff},
+          "automatic attribute decoding uses same first UTF16 NUL boundary");
+    selected = select_native_material_assignment_table(attributes, u"lATE", text);
+    check(selected.at("source_ordinal") == 0 && selected.at("candidates").size() == 3,
+          "named table lookup visits duplicate indices and applies source locale");
+    check(select_native_material_assignment_table(attributes, u"Missing", text).at("status") ==
+              "not_found",
+          "complete named table miss");
+    check(select_native_material_assignment_table(attributes, u"Late").at("status") == "unresolved",
+          "unknown earlier comparison blocks later exact match");
+    std::u16string nul_name = u"First";
+    nul_name.append({u'\0', u'X'});
+    check(select_native_material_assignment_table(attributes, nul_name).at("source_ordinal") == 1,
+          "requested table name ends at native NUL");
+    auto duplicates = Json::array({attribute(2, "First", one), attribute(2, "First", one)});
+    check(select_native_material_assignment_table(duplicates, u"First").at("source_ordinal") == 0,
+          "iterator uses first sorted duplicate, not small exact-key lookup's last duplicate");
+    duplicates[0]["payload"] = rawbytes(Bytes{0});
+    check(select_native_material_assignment_table(duplicates, u"").at("status") == "unresolved",
+          "unsupported preceding table cannot silently choose later table");
+    check(attributes.dump() == attribute_snapshot,
+          "selection does not sort or modify source attributes");
+    raw.resize(raw.size() - 3); // Remove terminator and suffix, update stored length.
+    for (unsigned i = 0; i < 4; ++i)
+        raw[4 + i] = ((raw.size() - 8) >> (8 * i)) & 255;
+    check(decode_attribute(0, 20015, raw).at("material_assignment_table").at("status") ==
+              "unresolved",
+          "missing terminator does not read beyond attribute boundary");
+
+    const Json current = {{"kind", "current_resource_context"}};
+    Json catalog = {
+        {"status", "resolved"},
+        {"current_context", current},
+        {"entries",
+         Json::array(
+             {{{"id", 9}, {"name", "Paint"}, {"resource", {{"primary_context", current}}}},
+              {{"id", 10}, {"name", "PAINT"}, {"resource", {{"primary_context", current}}}}})}};
+    NativeAssignmentMaterialContext loader;
+    std::vector<std::size_t> id_loads, name_loads;
+    loader.id.load = [&](std::size_t i) {
+        id_loads.push_back(i);
+        return GraphicsMaterialResult{true, 100 + i};
+    };
+    loader.compare_name = text.compare;
+    loader.load_name = [&](std::size_t i) {
+        name_loads.push_back(i);
+        return GraphicsMaterialResult{true, 200 + i};
+    };
+    query.layer_name = u"x";
+    query.color = 0;
+    table = read(one);
+    result = resolve_native_assignment_material(table, query, catalog, loader);
+    check(result.at("status") == "loaded" && result.at("material_index") == 100 &&
+              id_loads == std::vector<std::size_t>{0} && name_loads.empty(),
+          "successful ID load stops before name candidates");
+    loader.id.load = [&](std::size_t) { return GraphicsMaterialResult{true, {}}; };
+    result = resolve_native_assignment_material(table, query, catalog, loader);
+    check(result.at("status") == "load_failed" && result.at("native_diagnostic_code") == 4 &&
+              name_loads.empty(),
+          "ID provider failure must not fall back to name");
+    loader.id.load = [&](std::size_t) { return GraphicsMaterialResult{false, {}}; };
+    check(resolve_native_assignment_material(table, query, catalog, loader).at("status") ==
+                  "unresolved" &&
+              name_loads.empty(),
+          "unknown ID loading blocks name fallback");
+    table = read("<a id='99' materialName='Paint'><l cMsk0='1'>x</l></a>");
+    result = resolve_native_assignment_material(table, query, catalog, loader);
+    check(result.at("material_index") == 200 && name_loads == std::vector<std::size_t>({0, 1}) &&
+              result.at("loads").size() == 2,
+          "known ID miss loads all same-name candidates then selects first success");
+    name_loads.clear();
+    table = read("<a materialName='Paint'><l cMsk0='1'>x</l></a>");
+    result = resolve_native_assignment_material(table, query, catalog, loader);
+    check(result.at("status") == "loaded" && result.at("loads").size() == 1 &&
+              result.at("loads")[0]["query"] == "name",
+          "sentinel ID goes directly to name route");
+    loader.load_name = [&](std::size_t i) {
+        return GraphicsMaterialResult{true, i ? std::optional<std::size_t>{201} : std::nullopt};
+    };
+    check(resolve_native_assignment_material(table, query, catalog, loader).at("material_index") ==
+              201,
+          "failed first name candidate allows later successful name candidate");
+    loader.load_name = [&](std::size_t i) {
+        return i ? GraphicsMaterialResult{false, {}} : GraphicsMaterialResult{true, 200};
+    };
+    check(resolve_native_assignment_material(table, query, catalog, loader).at("status") ==
+              "unresolved",
+          "unknown later name load cannot be ignored after first success");
+    loader.load_name = [&](std::size_t) { return GraphicsMaterialResult{true, {}}; };
+    check(resolve_native_assignment_material(table, query, catalog, loader).at("status") ==
+              "load_failed",
+          "all name candidates failing yields provider failure");
+    table = read("<a id='99'><l cMsk0='1'>x</l></a>");
+    result = resolve_native_assignment_material(table, query, catalog, loader);
+    check(result.at("status") == "not_found" && result.at("loads").size() == 2,
+          "empty fallback name still records completed name query without matching");
+    query.color = 1;
+    check(resolve_native_assignment_material(table, query, Json(), {}).at("status") ==
+              "rule_not_found",
+          "rule miss does not access catalog or invent parent layer fallback");
     return checks;
 }

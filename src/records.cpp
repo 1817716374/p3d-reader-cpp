@@ -912,6 +912,26 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         result["encoding"] = stored ? "uncompressed_utf16_string" : "compressed_utf16_string";
         result["text"] = utf16(slice(raw, 0, raw.size() - 2));
     }
+    if (group == 0 && key == 20015) {
+        try {
+            std::size_t end = 0;
+            while (end + 1 < decoded.size() && (decoded[end] || decoded[end + 1]))
+                end += 2;
+            require(end + 1 < decoded.size(), "assignment_xml_terminator_outside_payload");
+            auto s = utf16(slice(decoded, 0, end));
+            auto table = decode_native_material_assignment_table(s);
+            result.update({{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
+                           {"xml", s}, {"material_assignment_table", table},
+                           {"terminator_byte_offset", end},
+                           {"ignored_suffix", rawbytes(slice(decoded, end + 2,
+                                                              decoded.size() - end - 2))}});
+            if (table.contains("source_tree"))
+                result["tree"] = table.at("source_tree");
+        } catch (const std::exception &e) {
+            result["material_assignment_table"] = {{"status", "unresolved"}, {"reason", e.what()}};
+        }
+        return result;
+    }
     try {
         auto s = utf16(decoded);
         while (!s.empty() && s.back() == 0)
@@ -920,8 +940,6 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         result.update({{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
                        {"xml", s},
                        {"tree", tree}});
-        if (group == 0 && key == 20015)
-            result["material_assignment_table"] = decode_native_material_assignment_table(s);
         if (tree["tag"] == "ExtendedColors") {
             Json colors = Json::array();
             for (auto &c : tree["children"]) {
