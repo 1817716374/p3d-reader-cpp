@@ -357,7 +357,8 @@ Json parse_native(const Bytes &b) {
                 decode_native_layer_table(slice(b, pos, attr - pos), out.back()["links"]);
         if (type == 47 && r.at<std::uint32_t>(pos + 16) == 32) {
             out.back()["model_unit_state"] = decode_model_units(slice(b, pos, attr - pos));
-            out.back()["model_coordinate_state"] = decode_model_coordinates(slice(b, pos, attr - pos));
+            out.back()["model_coordinate_state"] =
+                decode_model_coordinates(slice(b, pos, attr - pos));
             Json view = {{"status", "unsupported_header"},
                          {"scope", "model_header_view_sequence_position"},
                          {"source_offsets_include_stream_prefix", true}};
@@ -449,6 +450,39 @@ Json decode_symbology(const Bytes &b) {
         v["fill_mode"] = v["field_0040"];
     if (v.contains("field_1000"))
         v["subitem_index"] = v["field_1000"];
+    if (flags & 0x3f) {
+        Json display = {{"scope", "command_display_overrides"},
+                        {"final_display_status", "not_evaluated"}};
+        // These update the display traits, not the source/by-layer symbology.
+        // The reader processes packed color before indexed color, so the
+        // indexed form wins when both flags occur in a single command.
+        for (auto channel :
+             {std::make_pair("primary_color", 0u), std::make_pair("fill_color", 2u)}) {
+            const unsigned packed_bit = 1u << channel.second;
+            const unsigned index_bit = 2u << channel.second;
+            const auto packed_key = channel.second ? "field_0004" : "field_0001";
+            const auto index_key = channel.second ? "field_0008" : "field_0002";
+            if (flags & packed_bit) {
+                const auto value = v.at(packed_key).get<std::uint32_t>();
+                display[channel.first] = {
+                    {"encoding", "packed_rgb"},
+                    {"value", value},
+                    {"source_flag", packed_bit},
+                    {"rgb", {value & 255u, (value >> 8) & 255u, (value >> 16) & 255u}},
+                    {"high_byte", value >> 24}};
+            }
+            if (flags & index_bit)
+                display[channel.first] = {{"encoding", "context_color_index"},
+                                          {"value", v.at(index_key)},
+                                          {"source_flag", index_bit},
+                                          {"rgb", nullptr}};
+        }
+        if (flags & 0x20)
+            display["line_weight_code"] = v.at("field_0020");
+        if (flags & 0x10)
+            display["line_pattern_code"] = v.at("field_0010");
+        v["display_traits"] = std::move(display);
+    }
     if (v.contains("true_color_packed")) {
         auto packed = v["true_color_packed"].get<std::uint32_t>();
         v["true_color_rgb"] = {packed & 255u, (packed >> 8) & 255u, (packed >> 16) & 255u};
@@ -920,11 +954,12 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             require(end + 1 < decoded.size(), "assignment_xml_terminator_outside_payload");
             auto s = utf16(slice(decoded, 0, end));
             auto table = decode_native_material_assignment_table(s);
-            result.update({{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
-                           {"xml", s}, {"material_assignment_table", table},
-                           {"terminator_byte_offset", end},
-                           {"ignored_suffix", rawbytes(slice(decoded, end + 2,
-                                                              decoded.size() - end - 2))}});
+            result.update(
+                {{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
+                 {"xml", s},
+                 {"material_assignment_table", table},
+                 {"terminator_byte_offset", end},
+                 {"ignored_suffix", rawbytes(slice(decoded, end + 2, decoded.size() - end - 2))}});
             if (table.contains("source_tree"))
                 result["tree"] = table.at("source_tree");
         } catch (const std::exception &e) {
@@ -1143,9 +1178,10 @@ Json read_models(const Document &doc) {
         const auto &b = *s.decoded;
         Json info = {{"physical_storage", s.path[1]}};
         info["coordinate_context"] = {{"storage", "source_float64"},
-                                       {"unit_status", "missing_model_unit_record"},
-                                       {"scale_to_meters", nullptr}, {"crs", nullptr},
-                                       {"georeferencing_status", "unresolved"}};
+                                      {"unit_status", "missing_model_unit_record"},
+                                      {"scale_to_meters", nullptr},
+                                      {"crs", nullptr},
+                                      {"georeferencing_status", "unresolved"}};
         try {
             auto records = parse_native(slice(b, 4096, b.size() - 4096));
             info["layer_group_references"] = Json::array();

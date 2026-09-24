@@ -194,6 +194,16 @@ void apply_symbology(Json &style, const Json &d) {
         style.erase("line_style_modifiers");
     auto fields = d;
     fields.erase("flags");
+    if (fields.contains("display_traits")) {
+        // Commands independently change primary/fill colors and line traits.
+        // Replace a whole color choice, so an index cannot retain old RGB,
+        // while preserving channels not touched by this command.
+        auto &display = style["display_traits"];
+        if (display.is_null())
+            display = Json::object();
+        display.update(fields.at("display_traits"));
+        fields.erase("display_traits");
+    }
     style.update(fields);
 }
 } // namespace p3d

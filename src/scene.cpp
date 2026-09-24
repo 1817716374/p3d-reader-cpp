@@ -108,6 +108,15 @@ static Json style_color(const Json &style, const Json &entries) {
             return {{"rgb", nullptr}, {"source", "native_display_color_requires_context"}};
     return color(style.value("color_index", std::uint64_t(0)), entries);
 }
+static Json combined_style(const Json &instance, const Json &primitive) {
+    auto result = instance;
+    result.update(primitive);
+    if (instance.contains("display_traits") && primitive.contains("display_traits")) {
+        result["display_traits"] = instance.at("display_traits");
+        result["display_traits"].update(primitive.at("display_traits"));
+    }
+    return result;
+}
 NativeScene build_native_scene(const Document &doc, const Tessellation &policy, unsigned threads) {
     policy.segments(1);
     NativeScene scene;
@@ -685,7 +694,8 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         {"relationship_nodes", std::move(related)},
         {"errors", errors},
         {"library_errors", library_errors},
-        {"coordinate_units", "source-native; per-model conversions are in model_info.coordinate_context"},
+        {"coordinate_units",
+         "source-native; per-model conversions are in model_info.coordinate_context"},
 
         {"schema_definitions", std::move(schemas)},
         {"native_block_definitions", blocks},
@@ -726,8 +736,7 @@ Json NativeScene::expanded() const {
                                                           {"lines", geo.lines.size()},
                                                           {"texts", geo.texts.size()}};
             for (auto range : placed.primitive_ranges) {
-                auto style = instance.style;
-                style.update(range["style"]);
+                auto style = combined_style(instance.style, range["style"]);
                 Json appearance = {
                     {"color", style_color(style, extended)},
                     {"style_status",
@@ -891,8 +900,7 @@ void NativeScene::for_each_primitive(
                 require(start <= size && count <= size - start, "primitive range extent");
                 v.winding_reversed =
                     inst.apply_placement && reverses_winding(inst.matrix) && channel == "faces";
-                v.style = inst.style;
-                v.style.update(range["style"]);
+                v.style = combined_style(inst.style, range["style"]);
                 v.appearance = {
                     {"color", style_color(v.style, extended)},
                     {"style_status",

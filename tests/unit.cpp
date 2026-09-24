@@ -1066,9 +1066,10 @@ static void material_index_tests() {
     for (auto &e : j["entries"])
         if (e["status"] == "recognized") {
             ++valid;
-            check(e["part_index"] == -2147483648ll || e["part_index"] == 2147483647 ||
-                      (e["part_index"] == 2 && e["source_value"] == 17 && e["material_name"] == "17"),
-                  "part key uses exact signed int32 decimal formatting");
+            check(
+                e["part_index"] == -2147483648ll || e["part_index"] == 2147483647 ||
+                    (e["part_index"] == 2 && e["source_value"] == 17 && e["material_name"] == "17"),
+                "part key uses exact signed int32 decimal formatting");
         }
     check(valid == 3 && j["geometry_mapping_status"] == "not_established",
           "part indices neither accept aliases nor imply geometric mapping");
@@ -2400,9 +2401,51 @@ static void command_metadata_tests() {
               d["fill_mode"] == 107 && d["subitem_index"] == 111 &&
               d["true_color_packed"] == 0x12345678u,
           "complete symbology bit layout follows native order and preserves 64-bit material IDs");
+    check(d["field_0001"] == 101 && d["field_0002"] == 102 && d["field_0004"] == 103 &&
+              d["field_0008"] == 104 && d["display_traits"]["primary_color"]["value"] == 102 &&
+              d["display_traits"]["fill_color"]["value"] == 104 &&
+              d["display_traits"]["line_weight_code"] == 105 &&
+              d["display_traits"]["line_pattern_code"] == 106,
+          "display aliases preserve reader order, source values and indexed color precedence");
     check(d["true_color_rgb"] == Json({0x78, 0x56, 0x34}) &&
               d["true_color_unassigned_high_byte"] == 0x12,
           "packed direct color decodes low three RGB bytes and does not guess alpha");
+    auto display = decode_symbology(wire_bytes("0500010203a1102030b4"));
+    check(display["display_traits"]["primary_color"]["rgb"] == Json({1, 2, 3}) &&
+              display["display_traits"]["primary_color"]["high_byte"] == 0xa1 &&
+              display["display_traits"]["fill_color"]["rgb"] == Json({16, 32, 48}) &&
+              display["display_traits"]["fill_color"]["high_byte"] == 0xb4,
+          "display packed colors retain their high bytes without interpreting them as alpha");
+    check(display["display_traits"]["scope"] == "command_display_overrides" &&
+              display["display_traits"]["final_display_status"] == "not_evaluated" &&
+              !display.contains("true_color_packed") && !display.contains("color_index"),
+          "display traits and source symbology remain distinct");
+    Json display_state = Json::object();
+    apply_symbology(display_state, display);
+    apply_symbology(display_state, decode_symbology(wire_bytes("020044332211")));
+    check(display_state["display_traits"]["primary_color"]["encoding"] == "context_color_index" &&
+              display_state["display_traits"]["primary_color"]["value"] == 0x11223344 &&
+              display_state["display_traits"]["primary_color"]["rgb"].is_null() &&
+              !display_state["display_traits"]["primary_color"].contains("high_byte") &&
+              display_state["display_traits"]["fill_color"]["rgb"] == Json({16, 32, 48}),
+          "an indexed primary override removes stale direct color while retaining fill");
+    apply_symbology(display_state, decode_symbology(wire_bytes("080000000000")));
+    check(display_state["display_traits"]["fill_color"]["value"] == 0 &&
+              display_state["display_traits"]["fill_color"]["rgb"].is_null() &&
+              display_state["display_traits"]["primary_color"]["value"] == 0x11223344,
+          "display index zero is an explicit update, independent of the primary channel");
+    apply_symbology(display_state, decode_symbology(wire_bytes("0100010203a1")));
+    check(display_state["display_traits"]["primary_color"]["encoding"] == "packed_rgb" &&
+              display_state["display_traits"]["primary_color"]["rgb"] == Json({1, 2, 3}) &&
+              display_state["display_traits"]["primary_color"]["source_flag"] == 1,
+          "a later packed display color replaces the previous index choice");
+    apply_symbology(display_state, decode_symbology(wire_bytes("30000100000000000080")));
+    check(display_state["display_traits"]["line_weight_code"] == 1 &&
+              display_state["display_traits"]["line_pattern_code"] == 0x80000000u &&
+              display_state["display_traits"]["primary_color"]["rgb"] == Json({1, 2, 3}),
+          "display line codes remain unsigned and preserve color channels");
+    check(!decode_symbology(wire_bytes("80002a000000")).contains("display_traits"),
+          "ordinary source color does not invent a display override");
     apply_symbology(style, d);
     apply_symbology(style, {{"flags", 128}, {"color_index", 42}});
     check(!style.contains("true_color_packed") && !style.contains("true_color_rgb") &&
@@ -2469,6 +2512,17 @@ static void command_metadata_tests() {
     instance.style = {{"layer_id", 114}, {"true_color_packed", 0x12345678u}};
     element.instances.push_back(instance);
     views.elements.push_back(element);
+    views.elements[0].instances[0].style["display_traits"] = display["display_traits"];
+    definition->geometry.primitive_ranges[0]["style"] =
+        decode_symbology(wire_bytes("020044332211"));
+    views.for_each_primitive([&](const PrimitiveView &v) {
+        check(v.style["display_traits"]["primary_color"]["value"] == 0x11223344 &&
+                  v.style["display_traits"]["primary_color"]["rgb"].is_null() &&
+                  v.style["display_traits"]["fill_color"]["rgb"] == Json({16, 32, 48}),
+              "primitive display updates override only their channel in the instance style");
+    });
+    definition->geometry.primitive_ranges[0]["style"] = Json::object();
+    views.elements[0].instances[0].style.erase("display_traits");
     views.for_each_primitive([&](const PrimitiveView &v) {
         check(v.style["layer_id"] == 114 &&
                   v.appearance["color"]["rgb"] == Json({0x78, 0x56, 0x34}) &&
