@@ -8,9 +8,13 @@ struct SolidMeshResult {
     PolyfaceMeshResult derived;
     // Native GeFaceIndices, indexed by derived.geometry.face_source_polygons.
     std::vector<std::array<std::int64_t, 3>> face_indices;
+    // Optional analytic surface coordinates per OUTPUT triangle corner. Empty
+    // when unavailable; a null triangle means no coordinates for that face.
+    // These are not material texture UVs. Currently populated for loft sides.
+    std::vector<std::optional<std::array<Point2, 3>>> surface_parameters;
 };
 // Derived faces for DgnBox, DgnCone, DgnSphere, DgnTorusPipe,
-// DgnExtrusion and DgnRuledSweep.
+// DgnExtrusion, DgnRuledSweep and P3DSectionLoft.
 // Requires a nondegenerate frame. Boxes need nonzero widths with consistent
 // signs between the two ends. Other solids and collapsed/crossing boxes are reported
 // as not meshed. Cones use an explicit uniform angular segment count (>=3),
@@ -29,6 +33,10 @@ struct SolidMeshResult {
 // including nonplanar caps. No missing source boundary segment is invented.
 // circle_segments controls arc sampling and V bands for nonplanar ruled patches.
 // These derived meshes do not claim a world-space error bound or native UVs.
+// Section lofts use SectionLoft::mesh with max_uv_edge=1/circle_segments;
+// its source-curve, denominator, join and planar-cap requirements still apply.
+// Side surface parameters and original native face IDs are retained separately
+// from material UVs. CSG currently requires identity placement for loft sources.
 SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &options = {},
                                 unsigned circle_segments = 64);
 struct SolidTransformResult {

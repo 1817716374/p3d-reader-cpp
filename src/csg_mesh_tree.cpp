@@ -10,6 +10,7 @@ struct Object {
     Mesh mesh;
     std::shared_ptr<Runtime> nested;
     bool solid = false;
+    bool loft = false;
     std::shared_ptr<Json> cone;
     std::shared_ptr<Json> torus;
     Object(Mesh value, bool is_solid = false) : mesh(std::move(value)), solid(is_solid) {}
@@ -88,6 +89,11 @@ struct Runtime {
               "CSG geometry visit budget exceeded");
         ++work.geometry_visits;
         if (object.mesh) {
+            // Native loft placement transforms source sections/guides BEFORE
+            // rebuilding the surface. Length-based reparameterization need not
+            // commute with an affine map of an already tessellated surface.
+            require(!object.loft || m == identity(),
+                    "CSG loft placement requires source reconstruction; only identity supported");
             if (object.cone || object.torus) {
                 auto placed = object.cone ? transform_bgfb_cone(*object.cone, m)
                                           : transform_bgfb_torus(*object.torus, m);
@@ -451,6 +457,8 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                     pool.back().cone = std::make_shared<Json>(table);
                 if (solid && table.at("_type") == "DgnTorusPipe")
                     pool.back().torus = std::make_shared<Json>(table);
+                if (solid && table.at("_type") == "P3DSectionLoft")
+                    pool.back().loft = true;
             }
             if (std::string(list) == "node_caches")
                 runtime->state["node_caches"].push_back(nullptr);

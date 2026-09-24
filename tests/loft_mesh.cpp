@@ -1,5 +1,7 @@
 #include "internal.hpp"
 #include "bspline_denominator.hpp"
+#include <p3d/solid.hpp>
+#include <p3d/csg_mesh_tree.hpp>
 #include <future>
 using namespace p3d;
 namespace {
@@ -460,5 +462,123 @@ unsigned loft_mesh_tests() {
     auto signed_task = std::async(std::launch::async, [&] { return signed_loft.mesh(options); });
     check(signed_task.get().report == signed_mesh.report && signed_loft.source() == signed_prism,
           "mixed-sign plane proofs are deterministic and do not mutate source data");
+    for (unsigned loops : {1u, 2u}) {
+        const auto source = prism(loops);
+        const auto parsed = SectionLoft::from_bgfb(source);
+        const auto solid = mesh_bgfb_solid(source, {}, 4);
+        const auto &geometry = solid.derived.geometry;
+        check(solid.derived.status == "meshed" && solid.source == source,
+              "unified loft mesh retains original source");
+        check(solid.surface_parameters.size() == geometry.faces.size(),
+              "loft output triangle surface parameter alignment");
+        LoftMesh shape;
+        shape.vertices = geometry.vertices;
+        shape.faces = geometry.faces;
+        check(std::abs(volume(shape) - (loops == 1 ? 12. : 9.)) < 1e-9,
+              "unified loft prism and annular prism independent volumes");
+        bool correct = true, side_found = false, cap_found = false;
+        for (std::size_t f = 0; f < geometry.faces.size(); ++f) {
+            const auto face = solid.face_indices.at(*geometry.face_source_polygons.at(f));
+            const auto &uv = solid.surface_parameters[f];
+            if (face[0] == -1) {
+                cap_found = true;
+                correct &= !uv;
+            } else {
+                side_found = true;
+                correct &= uv.has_value();
+                if (uv)
+                    for (unsigned k = 0; k < 3; ++k) {
+                        const auto p = parsed.sides()
+                                           .at(std::size_t(face[1]))
+                                           .surface.point_at((*uv)[k][0], (*uv)[k][1]);
+                        const auto q = geometry.vertices.at(geometry.faces[f][k]);
+                        for (unsigned axis = 0; axis < 3; ++axis)
+                            correct &= std::abs(p[axis] - q[axis]) < 1e-9;
+                    }
+            }
+        }
+        check(correct && side_found && cap_found,
+              "native loft face ID and each corner UV evaluate back to its 3D output");
+        check(geometry.uvs.empty() &&
+                  std::none_of(geometry.face_uvs.begin(), geometry.face_uvs.end(),
+                               [](const auto &uv) { return uv.has_value(); }),
+              "surface coordinates do not invent material texture coordinates");
+    }
+    const auto source_loft = prism();
+    PolyfaceMeshOptions low;
+    for (unsigned budget = 0; budget < 3; ++budget) {
+        low = {};
+        if (budget == 0)
+            low.max_points = 3;
+        if (budget == 1)
+            low.max_triangles = 1;
+        if (budget == 2)
+            low.max_corners = 3;
+        const auto failure = mesh_bgfb_solid(source_loft, low, 4);
+        check(failure.derived.status != "meshed" && failure.derived.geometry.vertices.empty() &&
+                  failure.derived.geometry.faces.empty() && failure.face_indices.empty() &&
+                  failure.surface_parameters.empty() && failure.source == source_loft,
+              "unified loft budgets fail without partial output or lost source");
+    }
+    check(mesh_bgfb_solid(source_loft, {}, 0).derived.status != "meshed",
+          "invalid loft sampling count rejected");
+    check(mesh_bgfb_solid(prism(1, 2, false), {}, 4).derived.status == "meshed",
+          "unified loft supports uncapped sides");
+    Json rows = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
+    Json archive = {{"geometries",
+                     {{{"status", "decoded"},
+                       {"encoding", "bgfb"},
+                       {"geometry", {{"geometry", source_loft}}}}}},
+                    {"node_caches", Json::array()},
+                    {"transforms", {{{"matrix_3x4_rows", rows}}}},
+                    {"tree",
+                     {{"root_index", 0},
+                      {"nodes",
+                       {{{"status", "decoded"},
+                         {"operation", 0},
+                         {"geometry_indices", {0}},
+                         {"cache_indices", Json::array()},
+                         {"matrix_indices", {0}},
+                         {"is_old_value", 0},
+                         {"left_index", nullptr},
+                         {"right_index", nullptr}}}}}}};
+    CsgMeshTreeOptions tree_options;
+    tree_options.solid_circle_segments = 4;
+    const auto csg = evaluate_csg_polyface_archive(archive, tree_options);
+    check(csg.result.status == "evaluated" && csg.result.meshes.size() == 1 &&
+              csg.solid_sources.size() == 1 && !csg.solid_sources[0].surface_parameters.empty(),
+          "identity CSG loft retains source analytic parameters");
+    for (double scale : {2., -1., .5}) {
+        auto changed = archive;
+        changed["transforms"][0]["matrix_3x4_rows"][0][0] = scale;
+        const auto rejected = evaluate_csg_polyface_archive(changed, tree_options);
+        check(rejected.result.status != "evaluated" && rejected.result.meshes.empty() &&
+                  rejected.result.diagnostics.dump().find("source reconstruction") !=
+                      std::string::npos,
+              "nonidentity CSG loft cannot silently transform a prebuilt surface");
+    }
+    // A polyline's length knots change under anisotropic placement, even when
+    // every corresponding guide has the same number of primitives.
+    auto bent = source_loft;
+    for (auto &guide : bent["guide_groups"][0]) {
+        const auto poles = guide["curves"][0]["geometry"]["poles"];
+        const double x = poles[0], y = poles[1];
+        guide["curves"][0]["geometry"] = {{"_type", "LineString"},
+                                          {"points", {x, y, 0., x + 1, y, 1., x, y, 3.}}};
+    }
+    auto scaled = bent;
+    transform_curves(scaled, [](Point3 p) {
+        p[0] *= 3;
+        return p;
+    });
+    for (auto &guide : scaled["guide_groups"][0]) {
+        auto &points = guide["curves"][0]["geometry"]["points"];
+        for (std::size_t i = 0; i < points.size(); i += 3)
+            points[i] = 3 * points[i].get<double>();
+    }
+    const auto before = SectionLoft::from_bgfb(bent).sides()[0].surface.point_at(.5, .4);
+    const auto after = SectionLoft::from_bgfb(scaled).sides()[0].surface.point_at(.5, .4);
+    check(std::abs(after[0] - 3 * before[0]) > .05 || std::abs(after[2] - before[2]) > .05,
+          "source loft reconstruction demonstrably differs from transforming cached surface");
     return checks;
 }
