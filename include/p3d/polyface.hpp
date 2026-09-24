@@ -8,6 +8,18 @@ struct PolyfaceMeshOptions {
     std::size_t max_triangles = 3000000;
     std::size_t max_polygon_edge_tests = 10000000;
 };
+struct PolyfaceSourceEdge {
+    std::size_t source_polygon = 0;
+    std::size_t start_corner = 0, end_corner = 0;
+    std::array<std::uint32_t, 2> points{};
+    // Signed pointIndex at the start corner: positive means visible.
+    // This is the stored edge flag, not final scene/view visibility.
+    bool visible = false;
+};
+struct PolyfaceTriangleEdgeSource {
+    std::size_t source_edge = 0;
+    bool reversed = false;
+};
 struct PolyfaceMeshResult {
     std::string status = "not_evaluated";
     Geometry geometry;
@@ -17,6 +29,12 @@ struct PolyfaceMeshResult {
     // For indexed faces these are positions in pointIndex; for implicit lists
     // they are source point positions. No deduplication of points or corners.
     std::vector<std::array<std::size_t, 3>> face_source_corners;
+    // Original edges include those affected by derived boundary reduction.
+    std::vector<PolyfaceSourceEdge> source_edges;
+    // Entry k describes the triangle edge from corner k to (k+1)%3.
+    // Null means no exact original corner adjacency, including new diagonals
+    // and shortened boundaries. Visibility is not guessed for these edges.
+    std::vector<std::array<std::optional<PolyfaceTriangleEdgeSource>, 3>> face_source_edges;
     std::vector<std::optional<Triangle>> face_double_color_indices;
     std::vector<std::optional<Triangle>> face_int_color_indices;
     std::vector<std::optional<Triangle>> face_color_table_indices;

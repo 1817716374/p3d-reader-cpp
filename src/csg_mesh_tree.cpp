@@ -315,7 +315,9 @@ CsgPolyfaceArchiveResult evaluate_csg_polyface_archive(const Json &archive,
             auto source = mesh_bgfb_polyface(entry.at("geometry").at("geometry"), budget);
             const bool meshed = source.status == "meshed";
             out.sources.push_back(std::move(source));
-            require(meshed, out.sources.back().report.dump());
+            if (!meshed)
+                throw std::runtime_error(out.sources.back().report.value(
+                    "reason", std::string("CSG source Polyface triangulation failed")));
             const auto &g = out.sources.back().geometry;
             budget.max_points -= g.vertices.size();
             budget.max_triangles -= g.faces.size();

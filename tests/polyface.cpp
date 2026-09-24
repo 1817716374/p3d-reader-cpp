@@ -63,6 +63,59 @@ unsigned polyface_tests() {
     check(result.geometry.source_normals[0][2] == 2, "source normal magnitude not rewritten");
     check(result.report["attribute_bindings"]["doubleColor"]["status"] == "invalid_indices",
           "geometry success does not imply every attribute pool is mapped");
+    check(result.source_edges.size() == 4 && result.source_edges[0].visible &&
+              !result.source_edges[1].visible && result.source_edges[3].end_corner == 0,
+          "signed start index defines stored visibility including closing edge");
+    std::size_t mapped_edges = 0, diagonals = 0;
+    for (std::size_t i = 0; i < result.geometry.faces.size(); ++i)
+        for (unsigned k = 0; k < 3; ++k) {
+            const auto &link = result.face_source_edges[i][k];
+            if (!link) {
+                ++diagonals;
+                continue;
+            }
+            ++mapped_edges;
+            const auto &edge = result.source_edges.at(link->source_edge);
+            check(edge.source_polygon == 0 &&
+                      edge.points[link->reversed ? 1 : 0] == result.geometry.faces[i][k] &&
+                      edge.points[link->reversed ? 0 : 1] == result.geometry.faces[i][(k + 1) % 3],
+                  "triangle edge maps exact original adjacency and direction");
+        }
+    check(mapped_edges == 4 && diagonals == 2,
+          "new diagonal has no invented source visibility flag");
+    auto defaults = quad();
+    defaults["pointIndex"] = {3, -4, 1, 2, 0};
+    defaults["normal"] = {0., 0., 1., 0., 0., 2., 0., 0., 3., 0., 0., 4., 999.};
+    defaults["normalIndex"] = nullptr;
+    defaults["paramIndex"] = Json::array();
+    defaults["colorIndex"] = nullptr;
+    auto default_mesh = mesh_bgfb_polyface(defaults);
+    check(default_mesh.status == "meshed" && default_mesh.source == defaults &&
+              default_mesh.report["attribute_bindings"]["normal"]["binding_rule"] ==
+                  "native_equal_point_count_default" &&
+              default_mesh.report["attribute_bindings"]["param"]["index_source"] == "pointIndex",
+          "native equal-size fallback uses copied pool count and retains raw absent indices");
+    for (std::size_t i = 0; i < default_mesh.geometry.faces.size(); ++i) {
+        check(default_mesh.geometry.face_normal_indices[i] ==
+                      std::optional<Triangle>(default_mesh.geometry.faces[i]) &&
+                  default_mesh.geometry.face_uv_indices[i] ==
+                      std::optional<Triangle>(default_mesh.geometry.faces[i]),
+              "default binding follows signed point values, not corner ordinal");
+        check(!default_mesh.face_int_color_indices[i],
+              "color does not inherit the normal and UV fallback rule");
+    }
+    defaults["paramIndex"] = {1, 2, 3, 4, 0};
+    defaults["normal"] = {0., 0., 1.};
+    default_mesh = mesh_bgfb_polyface(defaults);
+    check(default_mesh.report["attribute_bindings"]["normal"]["status"] == "unbound_pool" &&
+              default_mesh.report["attribute_bindings"]["param"]["binding_rule"] ==
+                  "explicit_indices",
+          "different-size pools stay unbound and explicit indices take precedence");
+    defaults["paramIndex"] = {99};
+    default_mesh = mesh_bgfb_polyface(defaults);
+    check(default_mesh.report["attribute_bindings"]["param"]["status"] == "invalid_indices" &&
+              default_mesh.report["attribute_bindings"]["param"]["index_source"] == "paramIndex",
+          "invalid explicit indices never silently fall back to point indices");
     auto fixed = quad();
     fixed["numPerFace"] = 5;
     auto f = mesh_bgfb_polyface(fixed);
@@ -100,6 +153,14 @@ unsigned polyface_tests() {
     check(f.source == retraced && f.report["polygons"][0]["source_corners"].size() == 5 &&
               f.report["polygons"][0]["boundary_reductions"][0]["source_corner"] == 1,
           "exact retrace records removed derived corner and preserves full source");
+    check(f.source_edges.size() == 5 && !f.source_edges[1].visible,
+          "source edges removed from derived boundary remain inspectable");
+    bool shortened_edge_unbound = false;
+    for (std::size_t i = 0; i < f.geometry.faces.size(); ++i)
+        for (unsigned k = 0; k < 3; ++k)
+            if (f.geometry.faces[i][k] == 0 && f.geometry.faces[i][(k + 1) % 3] == 2)
+                shortened_edge_unbound = !f.face_source_edges[i][k];
+    check(shortened_edge_unbound, "shortened boundary does not borrow one original edge flag");
     for (std::size_t i = 0; i < f.geometry.faces.size(); ++i)
         for (unsigned k = 0; k < 3; ++k) {
             const auto corner = f.face_source_corners[i][k];
@@ -180,6 +241,8 @@ unsigned polyface_tests() {
     f = mesh_bgfb_polyface(bad);
     check(f.status != "meshed" && f.geometry.vertices.empty() && f.source == bad,
           "bad geometry fails atomically but retains source");
+    check(f.source_edges.empty() && f.face_source_edges.empty(),
+          "failed geometry returns no partial source edge mappings");
     bad = quad();
     bad["pointIndex"] = {1, 2, 3};
     check(mesh_bgfb_polyface(bad).status != "meshed", "unterminated indexed face rejected");
@@ -188,6 +251,10 @@ unsigned polyface_tests() {
     implicit["paramIndex"] = {99}; // Native sequential conversion replaces indices.
     f = mesh_bgfb_polyface(implicit);
     check(f.status == "meshed" && area(f.geometry) == 4, "implicit quad list");
+    check(f.source_edges.size() == 4 &&
+              std::all_of(f.source_edges.begin(), f.source_edges.end(),
+                          [](const PolyfaceSourceEdge &e) { return e.visible; }),
+          "implicit lists have the visible flags of generated positive indices");
     for (std::size_t i = 0; i < f.geometry.faces.size(); ++i)
         check(f.geometry.face_uv_indices[i] == std::optional<Triangle>(f.geometry.faces[i]),
               "implicit parameter binding follows point sequence, not stored index array");

@@ -255,21 +255,35 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
         }
         out.report["source_corner_count"] = style == 1 ? point_indices.size() : g.vertices.size();
         auto binding = [&](const char *name, const char *report_name, std::size_t count,
-                           bool active,
-                           const std::array<std::size_t, 3> &corners) -> std::optional<Triangle> {
+                           bool active, const std::array<std::size_t, 3> &corners,
+                           bool allow_point_default = false) -> std::optional<Triangle> {
             auto &report = out.report["attribute_bindings"][report_name];
             if (report.is_null())
                 report = {{"status", "mapped"}, {"invalid_triangles", 0}};
             const auto &indices = array(table, name);
-            if (!active || (style == 1 && indices.empty())) {
+            const bool point_default = active && style == 1 && indices.empty() &&
+                                       allow_point_default && count == g.vertices.size();
+            report["index_source"] = !active            ? Json(nullptr)
+                                     : style != 1       ? Json("implicit_point_sequence")
+                                     : point_default    ? Json("pointIndex")
+                                     : !indices.empty() ? Json(name)
+                                                        : Json(nullptr);
+            report["binding_rule"] = point_default      ? "native_equal_point_count_default"
+                                     : !active          ? "not_present"
+                                     : style != 1       ? "implicit_point_sequence"
+                                     : !indices.empty() ? "explicit_indices"
+                                                        : "unbound_pool";
+            if (!active || (style == 1 && indices.empty() && !point_default)) {
                 report["status"] = active ? "unbound_pool" : "not_present";
                 return std::nullopt;
             }
             try {
                 Triangle result{};
                 for (unsigned k = 0; k < 3; ++k)
-                    result[k] = style == 1 ? index(indices.at(corners[k]), count)
-                                           : index(Json(corners[k] + 1), count);
+                    result[k] =
+                        style == 1
+                            ? index((point_default ? point_indices : indices).at(corners[k]), count)
+                            : index(Json(corners[k] + 1), count);
                 return result;
             } catch (const std::exception &) {
                 report["status"] = "invalid_indices";
@@ -290,6 +304,16 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
                                            : std::uint32_t(corner);
                 indices.push_back(id);
                 points.push_back(g.vertices[id]);
+            }
+            const auto edge_begin = out.source_edges.size();
+            for (std::size_t i = 0; i < corners.size(); ++i) {
+                const auto next = (i + 1) % corners.size();
+                out.source_edges.push_back(
+                    {f,
+                     corners[i],
+                     corners[next],
+                     {indices[i], indices[next]},
+                     style != 1 || point_indices.at(corners[i]).get<std::int64_t>() > 0});
             }
             reduce_retraced_edges(points, indices, corners, out.report["polygons"].back());
             // Normalize the projection scale, retaining original 3D positions.
@@ -390,10 +414,23 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
                 g.faces.push_back(triangle.first);
                 g.face_source_polygons.push_back(std::uint32_t(f));
                 out.face_source_corners.push_back(source);
+                std::array<std::optional<PolyfaceTriangleEdgeSource>, 3> edge_sources{};
+                const auto &original_corners = polygons[f];
+                for (unsigned k = 0; k < 3; ++k) {
+                    // Original face corners occupy a contiguous source block;
+                    // boundary reduction does not change those source offsets.
+                    const auto a = source[k] - original_corners.front();
+                    const auto b = source[(k + 1) % 3] - original_corners.front();
+                    if ((a + 1) % original_corners.size() == b)
+                        edge_sources[k] = PolyfaceTriangleEdgeSource{edge_begin + a, false};
+                    else if ((b + 1) % original_corners.size() == a)
+                        edge_sources[k] = PolyfaceTriangleEdgeSource{edge_begin + b, true};
+                }
+                out.face_source_edges.push_back(edge_sources);
                 g.face_normal_indices.push_back(binding("normalIndex", "normal", g.normals.size(),
-                                                        present(table, "normal"), source));
-                g.face_uv_indices.push_back(
-                    binding("paramIndex", "param", g.uvs.size(), present(table, "param"), source));
+                                                        present(table, "normal"), source, true));
+                g.face_uv_indices.push_back(binding("paramIndex", "param", g.uvs.size(),
+                                                    present(table, "param"), source, true));
                 // Keep all color pools. No unproved precedence between integer,
                 // floating RGB, and table colors is applied here.
                 out.face_double_color_indices.push_back(
@@ -417,6 +454,8 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
     } catch (const std::exception &e) {
         out.geometry = {};
         out.face_source_corners.clear();
+        out.source_edges.clear();
+        out.face_source_edges.clear();
         out.face_double_color_indices.clear();
         out.face_int_color_indices.clear();
         out.face_color_table_indices.clear();
