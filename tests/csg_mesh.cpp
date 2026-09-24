@@ -203,6 +203,41 @@ unsigned csg_mesh_tests() {
     validate_list(reduce_csg_mesh_list({a}, 1), {a}, {}, {8}, 0);
     check(reduce_csg_mesh_list({a}, 2).status == "invalid_input",
           "leaf difference is not invented");
+    Geometry open_patch;
+    open_patch.vertices = {{0., 0., 0.}, {1., 0., 0.}, {0., 1., 0.}};
+    open_patch.faces = {{0, 1, 2}};
+    for (int op : {0, 1}) {
+        auto pass = reduce_csg_mesh_list({open_patch}, op);
+        check(pass.status == "evaluated" && pass.groups.size() == 1 &&
+                  pass.groups[0].mesh.vertices == open_patch.vertices &&
+                  pass.groups[0].mesh.faces == open_patch.faces &&
+                  pass.diagnostics["kernel_validation"] ==
+                      "not_required_without_boolean_operations",
+              "native single-input leaf passes an open mesh without a solid kernel");
+    }
+    for (int op : {0, 2}) {
+        auto pass = evaluate_csg_mesh_lists({open_patch, open_patch}, {}, op);
+        check(pass.status == "evaluated" && pass.groups.size() == 2 &&
+                  pass.groups[1].mesh.face_sources[0].mesh_index == 1,
+              "empty-right union/difference preserves separate open inputs");
+    }
+    check(evaluate_csg_mesh_lists({}, {open_patch}, 0).status == "evaluated",
+          "empty-left union passes open input");
+    const auto empty_open = evaluate_csg_mesh_lists({open_patch}, {}, 1);
+    check(empty_open.status == "evaluated" && empty_open.groups.empty(),
+          "empty-list intersection requires no closed-mesh operation");
+    check(reduce_csg_mesh_list({open_patch, open_patch}, 0).status == "invalid_input" &&
+              evaluate_csg_mesh_lists({open_patch}, {a}, 2).status == "invalid_input",
+          "actual mesh Booleans still require closed operands");
+    auto corrupt_patch = open_patch;
+    corrupt_patch.faces[0][1] = 10;
+    auto corrupt_pass = reduce_csg_mesh_list({corrupt_patch}, 0);
+    check(corrupt_pass.status == "invalid_input" && corrupt_pass.groups.empty(),
+          "passthrough still rejects invalid source indices");
+    corrupt_patch = open_patch;
+    corrupt_patch.vertices[0][0] = std::numeric_limits<double>::infinity();
+    check(evaluate_csg_mesh_lists({corrupt_patch}, {}, 0).status == "invalid_input",
+          "passthrough still rejects nonfinite source coordinates");
     CsgMeshListOptions list_options;
     list_options.max_boolean_operations = 3;
     auto limited = evaluate_csg_mesh_lists(list_left, list_right, 1, list_options);

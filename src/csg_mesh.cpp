@@ -23,22 +23,28 @@ const char *error_name(manifold::Manifold::Error error) {
     const auto index = unsigned(error);
     return index < sizeof(names) / sizeof(*names) ? names[index] : "UnknownKernelError";
 }
-manifold::Manifold solid(const Geometry &g, std::uint32_t id, double tolerance) {
+void validate_mesh(const Geometry &g) {
     require(g.lines.empty() && g.texts.empty() && g.unknown.empty(),
             "CSG mesh operand contains nonmesh or unresolved geometry");
     require(g.vertices.size() <= std::size_t(INT32_MAX) &&
                 g.faces.size() <= std::size_t(INT32_MAX / 3),
             "CSG mesh operand too large");
+    for (const auto &p : g.vertices)
+        for (double x : p)
+            require(std::isfinite(x), "CSG nonfinite input position");
+    for (const auto &face : g.faces)
+        for (auto index : face)
+            require(index < g.vertices.size(), "CSG input triangle index out of range");
+}
+manifold::Manifold solid(const Geometry &g, std::uint32_t id, double tolerance) {
+    validate_mesh(g);
     manifold::MeshGL64 mesh;
     mesh.tolerance = tolerance;
     for (const auto &p : g.vertices)
-        for (double x : p) {
-            require(std::isfinite(x), "CSG nonfinite input position");
+        for (double x : p)
             mesh.vertProperties.push_back(x);
-        }
     for (std::size_t i = 0; i < g.faces.size(); ++i) {
         for (auto index : g.faces[i]) {
-            require(index < g.vertices.size(), "CSG input triangle index out of range");
             mesh.triVerts.push_back(index);
         }
         mesh.faceID.push_back(i);
@@ -234,18 +240,23 @@ CsgMeshListResult evaluate_lists(const std::vector<Geometry> &left,
         result.status = "invalid_input";
         std::vector<MeshSource> sources;
         std::vector<manifold::Manifold> solids;
-        const auto first_id = count ? manifold::Manifold::ReserveIDs(std::uint32_t(count)) : 0;
+        const auto first_id = operations ? manifold::Manifold::ReserveIDs(std::uint32_t(count)) : 0;
+        result.diagnostics["kernel_validation"] =
+            operations ? "closed_mesh_required" : "not_required_without_boolean_operations";
         auto add = [&](const std::vector<Geometry> &input, unsigned side) {
             for (std::size_t i = 0; i < input.size(); ++i) {
                 result.diagnostics["input_operand"] = side;
                 result.diagnostics["input_mesh_index"] = i;
                 const auto &g = input[i];
-                auto value =
-                    solid(g, first_id + std::uint32_t(sources.size()), options.mesh.tolerance);
-                require(value.Status() == manifold::Manifold::Error::NoError,
-                        error_name(value.Status()));
+                if (operations) {
+                    auto value =
+                        solid(g, first_id + std::uint32_t(sources.size()), options.mesh.tolerance);
+                    require(value.Status() == manifold::Manifold::Error::NoError,
+                            error_name(value.Status()));
+                    solids.push_back(std::move(value));
+                } else
+                    validate_mesh(g);
                 sources.push_back({&g, side, i});
-                solids.push_back(std::move(value));
             }
         };
         add(left, 0);

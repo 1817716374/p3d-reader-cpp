@@ -264,7 +264,76 @@ unsigned polyface_tests() {
               f.report["unused_trailing_points"] == 1 && f.geometry.vertices.size() == 4,
           "implicit triangle list retains incomplete source tail points");
     implicit["meshStyle"] = 5;
-    check(mesh_bgfb_polyface(implicit).status != "meshed", "grid layout not guessed");
+    check(mesh_bgfb_polyface(implicit).status != "meshed", "grid requires its source row width");
+    auto grid = quad();
+    grid["point"] = {0., 0., 0., 1., 0., 0., 2., 0., 0., 0., 1., 0., 1., 1., 0., 2., 1., 0.};
+    grid["param"] = {0., 0., 1., 0., 2., 0., 0., 1., 1., 1., 2., 1.};
+    grid["normal"] = {0., 0., 1., 0., 0., 2., 0., 0., 3., 0., 0., 4., 0., 0., 5., 0., 0., 6.};
+    grid["intColor"] = {10, 20, 30, 40, 50, 60};
+    grid["numPerRow"] = 3;
+    grid["meshStyle"] = 5;
+    for (const char *key : {"pointIndex", "normalIndex", "paramIndex", "colorIndex"})
+        grid[key] = {99};
+    f = mesh_bgfb_polyface(grid);
+    const std::vector<Triangle> grid_faces{{0, 1, 3}, {3, 1, 4}, {1, 2, 4}, {4, 2, 5}};
+    check(f.status == "meshed" && f.geometry.faces == grid_faces &&
+              f.geometry.vertices.size() == 6 && area(f.geometry) == 2,
+          "triangle grid keeps native diagonal, winding, row order and shared point pool");
+    check(f.source == grid && f.report["source_corner_count"] == 12 &&
+              f.report["grid_cells"] == 2 && f.source_edges.size() == 12,
+          "grid counts repeated face corners and retains ignored stored indices");
+    for (std::size_t i = 0; i < f.geometry.faces.size(); ++i) {
+        check(f.geometry.face_normal_indices[i] == std::optional<Triangle>(grid_faces[i]) &&
+                  f.geometry.face_uv_indices[i] == std::optional<Triangle>(grid_faces[i]) &&
+                  f.face_int_color_indices[i] == std::optional<Triangle>(grid_faces[i]),
+              "grid attributes follow grid point positions rather than stored index arrays");
+        for (unsigned k = 0; k < 3; ++k) {
+            const auto link = f.face_source_edges[i][k];
+            check(link.has_value() && f.source_edges[link->source_edge].visible &&
+                      f.source_edges[link->source_edge].points[0] == grid_faces[i][k],
+                  "native triangle-grid diagonal is a visible source edge");
+        }
+    }
+    grid["meshStyle"] = 6;
+    f = mesh_bgfb_polyface(grid);
+    check(f.status == "meshed" && f.geometry.faces.size() == 4 && area(f.geometry) == 2 &&
+              f.report["polygons"][0]["source_corners"] == Json({0, 1, 4, 3}) &&
+              f.report["polygons"][1]["source_corners"] == Json({1, 2, 5, 4}) &&
+              f.report["source_corner_count"] == 8,
+          "quad grid has native perimeter order and independent source face numbering");
+    std::size_t quad_mapped = 0;
+    for (std::size_t i = 0; i < f.geometry.faces.size(); ++i)
+        for (unsigned k = 0; k < 3; ++k)
+            if (const auto &link = f.face_source_edges[i][k]) {
+                ++quad_mapped;
+                const auto &edge = f.source_edges[link->source_edge];
+                check(edge.points[link->reversed ? 1 : 0] == f.geometry.faces[i][k] &&
+                          edge.points[link->reversed ? 0 : 1] == f.geometry.faces[i][(k + 1) % 3],
+                      "nonconsecutive grid corner values map to exact original perimeter edges");
+            }
+    check(quad_mapped == 8 && f.source_edges.size() == 8,
+          "quad-grid triangulation diagonals do not acquire source visibility");
+    auto partial_grid = grid;
+    partial_grid["point"].push_back(0.);
+    partial_grid["point"].push_back(2.);
+    partial_grid["point"].push_back(0.);
+    f = mesh_bgfb_polyface(partial_grid);
+    check(f.status != "meshed" && f.geometry.vertices.empty() && f.source == partial_grid,
+          "native partial-row one-past-end access is rejected atomically");
+    auto one_row = grid;
+    one_row["point"] = {0., 0., 0., 1., 0., 0.};
+    f = mesh_bgfb_polyface(one_row);
+    check(f.status == "meshed" && f.geometry.faces.empty() && f.geometry.vertices.size() == 2 &&
+              f.report["unused_trailing_points"] == 2,
+          "too few grid points for any cell preserves the unused point pool");
+    auto invalid_grid = grid;
+    invalid_grid["numPerRow"] = 1;
+    check(mesh_bgfb_polyface(invalid_grid).status != "meshed",
+          "grid division-by-zero width rejected");
+    PolyfaceMeshOptions grid_budget;
+    grid_budget.max_corners = 7;
+    check(mesh_bgfb_polyface(grid, grid_budget).status != "meshed",
+          "grid corner budget counts all generated face corners, not unique points");
     PolyfaceMeshOptions options;
     options.max_triangles = 1;
     check(mesh_bgfb_polyface(quad(), options).geometry.faces.empty(), "triangle output budget");

@@ -26,7 +26,7 @@ struct PolyfaceMeshResult {
     // Original BGFB table, including unused channels and scalar tails.
     Json source;
     Json report = Json::object();
-    // For indexed faces these are positions in pointIndex; for implicit lists
+    // For indexed faces these are positions in pointIndex; for implicit lists/grids
     // they are source point positions. No deduplication of points or corners.
     std::vector<std::array<std::size_t, 3>> face_source_corners;
     // Original edges include those affected by derived boundary reduction.
@@ -40,7 +40,7 @@ struct PolyfaceMeshResult {
     std::vector<std::optional<Triangle>> face_color_table_indices;
 };
 // Derived triangles for a decoded BGFB Polyface table (not VariantGeometry).
-// Supports signed indexed loops/fixed blocks and implicit triangle/quad lists.
+// Supports signed indexed loops/fixed blocks and implicit triangle/quad lists/grids.
 // A meshed result describes geometry, not complete material or color selection:
 // report.attribute_bindings records unresolved/missing/invalid source bindings.
 // On geometry failure no partial Geometry or triangle mappings are returned.

@@ -193,7 +193,8 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
         require(table.at("_type") == "Polyface", "expected BGFB Polyface table");
         const auto style = table.value("meshStyle", 0);
         const auto width = table.value("numPerFace", 0);
-        require(style == 1 || style == 3 || style == 4,
+        const bool grid = style == 5 || style == 6;
+        require(style == 1 || style == 3 || style == 4 || grid,
                 "BGFB Polyface mesh style not supported by derived triangulation");
         require(width >= 0, "BGFB Polyface negative face block width");
         out.report["mesh_style"] = style;
@@ -240,6 +241,38 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
                 }
                 require(face.empty(), "BGFB Polyface unterminated indexed face");
             }
+        } else if (grid) {
+            const auto columns_value = table.value("numPerRow", 0);
+            require(columns_value >= 2, "BGFB Polyface grid needs at least two points per row");
+            const auto columns = std::size_t(columns_value), count = g.vertices.size();
+            const auto rows = count / columns;
+            // The native visitor's upper-right guard accepts index == count,
+            // then reads that missing point. Reject such a partial cell safely.
+            require(count < columns + 1 || count % columns == 0,
+                    "BGFB Polyface incomplete grid row references a missing corner");
+            const auto cells = rows > 1 ? (rows - 1) * (columns - 1) : 0;
+            const std::size_t faces_per_cell = style == 5 ? 2 : 1;
+            const std::size_t corners_per_cell = style == 5 ? 6 : 4;
+            require(cells <= options.max_corners / corners_per_cell,
+                    "BGFB Polyface grid corner budget");
+            require(cells <= UINT32_MAX / faces_per_cell,
+                    "BGFB Polyface grid source face capacity");
+            out.report["num_per_row"] = columns;
+            out.report["grid_rows"] = rows;
+            out.report["grid_cells"] = cells;
+            out.report["layout_rule"] = "native_direct_grid_visitor";
+            out.report["source_corner_count"] = cells * corners_per_cell;
+            out.report["unused_trailing_points"] = cells ? 0 : count;
+            for (std::size_t row = 0; row + 1 < rows; ++row)
+                for (std::size_t col = 0; col + 1 < columns; ++col) {
+                    const auto a = row * columns + col, b = a + 1;
+                    const auto c = a + columns, d = c + 1;
+                    if (style == 5) {
+                        polygons.push_back({a, b, c});
+                        polygons.push_back({c, b, d});
+                    } else
+                        polygons.push_back({a, b, d, c});
+                }
         } else {
             const std::size_t block = style == 3 ? 3 : 4;
             require(g.vertices.size() <= options.max_corners,
@@ -253,7 +286,9 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
                 polygons.push_back(std::move(face));
             }
         }
-        out.report["source_corner_count"] = style == 1 ? point_indices.size() : g.vertices.size();
+        if (!grid)
+            out.report["source_corner_count"] =
+                style == 1 ? point_indices.size() : g.vertices.size();
         auto binding = [&](const char *name, const char *report_name, std::size_t count,
                            bool active, const std::array<std::size_t, 3> &corners,
                            bool allow_point_default = false) -> std::optional<Triangle> {
@@ -264,12 +299,14 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
             const bool point_default = active && style == 1 && indices.empty() &&
                                        allow_point_default && count == g.vertices.size();
             report["index_source"] = !active            ? Json(nullptr)
+                                     : grid             ? Json("implicit_grid_point_index")
                                      : style != 1       ? Json("implicit_point_sequence")
                                      : point_default    ? Json("pointIndex")
                                      : !indices.empty() ? Json(name)
                                                         : Json(nullptr);
             report["binding_rule"] = point_default      ? "native_equal_point_count_default"
                                      : !active          ? "not_present"
+                                     : grid             ? "implicit_grid_point_index"
                                      : style != 1       ? "implicit_point_sequence"
                                      : !indices.empty() ? "explicit_indices"
                                                         : "unbound_pool";
@@ -417,10 +454,15 @@ PolyfaceMeshResult mesh_bgfb_polyface(const Json &table, const PolyfaceMeshOptio
                 std::array<std::optional<PolyfaceTriangleEdgeSource>, 3> edge_sources{};
                 const auto &original_corners = polygons[f];
                 for (unsigned k = 0; k < 3; ++k) {
-                    // Original face corners occupy a contiguous source block;
-                    // boundary reduction does not change those source offsets.
-                    const auto a = source[k] - original_corners.front();
-                    const auto b = source[(k + 1) % 3] - original_corners.front();
+                    // Grid faces use nonconsecutive point positions. Shared
+                    // grid vertices do not merge distinct source edge records.
+                    auto position = [&](std::size_t corner) {
+                        return grid ? std::size_t(std::find(original_corners.begin(),
+                                                            original_corners.end(), corner) -
+                                                  original_corners.begin())
+                                    : corner - original_corners.front();
+                    };
+                    const auto a = position(source[k]), b = position(source[(k + 1) % 3]);
                     if ((a + 1) % original_corners.size() == b)
                         edge_sources[k] = PolyfaceTriangleEdgeSource{edge_begin + a, false};
                     else if ((b + 1) % original_corners.size() == a)
