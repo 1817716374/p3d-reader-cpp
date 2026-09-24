@@ -369,15 +369,79 @@ std::vector<Triangle> cap_faces(const std::vector<Ring> &rings, const std::vecto
 }
 } // namespace
 
-std::vector<Triangle> triangulate_planar_sample_rings(
-    const std::vector<std::vector<std::uint32_t>> &rings,
-    const std::vector<Point3> &vertices, unsigned triangle_budget) {
+std::vector<Triangle>
+triangulate_planar_sample_rings(const std::vector<std::vector<std::uint32_t>> &rings,
+                                const std::vector<Point3> &vertices, unsigned triangle_budget) {
     LoftMeshOptions options;
     double plane_error = 0, collinear_distance = 0;
     unsigned plane_budget = 0;
     Json reports = Json::array();
-    return cap_faces(rings, vertices, Json(), options, triangle_budget,
-                     plane_error, collinear_distance, plane_budget, reports);
+    return cap_faces(rings, vertices, Json(), options, triangle_budget, plane_error,
+                     collinear_distance, plane_budget, reports);
+}
+
+ProjectedRingMesh
+triangulate_projected_sample_rings(const std::vector<std::vector<std::uint32_t>> &rings,
+                                   const std::vector<Point3> &vertices, unsigned triangle_budget) {
+    require(!rings.empty() && rings.front().size() >= 3, "projected cap boundary count");
+    const auto origin = vertices.at(rings.front().front());
+    Point3 normal{};
+    for (std::size_t i = 0; i < rings.front().size(); ++i) {
+        const auto a = difference(vertices.at(rings.front()[i]), origin);
+        const auto b =
+            difference(vertices.at(rings.front()[(i + 1) % rings.front().size()]), origin);
+        const auto n = cross_product(a, b);
+        for (unsigned k = 0; k < 3; ++k)
+            normal[k] += n[k];
+    }
+    auto normalize = [](Point3 &p) {
+        const auto n = length(p);
+        require(std::isfinite(n) && n > 0, "projected cap degenerate reference direction");
+        for (auto &x : p)
+            x /= n;
+    };
+    normalize(normal);
+    // An orthogonal derived reference plane. This does not claim native frame
+    // scaling, native diagonal choices or native post-triangulation equivalence.
+    Point3 x{};
+    double longest = 0;
+    for (auto index : rings.front()) {
+        auto edge = difference(vertices.at(index), origin);
+        const auto height = dot_product(edge, normal);
+        for (unsigned k = 0; k < 3; ++k)
+            edge[k] -= height * normal[k];
+        const auto magnitude = length(edge);
+        require(std::isfinite(magnitude), "projected cap reference overflow");
+        if (magnitude > longest) {
+            longest = magnitude;
+            x = edge;
+        }
+    }
+    normalize(x);
+    auto y = cross_product(normal, x);
+    normalize(y);
+    std::vector<Point3> projected(vertices.size());
+    double max_distance = 0;
+    for (const auto &ring : rings)
+        for (auto index : ring) {
+            const auto p = difference(vertices.at(index), origin);
+            const auto u = dot_product(p, x), v = dot_product(p, y), w = dot_product(p, normal);
+            require(std::isfinite(u) && std::isfinite(v) && std::isfinite(w),
+                    "projected cap coordinate overflow");
+            projected.at(index) = {u, v, 0};
+            max_distance = std::max(max_distance, std::abs(w));
+        }
+    ProjectedRingMesh result;
+    result.faces = triangulate_planar_sample_rings(rings, projected, triangle_budget);
+    result.report = {{"method", "derived_orthogonal_area_normal_projection"},
+                     {"origin", origin},
+                     {"axis_x", x},
+                     {"axis_y", y},
+                     {"normal", normal},
+                     {"max_sample_distance_from_plane", max_distance},
+                     {"output_coordinates", "original_3d_samples"},
+                     {"native_triangulation_equivalence", "not_established"}};
+    return result;
 }
 
 LoftMesh SectionLoft::mesh(const LoftMeshOptions &options) const {

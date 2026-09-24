@@ -227,8 +227,72 @@ unsigned sweep_tests() {
     auto nonplanar = rectangle(0, 0, 2, 2);
     nonplanar["curves"][0]["geometry"]["points"][8] = .5;
     r = mesh_bgfb_solid(extrude(nonplanar));
-    check(r.derived.status != "meshed" && r.derived.geometry.faces.empty() &&
+    check(r.derived.status == "meshed" && closed(r.derived.geometry) &&
               r.source == extrude(nonplanar),
-          "nonplanar source cap is retained without silently flattening it");
+          "nonplanar cap retains original height with closed side boundaries");
+    check(std::abs(volume(r.derived.geometry) - 12) < 1e-9,
+          "nonplanar prism independent projected-area times height volume");
+    check(r.derived.report["cap_projections"][0]["bottom"]["max_sample_distance_from_plane"] > .1,
+          "nonplanar cap is explicitly reported");
+    check(std::find(r.derived.geometry.vertices.begin(), r.derived.geometry.vertices.end(),
+                    Point3{2, 2, .5}) != r.derived.geometry.vertices.end(),
+          "source cap height is not flattened");
+    for (unsigned orientation = 0; orientation < 3; ++orientation)
+        for (double sign : {-1., 1.}) {
+            auto m = identity();
+            m[0] = {0, sign * 2, 0, 13};
+            m[1] = {0, 0, 3, -7};
+            m[2] = {1, 0, .25, 5};
+            for (unsigned i = 0; i < orientation; ++i) {
+                const auto row = m[0];
+                m[0] = m[1];
+                m[1] = m[2];
+                m[2] = row;
+            }
+            auto section = nonplanar;
+            auto &values = section["curves"][0]["geometry"]["points"];
+            for (std::size_t i = 0; i < values.size(); i += 3) {
+                Point3 p{values[i].get<double>(), values[i + 1].get<double>(),
+                         values[i + 2].get<double>()};
+                p = transform(m, p);
+                for (unsigned k = 0; k < 3; ++k)
+                    values[i + k] = p[k];
+            }
+            auto source = extrude(section, vector_transform(m, {0, 0, 3}));
+            r = mesh_bgfb_solid(source);
+            check(r.derived.status == "meshed" && closed(r.derived.geometry),
+                  "nonplanar caps survive axis permutation, shear and mirror");
+            check(std::abs(volume(r.derived.geometry) - 72) < 1e-8,
+                  "affine nonplanar prism has independently known volume");
+            check(r.source == source, "nonplanar affine source is preserved");
+        }
+    auto high_sample =
+        loop(line({{0, 0, 0}, {1, 0, .4}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}, {0, 0, 0}}));
+    r = mesh_bgfb_solid(extrude(high_sample));
+    check(r.derived.status == "meshed" && closed(r.derived.geometry),
+          "projected collinear sample with distinct 3D height retains cap boundary");
+    check(std::find(r.derived.geometry.vertices.begin(), r.derived.geometry.vertices.end(),
+                    Point3{1, 0, .4}) != r.derived.geometry.vertices.end(),
+          "height-bearing boundary sample survives projection");
+    auto nonplanar_hole = region({rectangle(0, 0, 8, 8), rectangle(2, 2, 4, 4, .25)});
+    r = mesh_bgfb_solid(extrude(nonplanar_hole));
+    check(r.derived.status == "meshed" && closed(r.derived.geometry),
+          "noncoplanar parity loops remain connected to caps");
+    check(std::abs(volume(r.derived.geometry) - 144) < 1e-8,
+          "noncoplanar annulus extrusion volume");
+    auto rounding = rectangle(0, 1000, 2, 2);
+    rounding["curves"] = {{{"geometry", line({{0, 1000, 0}, {2, 1000, 0}, {2, 1002, 0}})}},
+                          {{"geometry", line({{2, 1002, 5e-13}, {0, 1002, 0}, {0, 1000, 0}})}}};
+    const auto source_rounding = extrude(rounding);
+    r = mesh_bgfb_solid(source_rounding);
+    check(r.derived.status == "meshed" && closed(r.derived.geometry) && r.source == source_rounding,
+          "component near zero can retain source rounding at whole-coordinate scale");
+    check(r.derived.report["roundoff_join_count"] == 2 &&
+              r.derived.report["max_join_distance"] >= 5e-13,
+          "derived adjacent endpoint adjustment is explicitly measured");
+    rounding["curves"][1]["geometry"]["points"][2] = 1e-6;
+    r = mesh_bgfb_solid(extrude(rounding));
+    check(r.derived.status != "meshed" && r.derived.geometry.faces.empty(),
+          "actual gap is not merged by derived roundoff handling");
     return n;
 }

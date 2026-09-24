@@ -33,9 +33,15 @@ Point3 point(const Json &j, const std::string &prefix) {
     return {number(j.at(prefix + "X")), number(j.at(prefix + "Y")), number(j.at(prefix + "Z"))};
 }
 bool joins(Point3 a, Point3 b) {
+    double scale = 1;
+    for (unsigned k = 0; k < 3; ++k) {
+        if (!std::isfinite(a[k]) || !std::isfinite(b[k]))
+            return false;
+        scale = std::max({scale, std::abs(a[k]), std::abs(b[k])});
+    }
+    const auto tolerance = 16 * std::numeric_limits<double>::epsilon() * scale;
     for (unsigned k = 0; k < 3; ++k)
-        if (std::abs(a[k] - b[k]) > 16 * std::numeric_limits<double>::epsilon() *
-                                        std::max({1., std::abs(a[k]), std::abs(b[k])}))
+        if (std::abs(a[k] - b[k]) > tolerance)
             return false;
     return true;
 }
@@ -201,6 +207,17 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
             std::size_t primitive, component;
         };
         std::vector<std::vector<Edge>> edges(first.loops.size());
+        double max_join_distance = 0;
+        std::size_t roundoff_joins = 0;
+        auto checked_join = [&](Point3 a, Point3 b, const char *reason) {
+            require(joins(a, b), reason);
+            const auto d = minus(a, b);
+            const double distance = std::hypot(d[0], d[1], d[2]);
+            require(std::isfinite(distance), "sweep join distance overflow");
+            max_join_distance = std::max(max_join_distance, distance);
+            if (distance > 0)
+                ++roundoff_joins;
+        };
         std::vector<std::vector<Ring>> rows(profiles.size(), std::vector<Ring>(first.loops.size()));
         for (std::size_t l = 0; l < first.loops.size(); ++l) {
             const auto &loop = first.loops[l];
@@ -224,8 +241,8 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
                         if (ring.empty())
                             ring.push_back(vertex(start));
                         else
-                            require(joins(vertices[ring.back()], start),
-                                    "sweep disconnected source primitives");
+                            checked_join(vertices[ring.back()], start,
+                                         "sweep disconnected source primitives");
                         for (unsigned s = 1; s <= bands; ++s)
                             ring.push_back(vertex(q.at(c, double(s) / bands)));
                     }
@@ -234,9 +251,10 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
             if (loop.type != 1)
                 for (auto &row : rows) {
                     auto &ring = row[l];
-                    require(ring.size() >= 4 &&
-                                joins(vertices[ring.back()], vertices[ring.front()]),
+                    require(ring.size() >= 4,
                             "sweep closed boundary has an open or degenerate source chain");
+                    checked_join(vertices[ring.back()], vertices[ring.front()],
+                                 "sweep closed boundary has an open or degenerate source chain");
                     // Only the specified consecutive seam shares a derived index.
                     ring.back() = ring.front();
                 }
@@ -255,6 +273,7 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
             ids.push_back(id);
         };
         std::vector<bool> reverse(first.loops.size(), false);
+        Json cap_projections = Json::array();
         // Closed regions need the same parity classification for side orientation,
         // even when their caps are omitted from the output.
         for (const auto &group : first.regions) {
@@ -272,36 +291,17 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
             }
             const auto budget = unsigned(
                 std::min<std::size_t>(options.max_triangles - triangles.size(), UINT32_MAX));
-            auto a = triangulate_planar_sample_rings(bottom, vertices, budget);
-            auto b = triangulate_planar_sample_rings(top, vertices, budget);
+            auto bottom_mesh = triangulate_projected_sample_rings(bottom, vertices, budget);
+            auto top_mesh = triangulate_projected_sample_rings(top, vertices, budget);
+            cap_projections.push_back({{"bottom", bottom_mesh.report},
+                                       {"top", top_mesh.report},
+                                       {"source_loop_indices", group},
+                                       {"caps_emitted", capped}});
+            auto a = std::move(bottom_mesh.faces), b = std::move(top_mesh.faces);
             require(!a.empty() && !b.empty(), "sweep empty caps");
-            auto normal = [&](Triangle t) {
-                return cross(minus(vertices[t[1]], vertices[t[0]]),
-                             minus(vertices[t[2]], vertices[t[0]]));
-            };
-            // Samples alone cannot prove that the full analytic arc is planar.
-            // Check its center and both complete axis vectors against the cap.
-            auto analytic_plane = [&](const Profile &profile, Triangle t) {
-                auto n = normal(t);
-                const double length = std::sqrt(dot(n, n));
-                require(length > 0 && std::isfinite(length), "sweep cap normal");
-                for (auto &x : n)
-                    x /= length;
-                const auto origin = vertices[t[0]];
-                for (auto l : group)
-                    for (const auto &p : profile.loops[l].primitives)
-                        if (p.type == "EllipticArc") {
-                            const auto bound = std::abs(dot(minus(p.center, origin), n)) +
-                                               std::hypot(dot(p.x, n), dot(p.y, n));
-                            require(std::isfinite(bound) && bound <= 1e-8,
-                                    "sweep analytic cap arc is not planar");
-                        }
-            };
-            analytic_plane(profiles.front(), a.front());
-            analytic_plane(profiles.back(), b.front());
             const auto direction =
                 minus(vertices[rows[1][group.front()][0]], vertices[rows[0][group.front()][0]]);
-            const auto orientation = dot(normal(a.front()), direction);
+            const auto orientation = dot(bottom_mesh.report.at("normal").get<Point3>(), direction);
             require(std::isfinite(orientation) && orientation != 0,
                     "sweep initial section has no transverse direction");
             if (orientation < 0)
@@ -419,6 +419,10 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
         out.derived.report["source_loop_count"] = first.loops.size();
         out.derived.report["derived_ruled_bands"] = derived_bands;
         out.derived.report["native_uv_and_normals"] = "not_evaluated";
+        out.derived.report["cap_projections"] = std::move(cap_projections);
+        out.derived.report["adjacent_join_policy"] = "derived_16_epsilon_global_coordinate_scale";
+        out.derived.report["roundoff_join_count"] = roundoff_joins;
+        out.derived.report["max_join_distance"] = max_join_distance;
         if (out.derived.status == "meshed")
             out.face_indices = std::move(ids);
     } catch (const std::exception &e) {

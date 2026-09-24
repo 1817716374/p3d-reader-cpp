@@ -24,8 +24,9 @@ struct SolidMeshResult {
 // nonzero |minorRadius|. Native rotational sweeps are limited to one revolution.
 // Extrusion/ruled profiles support line segments, line strings and elliptic arcs,
 // open chains without caps, closed loops, parity regions and union children.
-// Corresponding source primitive/component counts must agree. Closed profiles
-// currently require planar end regions; no missing boundary segment is invented.
+// Corresponding source primitive/component counts must agree. Cap topology is
+// triangulated in a derived reference plane while retaining original 3D samples,
+// including nonplanar caps. No missing source boundary segment is invented.
 // circle_segments controls arc sampling and V bands for nonplanar ruled patches.
 // These derived meshes do not claim a world-space error bound or native UVs.
 SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &options = {},
