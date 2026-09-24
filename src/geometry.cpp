@@ -448,6 +448,13 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     throw std::runtime_error(d["field_decode_error"].get<std::string>());
                 if (op == 29)
                     return;
+                if (op == 58) {
+                    g.unknown.push_back({{"opcode", op}, {"offset", cmd["offset"]},
+                                         {"reason", "CSG Boolean result not evaluated"},
+                                         {"csg", d}, {"placement_matrix", matrix},
+                                         {"style", style}});
+                    return;
+                }
                 if (op == 37) {
                     require(d.at("version") == 1, "text version");
                     auto origin = d.at("origin").get<Point3>();

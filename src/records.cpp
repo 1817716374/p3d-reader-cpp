@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include <p3d/csg.hpp>
 #include "text_bytes.hpp"
 #include "material_catalog_read.hpp"
 #include <lz4/lz4.h>
@@ -686,7 +687,8 @@ Json command_fields(unsigned op, const Bytes &b) {
                                                     {53, "guided_loft_first_section"},
                                                     {54, "guided_loft_second_section"},
                                                     {55, "guided_loft_guides"},
-                                                    {56, "guided_loft_begin"}};
+                                                    {56, "guided_loft_begin"},
+                                                    {58, "csg_tree"}};
     Json v = {{"name", names.count(op) ? names.at(op) : "unknown"}};
     Reader r(b);
     try {
@@ -752,6 +754,8 @@ Json command_fields(unsigned op, const Bytes &b) {
             r.finish();
         } else if (op == 37) {
             v.update(decode_text_bytes(b));
+        } else if (op == 58) {
+            v.update(decode_csg_bytes(b));
         } else if (op == 28)
             v.update(decode_symbology(b));
         else if (op == 25)

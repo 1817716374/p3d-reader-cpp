@@ -301,7 +301,10 @@ Json read_materials(const Document &doc) {
             "graphics_entry_material"}},
           {"element_lookup_order", {"native_element_material", "advanced_element_name"}},
           {"part_index_basis", "zero_based_graphics_entry_order"},
-          {"unresolved_name_policy", "continue_to_next_layer"},
+          {"unresolved_name_policy", "stop_with_unresolved_selection"},
+          {"confirmed_missing_name_policy", "continue_to_next_layer"},
+          {"selection_scope", "before_ordinary_symbology"},
+          {"draw_material_status", "not_evaluated"},
           {"name_comparison", "native_case_insensitive_locale_dependent"},
           {"stored_command_styles", "already_materialized_do_not_reapply_by_triangle_index"}}},
         {"texture_policy", "opaque source references; resolution and loading belong to caller"}};

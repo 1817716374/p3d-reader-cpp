@@ -375,5 +375,20 @@ unsigned graphics_bytes_tests() {
               duplicate_footer["values"][4]["value"] == 73 &&
               duplicate_footer["values"][7]["value"] == 73,
           "null unknown and truncated first matches prevent substituting later same-ID values");
+    Bytes csg_archive(32);
+    csg_archive[0] = 22;
+    csg_archive[16] = 36;
+    auto csg_entry = entry({}, csg_archive);
+    csg_entry[4] = 10;
+    auto csg = decode_graphics_bytes(graphics({csg_entry})).at("geometry_packets").at(0);
+    check(csg.at("geometry_status") == "decoded_archive" &&
+              csg.at("geometry").at("tree").at("nodes").empty() &&
+              csg.at("geometry").at("boolean_evaluation_status") == "not_evaluated" &&
+              csg.at("footer_status") == "decoded",
+          "CSG graphics entry uses its own archive and keeps material footer boundaries");
+    csg_entry[36] = 99;
+    csg = decode_graphics_bytes(graphics({csg_entry})).at("geometry_packets").at(0);
+    check(csg.at("geometry_status") == "invalid" && csg.at("footer_status") == "decoded",
+          "invalid CSG archive marker does not suppress independent graphics footer");
     return checks + graphics_native_tests() + text_bytes_tests();
 }

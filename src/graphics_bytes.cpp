@@ -1,4 +1,5 @@
 #include "graphics_native.hpp"
+#include <p3d/csg.hpp>
 #include "text_bytes.hpp"
 
 namespace p3d {
@@ -92,7 +93,15 @@ Json entry_bytes(const Bytes &b) {
     const auto geometry = r.take(std::size_t(size));
     out["geometry_bytes"] = size;
     out["geometry_status"] = geometry.empty() ? "empty" : "unsupported_encoding";
-    if (type == 7 && !geometry.empty()) {
+    if (type == 10 && !geometry.empty()) {
+        try {
+            out["geometry"] = decode_csg_bytes(geometry);
+            out["geometry_status"] = "decoded_archive";
+        } catch (const std::exception &e) {
+            out["geometry_status"] = "invalid";
+            out["geometry_decode_error"] = e.what();
+        }
+    } else if (type == 7 && !geometry.empty()) {
         try {
             out["geometry"] = decode_text_bytes(geometry);
             out["geometry"]["_type"] = "TextEntity";
