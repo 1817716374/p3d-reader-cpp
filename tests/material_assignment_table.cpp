@@ -295,5 +295,72 @@ unsigned material_assignment_table_tests() {
     check(resolve_native_assignment_material(table, query, Json(), {}).at("status") ==
               "rule_not_found",
           "rule miss does not access catalog or invent parent layer fallback");
+
+    auto palette = decode_native_palette_reference("$(_P3DLIB)|shared.p3d|Materials/Wood.pal");
+    check(palette.at("status") == "decoded" && palette.at("reference_kind") == "library" &&
+              palette.at("library_reference") == "shared.p3d" &&
+              palette.at("palette_name") == "Wood",
+          "library palette splits resource and filename stem");
+    check(palette.at("palette_path") == "Materials/Wood.pal" &&
+              palette.at("resource_lookup") == "not_performed" &&
+              palette.at("table_registration") == "not_evaluated",
+          "reference interpretation does not resolve external resources or claim registration");
+    palette = decode_native_palette_reference("$(_P3DPROJECT)\\Materials\\Paint.pal");
+    check(palette.at("reference_kind") == "project" && palette.at("library_reference") == "" &&
+              palette.at("palette_name") == "Paint" &&
+              palette.at("palette_path") == "Materials\\Paint.pal",
+          "project prefix strips exact native 15 UTF16 units");
+    palette = decode_native_palette_reference("E:\\Materials\\Mixed.case.pal");
+    check(palette.at("reference_kind") == "ordinary" && palette.at("palette_name") == "Mixed.case",
+          "ordinary reference uses Windows stem without filesystem access");
+    check(decode_native_palette_reference("logical:dir/Named.pal").at("palette_name") == "Named",
+          "native logical path prefix uses existing path parser");
+    check(decode_native_palette_reference("$(_P3DLIB)").at("palette_name") == "" &&
+              decode_native_palette_reference("$(_P3DLIB)").at("library_reference") == "",
+          "bare library marker returns empty outputs");
+    check(decode_native_palette_reference("").at("status") == "rejected",
+          "empty palette input is rejected before provider calls");
+    check(decode_native_palette_reference("$(_p3dlib)|shared|Wood.pal").at("status") ==
+              "unresolved",
+          "case-equivalent special prefix needs source locale");
+    check(decode_native_palette_reference("$(_p3dlib)|shared|Wood.pal", text).at("palette_name") ==
+              "Wood",
+          "explicit source comparison enables lowercase library marker");
+    check(decode_native_palette_reference("$(_P3DPROJECT)/Wood.pal").at("reference_kind") ==
+              "ordinary",
+          "project prefix requires native backslash rather than slash normalization");
+    palette = decode_native_palette_reference("$(_P3DLIB)|outer|$(_P3DLIB)|inner|Nested.pal");
+    check(palette.at("library_reference") == "outer" && palette.at("palette_name") == "Nested",
+          "one nested library expression strips member prefix but retains outer resource");
+    palette = decode_native_palette_reference("$(_P3DLIB)NoPipes");
+    check(palette.at("library_reference") == "$(_P3DLIB)NoPipes" &&
+              palette.at("palette_path") == "$(_P3DLIB)NoPipes",
+          "native npos wrap with absent separators preserves its odd source split");
+    palette = decode_native_palette_reference("$(_P3DLIB)||Wood.pal");
+    check(palette.at("library_reference") == "|Wood.pal" &&
+              palette.at("palette_path") == "$(_P3DLIB)||Wood.pal",
+          "second delimiter search skips immediately adjacent delimiter");
+    std::string nul_reference = "prefix.pal";
+    nul_reference.append("\0ignored.pal", 12);
+    palette = decode_native_palette_reference(nul_reference);
+    check(palette.at("palette_name") == "prefix" && palette.at("source_value") == nul_reference,
+          "native palette NUL cutoff retains full supplied source");
+    palette = decode_native_palette_reference(std::string(260, 'x') + ".pal");
+    check(palette.at("native_path_buffer_limit") == true && palette.at("palette_name") == "",
+          "native fixed path buffers clear stem on component overflow");
+    table = decode_native_material_assignment_table(
+        "<t><paletteList>ignored<!--x--><one>first.pal</one><anything>first.pal</anything>"
+        "<x>$(_P3DLIB)|shared|dir/<![CDATA[Wood]]>.pal</x><empty/>"
+        "</paletteList><paletteList><x>ignored.pal</x></paletteList></t>");
+    check(table.at("palette_references").size() == 4 &&
+              table.at("palette_references")[2]["palette_name"] == "Wood",
+          "first paletteList visits every direct element and concatenates text plus CDATA");
+    check(table.at("palette_references")[0]["source_value"] == "first.pal" &&
+              table.at("palette_references")[1]["source_value"] == "first.pal" &&
+              table.at("palette_references")[1]["source_index"] == 1,
+          "duplicate palette references retain source order before provider equality");
+    check(table.at("palette_references")[3]["status"] == "rejected" &&
+              table.at("palette_membership") == "not_evaluated" && table.at("status") == "resolved",
+          "palette membership and rejected entries remain separate from rule normalization");
     return checks;
 }

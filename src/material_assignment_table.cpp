@@ -139,6 +139,81 @@ bool pattern_match(const std::u16string &pattern, const std::u16string &name,
 }
 } // namespace
 
+Json decode_native_palette_reference(const std::string &reference,
+                                     const NativeAssignmentTextContext &text) {
+    Json out = {{"status", "unresolved"},
+                {"source_value", reference},
+                {"scope", "native_palette_reference_syntax"},
+                {"resource_lookup", "not_performed"},
+                {"table_registration", "not_evaluated"}};
+    try {
+        const auto value = wide(reference);
+        std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> codec;
+        out["native_input"] = codec.to_bytes(value);
+        if (value.empty()) {
+            out.update({{"status", "rejected"},
+                        {"reason", "empty_palette_reference"},
+                        {"native_input_return_code", 1}});
+            return out;
+        }
+        auto prefix = [&](const std::u16string &input, const std::u16string &marker) {
+            const auto part = input.substr(0, marker.size());
+            if (part == marker)
+                return true;
+            // Distinct ASCII letters/punctuation cannot become equal in the
+            // source comparison. Case-equivalent or non-ASCII pairs need its
+            // locale; in particular do not assume the I/i mapping.
+            auto lower_ascii = [](char16_t c) { return c >= u'A' && c <= u'Z' ? c + 32 : c; };
+            for (std::size_t i = 0; i < std::min(part.size(), marker.size()); ++i)
+                if (part[i] < 128 && marker[i] < 128 &&
+                    lower_ascii(part[i]) != lower_ascii(marker[i]))
+                    return false;
+            if (part.size() != marker.size())
+                return false;
+            require(bool(text.compare), "palette_prefix_source_locale_required");
+            auto result = text.compare(part, marker);
+            require(result.has_value(), "palette_prefix_comparison_unknown");
+            return *result == 0;
+        };
+        const std::u16string library_marker = u"$(_P3DLIB)";
+        std::u16string palette_path = value, library;
+        if (prefix(value, library_marker)) {
+            out["reference_kind"] = "library";
+            if (value.size() == library_marker.size()) {
+                palette_path.clear();
+            } else {
+                // Reproduce size_t wrap at npos: absent delimiters do not mean
+                // a conventional parse error in this native string splitter.
+                const auto first = value.find(u'|');
+                const auto begin = first + std::size_t(1);
+                const auto second = value.find(u'|', begin + 1);
+                library = value.substr(begin, second - begin);
+                palette_path = value.substr(second + std::size_t(1));
+                // One additional library prefix is stripped, not recursion.
+                if (prefix(palette_path, library_marker)) {
+                    const auto a = palette_path.find(u'|');
+                    const auto b = palette_path.find(u'|', a + std::size_t(2));
+                    palette_path = palette_path.substr(b + std::size_t(1));
+                }
+            }
+        } else if (prefix(value, u"$(_P3DPROJECT)\\")) {
+            out["reference_kind"] = "project";
+            palette_path = value.substr(15);
+        } else {
+            out["reference_kind"] = "ordinary";
+        }
+        const auto parts = native_path_parts(palette_path);
+        out.update({{"status", "decoded"},
+                    {"library_reference", codec.to_bytes(library)},
+                    {"palette_path", codec.to_bytes(palette_path)},
+                    {"palette_name", codec.to_bytes(parts.stem)},
+                    {"native_path_buffer_limit", parts.buffer_limit}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
 Json decode_native_material_assignment_table(const std::string &xml,
                                              const NativeAssignmentTextContext &text) {
     Json out = {{"status", "unresolved"},
@@ -187,6 +262,15 @@ Json decode_native_material_assignment_table(const std::string &xml,
         for (auto node : root.child("rendering_parameters").children())
             if (node.type() == pugi::node_element)
                 out["rendering_parameters"].push_back(content(node));
+        out["palette_references"] = Json::array();
+        for (auto node : root.child("paletteList").children()) {
+            if (node.type() != pugi::node_element)
+                continue;
+            auto reference = decode_native_palette_reference(content(node), text);
+            reference["source_index"] = out["palette_references"].size();
+            out["palette_references"].push_back(std::move(reference));
+        }
+        out["palette_membership"] = "not_evaluated";
         bool complete = true;
         std::size_t group_index = 0;
         for (auto group : root.child("assignments").children()) {

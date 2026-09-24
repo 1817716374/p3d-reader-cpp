@@ -16,6 +16,12 @@ struct NativeAssignmentTextContext {
 Json decode_native_material_assignment_table(const std::string &xml,
                                              const NativeAssignmentTextContext &text = {});
 
+// Decodes a paletteList source reference before resource-provider calls. Keeps
+// the source spelling; never opens files or replaces a path with an absolute one.
+// Native special-prefix comparisons use the same source text locale as tables.
+Json decode_native_palette_reference(const std::string &reference,
+                                     const NativeAssignmentTextContext &text = {});
+
 struct NativeAssignmentQuery {
     std::u16string layer_name;
     std::uint32_t color = 0;
