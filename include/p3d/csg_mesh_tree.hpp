@@ -1,5 +1,6 @@
 #pragma once
 #include <p3d/csg_mesh.hpp>
+#include <p3d/polyface.hpp>
 
 namespace p3d {
 struct CsgMeshTreeOptions {
@@ -40,4 +41,16 @@ struct CsgMeshTreeResult {
 CsgMeshTreeResult evaluate_csg_polyface_tree(const Json &archive,
                                              const std::vector<Geometry> &source_meshes,
                                              const CsgMeshTreeOptions &options = {});
+struct CsgPolyfaceArchiveResult {
+    CsgMeshTreeResult result;
+    // Source tables, attribute pools and polygon/corner links for interpreting
+    // result face geometry_index/face_index. Binding status is independent of
+    // geometry evaluation status; no final material selection is implied.
+    std::vector<PolyfaceMeshResult> sources;
+};
+// Reads and triangulates supported BGFB Polyface sources, then updates the tree.
+// Mesh point/corner/triangle budgets are shared across all original sources.
+CsgPolyfaceArchiveResult
+evaluate_csg_polyface_archive(const Json &archive, const CsgMeshTreeOptions &tree_options = {},
+                              const PolyfaceMeshOptions &mesh_options = {});
 } // namespace p3d

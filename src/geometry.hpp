@@ -8,6 +8,8 @@ Point3 vector_transform(const Matrix4 &, const Point3 &);
 double determinant(const Matrix4 &);
 bool reverses_winding(const Matrix4 &);
 Matrix4 instance_transform(const Bytes &);
+std::vector<Triangle> polygon_faces(const std::vector<Point3> &,
+                                    const std::vector<std::size_t> &lengths = {});
 Geometry reconstruct(const Json &, const Tessellation &);
 Geometry reconstruct_native(const Json &, const Tessellation &);
 void merge_geometry(Geometry &, const Geometry &, const Matrix4 &, bool text_parent = true);

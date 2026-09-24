@@ -246,8 +246,8 @@ static double scale_bound(const Matrix4 &m) {
     }
     return std::sqrt(std::max({0., a[0][0], a[1][1], a[2][2]}));
 }
-static std::vector<Triangle> polygon_faces(const std::vector<Point3> &points,
-                                           const std::vector<std::size_t> &lengths = {}) {
+std::vector<Triangle> polygon_faces(const std::vector<Point3> &points,
+                                    const std::vector<std::size_t> &lengths) {
     if (points.size() < 3)
         return {};
     std::vector<Point3> centered;

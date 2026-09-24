@@ -301,4 +301,35 @@ CsgMeshTreeResult evaluate_csg_polyface_tree(const Json &archive,
     result.diagnostics["vertex_transforms"] = runtime.transformed_vertices;
     return result;
 }
+CsgPolyfaceArchiveResult evaluate_csg_polyface_archive(const Json &archive,
+                                                       const CsgMeshTreeOptions &tree_options,
+                                                       const PolyfaceMeshOptions &mesh_options) {
+    CsgPolyfaceArchiveResult out;
+    std::vector<Geometry> meshes;
+    auto budget = mesh_options;
+    try {
+        for (const auto &entry : archive.at("geometries")) {
+            out.result.diagnostics["source_geometry_index"] = out.sources.size();
+            require(entry.at("status") == "decoded" && entry.at("encoding") == "bgfb",
+                    "CSG source requires a decoded BGFB Polyface");
+            auto source = mesh_bgfb_polyface(entry.at("geometry").at("geometry"), budget);
+            const bool meshed = source.status == "meshed";
+            out.sources.push_back(std::move(source));
+            require(meshed, out.sources.back().report.dump());
+            const auto &g = out.sources.back().geometry;
+            budget.max_points -= g.vertices.size();
+            budget.max_triangles -= g.faces.size();
+            budget.max_corners -=
+                out.sources.back().report.at("source_corner_count").get<std::size_t>();
+            budget.max_polygon_edge_tests -=
+                out.sources.back().report.at("polygon_edge_tests").get<std::size_t>();
+            meshes.push_back(g);
+        }
+        out.result = evaluate_csg_polyface_tree(archive, meshes, tree_options);
+    } catch (const std::exception &e) {
+        out.result.status = "not_evaluated";
+        out.result.diagnostics["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace p3d
