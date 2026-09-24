@@ -10,6 +10,7 @@ struct Object {
     Mesh mesh;
     std::shared_ptr<Runtime> nested;
     bool solid = false;
+    std::shared_ptr<Json> cone;
     Object(Mesh value, bool is_solid = false) : mesh(std::move(value)), solid(is_solid) {}
     Object(std::shared_ptr<Runtime> value) : nested(std::move(value)) {}
 };
@@ -86,7 +87,15 @@ struct Runtime {
               "CSG geometry visit budget exceeded");
         ++work.geometry_visits;
         if (object.mesh) {
-            place({object.mesh}, m);
+            if (object.cone) {
+                auto placed = transform_bgfb_cone(*object.cone, m);
+                if (placed.status != "transformed")
+                    throw std::runtime_error(
+                        placed.report.value("reason", std::string("CSG cone placement failed")));
+                place({object.mesh}, placed.geometry_transform);
+                *object.cone = std::move(placed.transformed);
+            } else
+                place({object.mesh}, m);
         } else {
             // Native GeCsgTree::transformInPlace visits the original pool and
             // CURRENT caches separately. Aliases may therefore be transformed twice.
@@ -110,8 +119,8 @@ struct Runtime {
             }
             if (object.mesh)
                 // A solid is tessellated into a fresh Polyface on EACH visit.
-                // Planar box geometry commutes with affine placement; copying
-                // its derived triangles preserves that distinct object identity.
+                // transform_object applies each supported solid's placement rule;
+                // copying its derived triangles preserves distinct object identity.
                 values.push_back(object.solid ? std::make_shared<CsgTreeMesh>(*object.mesh)
                                               : object.mesh);
             else {
@@ -416,7 +425,8 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                 const bool solid = table.at("_type") != "Polyface";
                 const auto index = solid ? out.solid_sources.size() : out.sources.size();
                 if (solid) {
-                    out.solid_sources.push_back(mesh_bgfb_solid(table, budget));
+                    out.solid_sources.push_back(
+                        mesh_bgfb_solid(table, budget, work.options.solid_circle_segments));
                     out.solid_source_paths.push_back(child_path);
                 } else {
                     out.sources.push_back(mesh_bgfb_polyface(table, budget));
@@ -435,6 +445,8 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                 pool.emplace_back(
                     source_mesh(g, index, solid ? CsgSourceKind::solid : CsgSourceKind::polyface),
                     solid);
+                if (solid && table.at("_type") == "DgnCone")
+                    pool.back().cone = std::make_shared<Json>(table);
             }
             if (std::string(list) == "node_caches")
                 runtime->state["node_caches"].push_back(nullptr);

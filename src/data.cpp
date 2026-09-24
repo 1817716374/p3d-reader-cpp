@@ -370,11 +370,11 @@ const Json &bgfb_schema() {
           "type": "double"
         },
         {
-          "name": "radiusA",
+          "name": "radiusB",
           "type": "double"
         },
         {
-          "name": "radiusB",
+          "name": "radiusA",
           "type": "double"
         },
         {
