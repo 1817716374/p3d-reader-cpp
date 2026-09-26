@@ -10,6 +10,10 @@ struct CurveVectorArea {
 // B-spline and nested CurveVector. Region types retain their native dispatch;
 // this does not repair closure, intersections or infer geometric containment.
 CurveVectorArea native_curve_vector_area(const Json &, swept_detail::TubeBudget &);
+// First successful source start and last successful source end, recursively.
+// Null members and primitives with no endpoints do not replace either endpoint.
+std::optional<std::array<Point3, 2>> native_source_curve_endpoints(const Json &,
+                                                                   swept_detail::TubeBudget &);
 // Native source-ring orientation flags for face-patch construction. Empty or
 // partial flag arrays are meaningful; report maps each flag to its source ring.
 Json native_facet_orientation_flags(const Json &, Point3 tangent, swept_detail::TubeBudget &);

@@ -277,6 +277,10 @@ CurveVectorArea native_curve_vector_area(const Json &v, swept_detail::TubeBudget
     out.report["work_used"] = b.work;
     return out;
 }
+std::optional<std::array<Point3, 2>> native_source_curve_endpoints(const Json &v,
+                                                                   swept_detail::TubeBudget &b) {
+    return Visitor{b}.ends(v);
+}
 Json native_facet_orientation_flags(const Json &source, Point3 tangent,
                                     swept_detail::TubeBudget &b) {
     for (double x : tangent)
