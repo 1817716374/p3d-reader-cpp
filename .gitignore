@@ -129,3 +129,4 @@
 !/tests/native_tube.cpp
 !/tests/native_tube_path.cpp
 !/tests/native_tube_close.cpp
+!/tests/native_tube_fit.cpp

@@ -25,6 +25,16 @@ struct TubeAssembly {
     Json surface;
     Json report;
 };
+struct TubeCurve {
+    BsplineCurve curve;
+    Json report;
+};
+// Native LineString-to-B-spline conversion used for both swept paths and
+// sections: two points form a line; longer inputs use the degree-one fit.
+// This can remove source vertices. It is not a general polyline simplifier.
+// Singular interpolation and unrepresentable dense-knot removal states fail
+// explicitly; they are not repaired by merging points or changing tolerances.
+TubeCurve fit_tube_linestring(const std::vector<Point3> &points, TubeBudget &budget);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order
 // and rational flags. patch is one normalized Bezier V span; assembled contains
