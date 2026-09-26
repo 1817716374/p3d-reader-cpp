@@ -1,6 +1,8 @@
 #include <p3d/solid.hpp>
 #include "geometry.hpp"
 #include "planar_rings.hpp"
+#include "bspline_denominator.hpp"
+#include "native_pcurve_points.hpp"
 
 namespace p3d {
 namespace {
@@ -49,12 +51,23 @@ struct Primitive {
     std::string type;
     std::vector<Point3> points;
     Point3 center{}, x{}, y{};
+    std::optional<BsplineCurve> spline;
+    Point3 offset{};
     double start = 0, sweep = 0;
     std::size_t flat = 0;
     std::size_t pieces() const {
-        return type == "EllipticArc" ? 1 : points.size() - 1;
+        return type == "EllipticArc" || spline ? 1 : points.size() - 1;
     }
     Point3 at(std::size_t piece, double f) const {
+        if (spline) {
+            const auto evaluated = detail::pcurve_point(*spline, f);
+            require(!evaluated.zero_weight_fallback,
+                    "sweep evaluated denominator lost to numerical precision");
+            auto p = evaluated.point;
+            for (unsigned k = 0; k < 3; ++k)
+                p[k] += offset[k];
+            return p;
+        }
         if (type != "EllipticArc")
             return blend(points.at(piece), points.at(piece + 1), f);
         const auto angle = start + sweep * f;
@@ -76,6 +89,12 @@ struct Profiles {
     std::vector<Profile> profiles;
     std::size_t visited = 0, coordinates = 0;
     const PolyfaceMeshOptions &budget;
+    std::size_t curve_work = 0;
+    Json denominator_reports = Json::array();
+    void charge(std::size_t work) {
+        require(work <= budget.max_curve_work - curve_work, "sweep curve work budget");
+        curve_work += work;
+    }
     Profile parse(const Json &j) {
         Profile out;
         std::size_t flat = 0;
@@ -133,6 +152,39 @@ struct Profiles {
                     p.sweep = number(a.at("sweepRadians"));
                     require(p.sweep != 0 && std::abs(p.sweep) <= tau,
                             "sweep zero or multi-turn profile arc not supported");
+                } else if (p.type == "BsplineCurve") {
+                    const auto &poles = g.at("poles");
+                    require(poles.is_array() && poles.size() % 3 == 0 &&
+                                poles.size() / 3 <= budget.max_points - coordinates,
+                            "sweep B-spline source point budget");
+                    coordinates += poles.size() / 3;
+                    require(g.at("order").is_number_integer() && g.at("order") >= 2 &&
+                                g.at("order") <= 26,
+                            "sweep B-spline order exceeds native limit");
+                    p.spline = BsplineCurve::from_bgfb(g);
+                    require(p.spline->order() <= 26, "sweep B-spline order exceeds native limit");
+                    const auto &knots = p.spline->knots();
+                    charge(knots.size());
+                    const auto domain = p.spline->knot_domain();
+                    for (std::size_t i = 0; i < knots.size();) {
+                        auto end = i + 1;
+                        while (end < knots.size() && knots[end] == knots[i])
+                            ++end;
+                        require(knots[i] <= domain[0] || knots[i] >= domain[1] ||
+                                    end - i < p.spline->order(),
+                                "sweep discontinuous B-spline profile not supported");
+                        i = end;
+                    }
+                    auto proof = certify_curve_denominator(
+                        *p.spline, unsigned(std::min<std::size_t>(
+                                       budget.max_curve_work - curve_work, UINT32_MAX)));
+                    charge(proof.at("work_steps").get<std::size_t>());
+                    require(proof.at("status") == "verified",
+                            "sweep B-spline denominator unverified: " +
+                                proof.value("reason", std::string("unknown")));
+                    proof["section_index"] = profiles.size();
+                    proof["flat_primitive_index"] = p.flat;
+                    denominator_reports.push_back(std::move(proof));
                 } else
                     throw std::runtime_error("sweep primitive not supported: " + p.type);
                 loop.primitives.push_back(std::move(p));
@@ -168,6 +220,8 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
                             q[k] += delta[k];
                     for (unsigned k = 0; k < 3; ++k)
                         p.center[k] += delta[k];
+                    if (p.spline)
+                        p.offset = delta;
                 }
             reader.profiles.push_back(std::move(top));
         } else {
@@ -229,13 +283,65 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
                         bands = std::max(bands, unsigned(std::ceil(
                                                     std::abs(profile.loops[l].primitives[i].sweep) /
                                                     tau * circle_segments)));
+                std::vector<double> fractions{0, 1};
+                if (p.spline) {
+                    // A native B-spline has one component, even across knot
+                    // spans. Corresponding sections use the same source fraction.
+                    // Retain every section's knot break in this derived mesh.
+                    for (const auto &profile : profiles) {
+                        const auto &curve = *profile.loops[l].primitives[i].spline;
+                        const auto domain = curve.knot_domain();
+                        double previous_knot = domain[0], previous_fraction = 0;
+                        for (double knot : curve.knots()) {
+                            if (knot <= domain[0] || knot >= domain[1] || knot == previous_knot)
+                                continue;
+                            const double f = (knot - domain[0]) / (domain[1] - domain[0]);
+                            require(f > previous_fraction && f < 1,
+                                    "sweep B-spline knot fractions below precision");
+                            require(fractions.size() < options.max_corners,
+                                    "sweep B-spline knot sampling budget");
+                            fractions.push_back(f);
+                            previous_knot = knot;
+                            previous_fraction = f;
+                        }
+                    }
+                    std::sort(fractions.begin(), fractions.end());
+                    fractions.erase(std::unique(fractions.begin(), fractions.end()),
+                                    fractions.end());
+                    auto knots = std::move(fractions);
+                    fractions = {0};
+                    for (std::size_t k = 1; k < knots.size(); ++k) {
+                        const auto count = std::max(
+                            1u, unsigned(std::ceil((knots[k] - knots[k - 1]) * circle_segments)));
+                        require(count <= options.max_corners - fractions.size(),
+                                "sweep B-spline sample budget");
+                        for (unsigned s = 1; s <= count; ++s) {
+                            const double f = s == count ? knots[k]
+                                                        : (1 - double(s) / count) * knots[k - 1] +
+                                                              double(s) / count * knots[k];
+                            require(f > fractions.back(), "sweep sample interval below precision");
+                            fractions.push_back(f);
+                        }
+                    }
+                } else {
+                    fractions.clear();
+                    for (unsigned s = 0; s <= bands; ++s)
+                        fractions.push_back(double(s) / bands);
+                }
                 for (std::size_t c = 0; c < p.pieces(); ++c) {
-                    require(bands <= options.max_corners - edges[l].size(),
+                    require(fractions.size() - 1 <= options.max_corners - edges[l].size(),
                             "sweep sampled edge budget");
-                    for (unsigned s = 0; s < bands; ++s)
+                    for (std::size_t s = 1; s < fractions.size(); ++s)
                         edges[l].push_back({p.flat, c});
                     for (std::size_t row = 0; row < profiles.size(); ++row) {
                         const auto &q = profiles[row].loops[l].primitives[i];
+                        if (q.spline) {
+                            const auto cost = std::size_t(q.spline->order()) * q.spline->order();
+                            require(fractions.size() <=
+                                        (options.max_curve_work - reader.curve_work) / cost,
+                                    "sweep B-spline evaluation budget");
+                            reader.charge(fractions.size() * cost);
+                        }
                         auto &ring = rows[row][l];
                         const auto start = q.at(c, 0);
                         if (ring.empty())
@@ -243,8 +349,8 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
                         else
                             checked_join(vertices[ring.back()], start,
                                          "sweep disconnected source primitives");
-                        for (unsigned s = 1; s <= bands; ++s)
-                            ring.push_back(vertex(q.at(c, double(s) / bands)));
+                        for (std::size_t s = 1; s < fractions.size(); ++s)
+                            ring.push_back(vertex(q.at(c, fractions[s])));
                     }
                 }
             }
@@ -423,6 +529,9 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
         out.derived.report["adjacent_join_policy"] = "derived_16_epsilon_global_coordinate_scale";
         out.derived.report["roundoff_join_count"] = roundoff_joins;
         out.derived.report["max_join_distance"] = max_join_distance;
+        out.derived.report["curve_work_steps"] = reader.curve_work;
+        out.derived.report["curve_denominators"] = std::move(reader.denominator_reports);
+        out.derived.report["bspline_sampling"] = "uniform_fraction_with_corresponding_knot_breaks";
         if (out.derived.status == "meshed")
             out.face_indices = std::move(ids);
     } catch (const std::exception &e) {

@@ -26,12 +26,14 @@ struct SolidMeshResult {
 // The original affine frame is retained, including anisotropy, shear and reflection.
 // Torus meshing rotates the source start section; |majorRadius| must exceed
 // nonzero |minorRadius|. Native rotational sweeps are limited to one revolution.
-// Extrusion/ruled profiles support line segments, line strings and elliptic arcs,
+// Extrusion/ruled profiles support line segments, line strings, elliptic arcs and
+// continuous B-splines of native order 2..26 with verified nonzero denominators,
 // open chains without caps, closed loops, parity regions and union children.
 // Corresponding source primitive/component counts must agree. Cap topology is
 // triangulated in a derived reference plane while retaining original 3D samples,
 // including nonplanar caps. No missing source boundary segment is invented.
-// circle_segments controls arc sampling and V bands for nonplanar ruled patches.
+// circle_segments controls arc/fraction sampling and V bands for nonplanar ruled
+// patches. B-spline sampling includes the knot breaks of all corresponding sections.
 // These derived meshes do not claim a world-space error bound or native UVs.
 // Section lofts use SectionLoft::mesh with max_uv_edge=1/circle_segments;
 // its source-curve, denominator, join and planar-cap requirements still apply.

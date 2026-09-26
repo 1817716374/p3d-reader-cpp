@@ -161,6 +161,8 @@ struct Runtime {
             generated.derived.report.at("source_corner_count").get<std::size_t>();
         work.mesh_budget->max_polygon_edge_tests -=
             generated.derived.report.at("polygon_edge_tests").get<std::size_t>();
+        work.mesh_budget->max_curve_work -=
+            generated.derived.report.value("curve_work_steps", std::size_t(0));
         work.solid_triangles += g.faces.size();
         ++work.solid_conversions;
         auto mesh = source_mesh(g, source.source_index, CsgSourceKind::solid);
@@ -530,6 +532,8 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                         source.report.at("source_corner_count").get<std::size_t>();
                     budget.max_polygon_edge_tests -=
                         source.report.at("polygon_edge_tests").get<std::size_t>();
+                    budget.max_curve_work -=
+                        source.report.value("curve_work_steps", std::size_t(0));
                     pool.emplace_back(
                         source_mesh(g, index,
                                     solid ? CsgSourceKind::solid : CsgSourceKind::polyface),

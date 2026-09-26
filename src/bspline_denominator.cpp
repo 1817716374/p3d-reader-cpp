@@ -297,6 +297,37 @@ Json certify_curve_plane(const BsplineCurve &curve, Point3 origin, Point3 normal
     return result;
 }
 
+Json certify_curve_denominator(const BsplineCurve &curve, unsigned max_steps) {
+    if (!curve.rational())
+        return {{"status", "verified"}, {"method", "polynomial"}, {"work_steps", 0}};
+    const auto &weights = curve.weights();
+    const bool positive = weights.front() > 0;
+    if (std::all_of(weights.begin(), weights.end(),
+                    [&](double w) { return w != 0 && (w > 0) == positive; }))
+        return {{"status", "verified"}, {"method", "source_weight_sign"}, {"work_steps", 0}};
+    Json result = {{"status", "unverified"}, {"method", "bernstein_interval_subdivision"}};
+    Proof proof{0, 0, 0, max_steps};
+    try {
+        const auto &direction = curve.direction();
+        for (const auto span : proof.active_spans(direction)) {
+            proof.charge(curve.order());
+            std::vector<Interval> net(curve.order());
+            for (std::size_t i = 0; i < net.size(); ++i)
+                net[i] = exact(weights[source_index(direction, span, i)]);
+            net = proof.extract(direction, span, std::move(net));
+            proof.verify(net, net.size(), 1);
+            ++proof.spans;
+        }
+        result["status"] = "verified";
+    } catch (const std::exception &e) {
+        result["reason"] = e.what();
+    }
+    result["verified_knot_spans"] = proof.spans;
+    result["visited_cells"] = proof.cells;
+    result["work_steps"] = proof.steps;
+    return result;
+}
+
 Json certify_surface_denominator(const BsplineSurface &surface, unsigned max_steps) {
     if (!surface.rational())
         return {{"status", "verified"}, {"method", "polynomial"}};

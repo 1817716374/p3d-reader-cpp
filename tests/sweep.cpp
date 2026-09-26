@@ -295,5 +295,125 @@ unsigned sweep_tests() {
     r = mesh_bgfb_solid(extrude(rounding));
     check(r.derived.status != "meshed" && r.derived.geometry.faces.empty(),
           "actual gap is not merged by derived roundoff handling");
+    {
+        auto spline = [](unsigned order, Json poles, Json weights = nullptr, Json knots = nullptr,
+                         bool periodic = false) {
+            return Json{{"_type", "BsplineCurve"}, {"order", order},     {"closed", periodic},
+                        {"poles", poles},          {"weights", weights}, {"knots", knots}};
+        };
+        auto polygon =
+            spline(2, {0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 0}, nullptr, {2, 2, 2.2, 2.8, 3, 3});
+        auto bsp_solid = extrude(loop(polygon));
+        r = mesh_bgfb_solid(bsp_solid, {}, 3);
+        check(r.derived.status == "meshed" && closed(r.derived.geometry),
+              "nonuniform B-spline knot corners survive coarse sampling");
+        check(std::abs(volume(r.derived.geometry) - 6) < 1e-9 && r.source == bsp_solid,
+              "nonunit knot domain preserves independent triangular prism volume and source");
+        ids = {r.face_indices.begin(), r.face_indices.end()};
+        check(ids == std::set<std::array<std::int64_t, 3>>{{-1, 0, 0}, {-1, 1, 0}, {0, 0, 0}},
+              "all spline knot spans retain one native component ID");
+        auto periodic = spline(2, {0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2, 0}, nullptr, nullptr, true);
+        r = mesh_bgfb_solid(extrude(loop(periodic)), {}, 3);
+        check(r.derived.status == "meshed" && closed(r.derived.geometry) &&
+                  std::abs(volume(r.derived.geometry) - 12) < 1e-9,
+              "periodic B-spline profile seam and exact polygon volume");
+        const double w = std::sqrt(.5);
+        auto quarter = spline(3, {1, 0, 0, w, w, 0, 0, 1, 0}, {1, w, 1});
+        auto disk = loop(quarter);
+        disk["curves"].push_back({{"geometry", line({{0, 1, 0}, {0, 0, 0}, {1, 0, 0}})}});
+        auto arc_point = [&](double f) {
+            const double a = (1 - f) * (1 - f), b = 2 * f * (1 - f) * w, c = f * f;
+            return Point3{(a + b) / (a + b + c), (b + c) / (a + b + c), 0};
+        };
+        double area2 = 0;
+        for (unsigned i = 0; i < 8; ++i) {
+            const auto a = arc_point(double(i) / 8), b = arc_point(double(i + 1) / 8);
+            area2 += a[0] * b[1] - a[1] * b[0];
+        }
+        for (double sign : {-1., 1.}) {
+            auto input = disk;
+            for (auto &v : input["curves"][0]["geometry"]["poles"])
+                v = sign * v.get<double>();
+            for (auto &v : input["curves"][0]["geometry"]["weights"])
+                v = sign * v.get<double>();
+            r = mesh_bgfb_solid(extrude(input), {}, 8);
+            check(r.derived.status == "meshed" && closed(r.derived.geometry),
+                  "positive and negative homogeneous quarter-circle sweeps mesh");
+            check(std::abs(volume(r.derived.geometry) - 1.5 * area2) < 1e-9,
+                  "rational sweep volume agrees with independent Bernstein polygon area");
+            bool found = false;
+            for (auto p : r.derived.geometry.vertices)
+                found |= std::hypot(p[0] - w, p[1] - w, p[2]) < 1e-12;
+            check(found, "rational quarter-circle midpoint is independently known");
+        }
+        for (double middle : {0., -.1}) {
+            auto mixed = spline(3, {0, 0, 0, 1, 1, 0, 2, 0, 0}, {1, middle, 1});
+            r = mesh_bgfb_solid(extrude(loop(mixed, 1), {0, 0, 3}, false), {}, 8);
+            check(r.derived.status == "meshed" &&
+                      r.derived.report["curve_denominators"][0]["method"] ==
+                          "bernstein_interval_subdivision",
+                  "zero and mixed source weights supported when whole denominator stays nonzero");
+            bool found = false;
+            const double d = .5 + .5 * middle;
+            for (auto p : r.derived.geometry.vertices)
+                found |= std::hypot(p[0] - 1 / d, p[1] - .5 / d, p[2]) < 1e-12;
+            check(found,
+                  "mixed homogeneous control point midpoint is evaluated without unweighting");
+        }
+        auto singular = spline(3, {0, 0, 0, 1, 1, 0, 2, 0, 0}, {1, -1, 1});
+        r = mesh_bgfb_solid(extrude(loop(singular, 1), {0, 0, 3}, false), {}, 3);
+        check(r.derived.status != "meshed" && r.derived.geometry.faces.empty() &&
+                  r.derived.report["reason"].get<std::string>().find("denominator") !=
+                      std::string::npos,
+              "double denominator root between uniform samples is not hidden by native zero "
+              "fallback");
+        auto disconnected =
+            spline(2, {0, 0, 0, 1, 0, 0, 2, 1, 0, 3, 1, 0}, nullptr, {0, 0, .5, .5, 1, 1});
+        r = mesh_bgfb_solid(extrude(loop(disconnected, 1), {0, 0, 3}, false));
+        check(r.derived.status != "meshed" && r.derived.geometry.faces.empty(),
+              "full multiplicity knot is not bridged by an invented side strip");
+        auto top_polygon = polygon;
+        top_polygon["knots"] = {5, 5, 5.1, 5.9, 6, 6};
+        for (std::size_t i = 2; i < top_polygon["poles"].size(); i += 3)
+            top_polygon["poles"][i] = 3.;
+        Json ruled = {{"_type", "DgnRuledSweep"},
+                      {"capped", true},
+                      {"curves", {loop(polygon), loop(top_polygon)}}};
+        r = mesh_bgfb_solid(ruled, {}, 3);
+        check(r.derived.status == "meshed" && closed(r.derived.geometry),
+              "ruled B-spline sections use common fractions including both knot schedules");
+        bool bottom_corner = false, top_corner = false;
+        for (const auto p : r.derived.geometry.vertices) {
+            bottom_corner |= std::hypot(p[0] - 2, p[1], p[2]) < 1e-12;
+            top_corner |= std::hypot(p[0] - 2, p[1], p[2] - 3) < 1e-12;
+        }
+        check(bottom_corner && top_corner,
+              "both differently parametrized section corners retained");
+        auto placed = identity();
+        placed[0] = {2, .25, 0, 7};
+        placed[2][2] = .5;
+        CsgMeshTreeOptions tree_options;
+        tree_options.solid_circle_segments = 8;
+        const auto csg =
+            evaluate_csg_polyface_archive(archive(extrude(disk), placed), tree_options);
+        check(csg.result.status == "evaluated" && csg.solid_snapshots.size() == 1,
+              "rational profile reaches CSG source transformation and reconstruction");
+        check(std::abs(volume(csg.solid_snapshots[0].mesh.derived.geometry) - 1.5 * area2) < 1e-9,
+              "weighted translation and anisotropic CSG reconstruction retain analytic volume");
+        PolyfaceMeshOptions limited;
+        limited.max_curve_work = 0;
+        r = mesh_bgfb_solid(extrude(disk), limited, 8);
+        check(r.derived.status != "meshed" && r.derived.geometry.faces.empty(),
+              "curve work limit rejects profile without partial output");
+        const auto used =
+            csg.solid_snapshots[0].mesh.derived.report["curve_work_steps"].get<std::size_t>();
+        limited.max_curve_work = used;
+        auto repeated = archive(extrude(disk), identity());
+        repeated["tree"]["nodes"][0]["geometry_indices"] = {0, 0};
+        const auto bounded = evaluate_csg_polyface_archive(repeated, tree_options, limited);
+        check(bounded.result.status == "work_limit" && bounded.result.meshes.empty() &&
+                  bounded.solid_snapshots.size() == 1,
+              "curve work is shared by repeated CSG snapshots");
+    }
     return n;
 }

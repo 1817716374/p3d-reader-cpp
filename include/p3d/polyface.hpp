@@ -7,6 +7,9 @@ struct PolyfaceMeshOptions {
     std::size_t max_corners = 9000000;
     std::size_t max_triangles = 3000000;
     std::size_t max_polygon_edge_tests = 10000000;
+    // Used by curve-based solid reconstruction: denominator proofs, knot
+    // inspection and B-spline evaluation work. Shared across CSG snapshots.
+    std::size_t max_curve_work = 1000000;
 };
 struct PolyfaceSourceEdge {
     std::size_t source_polygon = 0;
