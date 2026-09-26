@@ -315,6 +315,52 @@ void endpoint(Coefficients &out, const Coefficients &a, bool end, BezierWork wor
     }
 }
 } // namespace
+std::vector<double> native_bezier_product(const std::vector<double> &a,
+                                          const std::vector<double> &b, BezierWork work) {
+    require(!a.empty() && !b.empty() && a.size() <= 78 && b.size() <= 78 &&
+                a.size() + b.size() <= 79,
+            "native Bezier product order exceeded");
+    work.charge(8 * a.size() * b.size());
+    for (double x : a)
+        finite(x);
+    for (double x : b)
+        finite(x);
+    const auto da = a.size() - 1, db = b.size() - 1, d = da + db;
+    Coefficients out(d + 1);
+    if (a.size() == 1) {
+        for (std::size_t i = 0; i < b.size(); ++i)
+            out[i] = finite(a[0] * b[i]);
+    } else if (a.size() <= 4 && b.size() <= 4) {
+        // Native explicit formulas prescale degree-2/3 middle ordinates.
+        // The 3x3 convolution accumulates in descending A-index order.
+        auto aa = a, bb = b;
+        for (std::size_t i = 1; i < da; ++i)
+            aa[i] = finite(pascal()[da][i] * aa[i]);
+        for (std::size_t j = 1; j < db; ++j)
+            bb[j] = finite(pascal()[db][j] * bb[j]);
+        for (std::size_t k = 0; k <= d; ++k) {
+            const auto low = k > db ? k - db : 0, high = std::min(k, da);
+            const bool reverse = a.size() == 3 && b.size() == 3;
+            double sum = 0;
+            bool first = true;
+            for (std::size_t step = 0; step <= high - low; ++step) {
+                const auto i = reverse ? high - step : low + step;
+                const double term = finite(aa[i] * bb[k - i]);
+                sum = first ? term : finite(sum + term);
+                first = false;
+            }
+            out[k] = finite(sum * (1. / pascal()[d][k]));
+        }
+    } else {
+        for (std::size_t i = 0; i <= da; ++i)
+            for (std::size_t j = 0; j <= db; ++j)
+                out[i + j] =
+                    finite(out[i + j] + ((pascal()[da][i] * pascal()[db][j]) * a[i]) * b[j]);
+        for (std::size_t k = 0; k <= d; ++k)
+            out[k] = finite(out[k] / pascal()[d][k]);
+    }
+    return out;
+}
 BezierRoots native_bezier_roots(const std::vector<double> &source, BezierWork work,
                                 bool add_endpoint_roots) {
     require(source.size() >= 2 && source.size() <= 78, "native Bezier root order must be 2..78");

@@ -1,6 +1,9 @@
 #pragma once
 #include "native_bezier.hpp"
 namespace p3d::curve_detail {
+// Bernstein product with the native low-order fast paths and Pascal fallback.
+std::vector<double> native_bezier_product(const std::vector<double> &, const std::vector<double> &,
+                                          BezierWork);
 struct BezierRoots {
     bool success = false;
     // Native all-parameter sentinel is parameters.size()==coefficient count;

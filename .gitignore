@@ -142,6 +142,7 @@
 !/tests/native_tube_reference.cpp
 !/tests/native_tube_path_source.cpp
 !/tests/native_bezier_roots.cpp
+!/tests/native_curve_closest.cpp
 !/tests/native_bezier.cpp
 !/tests/native_bspline_area.cpp
 !/tests/native_curve_area.cpp
