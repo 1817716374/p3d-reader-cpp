@@ -37,6 +37,7 @@ unsigned native_tube_path_branches_tests();
 unsigned native_curve_segment_tests();
 unsigned native_tube_path_placement_tests();
 unsigned native_tube_facet_sections_tests();
+unsigned native_tube_curvature_tests();
 unsigned native_bezier_tests();
 unsigned native_bspline_area_tests();
 unsigned native_curve_area_tests();
@@ -2844,6 +2845,7 @@ int main() {
         checks += native_curve_segment_tests();
         checks += native_tube_path_placement_tests();
         checks += native_tube_facet_sections_tests();
+        checks += native_tube_curvature_tests();
         checks += native_bezier_tests();
         checks += native_bspline_area_tests();
         checks += native_curve_area_tests();
