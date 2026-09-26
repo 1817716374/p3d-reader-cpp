@@ -36,7 +36,7 @@ struct SolidMeshResult {
 // Section lofts use SectionLoft::mesh with max_uv_edge=1/circle_segments;
 // its source-curve, denominator, join and planar-cap requirements still apply.
 // Side surface parameters and original native face IDs are retained separately
-// from material UVs. CSG currently requires identity placement for loft sources.
+// from material UVs. CSG rebuilds transformed curve-based sources into snapshots.
 SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &options = {},
                                 unsigned circle_segments = 64);
 struct SolidTransformResult {
@@ -88,4 +88,12 @@ struct LoftSourceTransformResult {
 LoftSourceTransformResult
 transform_bgfb_section_loft(const Json &table, const Matrix4 &matrix,
                             const LoftSourceTransformOptions &options = {});
+// The same source-curve rules for a section loft, extrusion or ruled sweep.
+// Extrusion vectors receive the linear transform before the base curve;
+// ruled sections are visited in their stored order. Rebuild from transformed.
+using CurveSolidTransformOptions = LoftSourceTransformOptions;
+using CurveSolidTransformResult = LoftSourceTransformResult;
+CurveSolidTransformResult
+transform_bgfb_curve_solid(const Json &table, const Matrix4 &matrix,
+                           const CurveSolidTransformOptions &options = {});
 } // namespace p3d

@@ -204,9 +204,10 @@ unsigned sweep_tests() {
     check(std::abs(volume(placed) - 288) < 1e-8 && closed(placed),
           "CSG extrusion preserves oblique mirrored affine volume");
     for (const auto &face : result.result.meshes[0].face_sources)
-        check(face.source_kind == CsgSourceKind::solid && face.source_to_result == m &&
+        check(face.source_kind == CsgSourceKind::solid && face.source_to_result == identity() &&
+                  face.solid_snapshot.has_value() && result.solid_placements[0].matrix == m &&
                   face.corner_projection_distance[0] < 1e-8,
-              "CSG source faces retain affine mapping");
+              "CSG source faces retain rebuilt snapshot mapping and source placement");
     auto segments = rectangle(0, 0, 2, 2);
     segments["curves"] = Json::array();
     const std::vector<Point3> corners{{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}, {0, 0, 0}};

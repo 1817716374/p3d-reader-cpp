@@ -162,28 +162,51 @@ struct Placement {
     }
 };
 } // namespace
-LoftSourceTransformResult transform_bgfb_section_loft(const Json &table, const Matrix4 &matrix,
-                                                      const LoftSourceTransformOptions &options) {
+CurveSolidTransformResult transform_bgfb_curve_solid(const Json &table, const Matrix4 &matrix,
+                                                     const CurveSolidTransformOptions &options) {
     LoftSourceTransformResult out;
     try {
-        require(table.at("_type") == "P3DSectionLoft", "loft transform source type");
+        const auto type = table.at("_type").get<std::string>();
+        require(type == "P3DSectionLoft" || type == "DgnExtrusion" || type == "DgnRuledSweep",
+                "curve solid transform source type");
         Placement placement(matrix, options);
         Json transformed = table;
         try {
-            require(transformed.at("section0").at("_type") == "CurveVector" &&
-                        transformed.at("section1").at("_type") == "CurveVector",
-                    "loft transform sections must be curve arrays");
-            placement.curve(transformed.at("section0"), 0, "/section0");
-            placement.curve(transformed.at("section1"), 0, "/section1");
-            auto &groups = transformed.at("guide_groups");
-            require(groups.is_array(), "loft transform guide groups");
-            for (std::size_t i = 0; i < groups.size(); ++i) {
-                require(groups[i].is_array(), "loft transform guide group");
-                for (std::size_t j = 0; j < groups[i].size(); ++j) {
-                    require(groups[i][j].at("_type") == "CurveVector",
-                            "loft transform guide must be a curve array");
-                    placement.curve(groups[i][j], 0,
-                                    "/guide_groups/" + std::to_string(i) + "/" + std::to_string(j));
+            if (type == "DgnExtrusion") {
+                auto &v = transformed.at("extrusionVector");
+                placement.path = "/extrusionVector";
+                const auto p =
+                    placement.point({number(v.at("x")), number(v.at("y")), number(v.at("z"))}, 0);
+                for (unsigned i = 0; i < 3; ++i)
+                    v[std::string(1, "xyz"[i])] = p[i];
+                require(transformed.at("baseCurve").at("_type") == "CurveVector",
+                        "extrusion base curve array required");
+                placement.curve(transformed.at("baseCurve"), 0, "/baseCurve");
+            } else if (type == "DgnRuledSweep") {
+                auto &curves = transformed.at("curves");
+                require(curves.is_array(), "ruled section array required");
+                for (std::size_t i = 0; i < curves.size(); ++i) {
+                    require(curves[i].at("_type") == "CurveVector",
+                            "ruled section curve array required");
+                    placement.curve(curves[i], 0, "/curves/" + std::to_string(i));
+                }
+            } else {
+                require(transformed.at("section0").at("_type") == "CurveVector" &&
+                            transformed.at("section1").at("_type") == "CurveVector",
+                        "loft transform sections must be curve arrays");
+                placement.curve(transformed.at("section0"), 0, "/section0");
+                placement.curve(transformed.at("section1"), 0, "/section1");
+                auto &groups = transformed.at("guide_groups");
+                require(groups.is_array(), "loft transform guide groups");
+                for (std::size_t i = 0; i < groups.size(); ++i) {
+                    require(groups[i].is_array(), "loft transform guide group");
+                    for (std::size_t j = 0; j < groups[i].size(); ++j) {
+                        require(groups[i][j].at("_type") == "CurveVector",
+                                "loft transform guide must be a curve array");
+                        placement.curve(groups[i][j], 0,
+                                        "/guide_groups/" + std::to_string(i) + "/" +
+                                            std::to_string(j));
+                    }
                 }
             }
         } catch (...) {
@@ -191,7 +214,8 @@ LoftSourceTransformResult transform_bgfb_section_loft(const Json &table, const M
             throw;
         }
         out.transformed = std::move(transformed);
-        out.report = {{"scope", "source_sections_and_guides"},
+        out.report = {{"scope", type == "P3DSectionLoft" ? "source_sections_and_guides"
+                                                         : "source_curves_and_parameters"},
                       {"curve_nodes", placement.nodes},
                       {"point_count", placement.points},
                       {"bspline_near_identity", placement.bspline_identity},
@@ -204,6 +228,14 @@ LoftSourceTransformResult transform_bgfb_section_loft(const Json &table, const M
         out.transformed = nullptr;
         out.report["reason"] = e.what();
     }
+    return out;
+}
+LoftSourceTransformResult transform_bgfb_section_loft(const Json &table, const Matrix4 &matrix,
+                                                      const LoftSourceTransformOptions &options) {
+    if (table.is_object() && table.value("_type", Json()) == "P3DSectionLoft")
+        return transform_bgfb_curve_solid(table, matrix, options);
+    LoftSourceTransformResult out;
+    out.report["reason"] = "loft transform source type";
     return out;
 }
 } // namespace p3d

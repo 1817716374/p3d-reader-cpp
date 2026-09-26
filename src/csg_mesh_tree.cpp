@@ -5,22 +5,32 @@
 namespace p3d {
 namespace {
 using Mesh = std::shared_ptr<CsgTreeMesh>;
+Mesh source_mesh(const Geometry &, std::size_t, CsgSourceKind);
 struct Runtime;
+struct CurveSolid {
+    Json current;
+    std::size_t source_index = 0;
+    std::optional<std::size_t> placement;
+};
 struct Object {
     Mesh mesh;
     std::shared_ptr<Runtime> nested;
     bool solid = false;
-    bool loft = false;
+    std::shared_ptr<CurveSolid> curves;
     std::shared_ptr<Json> cone;
     std::shared_ptr<Json> torus;
     Object(Mesh value, bool is_solid = false) : mesh(std::move(value)), solid(is_solid) {}
     Object(std::shared_ptr<Runtime> value) : nested(std::move(value)) {}
+    Object(std::shared_ptr<CurveSolid> value) : solid(true), curves(std::move(value)) {}
 };
 struct Work {
     const CsgMeshTreeOptions &options;
     std::size_t operations = 0, cached_triangles = 0, transformed_vertices = 0;
     std::size_t cached_meshes = 0, nodes = 0, node_updates = 0, geometry_visits = 0;
     std::size_t solid_triangles = 0, solid_conversions = 0;
+    std::size_t source_points = 0, source_nodes = 0;
+    CsgPolyfaceArchiveResult *archive_result = nullptr;
+    PolyfaceMeshOptions *mesh_budget = nullptr;
     std::string status = "not_evaluated";
     void limit(bool valid, const char *why) {
         if (!valid) {
@@ -88,12 +98,28 @@ struct Runtime {
         limit(work.geometry_visits < options.max_geometry_visits,
               "CSG geometry visit budget exceeded");
         ++work.geometry_visits;
-        if (object.mesh) {
-            // Native loft placement transforms source sections/guides BEFORE
-            // rebuilding the surface. Length-based reparameterization need not
-            // commute with an affine map of an already tessellated surface.
-            require(!object.loft || m == identity(),
-                    "CSG loft placement requires source reconstruction; only identity supported");
+        if (object.curves) {
+            CurveSolidTransformOptions budget;
+            budget.max_points = std::min(budget.max_points,
+                                         options.max_source_transform_points - work.source_points);
+            budget.max_curve_nodes = std::min(
+                budget.max_curve_nodes, options.max_source_transform_nodes - work.source_nodes);
+            auto placed = transform_bgfb_curve_solid(object.curves->current, m, budget);
+            if (placed.status != "transformed") {
+                const auto reason =
+                    placed.report.value("reason", std::string("CSG source curve placement failed"));
+                if (reason.find("budget") != std::string::npos)
+                    status = "work_limit";
+                throw std::runtime_error(reason);
+            }
+            work.source_points += placed.report.at("point_count").get<std::size_t>();
+            work.source_nodes += placed.report.at("curve_nodes").get<std::size_t>();
+            auto &steps = work.archive_result->solid_placements;
+            steps.push_back({object.curves->source_index, object.curves->placement, m,
+                             std::move(placed.report)});
+            object.curves->placement = steps.size() - 1;
+            object.curves->current = std::move(placed.transformed);
+        } else if (object.mesh) {
             if (object.cone || object.torus) {
                 auto placed = object.cone ? transform_bgfb_cone(*object.cone, m)
                                           : transform_bgfb_torus(*object.torus, m);
@@ -113,25 +139,57 @@ struct Runtime {
                 transform_object(child, m);
         }
     }
+    Mesh rebuild(const CurveSolid &source) {
+        auto &snapshots = work.archive_result->solid_snapshots;
+        limit(snapshots.size() < options.max_solid_snapshots, "CSG solid snapshot budget exceeded");
+        auto budget = *work.mesh_budget;
+        budget.max_triangles =
+            std::min(budget.max_triangles, options.max_solid_triangles - work.solid_triangles);
+        auto generated = mesh_bgfb_solid(source.current, budget, options.solid_circle_segments);
+        if (generated.derived.status != "meshed") {
+            const auto reason = generated.derived.report.value(
+                "reason", std::string("CSG solid reconstruction failed"));
+            if (reason.find("budget") != std::string::npos ||
+                reason.find("invalid loft mesh options") != std::string::npos)
+                status = "work_limit";
+            throw std::runtime_error(reason);
+        }
+        const auto &g = generated.derived.geometry;
+        work.mesh_budget->max_points -= g.vertices.size();
+        work.mesh_budget->max_triangles -= g.faces.size();
+        work.mesh_budget->max_corners -=
+            generated.derived.report.at("source_corner_count").get<std::size_t>();
+        work.mesh_budget->max_polygon_edge_tests -=
+            generated.derived.report.at("polygon_edge_tests").get<std::size_t>();
+        work.solid_triangles += g.faces.size();
+        ++work.solid_conversions;
+        auto mesh = source_mesh(g, source.source_index, CsgSourceKind::solid);
+        for (auto &face : mesh->face_sources)
+            face.solid_snapshot = snapshots.size();
+        snapshots.push_back({source.source_index, source.placement, std::move(generated)});
+        return mesh;
+    }
     std::vector<Mesh> convert(const std::vector<Object> &input, const Matrix4 &m) {
         std::vector<Mesh> out;
         for (const auto &object : input) {
             transform_object(object, m);
             std::vector<Mesh> values;
-            if (object.solid) {
-                limit(object.mesh->faces.size() <=
-                          options.max_solid_triangles - work.solid_triangles,
-                      "CSG solid conversion triangle budget exceeded");
-                work.solid_triangles += object.mesh->faces.size();
-                ++work.solid_conversions;
-            }
-            if (object.mesh)
+            if (object.curves) {
+                values.push_back(rebuild(*object.curves));
+            } else if (object.mesh) {
+                if (object.solid) {
+                    limit(object.mesh->faces.size() <=
+                              options.max_solid_triangles - work.solid_triangles,
+                          "CSG solid conversion triangle budget exceeded");
+                    work.solid_triangles += object.mesh->faces.size();
+                    ++work.solid_conversions;
+                }
                 // A solid is tessellated into a fresh Polyface on EACH visit.
                 // transform_object applies each supported solid's placement rule;
                 // copying its derived triangles preserves distinct object identity.
                 values.push_back(object.solid ? std::make_shared<CsgTreeMesh>(*object.mesh)
                                               : object.mesh);
-            else {
+            } else {
                 object.nested->run_update();
                 values = object.nested->root_meshes();
             }
@@ -357,7 +415,10 @@ void evaluate(Runtime &runtime, const std::vector<const Geometry *> &source_mesh
             auto &source = output.face_sources[f];
             const auto &pool =
                 source.source_kind == CsgSourceKind::solid ? solid_meshes : source_meshes;
-            const auto &g = *pool.at(source.geometry_index);
+            const auto &g = source.solid_snapshot ? runtime.work.archive_result->solid_snapshots
+                                                        .at(*source.solid_snapshot)
+                                                        .mesh.derived.geometry
+                                                  : *pool.at(source.geometry_index);
             for (unsigned k = 0; k < 3; ++k) {
                 Point3 point{};
                 for (unsigned j = 0; j < 3; ++j)
@@ -391,6 +452,8 @@ void diagnostics(CsgMeshTreeResult &result, const Work &work) {
     result.diagnostics["geometry_visits"] = work.geometry_visits;
     result.diagnostics["solid_mesh_conversions"] = work.solid_conversions;
     result.diagnostics["solid_triangles"] = work.solid_triangles;
+    result.diagnostics["source_transform_points"] = work.source_points;
+    result.diagnostics["source_transform_nodes"] = work.source_nodes;
 }
 void failure(CsgMeshTreeResult &result, const Work &work, const std::exception &error) {
     result.status = work.status;
@@ -432,43 +495,50 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                 const auto &table = entry.at("geometry").at("geometry");
                 const bool solid = table.at("_type") != "Polyface";
                 const auto index = solid ? out.solid_sources.size() : out.sources.size();
-                if (solid) {
-                    if (table.at("_type") == "P3DSectionLoft") {
-                        const auto identity_source = transform_bgfb_section_loft(table, identity());
-                        require(identity_source.status == "transformed",
-                                identity_source.report.value(
-                                    "reason",
-                                    std::string("CSG loft source identity transformation failed")));
-                        require(identity_source.report.at("arc_replacements").empty(),
-                                "CSG loft identity placement changes curve representation; source "
-                                "reconstruction required");
-                    }
-                    out.solid_sources.push_back(
-                        mesh_bgfb_solid(table, budget, work.options.solid_circle_segments));
+                const bool curve_solid = table.at("_type") == "P3DSectionLoft" ||
+                                         table.at("_type") == "DgnExtrusion" ||
+                                         table.at("_type") == "DgnRuledSweep";
+                if (curve_solid) {
+                    SolidMeshResult original;
+                    original.source = table;
+                    original.derived.status = "deferred";
+                    original.derived.report["scope"] = "reconstructed_on_each_native_conversion";
+                    out.solid_sources.push_back(std::move(original));
                     out.solid_source_paths.push_back(child_path);
+                    auto source = std::make_shared<CurveSolid>();
+                    source->current = table;
+                    source->source_index = index;
+                    pool.emplace_back(std::move(source));
                 } else {
-                    out.sources.push_back(mesh_bgfb_polyface(table, budget));
-                    out.source_paths.push_back(child_path);
+                    if (solid) {
+                        out.solid_sources.push_back(
+                            mesh_bgfb_solid(table, budget, work.options.solid_circle_segments));
+                        out.solid_source_paths.push_back(child_path);
+                    } else {
+                        out.sources.push_back(mesh_bgfb_polyface(table, budget));
+                        out.source_paths.push_back(child_path);
+                    }
+                    const auto &source =
+                        solid ? out.solid_sources.back().derived : out.sources.back();
+                    if (source.status != "meshed")
+                        throw std::runtime_error(source.report.value(
+                            "reason", std::string("CSG source triangulation failed")));
+                    const auto &g = source.geometry;
+                    budget.max_points -= g.vertices.size();
+                    budget.max_triangles -= g.faces.size();
+                    budget.max_corners -=
+                        source.report.at("source_corner_count").get<std::size_t>();
+                    budget.max_polygon_edge_tests -=
+                        source.report.at("polygon_edge_tests").get<std::size_t>();
+                    pool.emplace_back(
+                        source_mesh(g, index,
+                                    solid ? CsgSourceKind::solid : CsgSourceKind::polyface),
+                        solid);
+                    if (solid && table.at("_type") == "DgnCone")
+                        pool.back().cone = std::make_shared<Json>(table);
+                    if (solid && table.at("_type") == "DgnTorusPipe")
+                        pool.back().torus = std::make_shared<Json>(table);
                 }
-                const auto &source = solid ? out.solid_sources.back().derived : out.sources.back();
-                if (source.status != "meshed")
-                    throw std::runtime_error(source.report.value(
-                        "reason", std::string("CSG source triangulation failed")));
-                const auto &g = source.geometry;
-                budget.max_points -= g.vertices.size();
-                budget.max_triangles -= g.faces.size();
-                budget.max_corners -= source.report.at("source_corner_count").get<std::size_t>();
-                budget.max_polygon_edge_tests -=
-                    source.report.at("polygon_edge_tests").get<std::size_t>();
-                pool.emplace_back(
-                    source_mesh(g, index, solid ? CsgSourceKind::solid : CsgSourceKind::polyface),
-                    solid);
-                if (solid && table.at("_type") == "DgnCone")
-                    pool.back().cone = std::make_shared<Json>(table);
-                if (solid && table.at("_type") == "DgnTorusPipe")
-                    pool.back().torus = std::make_shared<Json>(table);
-                if (solid && table.at("_type") == "P3DSectionLoft")
-                    pool.back().loft = true;
             }
             if (std::string(list) == "node_caches")
                 runtime->state["node_caches"].push_back(nullptr);
@@ -512,6 +582,8 @@ CsgPolyfaceArchiveResult evaluate_csg_polyface_archive(const Json &archive,
     CsgPolyfaceArchiveResult out;
     Work work{tree_options};
     auto budget = mesh_options;
+    work.archive_result = &out;
+    work.mesh_budget = &budget;
     try {
         validate_options(tree_options);
         auto runtime = load_archive(archive, work, out, budget, 0, Json::array());

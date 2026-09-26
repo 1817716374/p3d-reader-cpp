@@ -546,16 +546,17 @@ unsigned loft_mesh_tests() {
     tree_options.solid_circle_segments = 4;
     const auto csg = evaluate_csg_polyface_archive(archive, tree_options);
     check(csg.result.status == "evaluated" && csg.result.meshes.size() == 1 &&
-              csg.solid_sources.size() == 1 && !csg.solid_sources[0].surface_parameters.empty(),
+              csg.solid_sources.size() == 1 && csg.solid_snapshots.size() == 1 &&
+              !csg.solid_snapshots[0].mesh.surface_parameters.empty(),
           "identity CSG loft retains source analytic parameters");
     for (double scale : {2., -1., .5}) {
         auto changed = archive;
         changed["transforms"][0]["matrix_3x4_rows"][0][0] = scale;
-        const auto rejected = evaluate_csg_polyface_archive(changed, tree_options);
-        check(rejected.result.status != "evaluated" && rejected.result.meshes.empty() &&
-                  rejected.result.diagnostics.dump().find("source reconstruction") !=
-                      std::string::npos,
-              "nonidentity CSG loft cannot silently transform a prebuilt surface");
+        const auto placed_loft = evaluate_csg_polyface_archive(changed, tree_options);
+        check(placed_loft.result.status == "evaluated" && placed_loft.solid_snapshots.size() == 1 &&
+                  placed_loft.solid_placements[0].matrix[0][0] == scale &&
+                  placed_loft.result.meshes[0].face_sources[0].solid_snapshot == 0,
+              "nonidentity CSG loft reconstructs source curves and records a new mesh source");
     }
     // A polyline's length knots change under anisotropic placement, even when
     // every corresponding guide has the same number of primitives.
@@ -790,10 +791,10 @@ unsigned loft_mesh_tests() {
           "a replaced source remains a line segment on later visits");
     auto csg_replacement = archive;
     csg_replacement["geometries"][0]["geometry"]["geometry"] = tiny_prism;
-    const auto unsupported_csg = evaluate_csg_polyface_archive(csg_replacement, tree_options);
-    check(unsupported_csg.result.status != "evaluated" && unsupported_csg.result.meshes.empty() &&
-              unsupported_csg.result.diagnostics.dump().find("changes curve representation") !=
-                  std::string::npos,
-          "CSG cannot treat identity-triggered source replacement as a prebuilt-mesh identity");
+    const auto rebuilt_csg = evaluate_csg_polyface_archive(csg_replacement, tree_options);
+    check(rebuilt_csg.result.status == "evaluated" && rebuilt_csg.solid_snapshots.size() == 1 &&
+              rebuilt_csg.solid_placements[0].report["arc_replacements"].size() == 2 &&
+              rebuilt_csg.solid_sources[0].source == tiny_prism,
+          "CSG reconstructs identity-triggered replacements and retains the original source");
     return checks;
 }

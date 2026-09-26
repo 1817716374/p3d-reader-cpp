@@ -14,7 +14,10 @@ struct CsgMeshTreeOptions {
     std::size_t max_node_updates = 1000000;
     std::size_t max_geometry_visits = 1000000;
     std::size_t max_solid_triangles = 3000000; // Cumulative conversion output.
-    unsigned solid_circle_segments = 64;       // Derived solid mesh, not native angle_tolerance.
+    std::size_t max_solid_snapshots = 100000;
+    std::size_t max_source_transform_points = 10000000;
+    std::size_t max_source_transform_nodes = 1000000;
+    unsigned solid_circle_segments = 64; // Derived solid mesh, not native angle_tolerance.
 };
 enum class CsgSourceKind { polyface, solid };
 struct CsgTreeTriangleSource {
@@ -24,6 +27,10 @@ struct CsgTreeTriangleSource {
     std::array<std::array<double, 3>, 3> corner_barycentric{};
     std::array<double, 3> corner_projection_distance{};
     CsgSourceKind source_kind = CsgSourceKind::polyface;
+    // When present, face_index and source_to_result refer to this rebuilt
+    // snapshot, not the original solid_sources mesh. geometry_index still
+    // identifies the original source and its path.
+    std::optional<std::size_t> solid_snapshot;
 };
 struct CsgTreeMesh {
     std::vector<Point3> vertices;
@@ -49,6 +56,17 @@ struct CsgMeshTreeResult {
 CsgMeshTreeResult evaluate_csg_polyface_tree(const Json &archive,
                                              const std::vector<Geometry> &source_meshes,
                                              const CsgMeshTreeOptions &options = {});
+struct CsgSolidPlacement {
+    std::size_t source_index = 0;
+    std::optional<std::size_t> previous;
+    Matrix4 matrix{};
+    Json report;
+};
+struct CsgSolidSnapshot {
+    std::size_t source_index = 0;
+    std::optional<std::size_t> placement;
+    SolidMeshResult mesh; // source is the transformed parameter table.
+};
 struct CsgPolyfaceArchiveResult {
     CsgMeshTreeResult result;
     // Source tables, attribute pools and polygon/corner links for interpreting
@@ -65,6 +83,12 @@ struct CsgPolyfaceArchiveResult {
     // source_kind==solid address these vectors with geometry_index.
     std::vector<SolidMeshResult> solid_sources;
     std::vector<Json> solid_source_paths;
+    // Curve-based solids retain only their original table in solid_sources;
+    // their derived.status is deferred. Each conversion builds a new snapshot,
+    // including repeated references. These are derived results, not added native
+    // sharing. Placement chains record source updates without merging matrices.
+    std::vector<CsgSolidSnapshot> solid_snapshots;
+    std::vector<CsgSolidPlacement> solid_placements;
 };
 // Reads supported BGFB Polyface/solid sources and nested CSG archives. Nested objects
 // are placed, updated and expanded each time the native conversion visits them;
