@@ -153,6 +153,7 @@
 !/tests/native_tube_curvature.cpp
 !/tests/native_tube_refinement.cpp
 !/tests/native_tube_facet_patch.cpp
+!/tests/native_tube_facet_chain.cpp
 !/tests/native_bezier.cpp
 !/tests/native_bspline_area.cpp
 !/tests/native_curve_area.cpp

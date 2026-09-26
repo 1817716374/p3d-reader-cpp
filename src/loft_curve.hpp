@@ -25,6 +25,11 @@ Curve open_periodic_boundary(const BsplineCurve &, unsigned limit, Json *report 
 // requests reset to zero; zero outside the source domain is rejected.
 Curve open_periodic_boundary_at(const BsplineCurve &, double knot, unsigned limit,
                                 Json *report = nullptr);
+// Native single-knot insertion on closed storage, without opening, normalizing
+// or regenerating exterior knots. Failure retains the original closed curve.
+BsplineCurve insert_periodic_native_knot(const BsplineCurve &, double knot, double tolerance,
+                                         unsigned target_multiplicity, unsigned limit,
+                                         Json &report);
 struct CurveClosure {
     Curve curve;
     bool success = false, closed = false;

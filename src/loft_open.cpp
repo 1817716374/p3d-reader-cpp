@@ -260,4 +260,63 @@ Curve open_periodic_boundary_at(const BsplineCurve &source, double knot, unsigne
                                 Json *report) {
     return open_periodic_impl(source, limit, report, true, knot);
 }
+BsplineCurve insert_periodic_native_knot(const BsplineCurve &source, double knot, double tolerance,
+                                         unsigned target, unsigned limit, Json &report) {
+    require(source.closed() && source.order() <= 26 && source.poles().size() <= limit &&
+                source.poles().size() <= INT32_MAX && std::isfinite(knot) &&
+                std::isfinite(tolerance) && tolerance >= 0,
+            "native periodic insertion source/parameter limits");
+    report = {{"requested_knot", knot}, {"target_multiplicity", target}, {"success", false}};
+    const auto domain = source.knot_domain();
+    if (knot < domain[0] || knot > domain[1]) {
+        report["reason"] = "outside_domain";
+        return source;
+    }
+    unsigned multiplicity = 0;
+    double t = knot;
+    for (double k : source.knots()) {
+        if (std::abs(k - t) <= tolerance) {
+            t = k;
+            ++multiplicity;
+        } else if (multiplicity)
+            break;
+    }
+    const auto added = target > multiplicity ? target - multiplicity : 0;
+    report["snapped_knot"] = t;
+    report["current_multiplicity"] = multiplicity;
+    report["added"] = added;
+    if (!added) {
+        report["success"] = true;
+        return source;
+    }
+    if (added > source.order()) {
+        report["reason"] = "added_multiplicity_exceeds_order";
+        return source;
+    }
+    require(added <= limit - source.poles().size() && source.poles().size() + added <= INT32_MAX,
+            "native periodic insertion output control budget");
+    Curve c;
+    c.degree = source.order() - 1;
+    c.rational = source.rational();
+    c.knots = source.knots();
+    for (std::size_t i = 0; i < source.poles().size(); ++i) {
+        const auto &p = source.poles()[i];
+        c.poles.push_back({p[0], p[1], p[2], source.rational() ? source.weights()[i] : 1.});
+    }
+    const bool corrected = source.periodic_pole_shift() != 0 && special_seam(c);
+    const auto right = std::upper_bound(c.knots.begin(), c.knots.end(), t) - c.knots.begin();
+    const auto start = right - std::ptrdiff_t(source.order()) -
+                       (corrected ? std::ptrdiff_t(source.order() / 2) : 0);
+    report["control_copy"] = start < 0 ? "left_wrap"
+                             : start > std::ptrdiff_t(source.poles().size() - source.order())
+                                 ? "right_wrap"
+                                 : "interior";
+    insert_cyclic(c, t, added, corrected);
+    auto table = c.table();
+    table["closed"] = true;
+    auto result = BsplineCurve::from_bgfb(table);
+    report["corrected_periodic_poles"] = corrected;
+    report["success"] = true;
+    return result;
+}
 } // namespace p3d::loft_detail
