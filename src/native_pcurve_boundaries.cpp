@@ -1,6 +1,7 @@
 #include "p3d/pcurve.hpp"
 #include "loft_curve.hpp"
 #include "native_pcurve_points.hpp"
+#include "native_curve_conversion.hpp"
 
 namespace p3d {
 namespace {
@@ -32,11 +33,6 @@ BsplineCurve polyline(const Json &poles) {
                                     {"weights", nullptr},
                                     {"knots", nullptr}});
 }
-double magnitude(const Point3 &p) {
-    const double length = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-    require(std::isfinite(length), "native boundary axis length overflow");
-    return length;
-}
 bool closed_points(const Point3 &a, const Point3 &b) {
     double distance = 0, scale = 1;
     for (unsigned k = 0; k < 3; ++k) {
@@ -45,75 +41,6 @@ bool closed_points(const Point3 &a, const Point3 &b) {
     }
     require(std::isfinite(distance) && std::isfinite(scale), "native boundary closure overflow");
     return distance < scale * 1e-20;
-}
-BsplineCurve ellipse(const Json &value) {
-    const auto &a = value.at("arc");
-    const auto center = point(a, "center"), x = point(a, "vector0"), y = point(a, "vector90");
-    const double lx = magnitude(x), ly = magnitude(y);
-    constexpr double pi = 3.141592653589793;
-    auto angle = [&](double t) {
-        const double s = lx * std::sin(t), c = ly * std::cos(t);
-        if (std::abs(s) < 1e-5 || std::abs(c) < 1e-5)
-            return t;
-        const double adjusted = std::atan2(s, c);
-        if (std::abs(t) < pi)
-            return adjusted;
-        return adjusted + std::copysign(std::ceil(std::abs(t) / pi) * pi, t);
-    };
-    const double start = angle(number(a.at("startRadians")));
-    const double sweep = angle(number(a.at("sweepRadians")));
-    require(std::isfinite(start) && std::isfinite(sweep) && std::isfinite(start + sweep),
-            "native ellipse angle conversion overflow");
-    const unsigned spans = std::abs(sweep) <= 2.0943951023931953   ? 1
-                           : std::abs(sweep) <= 4.1887902047863905 ? 2
-                                                                   : 3;
-    const bool closed = std::abs(sweep) > 6.283185307178586;
-    const double w = std::cos(std::abs(sweep) * .5 / spans), twice = 2 * w, blend = 2 * (1 + w);
-    require(w != 0, "native ellipse control weight is zero");
-    const double half_step = spans == 3 ? sweep / 6 : spans == 2 ? sweep * .25 : sweep * .5;
-    std::vector<Point2> circle(2 * spans + 1);
-    for (unsigned i = 0; i <= spans; ++i) {
-        const double t = i == spans ? start + sweep : start + double(2 * i) * half_step;
-        circle[2 * i] = {std::cos(t), std::sin(t)};
-    }
-    for (unsigned i = 0; i < spans; ++i) {
-        const double t = start + double(2 * i + 1) * half_step;
-        const Point2 mid{std::cos(t), std::sin(t)};
-        for (unsigned k = 0; k < 2; ++k)
-            circle[2 * i + 1][k] =
-                (blend * mid[k] - (circle[2 * i][k] + circle[2 * i + 2][k])) / twice;
-    }
-    std::vector<double> weights, poles;
-    for (unsigned i = 0; i < circle.size(); ++i) {
-        const double weight = i % 2 ? w : 1;
-        weights.push_back(weight);
-        // setEllipticArc first weights the unit-circle controls; setbyGeEllipse3d
-        // deweights those controls, applies the original basis, then reweights.
-        const double u = (circle[i][0] * weight) / weight, v = (circle[i][1] * weight) / weight;
-        for (unsigned k = 0; k < 3; ++k)
-            poles.push_back(((center[k] + x[k] * u) + y[k] * v) * weight);
-    }
-    std::vector<double> inside;
-    if (spans == 2)
-        inside = {.5, .5};
-    if (spans == 3)
-        inside = closed ? std::vector<double>{0, 1. / 3, 1. / 3, 2. / 3, 2. / 3, 1}
-                        : std::vector<double>{1. / 3, 1. / 3, 2. / 3, 2. / 3};
-    std::vector<double> knots(weights.size() + (closed ? 5 : 3), 0);
-    std::copy(inside.begin(), inside.end(), knots.begin() + 3);
-    for (unsigned i = 0; i < 3; ++i) {
-        if (closed) {
-            knots[i] = knots[i + inside.size() + 1] - 1;
-            knots[3 + inside.size() + i] = knots[2 + i] + 1;
-        } else
-            knots[3 + inside.size() + i] = 1;
-    }
-    return BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
-                                    {"order", 3},
-                                    {"closed", closed},
-                                    {"poles", poles},
-                                    {"weights", weights},
-                                    {"knots", knots}});
 }
 struct Boundaries {
     const BsplineSurface &surface;
@@ -154,7 +81,7 @@ struct Boundaries {
         else if (type == "TransitionSpiral")
             c = TransitionSpiral::from_bgfb(v).native_fit(options.max_integration_intervals).curve;
         else if (type == "EllipticArc")
-            c = ellipse(v);
+            c = curve_detail::ellipse_to_bspline(v);
         else if (type == "LineSegment") {
             const auto &s = v.at("segment");
             const auto a = point(s, "point0"), b = point(s, "point1");

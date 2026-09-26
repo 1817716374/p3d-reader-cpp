@@ -35,6 +35,11 @@ struct TubeCurve {
 // Singular interpolation and unrepresentable dense-knot removal states fail
 // explicitly; they are not repaired by merging points or changing tolerances.
 TubeCurve fit_tube_linestring(const std::vector<Point3> &points, TubeBudget &budget);
+// One decoded BGFB primitive, not a VariantGeometry or a CurveVector. Native
+// swept sources accept line, LineString, ellipse and B-spline primitives only.
+// B-spline controls, weights, knots and closed state are copied without opening
+// or normalization; successful conversion does not prove sweepability.
+TubeCurve convert_tube_primitive(const Json &value, TubeBudget &budget);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order
 // and rational flags. patch is one normalized Bezier V span; assembled contains
