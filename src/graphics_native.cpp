@@ -290,8 +290,8 @@ struct GeometryConstruction {
             out["geometry_pointer"] = "non_null";
             return out;
         }
-        require(tag == 1 || tag == 2 || tag == 4 || tag == 5 || tag == 10 || tag == 12 ||
-                    tag == 18 || tag == 21,
+        require(tag == 1 || tag == 2 || tag == 4 || tag == 5 || tag == 10 || tag == 11 ||
+                    tag == 12 || tag == 18 || tag == 20 || tag == 21,
                 "native_geometry_construction_not_supported");
         const auto table = child(root, 1);
         if (tag == 5)
@@ -331,6 +331,28 @@ struct GeometryConstruction {
             out.update({{"operation", "retain_base_curve_and_copy_extrusion"},
                         {"extrusion_vector_offset", *vector},
                         {"capped", flag(*table, 2)}});
+            return out;
+        }
+        if (tag == 11) {
+            auto out = object("DgnRotationalSweep", "solid");
+            out["base_curve"] = curve_vector(child(*table, 0), depth + 1);
+            const auto axis = b.field(*table, 1, 48);
+            require(axis.has_value(), "native_rotation_requires_axis_detail");
+            const auto sweep = b.field(*table, 2, 8);
+            const auto rules = b.field(*table, 3, 4);
+            out.update({{"operation", "retain_base_curve_and_copy_rotation"},
+                        {"axis_offset", *axis},
+                        {"sweep_radians_offset", sweep ? Json(*sweep) : Json()},
+                        {"sweep_radians_bits", sweep ? b.at<std::uint64_t>(*sweep) : 0},
+                        {"num_v_rules", rules ? std::int64_t(b.at<std::int32_t>(*rules)) : 0},
+                        {"capped", flag(*table, 4)}});
+            return out;
+        }
+        if (tag == 20) {
+            auto out = object("P3DSweptBody", "solid");
+            out["profile"] = curve_vector(child(*table, 0), depth + 1);
+            out["path"] = curve_vector(child(*table, 1), depth + 1);
+            out.update({{"operation", "retain_profile_and_path"}, {"capped", flag(*table, 2)}});
             return out;
         }
         if (tag == 21) {
@@ -450,6 +472,17 @@ Json parametric_append_input(const Json &input) {
             // Unlike the initial reader, this copy path dereferences its base.
             copy_curve_vector_input(source.at("base_curve"));
             operation = "copy_base_curves_and_extrusion";
+        } else if (name == "DgnRotationalSweep") {
+            copy_curve_vector_input(source.at("base_curve"));
+            operation = "copy_base_curves_and_rotation";
+            // deepClone rebuilds through the constructor, which resets this
+            // sampling hint rather than copying the value read from the file.
+            out["source_num_v_rules"] = source.at("num_v_rules");
+            out["output_num_v_rules"] = 0;
+        } else if (name == "P3DSweptBody") {
+            copy_curve_vector_input(source.at("path"), true);
+            copy_curve_vector_input(source.at("profile"), true);
+            operation = "copy_path_and_profile";
         } else if (name == "DgnRuledSweep") {
             for (const auto &section : source.at("sections"))
                 copy_curve_vector_input(section);

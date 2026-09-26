@@ -93,7 +93,9 @@ struct LoftSourceTransformResult {
 LoftSourceTransformResult
 transform_bgfb_section_loft(const Json &table, const Matrix4 &matrix,
                             const LoftSourceTransformOptions &options = {});
-// The same source-curve rules for a section loft, extrusion, ruled or rotational sweep.
+// The same source-curve rules for a section loft, extrusion, ruled/rotational sweep
+// or P3DSweptBody path sweep. Path sweeps visit path then profile, skipping null
+// arrays. This source transform does not implement their surface reconstruction.
 // Extrusion vectors receive the linear transform before the base curve;
 // ruled sections are visited in their stored order. Rebuild from transformed.
 // Rotational placement reverses the sweep for reflected frames, then transforms

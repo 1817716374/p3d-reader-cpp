@@ -372,6 +372,108 @@ unsigned graphics_native_tests() {
     const auto nested_group = collection(5, {line, ellipse});
     const auto mixed_group = collection(5, {line, bgfb(255), scalar_solid(6, 120), nested_group,
                                             polyline, null_group, empty_group});
+    auto rotational = [&](const Bytes &base, std::int32_t rules = 17) {
+        auto b = bgfb(11);
+        b.resize(136);
+        write(b, 28, 36, 4); // rotation table at 64, vtable at 40
+        write(b, 40, 14, 2);
+        write(b, 42, 72, 2);
+        for (unsigned i = 0; i < 5; ++i)
+            write(b, 44 + 2 * i, std::array<unsigned, 5>{4, 8, 56, 64, 68}[i], 2);
+        write(b, 64, 24, 4);
+        write(b, 128, std::uint32_t(rules), 4);
+        write(b, 132, 255, 1);
+        if (base.empty())
+            write(b, 44, 0, 2);
+        else {
+            write(b, 68, 136 + 48 - 68, 4);
+            b.insert(b.end(), base.begin(), base.end());
+        }
+        return b;
+    };
+    auto swept_body = [&](const Bytes &profile, const Bytes &path) {
+        auto b = bgfb(20);
+        b.resize(64);
+        write(b, 28, 20, 4);
+        write(b, 36, 10, 2);
+        write(b, 38, 16, 2);
+        write(b, 48, 12, 4);
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto &curves = i ? path : profile;
+            if (!curves.empty()) {
+                write(b, 40 + 2 * i, 4 + 4 * i, 2);
+                write(b, 52 + 4 * i, b.size() + 48 - (52 + 4 * i), 4);
+                b.insert(b.end(), curves.begin(), curves.end());
+            }
+        }
+        write(b, 44, 12, 2);
+        write(b, 60, 1, 1);
+        return b;
+    };
+    for (std::int32_t rules : {INT32_MIN, -1, 0, 17, INT32_MAX}) {
+        auto source = rotational(mixed_group, rules);
+        // Construction copies even a nonfinite axis and angle; meshing may reject it.
+        write(source, 72, UINT64_C(0x7ff0000000000000), 8);
+        write(source, 120, UINT64_C(0xfff8000000000042), 8);
+        result = with_project(packet(6, source));
+        const auto &c = result.at("construction");
+        check(result.at("status") == "geometry_constructed" && c.at("num_v_rules") == rules &&
+                  c.at("axis_offset") == 72 && c.at("capped") == true &&
+                  c.at("sweep_radians_bits") == UINT64_C(0xfff8000000000042) &&
+                  c.at("base_curve").at("output_member_count") == 4,
+              "rotation reads signed sampling hint and preserves unvalidated parameter bits");
+        const auto &append = result.at("parametric_append_input");
+        check(append.at("status") == "appended" && append.at("source_num_v_rules") == rules &&
+                  append.at("output_num_v_rules") == 0 &&
+                  append.at("source_geometry_reused") == false,
+              "native rotation clone copies curves but resets sampling hint via constructor");
+    }
+    auto default_rotation = rotational({});
+    for (unsigned slot : {48u, 50u, 52u})
+        write(default_rotation, slot, 0, 2);
+    result = with_project(packet(6, default_rotation));
+    check(result.at("status") == "geometry_constructed" &&
+              result.at("construction").at("num_v_rules") == 0 &&
+              result.at("construction").at("sweep_radians_bits") == 0 &&
+              result.at("construction").at("sweep_radians_offset").is_null() &&
+              result.at("construction").at("capped") == false &&
+              result.at("parametric_append_input").at("reason") ==
+                  "native_curve_vector_copy_requires_non_null_source",
+          "rotation defaults and null base construction differ from unsafe null base clone");
+    write(default_rotation, 46, 0, 2);
+    check(with_project(packet(6, default_rotation)).at("reason") ==
+              "native_rotation_requires_axis_detail",
+          "rotation requires inline axis even with a missing base");
+    for (unsigned mask = 0; mask < 4; ++mask) {
+        const auto source =
+            swept_body(mask & 1 ? mixed_group : Bytes{}, mask & 2 ? nested_group : Bytes{});
+        result = with_project(packet(6, source));
+        const auto &c = result.at("construction");
+        check(result.at("status") == "geometry_constructed" && c.at("capped") == true &&
+                  c.at("profile").at("geometry_pointer") == (mask & 1 ? "non_null" : "null") &&
+                  c.at("path").at("geometry_pointer") == (mask & 2 ? "non_null" : "null"),
+              "swept body retains profile and path in their distinct source fields");
+        check(result.at("parametric_append_input").at("status") == "appended" &&
+                  result.at("parametric_append_input").at("geometry_operation") ==
+                      "copy_path_and_profile",
+              "swept body clones each present array and permits either missing pointer");
+        if (mask == 3)
+            check(c.at("profile").at("output_member_count") == 4 &&
+                      c.at("path").at("output_member_count") == 2,
+                  "swept body does not swap profile and path");
+    }
+    auto missing_swept_flag = swept_body(empty_group, empty_group);
+    write(missing_swept_flag, 44, 0, 2);
+    check(with_project(packet(6, missing_swept_flag)).at("construction").at("capped") == false,
+          "swept body file default capped flag is false");
+    check(with_project(packet(6, swept_body(collection(5, {bgfb(3)}), empty_group))).at("status") ==
+              "not_evaluated",
+          "swept body cannot replace an unconfirmed profile with an empty group");
+    result = with_project(packet(2, collection(5, {swept_body({}, {}), rotational(empty_group)})));
+    check(result.at("status") == "geometry_constructed" &&
+              result.at("construction").at("output_member_count") == 0 &&
+              result.at("construction").at("members").at(0).at("action") == "skip_non_curve",
+          "generic curve-array reader constructs then filters both sweep solid kinds");
     result = with_project(packet(2, mixed_group));
     const auto &group = result.at("construction");
     check(result.at("status") == "geometry_constructed" && group.at("source_member_count") == 7 &&

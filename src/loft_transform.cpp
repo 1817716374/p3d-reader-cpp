@@ -168,7 +168,7 @@ CurveSolidTransformResult transform_bgfb_curve_solid(const Json &table, const Ma
     try {
         const auto type = table.at("_type").get<std::string>();
         require(type == "P3DSectionLoft" || type == "DgnExtrusion" || type == "DgnRuledSweep" ||
-                    type == "DgnRotationalSweep",
+                    type == "DgnRotationalSweep" || type == "P3DSweptBody",
                 "curve solid transform source type");
         Placement placement(matrix, options);
         Json transformed = table;
@@ -210,6 +210,18 @@ CurveSolidTransformResult transform_bgfb_curve_solid(const Json &table, const Ma
                 require(transformed.at("baseCurve").at("_type") == "CurveVector",
                         "rotational base curve array required");
                 placement.curve(transformed.at("baseCurve"), 0, "/baseCurve");
+            } else if (type == "P3DSweptBody") {
+                // Native placement visits path first; either pointer may be null.
+                // Keep both source arrays and their independent coordinate frames.
+                for (const auto *key : {"path", "profile"}) {
+                    placement.path = std::string("/") + key;
+                    auto &curves = transformed.at(key);
+                    if (curves.is_null())
+                        continue;
+                    require(curves.at("_type") == "CurveVector",
+                            "swept body path and profile must be curve arrays or null");
+                    placement.curve(curves, 0, std::string("/") + key);
+                }
             } else if (type == "DgnExtrusion") {
                 auto &v = transformed.at("extrusionVector");
                 placement.path = "/extrusionVector";
