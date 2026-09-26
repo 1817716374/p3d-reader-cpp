@@ -204,5 +204,38 @@ unsigned native_tube_path_tests() {
             tube_surface(section, circle, false, b);
         },
         "trace preparation, frame evaluation, patches and joins share one budget");
+    const auto weighted_line = curve(2, {.1, 0, 0, .1, 0, 7}, {7, 7});
+    const auto zero_section = curve(2, {0, 0, 0, 0, 0, 0});
+    TubeBudget rounding_budget;
+    const auto rounded = tube_surface(zero_section, weighted_line, false, rounding_budget);
+    const auto rounded_surface = BsplineSurface::from_bgfb(rounded.surface);
+    check(rounded.working_trace_poles[0][0] == .09999999999999998 &&
+              rounded.working_trace_poles[1][0] == .09999999999999998,
+          "tube returns trace controls after both native frame weight round trips");
+    for (const auto &p : rounded_surface.poles())
+        check(p[0] == .09999999999999998, "Bezier preparation follows frame mutation and patch "
+                                          "output performs its own round trip");
+    check(weighted_line.poles()[0][0] == .1 && weighted_line.source_knots().empty(),
+          "tube preparation does not mutate source controls or implicit knots");
+    for (bool closed : {false, true}) {
+        const auto nonunit = curve(2, {.1, 0, 0, .1, 0, 7, .1, 7, 7}, {7, 7, 7}, closed,
+                                   closed ? Json({-2, 0, 2, 5, 9, 11}) : Json({2, 2, 5, 9, 9}));
+        TubeBudget b;
+        const auto result = tube_surface(zero_section, nonunit, false, b);
+        check(result.working_trace_poles.size() == 3 &&
+                  result.working_trace_poles[0][0] == .09999999999999998 &&
+                  result.report["trace_preparation"]["source_closed"] == closed,
+              "working trace preserves explicit non-unit and periodic knot layout");
+        check(nonunit.poles()[0][0] == .1,
+              "open and periodic rational tube queries keep input controls unchanged");
+    }
+    auto rounding_task = std::async(std::launch::async, [&] {
+        TubeBudget b;
+        return tube_surface(zero_section, weighted_line, false, b);
+    });
+    const auto parallel = rounding_task.get();
+    check(parallel.surface == rounded.surface &&
+              parallel.working_trace_poles == rounded.working_trace_poles,
+          "parallel rational tubes retain separate working trace state");
     return n;
 }

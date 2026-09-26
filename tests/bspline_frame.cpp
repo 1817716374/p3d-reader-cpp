@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "bspline_frame.hpp"
 #include <future>
 using namespace p3d;
 namespace {
@@ -134,5 +135,31 @@ unsigned bspline_frame_tests() {
     check(circle.native_frame_at(.3) == expected && task.get() == expected &&
               circle.poles() == saved,
           "native frame reads source concurrently without cumulative weight-roundtrip mutations");
+    // Decimal constants are golden binary64 values, not approximate geometry
+    // comparisons: a second rational round trip must not be optimized away.
+    for (double sign : {1., -1.}) {
+        const auto straight = curve(2, {.1, 0, 0, .1, 0, 7}, {7 * sign, 7 * sign});
+        const auto working = native_bspline_frame_working(straight, 0);
+        check(working.working_poles[0][0] == .09999999999999998 &&
+                  working.working_poles[1][0] == .09999999999999998 &&
+                  working.report["method"] == "axis_fallback_frame",
+              "rational axis fallback returns weighted controls after two round trips");
+        check(working.report == straight.native_frame_at(0) && straight.poles()[0][0] == .1,
+              "working frame keeps public report and immutable input");
+        const auto bent = curve(3, {.1, 0, 0, 1, 2, 0, 3, 0, 0}, {7 * sign, 7 * sign, 7 * sign});
+        const auto regular = native_bspline_frame_working(bent, 0);
+        check(regular.report["method"] == "derivative_frame" &&
+                  regular.working_poles[0][0] == .09999999999999999,
+              "regular rational Frenet branch returns exactly one tolerance round trip");
+        const auto inflected = curve(4, {.1, 0, 0, 1, 0, 0, 1.9, 0, 0, 3, 2, 0},
+                                     {7 * sign, 7 * sign, 7 * sign, 7 * sign});
+        const auto polygon = native_bspline_frame_working(inflected, 0);
+        check(polygon.report["method"] == "control_polygon_frame" &&
+                  polygon.working_poles[0][0] == .09999999999999998,
+              "rational polygon fallback restores weighted controls after the polygon query");
+    }
+    for (const auto &c : {line, cubic, inflection, periodic})
+        check(native_bspline_frame_working(c, .2).working_poles == c.poles(),
+              "polynomial frame does not introduce a weight conversion");
     return checks;
 }

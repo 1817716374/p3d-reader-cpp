@@ -13,6 +13,9 @@ struct TubePatch {
     Json surface;
     Matrix3 final_frame; // Rows: profile X, profile Y, path tangent.
     Json report;
+    // Only tube_surface fills this. Carry into subsequent operations on the
+    // same native trace; tube_patch has no shared source-curve frame query.
+    std::vector<Point3> working_trace_poles{};
 };
 // Native zero-vector normalization is retained; no substitute reference axis.
 Matrix3 advance_tube_frame(const Matrix3 &previous, Point3 tangent, bool rigid);

@@ -6,6 +6,7 @@
 // source-span/leading-control reports and shared resource limits.
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_tube.hpp"
+#include "bspline_frame.hpp"
 
 namespace p3d::swept_detail {
 namespace {
@@ -131,16 +132,39 @@ TubeTrace prepare_tube_trace(const BsplineCurve &trace, TubeBudget &budget) {
 
 TubePatch tube_surface(const BsplineCurve &section, const BsplineCurve &trace, bool rigid,
                        TubeBudget &budget) {
-    auto prepared = prepare_tube_trace(trace, budget);
+    require(trace.order() <= 26 && section.order() <= 26 &&
+                trace.poles().size() <= budget.max_control_points &&
+                trace.poles().size() <= INT32_MAX &&
+                section.poles().size() <= budget.max_control_points,
+            "native tube surface input budget exceeded");
+    charge(budget, std::size_t(trace.order()) * trace.order() * trace.order());
+    for (unsigned i = 0; i < 13; ++i)
+        charge(budget, trace.poles().size());
+    // Native tubeSurface queries the source frame before processBspline makes
+    // its prepared copy. Retain the frame query's weighted-control round trips.
+    auto evaluated_frame = native_bspline_frame_working(trace, 0);
+    const auto &source_frame = evaluated_frame.report;
+    BsplineCurve working = trace;
+    if (evaluated_frame.working_poles != trace.poles()) {
+        Json flat = Json::array();
+        for (const auto &p : evaluated_frame.working_poles)
+            for (double x : p)
+                flat.push_back(x);
+        working = BsplineCurve::from_bgfb(
+            {{"_type", "BsplineCurve"},
+             {"order", trace.order()},
+             {"closed", trace.closed()},
+             {"poles", std::move(flat)},
+             {"weights", trace.rational() ? Json(trace.weights()) : Json()},
+             {"knots", trace.source_knots().empty() ? Json() : Json(trace.source_knots())}});
+    }
+    auto prepared = prepare_tube_trace(working, budget);
     const auto count = prepared.segments.size(), nu = section.poles().size();
     const auto nv = count * (trace.order() - 1) + 1;
     require(nu <= budget.max_control_points / nv && section.order() <= 26,
             "native tube surface control budget exceeded");
     // The initial Frenet frame belongs to the original curve, before null-span
     // skipping or shared-control preparation. Rows are N, B, T.
-    charge(budget,
-           trace.poles().size() + std::size_t(trace.order()) * trace.order() * trace.order());
-    const auto source_frame = trace.native_frame_at(0);
     Matrix3 frame{};
     for (unsigned row = 0; row < 3; ++row)
         for (unsigned axis = 0; axis < 3; ++axis)
@@ -171,6 +195,7 @@ TubePatch tube_surface(const BsplineCurve &section, const BsplineCurve &trace, b
              {"joins", std::move(joins)},
              {"work_used", budget.work},
              {"source_geometry_reused", false},
-             {"surface_validity", "not_certified"}}};
+             {"surface_validity", "not_certified"}},
+            std::move(evaluated_frame.working_poles)};
 }
 } // namespace p3d::swept_detail

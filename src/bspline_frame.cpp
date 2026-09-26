@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "bspline_frame.hpp"
 
 namespace p3d {
 namespace {
@@ -39,11 +39,11 @@ Point3 polygon_normal(const std::vector<Point3> &p) {
 }
 } // namespace
 
-Json BsplineCurve::native_frame_at(double fraction) const {
-    auto evaluation = native_bspline_evaluate(*this, fraction, 3);
+NativeBsplineFrame native_bspline_frame_working(const BsplineCurve &curve, double fraction) {
+    auto evaluation = native_bspline_evaluate(curve, fraction, 3);
     const auto &h = evaluation.homogeneous;
     Point3 position{}, first{}, second{};
-    if (rational()) {
+    if (curve.rational()) {
         const double w = h[0][3], dw = h[1][3], ddw = h[2][3];
         require(w != 0, "B-spline native frame: zero evaluated weight");
         const double w2 = finite(w * w), w3 = finite(w2 * w);
@@ -73,7 +73,7 @@ Json BsplineCurve::native_frame_at(double fraction) const {
         normal = cross(binormal, tangent);
     }
     double curvature = 0;
-    bool fallback = order() < 3 || degenerate;
+    bool fallback = curve.order() < 3 || degenerate;
     if (!fallback) {
         const double speed = magnitude(first);
         require(speed != 0, "B-spline native frame: zero curvature denominator");
@@ -82,9 +82,9 @@ Json BsplineCurve::native_frame_at(double fraction) const {
     }
     std::string method = "derivative_frame";
     if (fallback) {
-        if (rational())
+        if (curve.rational())
             for (std::size_t i = 0; i < evaluation.working_poles.size(); ++i) {
-                const double inverse = finite(1 / weights()[i]);
+                const double inverse = finite(1 / curve.weights()[i]);
                 for (auto &x : evaluation.working_poles[i])
                     x = finite(x * inverse);
             }
@@ -98,6 +98,13 @@ Json BsplineCurve::native_frame_at(double fraction) const {
         normal = cross(reference, tangent);
         normalize(normal);
         binormal = cross(tangent, normal);
+        // The native polygon fallback restores weighted coordinates in place.
+        // Following curve operations see this second round trip, not the
+        // original input or the temporary Cartesian polygon.
+        if (curve.rational())
+            for (std::size_t i = 0; i < evaluation.working_poles.size(); ++i)
+                for (auto &x : evaluation.working_poles[i])
+                    x = finite(x * curve.weights()[i]);
     }
     Matrix4 frame{};
     for (unsigned axis = 0; axis < 3; ++axis) {
@@ -106,12 +113,17 @@ Json BsplineCurve::native_frame_at(double fraction) const {
     frame[3][3] = 1;
     const bool singular =
         magnitude(tangent) == 0 || magnitude(normal) == 0 || magnitude(binormal) == 0;
-    return {{"status", "computed"},
-            {"profile", "native_bspline_frenet_frame"},
-            {"method", method},
-            {"frame", frame},
-            {"basis_status", singular ? "degenerate" : "nondegenerate"},
-            {"tangent_magnitude", tangent_length},
-            {"curvature", fallback ? 0. : curvature}};
+    return {{{"status", "computed"},
+             {"profile", "native_bspline_frenet_frame"},
+             {"method", method},
+             {"frame", frame},
+             {"basis_status", singular ? "degenerate" : "nondegenerate"},
+             {"tangent_magnitude", tangent_length},
+             {"curvature", fallback ? 0. : curvature}},
+            std::move(evaluation.working_poles)};
+}
+
+Json BsplineCurve::native_frame_at(double fraction) const {
+    return native_bspline_frame_working(*this, fraction).report;
 }
 } // namespace p3d
