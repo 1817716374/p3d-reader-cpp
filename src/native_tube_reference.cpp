@@ -1,13 +1,17 @@
 #include "native_tube_reference.hpp"
+#include "native_tube_path_source.hpp"
 #include "native_curve_area.hpp"
 #include "native_curve_conversion.hpp"
 
 namespace p3d::swept_detail {
 namespace {
+Json line(Point3, Point3);
 struct Clone {
     TubeBudget &budget;
     std::size_t controls = 0;
     Json members = Json::array(), skipped = Json::array();
+    bool split_polylines = false;
+    Json empty_polylines = Json::array();
     void charge(std::size_t n) {
         curve_detail::BezierWork{budget.work, budget.max_work}.charge(n);
     }
@@ -84,15 +88,51 @@ struct Clone {
                 skipped.push_back(from);
                 continue;
             }
+            const auto kind = g.at("_type").get<std::string>();
+            if (split_polylines && kind == "LineString") {
+                const auto &p = g.at("points");
+                require(p.is_array() && p.size() % 3 == 0,
+                        "native path source polyline control layout");
+                const auto n = p.size() / 3;
+                if (n < 2)
+                    empty_polylines.push_back(from);
+                auto point = [&](std::size_t j) {
+                    Point3 result;
+                    for (unsigned k = 0; k < 3; ++k) {
+                        require(p[3 * j + k].is_number(), "native path source coordinate layout");
+                        result[k] = p[3 * j + k].get<double>();
+                        require(std::isfinite(result[k]),
+                                "native path source nonfinite coordinate");
+                    }
+                    return result;
+                };
+                for (std::size_t j = 1; j < n; ++j) {
+                    charge(32);
+                    add_controls(2);
+                    const auto to =
+                        working + ".curves[" + std::to_string(out["curves"].size()) + "].geometry";
+                    members.push_back({{"source_path", from},
+                                       {"working_path", to},
+                                       {"source_segment", j - 1},
+                                       {"descriptor_policy", "new_primitive"}});
+                    out["curves"].push_back({{"geometry", line(point(j - 1), point(j))}});
+                }
+                continue;
+            }
             const auto to =
                 working + ".curves[" + std::to_string(out["curves"].size()) + "].geometry";
             Json item = Json::object();
-            for (auto field = member.begin(); field != member.end(); ++field)
-                if (field.key() != "geometry") {
-                    charge(field.key().size());
-                    item[field.key()] = copy(field.value());
-                }
-            members.push_back({{"source_path", from}, {"working_path", to}});
+            const bool new_wrapper = split_polylines && kind == "CurveVector";
+            if (!new_wrapper)
+                for (auto field = member.begin(); field != member.end(); ++field)
+                    if (field.key() != "geometry") {
+                        charge(field.key().size());
+                        item[field.key()] = copy(field.value());
+                    }
+            Json location{{"source_path", from}, {"working_path", to}};
+            if (split_polylines)
+                location["descriptor_policy"] = new_wrapper ? "new_primitive" : "cloned";
+            members.push_back(std::move(location));
             item["geometry"] = geometry(g, from, to, depth + 1);
             out["curves"].push_back(std::move(item));
         }
@@ -186,5 +226,33 @@ TubeReferenceProfile prepare_tube_reference_profile(const Json &source, TubeBudg
     out.report["work_used"] = budget.work;
     out.report["working_control_points"] = clone.controls;
     return out;
+}
+TubePathSource prepare_tube_path_source(const Json &source, TubeBudget &budget) {
+    const auto type = boundary_type(source);
+    TubePathSource out;
+    const auto endpoints = curve_detail::native_source_curve_endpoints(source, budget);
+    out.endpoints_found = endpoints.has_value();
+    if (endpoints)
+        out.source_endpoints = *endpoints;
+    Clone clone{budget};
+    clone.split_polylines = true;
+    out.path = clone.geometry(source, "path", "working_path");
+    out.report = {{"scope", "native_facet_path_source"},
+                  {"source_boundary_type", type},
+                  {"source_endpoints_found", out.endpoints_found},
+                  {"source_endpoints", out.source_endpoints},
+                  {"members", std::move(clone.members)},
+                  {"skipped_null_sources", std::move(clone.skipped)},
+                  {"polylines_without_segments", std::move(clone.empty_polylines)},
+                  {"working_control_points", clone.controls},
+                  {"work_used", budget.work}};
+    return out;
+}
+TubeFacetSources prepare_tube_facet_sources(const Json &profile, const Json &path,
+                                            TubeBudget &budget) {
+    require(!profile.is_null() && !path.is_null(), "native facet preparation null source");
+    auto reference = prepare_tube_reference_profile(profile, budget);
+    auto working_path = prepare_tube_path_source(path, budget);
+    return {std::move(reference), std::move(working_path)};
 }
 } // namespace p3d::swept_detail
