@@ -692,5 +692,11 @@
     "url": "https://raw.githubusercontent.com/AngusJohnson/Clipper2/main/LICENSE",
     "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
     "bytes": 1338
+  },
+  {
+    "file": "BENTLEY_GEOMETRY_LICENSE.md",
+    "url": "https://raw.githubusercontent.com/iTwin/imodel-native/2350843ad1580a751ee24cc552460644015b07dc/LICENSE.md",
+    "sha256": "a1226353de0975c3556b2628a53b22af4dd82804cb272e7052cec5c480b80e9d",
+    "bytes": 9857
   }
 ]

@@ -126,3 +126,4 @@
 !/tests/csg_curve_solids.cpp
 !/tests/rotational.cpp
 !/tests/swept_body.cpp
+!/tests/native_tube.cpp
