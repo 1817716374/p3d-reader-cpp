@@ -75,6 +75,12 @@ bool reverse(BsplineCurve &s, unsigned limit, BezierWork work, Json &report) {
     return true;
 }
 } // namespace
+bool reverse_native_working_curve(BsplineCurve &curve, unsigned limit, BezierWork work,
+                                  Json &report) {
+    require(curve.order() >= 2 && curve.order() <= 26 && curve.poles().size() <= limit,
+            "native reversal source control/order limit");
+    return reverse(curve, limit, work, report);
+}
 bool insert_open_native_knot(loft_detail::Curve &c, double knot, double tolerance, unsigned target,
                              unsigned limit, BezierWork work, Json &report) {
     const auto n = c.poles.size();
