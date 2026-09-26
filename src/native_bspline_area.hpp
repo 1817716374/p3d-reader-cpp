@@ -14,4 +14,8 @@ struct BsplineArea {
 // Closure and planarity are not prerequisites imposed by the native visitor;
 // valid means nonzero accumulated area, not a certified bounded region.
 BsplineArea native_bspline_area(const BsplineCurve &, BezierWork);
+// Add each integration interval directly to an existing source-group visitor.
+// The caller supplies its reference point; no per-curve subtotal or finishing.
+void accumulate_native_bspline_area(const BsplineCurve &, BsplineArea &, BezierWork);
+void finish_native_curve_area(BsplineArea &);
 } // namespace p3d::curve_detail

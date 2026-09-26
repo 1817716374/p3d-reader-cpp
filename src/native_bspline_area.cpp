@@ -23,21 +23,16 @@ BezierPole identity_product(const BezierPole &p) {
     return q;
 }
 } // namespace
-BsplineArea native_bspline_area(const BsplineCurve &curve, BezierWork work) {
+void accumulate_native_bspline_area(const BsplineCurve &curve, BsplineArea &result,
+                                    BezierWork work) {
     const auto order = curve.order(), degree = order - 1;
     const auto n = curve.poles().size();
     require(order >= 2 && order <= 26 && n <= INT32_MAX,
             "native B-spline area order or control count exceeded");
     const auto candidates = curve.closed() ? n : n - order + 1;
-    // Charge reference evaluation before its allocations and knot scan. Range
-    // queries in the native visitor are read-only and unused by its quadrature.
+    // Range queries are read-only and unused by the native quadrature.
     work.charge(curve.knots().size());
-    work.charge(std::size_t(8) * order * order);
     work.charge(candidates);
-    BsplineArea result;
-    const auto reference = detail::pcurve_point(curve, 0);
-    result.reference = result.centroid = reference.point;
-    result.reference_weight_fallback = reference.zero_weight_fallback;
     const auto &knots = curve.knots();
     for (std::size_t i = 0; i < candidates; ++i) {
         if (bezier_support::null_interval(knots[i + degree], knots[i + order])) {
@@ -67,9 +62,14 @@ BsplineArea native_bspline_area(const BsplineCurve &curve, BezierWork work) {
             }
         }
     }
+}
+void finish_native_curve_area(BsplineArea &result) {
+    result.centroid = result.reference;
+    result.normal = {};
+    result.valid = false;
     const auto &v = result.normal_sum;
     result.area = finite(std::sqrt(finite((v[0] * v[0] + v[1] * v[1]) + v[2] * v[2])));
-    // The B-spline visitor does not update absAreaSum. Its final native test
+    // These native visitors do not update absAreaSum. Their final native test
     // therefore has threshold zero; do not introduce a polygon area tolerance.
     if (result.area > 0) {
         result.valid = true;
@@ -83,6 +83,16 @@ BsplineArea native_bspline_area(const BsplineCurve &curve, BezierWork work) {
             result.centroid[r] = finite(result.reference[r] + dot * inverse);
         }
     }
+}
+BsplineArea native_bspline_area(const BsplineCurve &curve, BezierWork work) {
+    require(curve.order() <= 26, "native B-spline area order exceeded");
+    work.charge(std::size_t(8) * curve.order() * curve.order());
+    BsplineArea result;
+    const auto reference = detail::pcurve_point(curve, 0);
+    result.reference = result.centroid = reference.point;
+    result.reference_weight_fallback = reference.zero_weight_fallback;
+    accumulate_native_bspline_area(curve, result, work);
+    finish_native_curve_area(result);
     return result;
 }
 } // namespace p3d::curve_detail

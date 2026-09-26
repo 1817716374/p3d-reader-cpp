@@ -4,6 +4,8 @@
 
 `src/loft_open.cpp` 的周期曲线打开与循环节点插入参考下表固定提交的 `bspcurv.cpp`、`bsputil.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按原始节点参数处理接缝，保留特殊周期曲线的控制点偏移、重复端点去除及原生节点归一化规则，使用本库有界工作存储。
 
+`src/native_curve_area.cpp` 的原始曲线组面积参考同一固定提交的 `cv_properties.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的组类型分派、原始曲线访问、面积矩算序及最大子区域法向规则改写，并共享本库的逐区间 B 样条积分内核。
+
 | 组件 | 固定版本 / 来源 | 用途 | 许可证 |
 | --- | --- | --- | --- |
 | nlohmann/json | 3.12.0 | 属性树和 JSON 接口 | [MIT](third_party/nlohmann/LICENSE.MIT) |
