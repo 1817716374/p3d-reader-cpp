@@ -2,6 +2,8 @@
 
 本项目原创解析代码采用 [MIT 许可证](LICENSE)。以下依赖继续适用各自的许可证；许可证正文和版权声明保留原文。
 
+`src/native_bezier_roots.cpp` 与 `src/native_curve_plane.cpp` 参考下表固定 Bentley 几何提交中的 `bezroot.cpp`、`bezeval.cpp`、`quadeqn.cpp`、`bezierDPoint4d.cpp` 和 `MSBsplineCurve_ByBezier.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的非解析求根分支、数值容差、端点追加顺序、齐次投影和原始节点参数换算改写；使用有界工作存储及不可变输入，不依赖厂商运行库。
+
 `src/loft_open.cpp` 的周期曲线打开与循环节点插入参考下表固定提交的 `bspcurv.cpp`、`bsputil.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按原始节点参数处理接缝，保留特殊周期曲线的控制点偏移、重复端点去除及原生节点归一化规则，使用本库有界工作存储。
 
 `src/native_curve_area.cpp` 的原始曲线组面积参考同一固定提交的 `cv_properties.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的组类型分派、原始曲线访问、面积矩算序及最大子区域法向规则改写，并共享本库的逐区间 B 样条积分内核。
