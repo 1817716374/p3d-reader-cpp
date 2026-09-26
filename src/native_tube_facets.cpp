@@ -1,5 +1,6 @@
 #include "native_tube_facets.hpp"
 #include "native_curve_conversion.hpp"
+#include "loft_curve.hpp"
 
 namespace p3d::swept_detail {
 namespace {
@@ -81,6 +82,69 @@ struct Partition {
     }
 };
 } // namespace
+TubeProfile prepare_tube_facet_curves(const Json &source, TubeBudget &b) {
+    auto result = convert_tube_profile(source, b);
+    Json openings = Json::array();
+    std::size_t output_controls = 0;
+    for (auto &curve : result.curves) {
+        require(curve.poles().size() <= b.max_control_points - output_controls,
+                "native facet preparation total control budget exceeded");
+        Json opening{{"requested", curve.closed()}, {"success", nullptr}};
+        if (curve.closed()) {
+            require(curve.order() <= 26 && b.max_control_points <= UINT32_MAX,
+                    "native facet opening order/control range");
+            for (unsigned i = 0; i < 8 * (curve.order() + 1); ++i)
+                charge(b, curve.poles().size());
+            const auto domain = curve.knot_domain();
+            const double span = domain[1] - domain[0];
+            const double raw_knot = (0. - domain[0]) / span;
+            require(std::isfinite(raw_knot), "native facet opening parameter overflow");
+            double effective = raw_knot;
+            const double tolerance = span * 1e-10;
+            if (effective < domain[0] + tolerance || effective > domain[1] - tolerance)
+                effective = 0;
+            opening["requested_seam_knot"] = raw_knot;
+            opening["native_seam_knot"] = effective;
+            if (effective < domain[0] || effective > domain[1]) {
+                // Native insertion returns BADPARAMETER before replacing the
+                // output. The outer facet conversion does not test that status.
+                opening["success"] = false;
+                opening["failure"] = "effective_knot_outside_domain";
+            } else {
+                Json detail;
+                auto opened = loft_detail::open_periodic_boundary_at(
+                    curve, raw_knot, unsigned(b.max_control_points - output_controls), &detail);
+                curve = BsplineCurve::from_bgfb(opened.table());
+                opening["success"] = true;
+                opening["conversion"] = std::move(detail);
+            }
+        }
+        opening["output_closed"] = curve.closed();
+        output_controls += curve.poles().size();
+        openings.push_back(std::move(opening));
+    }
+    result.report = {{"scope", "native_swept_facet_curve_preparation"},
+                     {"native_result", true},
+                     {"source_conversion", std::move(result.report)},
+                     {"openings", std::move(openings)},
+                     {"work_used", b.work},
+                     {"source_geometry_reused", false}};
+    return result;
+}
+TubeCurve prepare_tube_facet_member(const TubeFacetMember &member, TubeBudget &b) {
+    require(member.derived_line || member.source_geometry,
+            "native facet member has no source primitive");
+    Json group{{"_type", "CurveVector"},
+               {"type", member.boundary_type},
+               {"curves", Json::array({{{"geometry", member.geometry()}}})}};
+    auto result = prepare_tube_facet_curves(group, b);
+    require(result.curves.size() == 1, "native facet member did not produce one curve");
+    result.report["source_path"] = member.source_path;
+    result.report["source_member"] = member.source_member;
+    result.report["source_segment"] =
+        member.source_segment ? Json(*member.source_segment) : Json(nullptr);
+    return {std::move(result.curves.front()), std::move(result.report)};
+}
 TubeFacetProfile partition_tube_facet_profile(std::shared_ptr<const Json> source, TubeBudget &b) {
     TubeFacetProfile out{std::move(source), {}, {}};
     Partition p{b, Json::array(), {}, {}, 0, 0};

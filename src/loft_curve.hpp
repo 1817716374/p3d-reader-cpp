@@ -21,6 +21,10 @@ Point3 cartesian(H);
 Curve open_periodic(const BsplineCurve &, unsigned limit, Json *report = nullptr);
 // Boundary opening retains native weights, discontinuities and special-seam domains.
 Curve open_periodic_boundary(const BsplineCurve &, unsigned limit, Json *report = nullptr);
+// The argument is a raw knot, not a fraction. Native near-end/out-of-range
+// requests reset to zero; zero outside the source domain is rejected.
+Curve open_periodic_boundary_at(const BsplineCurve &, double knot, unsigned limit,
+                                Json *report = nullptr);
 struct CurveClosure {
     Curve curve;
     bool success = false, closed = false;

@@ -26,6 +26,12 @@ struct TubeFacetProfile {
 // Unknown/nonparticipating primitive kinds are skipped by this native helper.
 // Native failure discards the current temporary group but retains earlier ones.
 TubeFacetProfile partition_tube_facet_profile(std::shared_ptr<const Json>, TubeBudget &);
+// Native facet conversion clones/converts the source group, then opens each
+// closed curve at raw knot (0 - domain.low) / domain.span. The native caller
+// ignores an opening status failure and keeps that curve closed. Unsupported
+// arithmetic/layouts and resource limits still throw rather than fake success.
+TubeProfile prepare_tube_facet_curves(const Json &, TubeBudget &);
+TubeCurve prepare_tube_facet_member(const TubeFacetMember &, TubeBudget &);
 
 using TubeFacetGroups = std::vector<std::vector<std::vector<Json>>>;
 // Input must be the three-level native face-patch result, not the whole-sweep

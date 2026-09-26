@@ -2,6 +2,8 @@
 
 本项目原创解析代码采用 [MIT 许可证](LICENSE)。以下依赖继续适用各自的许可证；许可证正文和版权声明保留原文。
 
+`src/loft_open.cpp` 的周期曲线打开与循环节点插入参考下表固定提交的 `bspcurv.cpp`、`bsputil.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按原始节点参数处理接缝，保留特殊周期曲线的控制点偏移、重复端点去除及原生节点归一化规则，使用本库有界工作存储。
+
 | 组件 | 固定版本 / 来源 | 用途 | 许可证 |
 | --- | --- | --- | --- |
 | nlohmann/json | 3.12.0 | 属性树和 JSON 接口 | [MIT](third_party/nlohmann/LICENSE.MIT) |

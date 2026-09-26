@@ -1,14 +1,17 @@
+// Copyright (c) Bentley Systems, Incorporated. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// Adapted from bspcurv.cpp / bsputil.cpp (see THIRD_PARTY.md).
 #include "loft_curve.hpp"
 namespace p3d::loft_detail {
 namespace {
 // Native cyclic insertion changes a local K-pole block. Its replacement can
 // straddle either end of the stored pole array; it does not regenerate the
 // exterior knots or extend a second copy of the complete curve.
-void insert_cyclic(Curve &c, double t, unsigned added) {
+void insert_cyclic(Curve &c, double t, unsigned added, bool corrected) {
     using Index = std::ptrdiff_t;
     const Index n = c.poles.size(), order = c.degree + 1;
     const Index b = std::upper_bound(c.knots.begin(), c.knots.end(), t) - c.knots.begin();
-    const Index start = b - order;
+    const Index start = b - order - (corrected ? order / 2 : 0);
     require(start > -order && start <= n, "periodic loft insertion control span");
     std::vector<H> block(order + added);
     for (Index i = 0; i < order; ++i)
@@ -120,7 +123,8 @@ bool special_seam(const Curve &c) {
             return false;
     return !c.rational || std::abs(c.poles.front()[3] - c.poles.back()[3]) < 1e-10;
 }
-Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *report, bool boundary) {
+Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *report, bool boundary,
+                         double requested) {
     require(source.closed() && source.order() >= 2 && source.order() <= 26 &&
                 source.poles().size() <= limit,
             "periodic loft degree/control budget");
@@ -137,9 +141,14 @@ Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *repor
     }
     const auto domain = source.knot_domain();
     const double length = domain[1] - domain[0];
-    // The native callers pass the knot parameter zero, not fraction zero.
-    require(domain[0] <= 0 && domain[1] >= 0,
-            "native periodic opening parameter zero is outside the source knot domain");
+    require(std::isfinite(requested), "native periodic opening nonfinite requested knot");
+    double parameter = requested;
+    const double edge_tolerance = length * 1e-10;
+    if (parameter < domain[0] + edge_tolerance || parameter > domain[1] - edge_tolerance)
+        parameter = 0;
+    require(parameter >= domain[0] && parameter <= domain[1],
+            "native periodic opening effective parameter is outside the source knot domain");
+    const bool corrected = source.periodic_pole_shift() != 0 && special_seam(c);
     auto check_result = [&] {
         if (!boundary) {
             c.check(limit);
@@ -158,7 +167,7 @@ Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *repor
         const double span = c.knots[c.poles.size()] - c.knots[c.degree];
         require(span > 0 && std::isfinite(span), "native periodic opening output domain");
     };
-    if (source.periodic_pole_shift() != 0 && special_seam(c)) {
+    if (corrected && (parameter == domain[0] || parameter == domain[1])) {
         const auto first = std::size_t(source.order() / 2);
         c.knots = std::vector<double>(c.knots.begin() + first,
                                       c.knots.begin() + first + c.poles.size() + source.order());
@@ -170,14 +179,13 @@ Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *repor
                 k = (k - a) / (b - a);
         check_result();
         if (report)
-            *report = {{"method", "strip_exterior_knots"},
-                       {"effective_seam_knot", a},
-                       {"inserted_knot_count", 0},
-                       {"pole_rotation", 0}};
+            *report = {{"method", "strip_exterior_knots"}, {"requested_seam_knot", requested},
+                       {"native_seam_knot", parameter},    {"effective_seam_knot", a},
+                       {"inserted_knot_count", 0},         {"pole_rotation", 0}};
         return c;
     }
     const double tolerance = seam_tolerance(c, length, boundary);
-    double t = 0;
+    double t = parameter;
     unsigned multiplicity = 0;
     // Each match updates t before the next comparison. The original knot
     // values remain intact, including distinct values in the same cluster.
@@ -191,22 +199,36 @@ Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *repor
     const auto added = source.order() > multiplicity ? source.order() - multiplicity : 0;
     require(c.poles.size() + added <= limit, "periodic opening control budget");
     if (added)
-        insert_cyclic(c, t, added);
+        insert_cyclic(c, t, added, source.periodic_pole_shift() != 0 && special_seam(c));
     std::size_t upper = 0;
-    // This search still uses the requested zero, not the snapped parameter.
-    while (upper < c.knots.size() && c.knots[upper] <= tolerance)
+    // Native subtraction and comparison use the unsnapped effective request.
+    while (upper < c.knots.size() && c.knots[upper] - parameter <= tolerance)
         ++upper;
     require(upper >= source.order(), "periodic loft opening knot span");
-    const auto first = upper - source.order(), count = c.poles.size();
-    require(first <= count, "periodic loft opening control rotation");
-    const auto stop = count + c.degree;
+    const auto first = upper - source.order(), old_count = c.poles.size();
+    require(first <= old_count, "periodic loft opening knot rotation");
+    const auto count = old_count - (corrected ? 1 : 0);
+    const auto stop = old_count + c.degree;
     std::vector<double> knots(c.knots.begin() + first, c.knots.begin() + stop);
-    for (std::size_t i = c.degree; knots.size() < count + source.order(); ++i) {
+    for (std::size_t i = c.degree + (corrected ? 1 : 0); knots.size() < count + source.order();
+         ++i) {
         require(i < c.knots.size(), "periodic loft opening wrap knot span");
         knots.push_back(c.knots[i] + length);
     }
     c.knots = std::move(knots);
-    std::rotate(c.poles.begin(), c.poles.begin() + first, c.poles.end());
+    const auto offset = corrected ? source.order() / 2 : 0;
+    const auto first_pole = first >= offset ? first - offset : 0;
+    const auto restart = corrected ? 1u : 0u;
+    require(first_pole >= restart && first_pole <= old_count,
+            "periodic loft opening control rotation");
+    if (corrected) {
+        std::vector<H> rotated;
+        rotated.reserve(count);
+        rotated.insert(rotated.end(), c.poles.begin() + first_pole, c.poles.end());
+        rotated.insert(rotated.end(), c.poles.begin() + restart, c.poles.begin() + first_pole);
+        c.poles = std::move(rotated);
+    } else
+        std::rotate(c.poles.begin(), c.poles.begin() + first_pole, c.poles.end());
     const double a = c.knots[c.degree], b = c.knots[count];
     require(b - a >= 1e-10, "native periodic opening knot domain is too short to normalize");
     for (auto &k : c.knots)
@@ -218,17 +240,24 @@ Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *repor
     if (report)
         *report = {{"method", source.periodic_pole_shift() ? "cyclic_seam_fallback"
                                                            : "cyclic_knot_insertion"},
+                   {"requested_seam_knot", requested},
+                   {"native_seam_knot", parameter},
+                   {"removed_duplicate_seam_pole", corrected},
                    {"effective_seam_knot", a},
                    {"knot_tolerance", tolerance},
                    {"inserted_knot_count", added},
-                   {"pole_rotation", first}};
+                   {"pole_rotation", first_pole}};
     return c;
 }
 } // namespace
 Curve open_periodic(const BsplineCurve &source, unsigned limit, Json *report) {
-    return open_periodic_impl(source, limit, report, false);
+    return open_periodic_impl(source, limit, report, false, 0);
 }
 Curve open_periodic_boundary(const BsplineCurve &source, unsigned limit, Json *report) {
-    return open_periodic_impl(source, limit, report, true);
+    return open_periodic_impl(source, limit, report, true, 0);
+}
+Curve open_periodic_boundary_at(const BsplineCurve &source, double knot, unsigned limit,
+                                Json *report) {
+    return open_periodic_impl(source, limit, report, true, knot);
 }
 } // namespace p3d::loft_detail

@@ -1,4 +1,5 @@
 #include "native_tube_facets.hpp"
+#include "loft_curve.hpp"
 #include <future>
 using namespace p3d;
 using namespace p3d::swept_detail;
@@ -186,5 +187,130 @@ unsigned native_tube_facets_tests() {
             partition_tube_facet_profile(std::make_shared<const Json>(group(1, {poly})), local);
         },
         "polyline source allocation is bounded");
+    auto near = [](Point3 a, Point3 b) {
+        for (unsigned axis = 0; axis < 3; ++axis)
+            if (std::abs(a[axis] - b[axis]) > 2e-9)
+                return false;
+        return true;
+    };
+    for (unsigned order : {2u, 3u, 4u, 8u})
+        for (bool rational : {false, true}) {
+            Json poles = Json::array(), weights = Json::array();
+            for (unsigned i = 0; i < order + 4; ++i) {
+                const double angle = i * 6.283185307179586 / (order + 4);
+                const double w = rational ? 1. + .2 * std::sin(angle) : 1.;
+                weights.push_back(w);
+                poles.push_back(w * std::cos(angle));
+                poles.push_back(w * std::sin(angle));
+                poles.push_back(w * .3 * std::sin(2 * angle));
+            }
+            Json table{{"_type", "BsplineCurve"},
+                       {"order", order},
+                       {"closed", true},
+                       {"poles", poles},
+                       {"weights", rational ? weights : Json(nullptr)},
+                       {"knots", nullptr}};
+            const auto uniform = BsplineCurve::from_bgfb(table);
+            for (const auto domain :
+                 {std::array<double, 2>{-2, 2}, std::array<double, 2>{-.75, .25},
+                  std::array<double, 2>{0, 2}, std::array<double, 2>{2, 4}}) {
+                Json knots = Json::array();
+                for (double k : uniform.knots())
+                    knots.push_back(domain[0] + k * (domain[1] - domain[0]));
+                table["knots"] = knots;
+                const auto source_curve = BsplineCurve::from_bgfb(table);
+                const auto before = table;
+                TubeBudget work;
+                const auto prepared = prepare_tube_facet_curves(group(1, {table}), work);
+                const auto &op = prepared.report["openings"][0];
+                const double raw = (0. - domain[0]) / (domain[1] - domain[0]);
+                check(op["requested_seam_knot"] == raw && prepared.report["native_result"] == true,
+                      "facet conversion passes fraction-of-zero as a raw knot and ignores opening "
+                      "status");
+                check(table == before,
+                      "facet preparation never mutates source knot/control storage");
+                if (domain[0] > 0) {
+                    check(op["success"] == false && op["output_closed"] == true &&
+                              prepared.curves[0].knots() == source_curve.knots() &&
+                              prepared.curves[0].poles() == source_curve.poles() &&
+                              prepared.curves[0].weights() == source_curve.weights(),
+                          "native bad-parameter opening keeps complete closed curve unchanged");
+                    continue;
+                }
+                const double seam = domain[0] == -.75 ? 0. : raw;
+                check(op["success"] == true && op["output_closed"] == false &&
+                          op["native_seam_knot"] == seam,
+                      "native effective raw knot is used without a second affine mapping");
+                const auto &opened_curve = prepared.curves[0];
+                const double phase = (seam - domain[0]) / (domain[1] - domain[0]);
+                for (unsigned j = 0; j <= 32; ++j) {
+                    const double u = double(j) / 32;
+                    const double source_u = phase + u - std::floor(phase + u);
+                    check(near(opened_curve.point_at(u), source_curve.point_at(source_u)),
+                          "opened nonunit periodic curve matches independent cyclic source "
+                          "evaluation");
+                }
+                TubeBudget bounded;
+                bounded.max_work = work.work - 1;
+                rejects([&] { prepare_tube_facet_curves(group(1, {table}), bounded); },
+                        "facet conversion opening obeys shared work budget");
+            }
+        }
+    const Json special{
+        {"_type", "BsplineCurve"}, {"order", 3},
+        {"closed", true},          {"poles", {0., 0., 0., 2., 1., 0., 1., -1., 0., 0., 0., 0.}},
+        {"weights", nullptr},      {"knots", {-1., 0., 0., 0., 1., 2., 2., 2., 3.}}};
+    const auto special_curve = BsplineCurve::from_bgfb(special);
+    auto invalid_wrap = special;
+    invalid_wrap["order"] = 2;
+    invalid_wrap["knots"] = {-1., -1., -.5, 0., 0., 0., 0.};
+    rejects(
+        [&] {
+            loft_detail::open_periodic_boundary_at(BsplineCurve::from_bgfb(invalid_wrap), 0., 100);
+        },
+        "invalid exterior knot multiplicity cannot overrun the native cyclic rotation");
+    for (double seam : {.25, 1., 1.75}) {
+        Json note;
+        const auto work = loft_detail::open_periodic_boundary_at(special_curve, seam, 100, &note);
+        const auto opened_curve = BsplineCurve::from_bgfb(work.table());
+        check(
+            note["removed_duplicate_seam_pole"] == true,
+            "opening a special periodic curve at an interior knot removes its duplicate seam pole");
+        for (unsigned j = 0; j <= 64; ++j) {
+            const double u = double(j) / 64, shifted = seam / 2 + u;
+            check(near(opened_curve.point_at(u),
+                       special_curve.point_at(shifted - std::floor(shifted))),
+                  "special interior opening preserves the source curve across the old seam");
+        }
+    }
+    auto two_cycles = group(4, {group(2, {special}), group(3, {special})});
+    TubeBudget two_budget;
+    const auto two_result = prepare_tube_facet_curves(two_cycles, two_budget);
+    check(two_result.curves.size() == 2 && !two_result.curves[0].closed() &&
+              !two_result.curves[1].closed(),
+          "native facet curve-list conversion opens all original parity rings in source order");
+    Json cycle = special;
+    cycle["knots"] = nullptr;
+    cycle["poles"] = {0., 0., 0., 1., 2., 0., 3., 1., 0., 2., -1., 0.};
+    TubeBudget limited;
+    limited.max_control_points = 8;
+    rejects(
+        [&] {
+            prepare_tube_facet_curves(group(4, {group(2, {cycle}), group(3, {cycle})}), limited);
+        },
+        "opening expansions across rings share one total control budget");
+    const auto source_partition =
+        partition(group(4, {group(2, {arc(true)}), group(3, {arc(true)})}));
+    TubeBudget member_work;
+    auto m0 = prepare_tube_facet_member(source_partition.groups[0][0], member_work);
+    auto m1 = prepare_tube_facet_member(source_partition.groups[1][0], member_work);
+    check(m0.curve.poles() == m1.curve.poles() && !m0.curve.closed() && !m1.curve.closed() &&
+              m0.report["source_path"] != m1.report["source_path"],
+          "partition member conversion preserves duplicate ring locations without deduplication");
+    auto future = std::async(std::launch::async, [&] {
+        TubeBudget local;
+        return prepare_tube_facet_member(source_partition.groups[0][0], local).curve.poles();
+    });
+    check(future.get() == m0.curve.poles(), "immutable facet member conversion is concurrent");
     return count;
 }
