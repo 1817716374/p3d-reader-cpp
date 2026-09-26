@@ -81,6 +81,19 @@ NativeBsplineEvaluation native_bspline_evaluate(const BsplineCurve &curve, doubl
                                                 unsigned derivative_order) {
     require(curve.order() <= 26 && derivative_order <= 24,
             "B-spline native derivatives: unsupported order");
+    return native_bspline_evaluate_working(curve, fraction, derivative_order, false, curve.poles());
+}
+
+double native_bspline_knot_tolerance(const BsplineCurve &curve, std::vector<Point3> &working) {
+    require(working.size() == curve.poles().size(), "B-spline native tolerance: working storage");
+    return knot_tolerance(curve, working);
+}
+
+NativeBsplineEvaluation native_bspline_evaluate_working(const BsplineCurve &curve, double fraction,
+                                                        unsigned derivative_order, bool left_side,
+                                                        std::vector<Point3> working) {
+    require(curve.order() <= 26 && derivative_order <= 25 && working.size() == curve.poles().size(),
+            "B-spline native derivatives: working storage/order");
     require(std::isfinite(fraction), "B-spline native derivatives: non-finite fraction");
     const auto domain = curve.knot_domain();
     const double width = domain[1] - domain[0];
@@ -104,12 +117,12 @@ NativeBsplineEvaluation native_bspline_evaluate(const BsplineCurve &curve, doubl
     } else
         u = std::clamp(u, domain[0], domain[1]);
 
-    auto working = curve.poles();
     const double tolerance = knot_tolerance(curve, working);
     const int pole_shift = native_pole_shift(curve, working);
     const auto &k = curve.knots();
-    const auto end = u == domain[1] ? std::lower_bound(k.begin(), k.end(), u)
-                                    : std::upper_bound(k.begin(), k.end(), u);
+    const auto end = (left_side && u > domain[0]) || u == domain[1]
+                         ? std::lower_bound(k.begin(), k.end(), u)
+                         : std::upper_bound(k.begin(), k.end(), u);
     require(end != k.begin() && end != k.end(), "B-spline native derivatives: span");
     const auto span = std::size_t(end - k.begin() - 1);
     const unsigned degree = curve.order() - 1;

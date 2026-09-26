@@ -48,6 +48,14 @@ TubeCurve convert_tube_primitive(const Json &value, TubeBudget &budget);
 // round trips and short-curve copy branches; source objects remain unchanged.
 TubeCurve combine_open_tube_curves(const BsplineCurve &left, const BsplineCurve &right,
                                    bool force_contiguous, bool reparameterize, TubeBudget &budget);
+// Native degree elevation of an already open curve. Same-degree input is copied
+// exactly; elevation preserves native knot grouping and endpoint reassignment.
+// Non-clamped layouts leaving native knot storage unwritten fail explicitly.
+TubeCurve elevate_open_tube_curve(const BsplineCurve &, unsigned degree, TubeBudget &);
+// Outer native two-curve combination: open closed inputs at source parameter
+// zero, elevate the lower degree, then combine with native endpoint rules.
+TubeCurve combine_tube_curves(const BsplineCurve &, const BsplineCurve &, bool force_contiguous,
+                              bool reparameterize, TubeBudget &);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order
 // and rational flags. patch is one normalized Bezier V span; assembled contains

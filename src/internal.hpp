@@ -186,6 +186,11 @@ struct NativeBsplineEvaluation {
     std::vector<Point3> working_poles;
 };
 NativeBsplineEvaluation native_bspline_evaluate(const BsplineCurve &, double, unsigned);
+// Internal computeDerivatives route, including left-side selection and the
+// mutable local control storage used by native repeated derivative queries.
+double native_bspline_knot_tolerance(const BsplineCurve &, std::vector<Point3> &);
+NativeBsplineEvaluation native_bspline_evaluate_working(const BsplineCurve &, double, unsigned,
+                                                       bool, std::vector<Point3>);
 Json native_record_input_filter(const Json &, const Bytes &);
 Json native_record_input_subtree(std::size_t, const Json &, std::uint32_t);
 Json command_fields(unsigned, const Bytes &);
