@@ -21,6 +21,7 @@ unsigned rotational_tests();
 unsigned swept_body_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
+unsigned native_tube_placement_tests();
 unsigned native_tube_close_tests();
 unsigned native_tube_fit_tests();
 unsigned native_tube_curve_tests();
@@ -2806,6 +2807,7 @@ int main() {
         checks += swept_body_tests();
         checks += native_tube_tests();
         checks += native_tube_path_tests();
+        checks += native_tube_placement_tests();
         checks += native_tube_close_tests();
         checks += native_tube_fit_tests();
         checks += native_tube_curve_tests();

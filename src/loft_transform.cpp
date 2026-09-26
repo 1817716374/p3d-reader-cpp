@@ -1,5 +1,6 @@
 #include <p3d/solid.hpp>
 #include "internal.hpp"
+#include "native_curve_affine.hpp"
 
 namespace p3d {
 namespace {
@@ -46,22 +47,12 @@ struct Placement {
         require(m[3] == std::array<double, 4>{0, 0, 0, 1}, "loft transform must be affine");
         // GeBsplineCurve::transformCurve invokes native GeTransform::isIdentity:
         // the linear test is inclusive, while translation uses strict bounds.
-        for (unsigned r = 0; r < 3; ++r) {
-            bspline_identity &= m[r][3] > -1e-10 && m[r][3] < 1e-10;
-            for (unsigned c = 0; c < 3; ++c)
-                bspline_identity &= std::abs(m[r][c] - (r == c ? 1. : 0.)) <= 1e-12;
-        }
+        bspline_identity = curve_detail::bspline_identity(m);
     }
     Point3 point(Point3 p, double weight) {
         require(points < options.max_points, "loft transform point budget exceeded");
         ++points;
-        Point3 out{};
-        for (unsigned r = 0; r < 3; ++r) {
-            out[r] = ((matrix[r][0] * p[0] + matrix[r][1] * p[1]) + matrix[r][2] * p[2]) +
-                     matrix[r][3] * weight;
-            require(std::isfinite(out[r]), "loft transformed coordinate overflow");
-        }
-        return out;
+        return curve_detail::affine_point(matrix, p, weight);
     }
     Point3 named(Json &j, const char *prefix, double w) {
         const std::string key(prefix);

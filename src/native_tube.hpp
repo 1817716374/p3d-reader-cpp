@@ -70,6 +70,24 @@ struct TubeProfile {
 // Simple group or parity group (type 4) of closed type-2/3 children. Source ring
 // order is retained; no nesting inference, orientation or spatial sorting.
 TubeProfile convert_tube_profile(const Json &, TubeBudget &);
+struct TubePlacement {
+    BsplineCurve trace;
+    std::vector<BsplineCurve> sections;
+    Json report;
+};
+// Frame at the converted trace start, then profile conversion and homogeneous
+// world-to-profile transformation. Singular frame uses native identity fallback.
+// The returned trace includes frame-query control round trips.
+TubePlacement place_tube_profile(const Json &profile, const BsplineCurve &trace, TubeBudget &);
+struct TubeSurfaces {
+    std::vector<Json> surfaces;
+    BsplineCurve trace;
+    Json report;
+};
+// Internal preparation only: carries native trace state across source rings
+// and requests V closure for closed traces. No source isValidGeom/isValidNum
+// dispatch, area orientation, caps or native face enumeration is applied here.
+TubeSurfaces prepare_swept_tube_surfaces(const Json &profile, const Json &path, TubeBudget &);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order
 // and rational flags. patch is one normalized Bezier V span; assembled contains

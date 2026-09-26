@@ -7,6 +7,7 @@
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_tube.hpp"
 #include "bspline_frame.hpp"
+#include "native_curve_affine.hpp"
 
 namespace p3d::swept_detail {
 namespace {
@@ -144,20 +145,7 @@ TubePatch tube_surface(const BsplineCurve &section, const BsplineCurve &trace, b
     // its prepared copy. Retain the frame query's weighted-control round trips.
     auto evaluated_frame = native_bspline_frame_working(trace, 0);
     const auto &source_frame = evaluated_frame.report;
-    BsplineCurve working = trace;
-    if (evaluated_frame.working_poles != trace.poles()) {
-        Json flat = Json::array();
-        for (const auto &p : evaluated_frame.working_poles)
-            for (double x : p)
-                flat.push_back(x);
-        working = BsplineCurve::from_bgfb(
-            {{"_type", "BsplineCurve"},
-             {"order", trace.order()},
-             {"closed", trace.closed()},
-             {"poles", std::move(flat)},
-             {"weights", trace.rational() ? Json(trace.weights()) : Json()},
-             {"knots", trace.source_knots().empty() ? Json() : Json(trace.source_knots())}});
-    }
+    const auto working = curve_detail::with_poles(trace, evaluated_frame.working_poles);
     auto prepared = prepare_tube_trace(working, budget);
     const auto count = prepared.segments.size(), nu = section.poles().size();
     const auto nv = count * (trace.order() - 1) + 1;
