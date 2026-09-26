@@ -1,163 +1,59 @@
 #include "loft_curve.hpp"
+#include "native_curve_range.hpp"
+#include "native_curve_affine.hpp"
 
 namespace p3d {
 namespace {
-using H = loft_detail::H;
-using Polynomial = std::vector<long double>;
 double finite(double x) {
     require(std::isfinite(x), "nonfinite loft cap UV calculation");
     return x;
 }
-H evaluate(std::vector<H> poles, double t) {
-    for (std::size_t n = poles.size(); n > 1; --n)
-        for (std::size_t i = 0; i + 1 < n; ++i)
-            for (unsigned k = 0; k < 4; ++k)
-                poles[i][k] = (1 - t) * poles[i][k] + t * poles[i + 1][k];
-    return poles.front();
-}
-long double choose(unsigned n, unsigned k) {
-    long double v = 1;
-    for (unsigned i = 1; i <= k; ++i)
-        v = v * (n + 1 - i) / i;
-    return v;
-}
-Polynomial tangent(const std::vector<H> &poles, unsigned axis) {
-    const auto degree = unsigned(poles.size() - 1);
-    if (std::all_of(poles.begin(), poles.end(),
-                    [](const H &h) { return std::abs(h[3] - 1) <= 1e-8; })) {
-        Polynomial out(degree);
-        for (unsigned i = 0; i < degree; ++i)
-            out[i] = degree * (static_cast<long double>(poles[i + 1][axis]) - poles[i][axis]);
-        return out;
-    }
-    Polynomial out(2 * degree);
-    for (unsigned i = 0; i < degree; ++i)
-        for (unsigned j = 0; j <= degree; ++j) {
-            const long double dx = static_cast<long double>(poles[i + 1][axis]) - poles[i][axis];
-            const long double dw = static_cast<long double>(poles[i + 1][3]) - poles[i][3];
-            out[i + j] += degree * (dx * poles[j][3] - dw * poles[j][axis]) *
-                          choose(degree - 1, i) * choose(degree, j) / choose(2 * degree - 1, i + j);
-        }
-    return out;
-}
-void roots(const Polynomial &p, double a, double b, std::vector<double> &out,
-           std::uint64_t &budget) {
-    require(budget > 0, "loft cap extrema root budget");
-    --budget;
-    unsigned changes = 0;
-    int previous = 0;
-    for (auto x : p) {
-        require(std::isfinite(x), "nonfinite loft cap derivative polynomial");
-        const int sign = x > 0 ? 1 : x < 0 ? -1 : 0;
-        if (sign) {
-            changes += previous && sign != previous;
-            previous = sign;
-        }
-    }
-    if (!previous) {
-        // Native zero-polynomial roots are an evenly spaced grid of `order`
-        // points. Their range contributions matter at the weight acceptance gate.
-        if (p.size() > 1)
-            for (std::size_t i = 0; i < p.size(); ++i)
-                out.push_back(a + (b - a) * double(i) / double(p.size() - 1));
-        return;
-    }
-    if (p.front() == 0)
-        out.push_back(a);
-    if (p.back() == 0)
-        out.push_back(b);
-    if (!changes)
-        return;
-    const double mid = a + (b - a) * .5;
-    if (b - a <= 8 * std::numeric_limits<double>::epsilon() || mid == a || mid == b) {
-        out.push_back(mid);
-        return;
-    }
-    Polynomial work = p, left(p.size()), right(p.size());
-    left.front() = work.front();
-    right.back() = work.back();
-    for (std::size_t n = p.size() - 1; n > 0; --n) {
-        for (std::size_t i = 0; i < n; ++i)
-            work[i] = (work[i] + work[i + 1]) * .5L;
-        left[p.size() - n] = work.front();
-        right[n - 1] = work[n - 1];
-    }
-    roots(left, a, mid, out, budget);
-    roots(right, mid, b, out, budget);
-}
-bool identity(const Matrix4 &matrix) {
-    for (unsigned row = 0; row < 3; ++row) {
-        if (!(matrix[row][3] > -1e-10 && matrix[row][3] < 1e-10))
-            return false;
-        for (unsigned col = 0; col < 3; ++col)
-            if (std::abs(matrix[row][col] - double(row == col)) > 1e-12)
-                return false;
-    }
-    return true;
-}
 struct Range {
-    Point3 low, high;
+    Point3 low{}, high{};
     bool present = false;
-    std::size_t spans = 0, skipped = 0, controls = 0;
-    std::uint64_t root_budget;
+    std::size_t spans = 0, skipped = 0, controls = 0, work_used = 0;
+    std::size_t extrema = 0, rejected = 0, work_limit;
     unsigned limit;
-    Range(unsigned maximum) : root_budget(std::uint64_t(maximum) * 64), limit(maximum) {}
-    void extend(H h) {
-        // Native endpoint and extremum range extension both use this absolute gate.
-        if (!(std::abs(h[3]) > 1e-12))
-            return;
-        const double reciprocal = 1 / h[3];
-        Point3 p{finite(h[0] * reciprocal), finite(h[1] * reciprocal), finite(h[2] * reciprocal)};
-        if (!present) {
-            low = high = p;
-            present = true;
-        } else
-            for (unsigned i = 0; i < 3; ++i) {
-                low[i] = std::min(low[i], p[i]);
-                high[i] = std::max(high[i], p[i]);
-            }
-    }
+    explicit Range(unsigned maximum) : work_limit(std::size_t(maximum) * 4096), limit(maximum) {}
     void curve(const Json &table, const Matrix4 &to_local) {
-        auto curve = loft_detail::Curve::from_bspline(BsplineCurve::from_bgfb(table), limit);
-        if (!identity(to_local))
-            for (auto &pole : curve.poles) {
-                const auto old = pole;
-                for (unsigned row = 0; row < 3; ++row)
-                    pole[row] = finite(((to_local[row][0] * old[0] + to_local[row][3] * old[3]) +
-                                        to_local[row][1] * old[1]) +
-                                       to_local[row][2] * old[2]);
-            }
-        const auto source_knots = curve.knots;
-        for (auto t : source_knots)
-            if (t > 0 && t < 1)
-                curve.insert(t, curve.degree, limit);
-        require(curve.poles.size() <= limit - controls, "loft cap range control budget");
-        controls += curve.poles.size();
-        for (std::size_t span = curve.degree; span < curve.poles.size(); ++span) {
-            const auto a = curve.knots[span], b = curve.knots[span + 1];
-            if (!(b > a))
-                continue;
-            if (b - a < ((std::abs(a) + 1) + std::abs(b)) * 1e-14) {
-                ++skipped;
-                continue;
-            }
-            ++spans;
-            std::vector<H> poles(curve.poles.begin() + span - curve.degree,
-                                 curve.poles.begin() + span + 1);
-            extend(poles.front());
-            extend(poles.back());
-            if (poles.size() <= 2)
-                continue;
-            for (unsigned axis = 0; axis < 3; ++axis) {
-                std::vector<double> values;
-                roots(tangent(poles, axis), 0, 1, values, root_budget);
-                for (auto t : values)
-                    extend(evaluate(poles, t));
-            }
+        const auto &flat = table.at("poles");
+        require(flat.is_array() && flat.size() / 3 <= limit, "loft cap source control budget");
+        curve_detail::BezierWork work{work_used, work_limit};
+        work.charge(flat.size());
+        auto curve = BsplineCurve::from_bgfb(table);
+        if (!curve_detail::bspline_identity(to_local)) {
+            work.charge(curve.poles().size() * 32);
+            auto poles = curve.poles();
+            for (std::size_t i = 0; i < poles.size(); ++i)
+                poles[i] = curve.rational()
+                               ? curve_detail::affine_point(to_local, poles[i], curve.weights()[i])
+                               : curve_detail::affine_polynomial_point(to_local, poles[i]);
+            curve = curve_detail::with_poles(curve, poles);
+        }
+        require(controls <= limit, "loft cap range control budget");
+        const auto range = curve_detail::native_curve_range(curve, limit - controls, work);
+        controls += range.segment_controls;
+        spans += range.segments;
+        skipped += range.skipped_intervals;
+        extrema += range.extrema_evaluations;
+        rejected += range.rejected_weights;
+        if (range.present) {
+            if (!present) {
+                low = range.low;
+                high = range.high;
+                present = true;
+            } else
+                for (unsigned axis = 0; axis < 3; ++axis) {
+                    if (range.low[axis] < low[axis])
+                        low[axis] = range.low[axis];
+                    if (range.high[axis] > high[axis])
+                        high[axis] = range.high[axis];
+                }
         }
     }
     void region(const Json &region, const Matrix4 &matrix, unsigned depth = 0) {
         require(depth < 80, "loft cap region depth");
+        curve_detail::BezierWork{work_used, work_limit}.charge(1);
         for (const auto &entry : region.at("curves")) {
             const auto &g = entry.at("geometry");
             if (g.at("_type") == "CurveVector")
@@ -187,8 +83,8 @@ Json SectionLoft::native_cap_uv(bool top, double u, double v, unsigned max_contr
              {"uv", {u, v}},
              {"containment", "not_evaluated"},
              {"planarity", "not_evaluated"},
-             {"range_method", "rational_bezier_numerical_extrema"},
-             {"native_root_solver_reproduced", false}};
+             {"range_method", "native_bezier_extrema"},
+             {"native_root_solver_reproduced", true}};
     try {
         const auto faces = native_faces(max_control_points);
         out["native_faces"] = faces.report;
@@ -280,7 +176,9 @@ Json SectionLoft::native_cap_uv(bool top, double u, double v, unsigned max_contr
                     {"range_scaled", scale},
                     {"range_spans", range.spans},
                     {"skipped_near_zero_spans", range.skipped},
-                    {"root_parameter_tolerance", 8 * std::numeric_limits<double>::epsilon()}});
+                    {"range_extrema_evaluations", range.extrema},
+                    {"range_rejected_weights", range.rejected},
+                    {"range_work_used", range.work_used}});
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }

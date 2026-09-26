@@ -1,6 +1,11 @@
 #pragma once
 #include "native_bezier_roots.hpp"
 namespace p3d::curve_detail {
+struct BezierPseudoTangent {
+    bool unit_weight_branch = false;
+    std::array<std::vector<double>, 3> coefficients;
+};
+BezierPseudoTangent native_bezier_pseudo_tangent(const std::vector<BezierPole> &, BezierWork);
 struct BezierPerpendiculars {
     bool all_parameters = false, unit_weight_branch = false;
     std::vector<double> coefficients, parameters;

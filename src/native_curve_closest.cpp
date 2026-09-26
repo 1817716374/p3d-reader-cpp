@@ -24,13 +24,11 @@ BezierPole evaluate(std::vector<BezierPole> p, double s, BezierWork work) {
     return p.back();
 }
 } // namespace
-BezierPerpendiculars native_bezier_perpendiculars(const std::vector<BezierPole> &p,
-                                                  const BezierPole &fixed, BezierWork work) {
+BezierPseudoTangent native_bezier_pseudo_tangent(const std::vector<BezierPole> &p,
+                                                 BezierWork work) {
     validate(p, work);
-    for (double x : fixed)
-        finite(x);
     const auto n = p.size(), degree = n - 1;
-    BezierPerpendiculars out;
+    BezierPseudoTangent out;
     out.unit_weight_branch =
         std::all_of(p.begin(), p.end(), [](const auto &h) { return std::abs(h[3] - 1.) <= 1e-8; });
     std::array<std::vector<double>, 4> source, derivative;
@@ -42,7 +40,7 @@ BezierPerpendiculars native_bezier_perpendiculars(const std::vector<BezierPole> 
             derivative[axis].push_back(finite((p[i + 1][axis] - p[i][axis]) * double(degree)));
     }
     for (unsigned axis = 0; axis < 3; ++axis) {
-        std::vector<double> tangent, eye;
+        auto &tangent = out.coefficients[axis];
         if (out.unit_weight_branch)
             tangent = derivative[axis];
         else {
@@ -51,13 +49,25 @@ BezierPerpendiculars native_bezier_perpendiculars(const std::vector<BezierPole> 
             for (std::size_t i = 0; i < tangent.size(); ++i)
                 tangent[i] = finite(tangent[i] - other[i]);
         }
+    }
+    return out;
+}
+BezierPerpendiculars native_bezier_perpendiculars(const std::vector<BezierPole> &p,
+                                                  const BezierPole &fixed, BezierWork work) {
+    for (double x : fixed)
+        finite(x);
+    const auto tangent = native_bezier_pseudo_tangent(p, work);
+    BezierPerpendiculars out;
+    out.unit_weight_branch = tangent.unit_weight_branch;
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        std::vector<double> eye;
         if (fixed[3] == 0)
             eye.push_back(fixed[axis]);
         else
             for (const auto &h : p)
                 eye.push_back(finite(h[axis] * fixed[3] -
                                      (out.unit_weight_branch ? fixed[axis] : fixed[axis] * h[3])));
-        const auto product = native_bezier_product(tangent, eye, work);
+        const auto product = native_bezier_product(tangent.coefficients[axis], eye, work);
         if (axis == 0)
             out.coefficients = product;
         else
