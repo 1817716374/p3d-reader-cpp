@@ -7,11 +7,16 @@ namespace {
 struct Blend {
     std::int64_t first;
     std::vector<double> values;
+    std::vector<double> derivatives{};
 };
 // The point/tangent and surface-point callers use fixed 26-value arrays.
 // Keep their native clamp, interval selection and divide-before-multiply order.
+// Derivative recurrence adapted from Bentley imodel-native bsputil.cpp.
+// Copyright (c) Bentley Systems, Incorporated. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 Blend blend(unsigned order, const std::vector<double> &knots, int pole_shift, double upper,
-            double parameter) {
+            double parameter, bool derivatives = false) {
     require(order <= 26, "native PCurve point evaluation supports order at most 26");
     require(std::isfinite(parameter), "native PCurve knot parameter overflow");
     const double t = std::min(upper, std::max(knots[order - 1], parameter));
@@ -22,11 +27,14 @@ Blend blend(unsigned order, const std::vector<double> &knots, int pole_shift, do
             "native PCurve knot window");
     Blend result{std::int64_t(index) - order + pole_shift, std::vector<double>(order)};
     result.values[0] = 1;
+    if (derivatives)
+        result.derivatives.resize(order);
     std::array<double, 26> left{}, right{};
     for (unsigned j = 1; j < order; ++j) {
         left[j - 1] = t - knots[index - j];
         right[j - 1] = knots[index + j - 1] - t;
         double saved = 0;
+        double saved_derivative = 0;
         for (unsigned r = 0; r < j; ++r) {
             const double denominator = right[r] + left[j - 1 - r];
             double value = result.values[r];
@@ -34,11 +42,22 @@ Blend blend(unsigned order, const std::vector<double> &knots, int pole_shift, do
                 value /= denominator;
             result.values[r] = saved + right[r] * value;
             saved = left[j - 1 - r] * value;
+            if (derivatives) {
+                double derivative = result.derivatives[r];
+                if (denominator != 0)
+                    derivative /= denominator;
+                result.derivatives[r] = (right[r] * derivative + saved_derivative) - value;
+                saved_derivative = left[j - 1 - r] * derivative + value;
+            }
         }
         result.values[j] = saved;
+        if (derivatives)
+            result.derivatives[j] = saved_derivative;
     }
     for (double value : result.values)
         require(std::isfinite(value), "native PCurve non-finite blending coefficient");
+    for (double value : result.derivatives)
+        require(std::isfinite(value), "native PCurve non-finite blending derivative");
     return result;
 }
 std::size_t pole(std::int64_t index, std::size_t count, bool closed) {
@@ -88,6 +107,34 @@ NativePCurvePoint pcurve_point(const BsplineCurve &curve, double fraction) {
     const double t = (1 - fraction) * domain[0] + fraction * domain[1];
     const auto b = blend(curve.order(), curve.knots(), curve.periodic_pole_shift(), domain[1], t);
     return evaluate(b, curve.poles().size(), curve.closed(), curve.poles(), curve.weights(), 0, 1);
+}
+
+NativePCurvePointTangent pcurve_point_tangent(const BsplineCurve &curve, double fraction) {
+    require(std::isfinite(fraction), "native PCurve non-finite curve fraction");
+    const auto domain = curve.knot_domain();
+    const double t = (1 - fraction) * domain[0] + fraction * domain[1];
+    const auto b =
+        blend(curve.order(), curve.knots(), curve.periodic_pole_shift(), domain[1], t, true);
+    NativePCurvePointTangent result;
+    result.value =
+        evaluate(b, curve.poles().size(), curve.closed(), curve.poles(), curve.weights(), 0, 1);
+    for (unsigned i = 0; i < curve.order(); ++i) {
+        const auto index = pole(b.first + i, curve.poles().size(), curve.closed());
+        if (curve.rational())
+            result.weight_derivative += b.derivatives[i] * curve.weights()[index];
+        for (unsigned k = 0; k < 3; ++k)
+            result.tangent[k] += b.derivatives[i] * curve.poles()[index][k];
+    }
+    if (curve.rational()) {
+        const double divisor = result.value.zero_weight_fallback ? 1 : result.value.weight;
+        require(std::isfinite(divisor) && std::isfinite(result.weight_derivative),
+                "native PCurve nonfinite tangent weight");
+        for (unsigned k = 0; k < 3; ++k)
+            result.tangent[k] =
+                (result.tangent[k] - result.weight_derivative * result.value.point[k]) / divisor;
+    }
+    result.tangent = finite(result.tangent);
+    return result;
 }
 
 // Isocurve construction adapted from Bentley imodel-native bspconv.cpp,

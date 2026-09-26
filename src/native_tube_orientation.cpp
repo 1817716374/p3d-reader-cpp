@@ -8,6 +8,7 @@
 #include "native_knot_normalize.hpp"
 #include "native_surface_iso.hpp"
 #include "native_bspline_area.hpp"
+#include "native_pcurve_points.hpp"
 
 namespace p3d::swept_detail {
 namespace {
@@ -143,6 +144,36 @@ TubeOrientation orient_tube_surfaces(const std::vector<Json> &input, Point3 tang
         out.report["rings"].push_back(std::move(ring));
     }
     out.report["work_used"] = b.work;
+    return out;
+}
+TubeOrientation orient_tube_surfaces_from_trace(const std::vector<Json> &surfaces,
+                                                const BsplineCurve &trace, TubeBudget &b) {
+    if (surfaces.empty()) {
+        auto out = orient_tube_surfaces(surfaces, Point3{}, b);
+        out.report["native_result"] = false;
+        out.report["stop_reason"] = "empty_generated_surface_list";
+        out.report["start_tangent_query"] = nullptr;
+        return out;
+    }
+    require(trace.order() <= 26 && trace.poles().size() <= b.max_control_points,
+            "native tube start tangent order or control budget exceeded");
+    work(b).charge(trace.knots().size());
+    work(b).charge(std::size_t(16) * trace.order() * trace.order());
+    const auto query = detail::pcurve_point_tangent(trace, 0);
+    const auto domain = trace.knot_domain();
+    const double span = finite(domain[1] - domain[0]);
+    auto fraction_tangent = query.tangent;
+    for (auto &x : fraction_tangent)
+        x = finite(x * span);
+    const auto initial_unit = unit(fraction_tangent);
+    auto out = orient_tube_surfaces(surfaces, initial_unit, b);
+    out.report["start_tangent_query"] = {{"point", query.value.point},
+                                         {"knot_tangent", query.tangent},
+                                         {"raw_weight", query.value.weight},
+                                         {"zero_weight_fallback", query.value.zero_weight_fallback},
+                                         {"knot_domain", domain},
+                                         {"fraction_tangent", fraction_tangent},
+                                         {"first_unit_tangent", initial_unit}};
     return out;
 }
 } // namespace p3d::swept_detail

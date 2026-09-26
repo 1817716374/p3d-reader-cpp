@@ -2,6 +2,7 @@
 #include "bspline_frame.hpp"
 #include "native_curve_affine.hpp"
 #include "native_pcurve_points.hpp"
+#include "native_tube_orientation.hpp"
 
 namespace p3d::swept_detail {
 namespace {
@@ -116,16 +117,21 @@ TubeSurfaces prepare_swept_tube_surfaces(const Json &profile, const Json &path,
                          {"tube", std::move(tube.report)},
                          {"v_closure", std::move(closure)}});
     }
-    return {std::move(surfaces),
+    auto orientation = orient_tube_surfaces_from_trace(surfaces, placed.trace, budget);
+    const bool complete = orientation.report.at("completed_all_rings");
+    const bool native_result = orientation.report.at("native_result");
+    return {std::move(orientation.surfaces),
             std::move(placed.trace),
-            {{"scope", "native_swept_surfaces_before_orientation"},
+            {{"scope", "native_swept_surfaces_with_orientation"},
              {"path_conversion", std::move(converted_path.report)},
              {"placement", std::move(placed.report)},
              {"rings", std::move(rings)},
              {"total_control_points", total},
              {"work_used", budget.work},
              {"source_validation", "native_geom_num_dispatch_not_applied"},
-             {"orientation_applied", false},
+             {"orientation_applied", complete},
+             {"native_generation_result", native_result},
+             {"orientation", std::move(orientation.report)},
              {"caps_generated", false},
              {"native_face_indices", nullptr},
              {"surface_validity", "not_certified"}}};

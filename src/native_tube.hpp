@@ -84,9 +84,11 @@ struct TubeSurfaces {
     BsplineCurve trace;
     Json report;
 };
-// Internal preparation only: carries native trace state across source rings
-// and requests V closure for closed traces. No source isValidGeom/isValidNum
-// dispatch, area orientation, caps or native face enumeration is applied here.
+// Internal preparation: carries native trace state across source rings, closes
+// V for closed traces, queries the carried trace's native start tangent, and
+// applies area orientation. Report distinguishes native success from visiting
+// every ring. No source isValidGeom/isValidNum dispatch, caps or native face
+// enumeration is applied here; failure retains generated/partly oriented data.
 TubeSurfaces prepare_swept_tube_surfaces(const Json &profile, const Json &path, TubeBudget &);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order

@@ -26,6 +26,7 @@ unsigned native_bezier_tests();
 unsigned native_bspline_area_tests();
 unsigned native_surface_iso_tests();
 unsigned native_tube_orientation_tests();
+unsigned native_pcurve_tangent_tests();
 unsigned native_tube_close_tests();
 unsigned native_tube_fit_tests();
 unsigned native_tube_curve_tests();
@@ -2816,6 +2817,7 @@ int main() {
         checks += native_bspline_area_tests();
         checks += native_surface_iso_tests();
         checks += native_tube_orientation_tests();
+        checks += native_pcurve_tangent_tests();
         checks += native_tube_close_tests();
         checks += native_tube_fit_tests();
         checks += native_tube_curve_tests();

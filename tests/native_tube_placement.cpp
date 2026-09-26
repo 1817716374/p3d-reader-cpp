@@ -54,17 +54,23 @@ unsigned native_tube_placement_tests() {
         const auto path = group(1, {line({10, 20, 30}, end)});
         TubeBudget b;
         const auto output = prepare_swept_tube_surfaces(profile, path, b);
-        check(output.surfaces.size() == 1 && output.report["orientation_applied"] == false &&
+        check(output.surfaces.size() == 1 && output.report["native_generation_result"] == true &&
+                  output.report["orientation"]["visited_rings"] == 1 &&
                   output.report["native_face_indices"].is_null() &&
                   output.report["placement"]["inverse_succeeded"] == true,
-              "source profile and path produce one surface without claiming face orientation");
+              "source profile and path produce one surface and run native orientation without face "
+              "indices");
         const auto s = BsplineSurface::from_bgfb(output.surfaces.front());
+        const bool reversed = output.report["orientation"]["rings"][0]["reversed_u"];
         for (double u : {0., .2, .65, 1.})
-            for (double v : {0., .3, .8, 1.})
+            for (double v : {0., .3, .8, 1.}) {
+                const double original_u = reversed ? 1 - u : u;
                 check(
-                    near(s.point_at(u, v), {11 + 3 * u + delta[0] * v, 22 + 3 * u + delta[1] * v,
-                                            33 + 3 * u + delta[2] * v}),
+                    near(s.point_at(u, v),
+                         {11 + 3 * original_u + delta[0] * v, 22 + 3 * original_u + delta[1] * v,
+                          33 + 3 * original_u + delta[2] * v}),
                     "world profile placement followed by straight sweep preserves oblique local Z");
+            }
     }
     const auto unclamped =
         BsplineCurve::from_bgfb(spline(3, {10, 20, 30, 11, 20, 31, 13, 22, 32, 14, 23, 34}, nullptr,
@@ -126,6 +132,12 @@ unsigned native_tube_placement_tests() {
           "parity rings retain original order and duplicates without geometric deduplication");
     check(multi.trace.poles()[0][0] == 8.777397980258003 && weighted_path.dump() == saved,
           "placement plus two rings carry six native weight round trips without editing input");
+    check(
+        multi.report["orientation_applied"] == true &&
+            multi.report["orientation"]["rings"][0]["reversed_u"] == false &&
+            multi.report["orientation"]["rings"][1]["reversed_u"] == true &&
+            multi.report["native_generation_result"] == true,
+        "full source preparation automatically orients duplicate outer and inner rings oppositely");
     check(multi.report["rings"][0]["tube"]["source_frame"]["frame"] !=
               multi.report["rings"][1]["tube"]["source_frame"]["frame"],
           "later ring frame sees cumulative native trace state");

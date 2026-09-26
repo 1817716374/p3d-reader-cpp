@@ -29,6 +29,8 @@
 
 `src/native_knot_normalize.hpp` 与 `src/native_tube_orientation.cpp` 中的曲面反向参考同一固定提交的 `bsputil.cpp` 和 `bspsurf.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的逐项除法、节点阈值及闭合延伸节点规则改写；输入保持只读，显式报告归一化失败及多环处理的提前返回状态。
 
+`src/native_pcurve_points.cpp` 的基函数导数递推参考同一固定提交中 `bsputil.cpp` 的 `bsputil_knotToBlendingFuncs`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的节点选择、零分母、除法及乘加顺序改写，并以独立工作数组提供点与切线查询，不对源控制点执行除权重和重新加权。
+
 `src/native_tube_elevate.cpp` 的升阶算法参考上述固定提交的 `bspcurv.cpp` 与 `bsputil.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现复用本库求导与周期打开内核，按 P3D 的节点归一化、节点分组、指定侧求导和权重舍入行为改写，并使用有界的局部工作数组。
 
 `src/native_tube.cpp`、`src/native_tube_path.cpp` 与 `src/native_tube_fit.cpp` 保留 Bentley 版权及 Apache-2.0 标记，使用本库的有界存储、曲线求值与参数表，并保留 P3D 的斜截面分量、数值容差和接缝控制行规则。路径分段还参考同一固定提交中的 [MSBsplineCurve_ByBezier.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bspline/MSBsplineCurve_ByBezier.cpp) 与 [bezierDPoint4d.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bezier/bezierDPoint4d.cpp)。折线转换参考 [BsplineCurveFit.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bspline/BsplineCurveFit.cpp) 与 [MSBsplineCurve_Modify.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bspline/MSBsplineCurve_Modify.cpp)，仅实现原生扫掠使用的一次拟合分支，保留弦长参数和累计误差节点删减规则。上述算法按本库的预算控制、不可变输入和来源报告改写，不依赖 Bentley 运行库。内部曲面生成流程不代表已经支持完整路径扫掠实体的重建。

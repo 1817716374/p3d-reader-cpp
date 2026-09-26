@@ -14,4 +14,9 @@ struct TubeOrientation {
 // Area failure exits the whole loop, returning true only for an order-2 iso
 // curve. Earlier reversals persist and remaining surfaces are not visited.
 TubeOrientation orient_tube_surfaces(const std::vector<Json> &, Point3 tangent, TubeBudget &);
+// Full orientation caller: query the carried working trace at fraction zero,
+// scale its knot derivative by domain length, normalize, then call the ring
+// routine (which normalizes again). Empty output is a native failure here.
+TubeOrientation orient_tube_surfaces_from_trace(const std::vector<Json> &, const BsplineCurve &,
+                                                TubeBudget &);
 } // namespace p3d::swept_detail
