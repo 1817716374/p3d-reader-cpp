@@ -654,9 +654,11 @@ unsigned loft_mesh_tests() {
     check(transform_bgfb_section_loft(source_loft, singular).status == "transformed",
           "source placement can succeed even when later mesh reconstruction degenerates");
     const auto collapsed = transform_bgfb_section_loft(arc_source, singular);
-    check(collapsed.status == "not_evaluated" && collapsed.transformed.is_null() &&
-              collapsed.report["source_path"] == "/section0/curves/0/geometry",
-          "collapsed ellipse replacement is explicit and never returns partial transformed data");
+    check(collapsed.status == "transformed" &&
+              collapsed.transformed["section0"]["curves"][0]["geometryType"] == 1 &&
+              collapsed.report["arc_replacements"][0]["source_path"] ==
+                  "/section0/curves/0/geometry",
+          "collapsed ellipse replacement preserves source path and updates union discriminator");
     for (unsigned mode = 0; mode < 3; ++mode) {
         LoftSourceTransformOptions limit;
         if (mode == 0)
@@ -692,5 +694,106 @@ unsigned loft_mesh_tests() {
     check(nested.status == "transformed" && nested_mesh.derived.status == "meshed" &&
               std::abs(std::abs(volume(nested_shape)) - 103.5) < 1e-8,
           "nested parity sections and guide groups preserve independent transformed volume");
+    constexpr double tau = 2 * pi;
+    // An independent bounded-period critical-angle oracle, rather than the
+    // native fmod normalization implemented in the library.
+    for (bool sine : {false, true})
+        for (double start : {-5 * tau - .3, -tau, -.2, 0., pi / 2, 3 * tau + .4})
+            for (double sweep : {-3 * tau, -4., -.2, 0., .2, 4., 3 * tau}) {
+                auto input = arc_source;
+                auto &a = input["section0"]["curves"][0]["geometry"]["arc"];
+                a["startRadians"] = start;
+                a["sweepRadians"] = sweep;
+                a["vector0X"] = sine ? 1e-7 : 2.;
+                a["vector90Y"] = sine ? 3. : 1e-7;
+                input["section0"]["curves"][0]["geometry"]["unknown_tag"] = {17, 19};
+                input["section0"]["curves"][0]["geometryType"] = 2;
+                const auto copy = input;
+                const auto r = transform_bgfb_section_loft(input, identity_matrix);
+                double lo = std::min(sine ? std::sin(start) : std::cos(start),
+                                     sine ? std::sin(start + sweep) : std::cos(start + sweep));
+                double hi = std::max(sine ? std::sin(start) : std::cos(start),
+                                     sine ? std::sin(start + sweep) : std::cos(start + sweep));
+                for (int period = -10; period <= 10; ++period)
+                    for (unsigned extremum = 0; extremum < 2; ++extremum) {
+                        const double angle = (sine ? pi / 2 : 0.) + extremum * pi + period * tau;
+                        if (angle >= std::min(start, start + sweep) &&
+                            angle <= std::max(start, start + sweep)) {
+                            if (extremum)
+                                lo = -1.;
+                            else
+                                hi = 1.;
+                        }
+                    }
+                const auto &range = r.report["arc_replacements"][0]["scalar_interval"];
+                const auto &s = r.transformed["section0"]["curves"][0]["geometry"]["segment"];
+                const auto p = s.at(sine ? "point0Y" : "point0X").get<double>();
+                const auto q = s.at(sine ? "point1Y" : "point1X").get<double>();
+                check(r.status == "transformed" && std::abs(range[0].get<double>() - lo) < 1e-14 &&
+                          std::abs(range[1].get<double>() - hi) < 1e-14 &&
+                          std::abs(p - ((sine ? 2. : 1.) + (sine ? 3. : 2.) * lo)) < 1e-13 &&
+                          std::abs(q - ((sine ? 2. : 1.) + (sine ? 3. : 2.) * hi)) < 1e-13 &&
+                          input == copy &&
+                          r.report["arc_replacements"][0]["transformed_arc"]["unknown_tag"] ==
+                              Json({17, 19}),
+                      "collapsed arc interval and ordered endpoints match independent periodic "
+                      "extrema");
+            }
+    auto both = arc_source;
+    auto &both_arc = both["section0"]["curves"][0]["geometry"]["arc"];
+    both_arc["vector0X"] = 1e-7;
+    both_arc["vector90Y"] = 2e-7;
+    both_arc["startRadians"] = 0.;
+    both_arc["sweepRadians"] = tau;
+    const auto priority = transform_bgfb_section_loft(both, identity_matrix);
+    check(priority.status == "transformed" &&
+              priority.report["arc_replacements"][0]["retained_axis"] == "vector90" &&
+              priority.transformed["section0"]["curves"][0]["geometry"]["segment"]["point0X"] == 1.,
+          "both short axes use first-axis branch and discard its nonzero contribution");
+    both_arc["vector0X"] = 0.;
+    both_arc["vector90Y"] = 0.;
+    const auto point_segment = transform_bgfb_section_loft(both, identity_matrix);
+    const auto &ps = point_segment.transformed["section0"]["curves"][0]["geometry"]["segment"];
+    check(point_segment.status == "transformed" && ps["point0X"] == ps["point1X"] &&
+              ps["point0Y"] == ps["point1Y"] && ps["point0Z"] == ps["point1Z"],
+          "fully collapsed ellipse retains a degenerate source segment rather than vanishing");
+    both_arc["vector0X"] = 1e-5;
+    both_arc["vector90Y"] = 3.;
+    check(transform_bgfb_section_loft(both, identity_matrix).report["arc_replacements"].empty(),
+          "native collapse length threshold is strict");
+    both_arc["vector0X"] = std::nextafter(1e-5, 0.);
+    check(transform_bgfb_section_loft(both, identity_matrix).report["arc_replacements"].size() == 1,
+          "one floating-point step below collapse threshold changes representation");
+    auto tiny_prism = source_loft;
+    for (const auto *name : {"section0", "section1"}) {
+        auto a = arc_source["section0"]["curves"][0]["geometry"];
+        a["arc"]["centerX"] = 1.;
+        a["arc"]["centerY"] = 0.;
+        a["arc"]["centerZ"] = std::string(name) == "section0" ? 0. : 3.;
+        a["arc"]["vector0X"] = 1.;
+        a["arc"]["vector90Y"] = 1e-7;
+        a["arc"]["startRadians"] = 0.;
+        a["arc"]["sweepRadians"] = pi;
+        tiny_prism[name]["curves"][0]["geometry"] = a;
+    }
+    const auto replaced = transform_bgfb_section_loft(tiny_prism, identity_matrix);
+    const auto rebuilt_mesh = mesh_bgfb_solid(replaced.transformed, {}, 4);
+    LoftMesh rebuilt_shape;
+    rebuilt_shape.vertices = rebuilt_mesh.derived.geometry.vertices;
+    rebuilt_shape.faces = rebuilt_mesh.derived.geometry.faces;
+    check(replaced.status == "transformed" && rebuilt_mesh.derived.status == "meshed" &&
+              std::abs(volume(rebuilt_shape) - 12.) < 1e-9,
+          "native minimum-to-maximum segment order rebuilds a closed loft with known volume");
+    const auto twice_replaced = transform_bgfb_section_loft(replaced.transformed, identity_matrix);
+    check(twice_replaced.status == "transformed" &&
+              twice_replaced.report["arc_replacements"].empty(),
+          "a replaced source remains a line segment on later visits");
+    auto csg_replacement = archive;
+    csg_replacement["geometries"][0]["geometry"]["geometry"] = tiny_prism;
+    const auto unsupported_csg = evaluate_csg_polyface_archive(csg_replacement, tree_options);
+    check(unsupported_csg.result.status != "evaluated" && unsupported_csg.result.meshes.empty() &&
+              unsupported_csg.result.diagnostics.dump().find("changes curve representation") !=
+                  std::string::npos,
+          "CSG cannot treat identity-triggered source replacement as a prebuilt-mesh identity");
     return checks;
 }

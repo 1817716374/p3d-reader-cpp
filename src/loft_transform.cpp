@@ -9,12 +9,34 @@ double number(const Json &v) {
     require(std::isfinite(x), "loft transform nonfinite coordinate or weight");
     return x;
 }
+bool angle_in_sweep(double angle, double start, double sweep) {
+    constexpr double tau = 6.283185307179586;
+    const double delta = angle - start, end = start + sweep;
+    require(std::isfinite(delta) && std::isfinite(end), "loft arc angular range overflow");
+    // Native angle normalization preserves exact one-period boundary cases.
+    // Reducing every delta with fmod would change those inclusive tests.
+    double adjusted = angle;
+    if (sweep < 0) {
+        if (delta < -tau)
+            adjusted = start - std::fmod(-delta, tau);
+        else if (delta > 0)
+            adjusted = delta <= tau ? angle - tau : std::fmod(delta, tau) + (start - tau);
+    } else {
+        if (delta > tau)
+            adjusted = start + std::fmod(delta, tau);
+        else if (delta < 0)
+            adjusted = delta >= -tau ? angle + tau : (start + tau) - std::fmod(-delta, tau);
+    }
+    require(std::isfinite(adjusted), "loft arc angular normalization overflow");
+    return sweep < 0 ? adjusted <= start && adjusted >= end : adjusted >= start && adjusted <= end;
+}
 struct Placement {
     const Matrix4 &matrix;
     const LoftSourceTransformOptions &options;
     std::size_t points = 0, nodes = 0, skipped = 0;
     bool bspline_identity = true;
     std::string path;
+    Json replacements = Json::array();
 
     Placement(const Matrix4 &m, const LoftSourceTransformOptions &o) : matrix(m), options(o) {
         require(o.max_depth <= 80, "loft transform depth ceiling exceeded");
@@ -79,9 +101,13 @@ struct Placement {
         if (type == "CurveVector") {
             auto &members = j.at("curves");
             require(members.is_array(), "loft transform requires curve array");
-            for (std::size_t i = 0; i < members.size(); ++i)
+            for (std::size_t i = 0; i < members.size(); ++i) {
+                const bool arc = members[i].at("geometry").value("_type", "") == "EllipticArc";
                 curve(members[i].at("geometry"), depth + 1,
                       current + "/curves/" + std::to_string(i) + "/geometry");
+                if (arc && members[i].at("geometry").at("_type") == "LineSegment")
+                    members[i]["geometryType"] = 1;
+            }
         } else if (type == "LineSegment") {
             named(j.at("segment"), "point0", 1);
             named(j.at("segment"), "point1", 1);
@@ -93,17 +119,44 @@ struct Placement {
             skipped += bspline_identity;
         } else if (type == "EllipticArc") {
             auto &arc = j.at("arc");
-            named(arc, "center", 1);
+            const auto center = named(arc, "center", 1);
             const auto u = named(arc, "vector0", 0), v = named(arc, "vector90", 0);
-            number(arc.at("startRadians"));
-            number(arc.at("sweepRadians"));
-            // Native CurveArray replaces these arcs by an extremal segment.
-            // Until that replacement is implemented, retaining an ellipse here
-            // would silently change the source topology used by the loft.
-            const double a = std::hypot(u[0], u[1], u[2]), b = std::hypot(v[0], v[1], v[2]);
+            const double start = number(arc.at("startRadians")),
+                         sweep = number(arc.at("sweepRadians"));
+            auto length = [](const Point3 &p) {
+                return std::sqrt((p[0] * p[0] + p[1] * p[1]) + p[2] * p[2]);
+            };
+            const double a = length(u), b = length(v);
             require(std::isfinite(a) && std::isfinite(b), "loft arc axis length overflow");
-            require(a >= 1e-5 && b >= 1e-5,
-                    "loft transform collapsed ellipse requires native segment replacement");
+            if (a < 1e-5 || b < 1e-5) {
+                // First-axis collapse has priority, including when both collapse.
+                const bool use_sine = a < 1e-5;
+                const auto axis = use_sine ? v : u;
+                const double end = start + sweep;
+                require(std::isfinite(end), "loft arc angular range overflow");
+                const double first = use_sine ? std::sin(start) : std::cos(start),
+                             last = use_sine ? std::sin(end) : std::cos(end);
+                double lo = std::min(first, last), hi = std::max(first, last);
+                constexpr double pi = 3.141592653589793;
+                if (angle_in_sweep(use_sine ? pi / 2 : 0., start, sweep))
+                    hi = 1;
+                if (angle_in_sweep(use_sine ? 3 * pi / 2 : pi, start, sweep))
+                    lo = -1;
+                Json segment = {{"_type", "DSegment3d"}};
+                for (unsigned k = 0; k < 3; ++k) {
+                    const double p = center[k] + axis[k] * lo, q = center[k] + axis[k] * hi;
+                    require(std::isfinite(p) && std::isfinite(q),
+                            "loft collapsed arc endpoint overflow");
+                    segment[std::string("point0") + "XYZ"[k]] = p;
+                    segment[std::string("point1") + "XYZ"[k]] = q;
+                }
+                replacements.push_back({{"source_path", current},
+                                        {"transformed_arc", j},
+                                        {"retained_axis", use_sine ? "vector90" : "vector0"},
+                                        {"scalar_interval", {lo, hi}},
+                                        {"endpoint_order", "minimum_then_maximum"}});
+                j = {{"_type", "LineSegment"}, {"segment", std::move(segment)}};
+            }
         } else
             throw std::runtime_error("loft transform unsupported source curve: " + type);
     }
@@ -143,6 +196,7 @@ LoftSourceTransformResult transform_bgfb_section_loft(const Json &table, const M
                       {"point_count", placement.points},
                       {"bspline_near_identity", placement.bspline_identity},
                       {"bspline_skipped", placement.skipped},
+                      {"arc_replacements", std::move(placement.replacements)},
                       {"surface_mapping", "reconstruct_from_transformed_source"},
                       {"mesh_status", "not_evaluated"}};
         out.status = "transformed";

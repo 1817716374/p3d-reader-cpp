@@ -433,6 +433,16 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                 const bool solid = table.at("_type") != "Polyface";
                 const auto index = solid ? out.solid_sources.size() : out.sources.size();
                 if (solid) {
+                    if (table.at("_type") == "P3DSectionLoft") {
+                        const auto identity_source = transform_bgfb_section_loft(table, identity());
+                        require(identity_source.status == "transformed",
+                                identity_source.report.value(
+                                    "reason",
+                                    std::string("CSG loft source identity transformation failed")));
+                        require(identity_source.report.at("arc_replacements").empty(),
+                                "CSG loft identity placement changes curve representation; source "
+                                "reconstruction required");
+                    }
                     out.solid_sources.push_back(
                         mesh_bgfb_solid(table, budget, work.options.solid_circle_segments));
                     out.solid_source_paths.push_back(child_path);

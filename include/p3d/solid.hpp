@@ -76,11 +76,12 @@ struct LoftSourceTransformResult {
     Json report = Json::object();
 };
 // Transform original sections and guide groups before reconstructing a loft.
-// Supports line segments/strings, B-splines and non-collapsed elliptic arcs,
+// Supports line segments/strings, B-splines and elliptic arcs,
 // including nested curve arrays. Rational poles receive weight*translation.
 // Native near-identity suppression applies to B-splines only. Arc axes shorter
-// than the native collapse threshold require a representation change and are
-// currently reported as not evaluated. Singular source transforms are allowed;
+// than 1e-5 trigger native replacement by an extremal line segment, including
+// first-axis priority when both are short. report.arc_replacements retains the
+// transformed arc and its source path. Singular source transforms are allowed;
 // successful transformation does not prove that the new loft can be meshed.
 // This is a derived parameter table, not an edited/serializable source file.
 // No single matrix maps the old loft surface to the reconstructed new one.
