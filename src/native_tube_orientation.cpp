@@ -32,28 +32,38 @@ Point3 unit(Point3 p) {
     return {1, 0, 0};
 }
 } // namespace
-TubeAssembly reverse_tube_surface(const BsplineSurface &s, bool reverse_u, TubeBudget &b) {
+static TubeAssembly reverse_surface_axes(const BsplineSurface &s, bool reverse_u, bool reverse_v,
+                                         TubeBudget &b) {
     require(s.boundaries().is_null(), "native tube reversal requires an untrimmed surface");
     const auto &u = s.u(), &v = s.v();
     require(s.poles().size() <= b.max_control_points && u.pole_count() <= INT32_MAX &&
                 v.pole_count() <= INT32_MAX,
             "native tube reversal control budget exceeded");
-    work(b).charge(s.poles().size());
-    for (unsigned i = 0; i < 7; ++i)
-        work(b).charge(s.poles().size());
-    work(b).charge(u.knots().size());
-    work(b).charge(v.knots().size());
+    // Account for the two native copies separately, even though the final
+    // independent axis permutations can be written directly into one grid.
+    for (unsigned pass = 0; pass < unsigned(reverse_u) + unsigned(reverse_v); ++pass) {
+        for (unsigned i = 0; i < 8; ++i)
+            work(b).charge(s.poles().size());
+        work(b).charge(u.knots().size());
+        work(b).charge(v.knots().size());
+    }
     auto ku = u.knots(), kv = v.knots();
-    auto &k = reverse_u ? ku : kv;
-    const auto &d = reverse_u ? u : v;
-    std::reverse(k.begin(), k.end());
-    const bool normalized =
-        curve_detail::normalize_native_knots(k, d.pole_count(), d.order(), d.closed());
+    bool normalized_u = true, normalized_v = true;
+    if (reverse_u) {
+        std::reverse(ku.begin(), ku.end());
+        normalized_u =
+            curve_detail::normalize_native_knots(ku, u.pole_count(), u.order(), u.closed());
+    }
+    if (reverse_v) {
+        std::reverse(kv.begin(), kv.end());
+        normalized_v =
+            curve_detail::normalize_native_knots(kv, v.pole_count(), v.order(), v.closed());
+    }
     Json poles = Json::array(), weights = Json::array();
     for (std::size_t j = 0; j < v.pole_count(); ++j)
         for (std::size_t i = 0; i < u.pole_count(); ++i) {
-            const auto index = reverse_u ? j * u.pole_count() + (u.pole_count() - 1 - i)
-                                         : (v.pole_count() - 1 - j) * u.pole_count() + i;
+            const auto index = (reverse_v ? v.pole_count() - 1 - j : j) * u.pole_count() +
+                               (reverse_u ? u.pole_count() - 1 - i : i);
             for (double x : s.poles()[index])
                 poles.push_back(x);
             if (s.rational())
@@ -74,10 +84,18 @@ TubeAssembly reverse_tube_surface(const BsplineSurface &s, bool reverse_u, TubeB
              {"numRulesU", s.num_rules_u()},
              {"numRulesV", s.num_rules_v()},
              {"holeOrigin", s.hole_origin()}},
-            {{"direction", reverse_u ? "u" : "v"},
-             {"knots_normalized", normalized},
+            {{"direction", reverse_u && reverse_v ? "u_then_v"
+                           : reverse_u            ? "u"
+                                                  : "v"},
+             {"knots_normalized", normalized_u && normalized_v},
              {"native_return", 0},
-             {"evaluable_knot_order", normalized}}};
+             {"evaluable_knot_order", normalized_u && normalized_v}}};
+}
+TubeAssembly reverse_tube_surface(const BsplineSurface &s, bool reverse_u, TubeBudget &b) {
+    return reverse_surface_axes(s, reverse_u, !reverse_u, b);
+}
+TubeAssembly reverse_tube_surface_both(const BsplineSurface &s, TubeBudget &b) {
+    return reverse_surface_axes(s, true, true, b);
 }
 TubeOrientation orient_tube_surfaces(const std::vector<Json> &input, Point3 tangent,
                                      TubeBudget &b) {

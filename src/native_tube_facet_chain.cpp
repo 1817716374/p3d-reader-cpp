@@ -115,24 +115,32 @@ TubeFacetSeam native_tube_facet_seam(Point3 incoming, Point3 outgoing, const Poi
     outgoing = normalized(outgoing);
     out.incoming = incoming;
     out.outgoing = outgoing;
+    update_native_tube_facet_plane(out, point);
+    return out;
+}
+void update_native_tube_facet_plane(TubeFacetSeam &out, const Point3 &point) {
+    if (!out.incoming || !out.outgoing)
+        return;
+    for (const auto &p : {*out.incoming, *out.outgoing, point})
+        for (double x : p)
+            finite(x);
     Point3 neg{}, middle{};
     for (unsigned i = 0; i < 3; ++i) {
-        neg[i] = -incoming[i];
-        middle[i] = finite(neg[i] + outgoing[i]);
+        neg[i] = -(*out.incoming)[i];
+        middle[i] = finite(neg[i] + (*out.outgoing)[i]);
     }
     const double largest =
         std::max({std::abs(middle[0]), std::abs(middle[1]), std::abs(middle[2])});
     if (largest * 1e-12 < 2)
         for (auto &x : middle)
             x = finite(x * .5);
-    const auto normal = cross(middle, cross(outgoing, neg));
+    const auto normal = cross(middle, cross(*out.outgoing, neg));
     if (curve_detail::endpoint_pair_closed(normal, {0, 0, 0})) {
         out.classifier = 2;
         out.incoming.reset();
         out.outgoing.reset();
     } else
         out.plane = std::array<Point3, 2>{point, normal};
-    return out;
 }
 TubeFacetChain build_tube_facet_chain(const BsplineCurve &section, const BsplineCurve &source,
                                       bool rigid, TubeBudget &budget) {
@@ -168,6 +176,12 @@ TubeFacetChain build_tube_facet_chain(const BsplineCurve &section, const Bspline
     for (unsigned row = 0; row < 3; ++row)
         for (unsigned axis = 0; axis < 3; ++axis)
             frame[row][axis] = source_frame.report.at("frame").at(axis).at((row + 1) % 3);
+    // A native section may reference the same curve as the trace. The first
+    // source-frame query precedes section reads by the patch callback.
+    std::optional<BsplineCurve> shared_section;
+    if (&section == &source)
+        shared_section = curve_detail::with_poles(section, out.working_source_poles);
+    const auto &effective_section = shared_section ? *shared_section : section;
     const auto first_tangent = frame[2];
     out.report = {{"scope", "native_independent_facet_chain"},
                   {"source_physically_closed", closed},
@@ -185,7 +199,7 @@ TubeFacetChain build_tube_facet_chain(const BsplineCurve &section, const Bspline
             out.nodes.back().end_seam =
                 native_tube_facet_seam(previous_end, start.tangent, start.value.point);
         }
-        auto patch = tube_facet_patch(section, segment, frame, rigid, budget);
+        auto patch = tube_facet_patch(effective_section, segment, frame, rigid, budget);
         frame = patch.final_frame;
         patches.push_back(std::move(patch.report));
         if (!patch.success) {

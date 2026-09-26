@@ -7,6 +7,10 @@ struct TubeFacetSeam {
     std::optional<Point3> incoming, outgoing;
     std::optional<std::array<Point3, 2>> plane; // origin, unnormalized normal
 };
+// Updates the plane from an existing tangent pair without normalizing or
+// repeating the parallel check. A degenerate normal clears only the pair;
+// the native routine retains any previous plane. Missing pairs are a no-op.
+void update_native_tube_facet_plane(TubeFacetSeam &, const Point3 &point);
 TubeFacetSeam native_tube_facet_seam(Point3 incoming, Point3 outgoing, const Point3 &point);
 struct TubeFacetNode {
     Json surface;

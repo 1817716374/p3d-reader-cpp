@@ -160,3 +160,5 @@
 !/tests/native_surface_iso.cpp
 !/tests/native_tube_orientation.cpp
 !/tests/native_pcurve_tangent.cpp
+
+!/tests/native_tube_facet_composition.cpp

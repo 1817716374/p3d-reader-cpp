@@ -5,6 +5,9 @@ namespace p3d::swept_detail {
 // normalization is reported and leaves reversed (descending) knots in JSON,
 // just as the native caller does; such output is not a valid BsplineSurface.
 TubeAssembly reverse_tube_surface(const BsplineSurface &, bool reverse_u, TubeBudget &);
+// U then V reversal, retaining both raw knot arrays even when either native
+// normalization fails. Does not reconstruct an invalid intermediate surface.
+TubeAssembly reverse_tube_surface_both(const BsplineSurface &, TubeBudget &);
 struct TubeOrientation {
     std::vector<Json> surfaces;
     Json report;
