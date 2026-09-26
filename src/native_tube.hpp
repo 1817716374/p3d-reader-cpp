@@ -32,4 +32,16 @@ struct TubeAssembly {
 // Miter/closure follow native control-line rules, not a watertightness repair.
 TubeAssembly append_tube_patch(const BsplineSurface &assembled, const BsplineSurface &patch,
                                std::size_t prior_segments, bool close_trace, TubeBudget &budget);
+struct TubeTrace {
+    std::vector<BsplineCurve> segments; // Normalized Beziers in native processing order.
+    Json report;
+};
+// Native prepareCurve storage shares each previous end control with the next
+// segment, even across source full-multiplicity discontinuities. Source stays
+// unchanged; report records discarded incoming leading controls.
+TubeTrace prepare_tube_trace(const BsplineCurve &trace, TubeBudget &budget);
+// General tubeSurface route for an already local-frame section and world-space
+// B-spline trace. This is not the P3DSweptBody profile-placement/face API.
+TubePatch tube_surface(const BsplineCurve &section, const BsplineCurve &trace, bool rigid,
+                       TubeBudget &budget);
 } // namespace p3d::swept_detail

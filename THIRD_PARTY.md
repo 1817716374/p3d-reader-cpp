@@ -21,6 +21,6 @@
 
 依赖的许可证正文和版权声明应随对应源码或二进制分发一并保留。
 
-`src/native_tube.cpp` 保留 Bentley 版权及 Apache-2.0 标记，使用本库的有界存储、曲线求值与参数表，并保留 P3D 的斜截面分量、数值容差和接缝控制行规则。它不依赖 Bentley 运行库。内部曲面片及拼接算法不代表已经支持完整路径扫掠实体的重建。
+`src/native_tube.cpp` 与 `src/native_tube_path.cpp` 保留 Bentley 版权及 Apache-2.0 标记，使用本库的有界存储、曲线求值与参数表，并保留 P3D 的斜截面分量、数值容差和接缝控制行规则。路径分段还参考同一固定提交中的 [MSBsplineCurve_ByBezier.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bspline/MSBsplineCurve_ByBezier.cpp) 与 [bezierDPoint4d.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bezier/bezierDPoint4d.cpp)，按本库的预算控制、不可变输入和来源报告改写。它们不依赖 Bentley 运行库。内部曲面生成流程不代表已经支持完整路径扫掠实体的重建。
 
 Manifold 仅随库编译 C++ 核心，不下载依赖，也不要求额外运行时 DLL。上游源码保持原文，构建时将内部命名空间隔离为 `p3d_bundled_manifold` 和 `p3d_bundled_linalg`，避免与调用方自行链接的版本冲突；本库公开头文件不暴露其类型。当前内核使用串行后端，独立求值调用可并发执行。`LICENSE.EMBEDDED` 汇集上游头文件中的 MIT 和 Sun 声明，便于二进制分发时保留。

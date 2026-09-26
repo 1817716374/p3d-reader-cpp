@@ -20,6 +20,7 @@ unsigned sweep_tests();
 unsigned rotational_tests();
 unsigned swept_body_tests();
 unsigned native_tube_tests();
+unsigned native_tube_path_tests();
 unsigned csg_curve_solid_tests();
 unsigned native_font_selection_tests();
 unsigned native_text_style_tests();
@@ -2798,6 +2799,7 @@ int main() {
         checks += rotational_tests();
         checks += swept_body_tests();
         checks += native_tube_tests();
+        checks += native_tube_path_tests();
         checks += csg_curve_solid_tests();
         checks += bfa_tests();
         checks += bspline_trim_tests();

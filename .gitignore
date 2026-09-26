@@ -127,3 +127,4 @@
 !/tests/rotational.cpp
 !/tests/swept_body.cpp
 !/tests/native_tube.cpp
+!/tests/native_tube_path.cpp
