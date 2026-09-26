@@ -1,4 +1,5 @@
 #include "native_tube.hpp"
+#include "native_knot_normalize.hpp"
 
 namespace p3d::swept_detail {
 namespace {
@@ -116,13 +117,9 @@ TubeCurve combine_open_tube_curves(const BsplineCurve &left, const BsplineCurve 
     const double join = finite(left.knots()[n1] * length1);
     for (std::size_t i = order; i < right.knots().size(); ++i)
         knots.push_back(finite(join + (right.knots()[i] - right.knots()[order - 1]) * length2));
-    const double low = knots[order - 1], range = finite(knots[count] - low);
     // The native caller ignores normalization failure, leaving a tiny domain
     // unchanged. Successful open normalization explicitly sets trailing knots.
-    if (std::abs(range) >= 1e-10) {
-        for (auto &u : knots)
-            u = finite((u - low) / range);
-        std::fill(knots.begin() + count, knots.end(), 1.0);
+    if (curve_detail::normalize_native_knots(knots, count, order, false)) {
         report["normalized_knots"] = true;
     }
     lp.reserve(count);
