@@ -131,3 +131,4 @@
 !/tests/native_tube_close.cpp
 !/tests/native_tube_fit.cpp
 !/tests/native_tube_curve.cpp
+!/tests/native_tube_combine.cpp

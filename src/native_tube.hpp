@@ -40,6 +40,14 @@ TubeCurve fit_tube_linestring(const std::vector<Point3> &points, TubeBudget &bud
 // B-spline controls, weights, knots and closed state are copied without opening
 // or normalization; successful conversion does not prove sweepability.
 TubeCurve convert_tube_primitive(const Json &value, TubeBudget &budget);
+// Native combine kernel for two open curves of equal order, including gaps.
+// force_contiguous drops the incoming first control even if endpoints differ.
+// Otherwise native Cartesian endpoint tolerance decides that choice. This does
+// not perform the outer CurveArray wrapper's periodic opening/degree elevation.
+// Reparameterization uses control-polygon lengths, with native weighted-control
+// round trips and short-curve copy branches; source objects remain unchanged.
+TubeCurve combine_open_tube_curves(const BsplineCurve &left, const BsplineCurve &right,
+                                   bool force_contiguous, bool reparameterize, TubeBudget &budget);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order
 // and rational flags. patch is one normalized Bezier V span; assembled contains

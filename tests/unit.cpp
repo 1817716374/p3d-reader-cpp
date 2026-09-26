@@ -24,6 +24,7 @@ unsigned native_tube_path_tests();
 unsigned native_tube_close_tests();
 unsigned native_tube_fit_tests();
 unsigned native_tube_curve_tests();
+unsigned native_tube_combine_tests();
 unsigned csg_curve_solid_tests();
 unsigned native_font_selection_tests();
 unsigned native_text_style_tests();
@@ -2806,6 +2807,7 @@ int main() {
         checks += native_tube_close_tests();
         checks += native_tube_fit_tests();
         checks += native_tube_curve_tests();
+        checks += native_tube_combine_tests();
         checks += csg_curve_solid_tests();
         checks += bfa_tests();
         checks += bspline_trim_tests();
