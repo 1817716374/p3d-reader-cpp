@@ -15,13 +15,21 @@ struct TubePathSelection {
 // Closest query when reference area failed; otherwise plane intersections only.
 // Converts every member before returning. Unsupported/undefined states fail.
 TubePathSelection select_tube_path_candidate(const TubeFacetSources &, TubeBudget &);
+struct TubePathLocation {
+    Point3 point{}, tangent{};
+    Json report;
+};
+// Native fractionToPoint/tangent at the remapped candidate, without replacing
+// the original winning candidate. Tangent is with respect to fraction.
+TubePathLocation evaluate_tube_path_selection(const TubePathSelection &, TubeBudget &);
 struct TubeFacetPath {
     TubeFacetSources sources;
     TubePathSelection selection;
+    TubePathLocation location;
     Json selected_member_planarity;
 };
 // Reference and path copying followed by candidate selection, sharing budget.
-// Includes original selected member frame/range planarity. Actual point/tangent,
-// splitting and surface assembly are subsequent.
+// Includes the selected point/tangent and original member frame/range planarity.
+// Splitting and surface assembly are subsequent.
 TubeFacetPath prepare_tube_facet_path(const Json &profile, const Json &path, TubeBudget &);
 } // namespace p3d::swept_detail

@@ -13,4 +13,7 @@ NativeRangeZ native_range_z(const NativeCurveRange &);
 // Single original working member. Native frame/inverse/empty-range failure is
 // a computed false; unsupported or unsafe arithmetic throws, never false.
 Json native_primitive_planarity(const Json &, std::size_t max_controls, BezierWork);
+// Original group, before path work-copy splitting. Includes LineString points,
+// null members and nested child groups, preserving the frame search order.
+Json native_curve_vector_planarity(const Json &, std::size_t max_controls, BezierWork);
 } // namespace p3d::curve_detail

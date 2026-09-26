@@ -27,7 +27,7 @@
 
 依赖的许可证正文和版权声明应随对应源码或二进制分发一并保留。
 
-`src/native_curve_planarity.cpp` 参考上述固定 Bentley 提交中的 `cp_line.cpp`、`cp_arc.cpp`、`CurvePrimitiveBsplineCurve.cpp` 和 `cv_ops.cpp` 的范围与平面性查询流程，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的原始成员选择、变换算序、椭圆极值角度判据及局部范围容差改写，复用本库参考系与 B 样条范围实现，不依赖厂商运行库。
+`src/native_curve_planarity.cpp` 参考上述固定 Bentley 提交中的 `cp_line.cpp`、`cp_linestring.cpp`、`cp_arc.cpp`、`CurvePrimitiveBsplineCurve.cpp`、`CurveVector.cpp` 和 `cv_ops.cpp` 的范围与平面性查询流程，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的原始成员选择、变换算序、椭圆极值角度判据及局部范围容差改写，复用本库参考系与 B 样条范围实现，不依赖厂商运行库。
 
 `src/native_bezier.cpp` 参考上述 Bentley 固定提交中的 `bezeval.cpp`、`bezierDPoint4d.cpp`、`cv_properties.cpp` 和 `BSIQuadrature.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现包含齐次 Bézier 求值、边数估计和面积矩积分，并按 P3D 的权重阈值、退化向量、细分及积分算序改写；使用有界工作计数和独立存储，不依赖 Bentley 运行库。
 

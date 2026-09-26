@@ -2,6 +2,7 @@
 #include "native_curve_closest.hpp"
 #include "native_curve_plane.hpp"
 #include "native_curve_planarity.hpp"
+#include "native_pcurve_points.hpp"
 namespace p3d::swept_detail {
 namespace {
 double finite(double x) {
@@ -115,13 +116,40 @@ TubePathSelection select_tube_path_candidate(const TubeFacetSources &sources, Tu
                   {"work_used", budget.work}};
     return out;
 }
+TubePathLocation evaluate_tube_path_selection(const TubePathSelection &selection,
+                                              TubeBudget &budget) {
+    require(selection.index < selection.curves.size(), "native selected path member index");
+    const auto &curve = selection.curves[selection.index];
+    require(curve.order() <= 26 && curve.poles().size() <= budget.max_control_points,
+            "native selected path point control/order limit");
+    curve_detail::BezierWork work{budget.work, budget.max_work};
+    work.charge(curve.knots().size());
+    work.charge(std::size_t(8) * curve.order() * curve.order() + 32 * curve.order());
+    const auto value = detail::pcurve_point_tangent(curve, selection.fraction);
+    const auto domain = curve.knot_domain();
+    const double span = finite(domain[1] - domain[0]);
+    TubePathLocation out;
+    out.point = value.value.point;
+    for (unsigned i = 0; i < 3; ++i)
+        out.tangent[i] = finite(value.tangent[i] * span);
+    out.report = {{"working_index", selection.index},
+                  {"fraction", selection.fraction},
+                  {"point", out.point},
+                  {"tangent", out.tangent},
+                  {"tangent_parameter", "fraction"},
+                  {"evaluated_weight", value.value.weight},
+                  {"zero_weight_fallback", value.value.zero_weight_fallback},
+                  {"work_used", budget.work}};
+    return out;
+}
 TubeFacetPath prepare_tube_facet_path(const Json &profile, const Json &path, TubeBudget &budget) {
     auto sources = prepare_tube_facet_sources(profile, path, budget);
     auto selection = select_tube_path_candidate(sources, budget);
+    auto location = evaluate_tube_path_selection(selection, budget);
     auto planarity = curve_detail::native_primitive_planarity(
         sources.path.path.at("curves").at(selection.index).at("geometry"),
         budget.max_control_points, {budget.work, budget.max_work});
     planarity["working_index"] = selection.index;
-    return {std::move(sources), std::move(selection), std::move(planarity)};
+    return {std::move(sources), std::move(selection), std::move(location), std::move(planarity)};
 }
 } // namespace p3d::swept_detail

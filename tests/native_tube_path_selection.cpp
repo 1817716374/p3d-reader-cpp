@@ -102,6 +102,8 @@ unsigned native_tube_path_selection_tests() {
         check(r.selection.curves[1].point_at(0) == Point3{10, 0, 0} &&
                   r.selection.report.at("moved_to_next_member") == true,
               "candidate point is not silently replaced by remapped point");
+        check(r.location.point == Point3{10, 0, 0} && r.location.tangent == Point3{10, 0, 0},
+              "selected point and tangent use remapped member across a gap");
         for (double delta : {2e-10, 4e-10}) {
             const double x = 1 - delta;
             r = select(group(0, {line({x, 0, 0}, {x, 0, 0})}),
@@ -156,6 +158,7 @@ unsigned native_tube_path_selection_tests() {
     const auto r = select_tube_path_candidate(sources, b);
     check(b.work > prior && sources.path.path == before,
           "selection shares budget and does not mutate prepared sources");
+    const auto location = evaluate_tube_path_selection(r, b);
     auto planarity = curve_detail::native_primitive_planarity(
         sources.path.path.at("curves").at(r.index).at("geometry"), b.max_control_points,
         {b.work, b.max_work});
@@ -167,6 +170,7 @@ unsigned native_tube_path_selection_tests() {
     check(exact.work == total && all.selection.report == r.report,
           "combined preparation uses identical cumulative budget and report");
     check(all.selected_member_planarity == planarity, "combined selected member planarity");
+    check(all.location.report == location.report, "combined selected point tangent");
     rejects(
         [&] {
             TubeBudget small;

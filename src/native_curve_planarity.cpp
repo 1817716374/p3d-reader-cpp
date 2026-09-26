@@ -53,11 +53,11 @@ std::int32_t native_int(double x) {
 }
 void check_primitive(const Json &j, std::size_t limit, BezierWork work) {
     const auto t = j.value("_type", "");
-    require(t == "LineSegment" || t == "EllipticArc" || t == "BsplineCurve",
+    require(t == "LineSegment" || t == "LineString" || t == "EllipticArc" || t == "BsplineCurve",
             "native primitive planarity unsupported source type");
     work.charge(128);
-    if (t == "BsplineCurve") {
-        const auto &p = j.at("poles");
+    if (t == "BsplineCurve" || t == "LineString") {
+        const auto &p = j.at(t == "BsplineCurve" ? "poles" : "points");
         require(p.is_array() && p.size() % 3 == 0 && p.size() / 3 <= limit,
                 "native primitive planarity source control budget");
         for (unsigned i = 0; i < 128; ++i)
@@ -109,6 +109,24 @@ NativeCurveRange native_primitive_range(const Json &j, const Matrix4 &m, std::si
     }
     NativeCurveRange out;
     out.segments = 1;
+    if (type == "LineString") {
+        const auto &points = j.at("points");
+        bool defined = false;
+        for (std::size_t i = 0; i < points.size(); i += 3) {
+            const Point3 p{number(points[i]), number(points[i + 1]), number(points[i + 2])};
+            if (disconnect(p)) {
+                // Base924 reuses the preceding temporary; at the first point
+                // that temporary is uninitialized. Do not invent its value.
+                require(defined, "native LineString range begins with undefined disconnect state");
+                continue;
+            }
+            const auto transformed = transform(m, p, false);
+            defined = true;
+            if (!disconnect(transformed))
+                extend(out, transformed);
+        }
+        return out;
+    }
     if (type == "LineSegment") {
         for (const auto &key : {"point0", "point1"}) {
             const auto p = point(j.at("segment"), key);
@@ -168,11 +186,9 @@ NativeRangeZ native_range_z(const NativeCurveRange &range) {
     out.planar = out.tolerance >= out.rounded_span;
     return out;
 }
-Json native_primitive_planarity(const Json &source, std::size_t limit, BezierWork work) {
-    check_primitive(source, limit, work);
-    const Json group{{"_type", "CurveVector"},
-                     {"type", 0},
-                     {"curves", Json::array({Json{{"geometry", source}}})}};
+namespace {
+Json planarity(const Json &group, const std::function<NativeCurveRange(const Matrix4 &)> &get_range,
+               BezierWork work) {
     const auto frame = native_curve_frame(group, 0);
     require(frame.at("status") != "not_evaluated",
             "native primitive planarity frame not evaluated");
@@ -201,7 +217,7 @@ Json native_primitive_planarity(const Json &source, std::size_t limit, BezierWor
                              local[i][2] * -world[2][3]);
     }
     out["world_to_local"] = local;
-    const auto range = native_primitive_range(source, local, limit, work);
+    const auto range = get_range(local);
     if (!range.present) {
         out["reason"] = "empty_range";
         return out;
@@ -214,5 +230,79 @@ Json native_primitive_planarity(const Json &source, std::size_t limit, BezierWor
                 {"planar", z.planar},
                 {"work_used", work.used}});
     return out;
+}
+// Preflight the complete tree before the frame query makes its own working data.
+void preflight_vector(const Json &group, std::size_t limit, std::size_t &controls, BezierWork work,
+                      unsigned depth) {
+    work.charge(1);
+    require(depth < 80 && group.value("_type", "") == "CurveVector",
+            "native group planarity type/depth");
+    const auto &members = group.at("curves");
+    if (members.is_null())
+        return;
+    require(members.is_array(), "native group planarity member array");
+    work.charge(members.size());
+    for (const auto &member : members) {
+        if (member.is_null())
+            continue;
+        const auto &g = member.at("geometry");
+        if (g.is_null())
+            continue;
+        const auto type = g.value("_type", "");
+        if (type == "CurveVector")
+            preflight_vector(g, limit, controls, work, depth + 1);
+        else {
+            check_primitive(g, limit, work);
+            const std::size_t count = type == "BsplineCurve"  ? g.at("poles").size() / 3
+                                      : type == "LineString"  ? g.at("points").size() / 3
+                                      : type == "LineSegment" ? 2
+                                                              : 3;
+            require(controls <= limit && count <= limit - controls,
+                    "native group planarity cumulative source control budget");
+            controls += count;
+        }
+    }
+}
+NativeCurveRange vector_range(const Json &group, const Matrix4 &m, std::size_t limit,
+                              BezierWork work, unsigned depth) {
+    work.charge(1);
+    require(depth < 80, "native group range depth");
+    NativeCurveRange out;
+    for (const auto &member : group.at("curves")) {
+        if (member.is_null())
+            continue;
+        const auto &g = member.at("geometry");
+        if (g.is_null())
+            continue;
+        const auto r = g.value("_type", "") == "CurveVector"
+                           ? vector_range(g, m, limit - out.segment_controls, work, depth + 1)
+                           : native_primitive_range(g, m, limit - out.segment_controls, work);
+        if (r.present) {
+            extend(out, r.low);
+            extend(out, r.high);
+        }
+        out.segment_controls += r.segment_controls;
+        out.segments += r.segments;
+        out.skipped_intervals += r.skipped_intervals;
+        out.extrema_evaluations += r.extrema_evaluations;
+        out.rejected_weights += r.rejected_weights;
+    }
+    return out;
+}
+} // namespace
+Json native_primitive_planarity(const Json &source, std::size_t limit, BezierWork work) {
+    check_primitive(source, limit, work);
+    const Json group{{"_type", "CurveVector"},
+                     {"type", 0},
+                     {"curves", Json::array({Json{{"geometry", source}}})}};
+    return planarity(
+        group, [&](const Matrix4 &m) { return native_primitive_range(source, m, limit, work); },
+        work);
+}
+Json native_curve_vector_planarity(const Json &group, std::size_t limit, BezierWork work) {
+    std::size_t controls = 0;
+    preflight_vector(group, limit, controls, work, 0);
+    return planarity(
+        group, [&](const Matrix4 &m) { return vector_range(group, m, limit, work, 0); }, work);
 }
 } // namespace p3d::curve_detail
