@@ -21,4 +21,15 @@ Matrix3 advance_tube_frame(const Matrix3 &previous, Point3 tangent, bool rigid);
 // Frame is passed by value: callers explicitly carry the returned frame forward.
 TubePatch tube_patch(const BsplineCurve &section, const BsplineCurve &segment, Matrix3 frame,
                      bool rigid, TubeBudget &budget);
+struct TubeAssembly {
+    Json surface;
+    Json report;
+};
+// General tube-surface assembly callback, not the separate native face-patch
+// enumeration. Inputs come from one trace/profile: matching U layout, V order
+// and rational flags. patch is one normalized Bezier V span; assembled contains
+// prior_segments spans. close_trace is requested only for the final append.
+// Miter/closure follow native control-line rules, not a watertightness repair.
+TubeAssembly append_tube_patch(const BsplineSurface &assembled, const BsplineSurface &patch,
+                               std::size_t prior_segments, bool close_trace, TubeBudget &budget);
 } // namespace p3d::swept_detail

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) Bentley Systems, Incorporated. All rights reserved.
-// Adapted from imodel-native bspdsurf.cpp tube-frame/patch algorithms.
+// Adapted from imodel-native bspdsurf.cpp tube-frame/patch/assembly algorithms,
+// bsputil.cpp line intersection and bspcurv.cpp contiguous curve combination.
 // Changes: bounded C++/JSON storage; P3D preserves profile Z; explicit native
 // tolerances and finite-arithmetic checks; immutable inputs and frame reports.
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
@@ -178,6 +179,192 @@ TubePatch tube_patch(const BsplineCurve &section, const BsplineCurve &segment, M
              {"control_points", count},
              {"work_used", budget.work},
              {"profile_z_preserved", true},
+             {"surface_validity", "not_certified"}}};
+}
+
+namespace {
+Point3 difference(const Point3 &a, const Point3 &b) {
+    return {finite(a[0] - b[0]), finite(a[1] - b[1]), finite(a[2] - b[2])};
+}
+// Returns closest points on the infinite control lines. Native segment status
+// codes do not affect the assembly callback; there is no clipping or skew-gap
+// tolerance check. On a parallel/degenerate pair the endpoints stay unchanged.
+bool intersect_lines(const Point3 &p0, Point3 &p1, Point3 &p2, const Point3 &p3) {
+    const auto aa = difference(p1, p0), bb = difference(p3, p2), cc = difference(p2, p0);
+    const double a = dot(aa, cc), b = dot(aa, aa), c = dot(aa, bb), d = dot(bb, cc),
+                 f = dot(bb, bb), denominator = finite(b * f - c * c);
+    if (!(std::abs(denominator) > 1e-12))
+        return false;
+    const double u = finite((a * f - c * d) / denominator),
+                 v = finite((c * a - b * d) / denominator);
+    Point3 q0{}, q1{};
+    for (unsigned k = 0; k < 3; ++k) {
+        q0[k] = finite(p0[k] + aa[k] * u);
+        q1[k] = finite(p2[k] + bb[k] * v);
+    }
+    p1 = q0;
+    p2 = q1;
+    return true;
+}
+bool same_point(const Point3 &a, const Point3 &b, double tolerance) {
+    for (unsigned k = 0; k < 3; ++k)
+        if (std::abs(finite(a[k] - b[k])) > tolerance)
+            return false;
+    return true;
+}
+double first_rows_range(const BsplineSurface &s) {
+    Point3 low{}, high{};
+    low.fill(std::numeric_limits<double>::max());
+    high.fill(-std::numeric_limits<double>::max());
+    for (std::size_t i = 0; i < 2 * s.u().pole_count(); ++i) {
+        if (s.rational() && std::abs(s.weights()[i]) <= 1e-12)
+            continue; // Native range helper's weight cutoff, not unWeightPoles.
+        const auto p = s.rational() ? unweight(s.poles()[i], s.weights()[i]) : s.poles()[i];
+        for (unsigned k = 0; k < 3; ++k) {
+            low[k] = std::min(low[k], p[k]);
+            high[k] = std::max(high[k], p[k]);
+        }
+    }
+    double extent = 0;
+    for (unsigned k = 0; k < 3; ++k)
+        extent = std::max(extent, std::abs(finite(high[k] - low[k])));
+    return extent;
+}
+void change_weights(std::vector<Point3> &poles, const std::vector<double> &weights,
+                    std::size_t begin, std::size_t end, bool divide) {
+    if (weights.empty())
+        return;
+    for (std::size_t i = begin; i < end; ++i) {
+        const double factor = divide ? finite(1 / weights[i]) : weights[i];
+        for (auto &x : poles[i])
+            x = finite(x * factor);
+    }
+}
+Json join_rows(std::vector<Point3> &a, std::size_t a0, std::size_t a1, std::vector<Point3> &b,
+               std::size_t b0, std::size_t b1, std::size_t nu, double tolerance, bool average) {
+    std::size_t equal = 0, intersections = 0, parallel = 0;
+    for (std::size_t j = 0; j < nu; ++j) {
+        auto &p1 = a[a1 + j], &p2 = b[b0 + j];
+        if (same_point(p1, p2, tolerance)) {
+            ++equal;
+        } else if (intersect_lines(a[a0 + j], p1, p2, b[b1 + j])) {
+            ++intersections;
+            if (average) {
+                for (unsigned k = 0; k < 3; ++k)
+                    p1[k] = finite(p1[k] + .5 * (p2[k] - p1[k]));
+                p2 = p1;
+            }
+        } else {
+            ++parallel;
+        }
+    }
+    return {{"within_tolerance", equal},
+            {"line_intersections", intersections},
+            {"parallel_or_degenerate", parallel}};
+}
+} // namespace
+
+TubeAssembly append_tube_patch(const BsplineSurface &assembled, const BsplineSurface &patch,
+                               std::size_t prior_segments, bool close_trace, TubeBudget &budget) {
+    const auto nu = assembled.u().pole_count(), na = assembled.v().pole_count(),
+               nb = patch.v().pole_count();
+    const auto order = assembled.v().order();
+    require(!assembled.v().closed() && !patch.v().closed() && order <= 26 &&
+                patch.v().order() == order && nb == order && assembled.u().order() <= 26 &&
+                patch.u().order() == assembled.u().order() && patch.u().pole_count() == nu &&
+                patch.u().closed() == assembled.u().closed() &&
+                patch.u().knots() == assembled.u().knots() &&
+                patch.rational() == assembled.rational() && assembled.boundaries().is_null() &&
+                patch.boundaries().is_null() && assembled.hole_origin() == 0 &&
+                patch.hole_origin() == 0,
+            "native tube assembly requires matching untrimmed tube patches");
+    require(prior_segments > 0 && prior_segments <= INT32_MAX &&
+                prior_segments <= (std::numeric_limits<std::size_t>::max() - 1) / (nb - 1) &&
+                na == prior_segments * (nb - 1) + 1,
+            "native tube assembly segment count does not match prior grid");
+    const auto &ka = assembled.v().knots(), &kb = patch.v().knots();
+    for (std::size_t k = 0; k < kb.size(); ++k)
+        require(kb[k] == (k < nb ? 0. : 1.), "native tube patch must be normalized Bezier V");
+    for (std::size_t k = 0; k < order; ++k)
+        require(ka[k] == 0 && ka[na + k] == 1,
+                "native tube assembly requires normalized clamped V knots");
+    require(na <= std::numeric_limits<std::size_t>::max() - nb + 1,
+            "native tube assembly row count overflow");
+    const auto nv = na + nb - 1;
+    require(nv <= INT32_MAX && nu <= INT32_MAX && nu <= budget.max_control_points / nv,
+            "native tube assembly control grid budget exceeded");
+    const auto count = nu * nv;
+    require(count <= std::numeric_limits<std::size_t>::max() / 32,
+            "native tube assembly work size overflow");
+    const auto work = 5 * count + 16 * nu;
+    require(budget.work <= budget.max_work && work <= budget.max_work - budget.work,
+            "native tube assembly work budget exceeded");
+    budget.work += work;
+    // Tolerance is determined from the FIRST two rows of the previous surface,
+    // not the rows at this join and not the extent of the whole surface.
+    const double intersection_tolerance = finite(first_rows_range(assembled) * 1e-4),
+                 point_tolerance = finite(intersection_tolerance * .25);
+    auto a = assembled.poles(), b = patch.poles();
+    auto weights = assembled.weights();
+    const auto a0 = (na - 2) * nu, a1 = (na - 1) * nu;
+    change_weights(b, patch.weights(), 0, 2 * nu, true);
+    change_weights(a, weights, a0, na * nu, true);
+    auto join = join_rows(a, a0, a1, b, 0, nu, nu, point_tolerance, false);
+    change_weights(b, patch.weights(), 0, 2 * nu, false);
+    change_weights(a, weights, a0, na * nu, false);
+    // Force-contiguous combine keeps the left join row and drops the right
+    // first row, including its weights. It does not average/rescale weights.
+    a.insert(a.end(), b.begin() + nu, b.end());
+    if (assembled.rational())
+        weights.insert(weights.end(), patch.weights().begin() + nu, patch.weights().end());
+    std::vector<double> knots;
+    knots.reserve(nv + order);
+    for (std::size_t k = 0; k < ka.size() - 1; ++k)
+        knots.push_back(finite(ka[k] * double(prior_segments)));
+    const double end = finite(ka[na] * double(prior_segments));
+    for (std::size_t k = order; k < kb.size(); ++k)
+        knots.push_back(finite(end + (kb[k] - kb[order - 1])));
+    const double start = knots[order - 1], span = finite(knots[nv] - start);
+    require(span > 0, "native tube assembly empty knot span");
+    for (auto &k : knots)
+        k = finite((k - start) / span);
+    std::fill(knots.begin() + nv, knots.end(), 1.);
+    Json closure = nullptr;
+    if (close_trace) {
+        change_weights(a, weights, 0, count, true);
+        closure = join_rows(a, (nv - 2) * nu, (nv - 1) * nu, a, 0, nu, nu, point_tolerance, true);
+        change_weights(a, weights, 0, count, false);
+    }
+    Json xyz = Json::array();
+    xyz.get_ref<Json::array_t &>().reserve(count * 3);
+    for (auto &p : a)
+        for (auto x : p)
+            xyz.push_back(x);
+    Json surface{{"_type", "BsplineSurface"},
+                 {"orderU", assembled.u().order()},
+                 {"orderV", order},
+                 {"closedU", assembled.u().closed()},
+                 {"closedV", false},
+                 {"numPolesU", nu},
+                 {"numPolesV", nv},
+                 {"knotsU", assembled.u().knots()},
+                 {"knotsV", knots},
+                 {"poles", std::move(xyz)},
+                 {"weights", assembled.rational() ? Json(weights) : Json()},
+                 {"numRulesU", nv},
+                 {"numRulesV", nu},
+                 {"holeOrigin", 0},
+                 {"boundaries", nullptr}};
+    BsplineSurface::from_bgfb(surface);
+    return {std::move(surface),
+            {{"scope", "native_tube_surface_assembly"},
+             {"prior_segments", prior_segments},
+             {"intersection_tolerance", intersection_tolerance},
+             {"point_tolerance", point_tolerance},
+             {"join", std::move(join)},
+             {"closure", std::move(closure)},
+             {"control_points", count},
+             {"work_used", budget.work},
              {"surface_validity", "not_certified"}}};
 }
 } // namespace p3d::swept_detail
