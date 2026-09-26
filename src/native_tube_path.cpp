@@ -8,47 +8,17 @@
 #include "native_tube.hpp"
 #include "bspline_frame.hpp"
 #include "native_curve_affine.hpp"
+#include "native_bezier_support.hpp"
 
 namespace p3d::swept_detail {
 namespace {
 using H = std::array<double, 4>;
-double finite(double v) {
-    require(std::isfinite(v), "native tube path nonfinite arithmetic");
-    return v;
-}
 void charge(TubeBudget &budget, std::size_t amount) {
     require(budget.work <= budget.max_work && amount <= budget.max_work - budget.work,
             "native tube path work budget exceeded");
     budget.work += amount;
 }
-bool null_interval(double a, double b) {
-    // Base isNullKnotInterval: strict comparison, sensitive to the raw knot
-    // domain. Normalizing before this decision would change segment selection.
-    const double tolerance = finite(((std::abs(a) + 1) + std::abs(b)) * 1e-14);
-    return tolerance > std::abs(finite(a - b));
-}
-void saturate(std::vector<H> &p, std::vector<double> k) {
-    const auto degree = p.size() - 1;
-    const double left = k[degree - 1], right = k[degree];
-    // Native two-sided knot insertion in the local support. The order <= 26
-    // and sorted support bound both triangular passes by degree squared.
-    while (k.front() < left) {
-        for (std::size_t i = 0; k[i] < left; ++i) {
-            const double f1 = finite((left - k[i]) / (k[i + degree] - k[i])), f0 = 1 - f1;
-            for (unsigned axis = 0; axis < 4; ++axis)
-                p[i][axis] = finite(f0 * p[i][axis] + f1 * p[i + 1][axis]);
-            k[i] = k[i + 1];
-        }
-    }
-    while (right < k.back()) {
-        for (std::size_t i = k.size() - 1, j = degree; right < k[i]; --i, --j) {
-            const double f1 = finite((right - k[i]) / (k[i - degree] - k[i])), f0 = 1 - f1;
-            for (unsigned axis = 0; axis < 4; ++axis)
-                p[j][axis] = finite(f0 * p[j][axis] + f1 * p[j - 1][axis]);
-            k[i] = k[i - 1];
-        }
-    }
-}
+using curve_detail::bezier_support::null_interval;
 } // namespace
 
 TubeTrace prepare_tube_trace(const BsplineCurve &trace, TubeBudget &budget) {
@@ -78,22 +48,7 @@ TubeTrace prepare_tube_trace(const BsplineCurve &trace, TubeBudget &budget) {
         const double u0 = knots[i + degree], u1 = knots[i + order];
         if (null_interval(u0, u1))
             continue;
-        std::vector<H> poles;
-        poles.reserve(order);
-        for (std::size_t j = 0; j < order; ++j) {
-            auto index = std::int64_t(i + j) + trace.periodic_pole_shift();
-            if (trace.closed()) {
-                index %= std::int64_t(n);
-                if (index < 0)
-                    index += std::int64_t(n);
-            }
-            require(index >= 0 && std::uint64_t(index) < n, "native tube trace support index");
-            const auto &p = trace.poles()[std::size_t(index)];
-            poles.push_back(
-                {p[0], p[1], p[2], trace.rational() ? trace.weights()[std::size_t(index)] : 1.});
-        }
-        saturate(poles,
-                 std::vector<double>(knots.begin() + i + 1, knots.begin() + i + 1 + 2 * degree));
+        auto poles = curve_detail::bezier_support::extract(trace, i);
         if (!result.segments.empty()) {
             if (poles.front() != previous_end)
                 replacements.push_back({{"segment", result.segments.size()},
