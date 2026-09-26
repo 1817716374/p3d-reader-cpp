@@ -135,3 +135,4 @@
 !/tests/native_tube_elevate.cpp
 !/tests/native_tube_array.cpp
 !/tests/native_tube_placement.cpp
+!/tests/native_bezier.cpp
