@@ -14,7 +14,7 @@ struct SolidMeshResult {
     std::vector<std::optional<std::array<Point2, 3>>> surface_parameters;
 };
 // Derived faces for DgnBox, DgnCone, DgnSphere, DgnTorusPipe,
-// DgnExtrusion, DgnRuledSweep and P3DSectionLoft.
+// DgnExtrusion, DgnRuledSweep, DgnRotationalSweep and P3DSectionLoft.
 // Requires a nondegenerate frame. Boxes need nonzero widths with consistent
 // signs between the two ends. Other solids and collapsed/crossing boxes are reported
 // as not meshed. Cones use an explicit uniform angular segment count (>=3),
@@ -35,6 +35,9 @@ struct SolidMeshResult {
 // circle_segments controls arc/fraction sampling and V bands for nonplanar ruled
 // patches. B-spline sampling includes the knot breaks of all corresponding sections.
 // These derived meshes do not claim a world-space error bound or native UVs.
+// Rotational sweeps reuse supported profiles, rotate about the stored axis ray,
+// and support nonzero sweeps up to one revolution. The native full-circle cap
+// predicate is distinct from exact seam closure. Axial samples stay stationary.
 // Section lofts use SectionLoft::mesh with max_uv_edge=1/circle_segments;
 // its source-curve, denominator, join and planar-cap requirements still apply.
 // Side surface parameters and original native face IDs are retained separately
@@ -90,9 +93,11 @@ struct LoftSourceTransformResult {
 LoftSourceTransformResult
 transform_bgfb_section_loft(const Json &table, const Matrix4 &matrix,
                             const LoftSourceTransformOptions &options = {});
-// The same source-curve rules for a section loft, extrusion or ruled sweep.
+// The same source-curve rules for a section loft, extrusion, ruled or rotational sweep.
 // Extrusion vectors receive the linear transform before the base curve;
 // ruled sections are visited in their stored order. Rebuild from transformed.
+// Rotational placement reverses the sweep for reflected frames, then transforms
+// its axis ray and base curves. Zero/overflowing normalization lengths are rejected.
 using CurveSolidTransformOptions = LoftSourceTransformOptions;
 using CurveSolidTransformResult = LoftSourceTransformResult;
 CurveSolidTransformResult

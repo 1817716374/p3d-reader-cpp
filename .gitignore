@@ -124,3 +124,4 @@
 !/tests/component_properties.cpp
 !/tests/sweep.cpp
 !/tests/csg_curve_solids.cpp
+!/tests/rotational.cpp

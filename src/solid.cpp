@@ -18,7 +18,8 @@ SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &op
             return mesh_bgfb_sphere(table, options, circle_segments);
         if (table.at("_type") == "DgnTorusPipe")
             return mesh_bgfb_torus(table, options, circle_segments);
-        if (table.at("_type") == "DgnExtrusion" || table.at("_type") == "DgnRuledSweep")
+        if (table.at("_type") == "DgnExtrusion" || table.at("_type") == "DgnRuledSweep" ||
+            table.at("_type") == "DgnRotationalSweep")
             return mesh_bgfb_sweep(table, options, circle_segments);
         if (table.at("_type") == "P3DSectionLoft")
             return mesh_bgfb_section_loft(table, options, circle_segments);

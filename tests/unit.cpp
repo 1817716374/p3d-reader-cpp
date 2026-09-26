@@ -17,6 +17,7 @@ unsigned cone_tests();
 unsigned sphere_tests();
 unsigned torus_tests();
 unsigned sweep_tests();
+unsigned rotational_tests();
 unsigned csg_curve_solid_tests();
 unsigned native_font_selection_tests();
 unsigned native_text_style_tests();
@@ -2792,6 +2793,7 @@ int main() {
         checks += sphere_tests();
         checks += torus_tests();
         checks += sweep_tests();
+        checks += rotational_tests();
         checks += csg_curve_solid_tests();
         checks += bfa_tests();
         checks += bspline_trim_tests();

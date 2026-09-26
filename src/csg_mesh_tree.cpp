@@ -499,6 +499,7 @@ std::shared_ptr<Runtime> load_archive(const Json &archive, Work &work,
                 const auto index = solid ? out.solid_sources.size() : out.sources.size();
                 const bool curve_solid = table.at("_type") == "P3DSectionLoft" ||
                                          table.at("_type") == "DgnExtrusion" ||
+                                         table.at("_type") == "DgnRotationalSweep" ||
                                          table.at("_type") == "DgnRuledSweep";
                 if (curve_solid) {
                     SolidMeshResult original;

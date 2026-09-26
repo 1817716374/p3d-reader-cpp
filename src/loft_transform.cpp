@@ -167,12 +167,50 @@ CurveSolidTransformResult transform_bgfb_curve_solid(const Json &table, const Ma
     LoftSourceTransformResult out;
     try {
         const auto type = table.at("_type").get<std::string>();
-        require(type == "P3DSectionLoft" || type == "DgnExtrusion" || type == "DgnRuledSweep",
+        require(type == "P3DSectionLoft" || type == "DgnExtrusion" || type == "DgnRuledSweep" ||
+                    type == "DgnRotationalSweep",
                 "curve solid transform source type");
         Placement placement(matrix, options);
         Json transformed = table;
+        bool reversed_rotation = false;
         try {
-            if (type == "DgnExtrusion") {
+            if (type == "DgnRotationalSweep") {
+                // Native placement tests the oriented transformed frame before
+                // transforming the axis ray and the base curve array.
+                Point3 x{}, y{}, z{};
+                for (unsigned i = 0; i < 3; ++i) {
+                    x[i] = matrix[i][0];
+                    y[i] = matrix[i][1];
+                    z[i] = matrix[i][2];
+                }
+                Point3 n{x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2],
+                         x[0] * y[1] - x[1] * y[0]};
+                auto normalize = [](Point3 &p) {
+                    const double length = std::sqrt((p[0] * p[0] + p[1] * p[1]) + p[2] * p[2]);
+                    require(std::isfinite(length) && length > 0,
+                            "rotational placement degenerate or overflowing handedness frame");
+                    for (auto &a : p)
+                        a /= length;
+                };
+                normalize(n);
+                normalize(z);
+                reversed_rotation = (n[1] * z[1] + n[0] * z[0]) + n[2] * z[2] < 0;
+                const auto sweep = number(transformed.at("sweepRadians"));
+                transformed["sweepRadians"] = reversed_rotation ? -sweep : sweep;
+                auto &axis = transformed.at("axis");
+                placement.path = "/axis";
+                const auto origin = placement.point(
+                    {number(axis.at("x")), number(axis.at("y")), number(axis.at("z"))}, 1);
+                const auto direction = placement.point(
+                    {number(axis.at("ux")), number(axis.at("uy")), number(axis.at("uz"))}, 0);
+                for (unsigned i = 0; i < 3; ++i) {
+                    axis[std::string(1, "xyz"[i])] = origin[i];
+                    axis[std::string("u") + "xyz"[i]] = direction[i];
+                }
+                require(transformed.at("baseCurve").at("_type") == "CurveVector",
+                        "rotational base curve array required");
+                placement.curve(transformed.at("baseCurve"), 0, "/baseCurve");
+            } else if (type == "DgnExtrusion") {
                 auto &v = transformed.at("extrusionVector");
                 placement.path = "/extrusionVector";
                 const auto p =
@@ -224,6 +262,8 @@ CurveSolidTransformResult transform_bgfb_curve_solid(const Json &table, const Ma
                       {"surface_mapping", "reconstruct_from_transformed_source"},
                       {"mesh_status", "not_evaluated"}};
         out.status = "transformed";
+        if (type == "DgnRotationalSweep")
+            out.report["rotational_sweep_reversed"] = reversed_rotation;
     } catch (const std::exception &e) {
         out.transformed = nullptr;
         out.report["reason"] = e.what();

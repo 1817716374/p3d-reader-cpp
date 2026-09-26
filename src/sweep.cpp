@@ -205,9 +205,35 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
         require(circle_segments >= 3 && circle_segments <= options.max_points,
                 "sweep angular segment budget");
         const bool extrusion = table.at("_type") == "DgnExtrusion";
-        const bool capped = table.at("capped").get<bool>();
+        const bool rotational = table.at("_type") == "DgnRotationalSweep";
+        bool capped = table.at("capped").get<bool>();
+        Point3 axis_origin{}, axis_direction{};
+        double rotation_sweep = 0;
+        unsigned rotation_bands = 0;
+        bool rotation_full = false, rotation_joined = false;
         Profiles reader{{}, 0, 0, options};
-        if (extrusion) {
+        if (rotational) {
+            const auto &axis = table.at("axis");
+            for (unsigned i = 0; i < 3; ++i) {
+                axis_origin[i] = number(axis.at(std::string(1, "xyz"[i])));
+                axis_direction[i] = number(axis.at(std::string("u") + "xyz"[i]));
+            }
+            const double squared_length = dot(axis_direction, axis_direction);
+            require(std::isfinite(squared_length) && squared_length > 0,
+                    "rotational sweep zero or overflowing axis");
+            const double length = std::sqrt(squared_length);
+            for (auto &v : axis_direction)
+                v /= length;
+            rotation_sweep = number(table.at("sweepRadians"));
+            require(rotation_sweep != 0 && std::abs(rotation_sweep) <= tau,
+                    "rotational sweep zero or multiple revolutions not supported");
+            rotation_full = std::abs(rotation_sweep) > 6.283185307178586;
+            rotation_joined = std::abs(rotation_sweep) == tau;
+            capped = capped && !rotation_full;
+            rotation_bands =
+                std::max(1u, unsigned(std::ceil(std::abs(rotation_sweep) / tau * circle_segments)));
+            reader.profiles.push_back(reader.parse(table.at("baseCurve")));
+        } else if (extrusion) {
             reader.profiles.push_back(reader.parse(table.at("baseCurve")));
             auto top = reader.profiles.front();
             const auto &v = table.at("extrusionVector");
@@ -365,9 +391,54 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
                     ring.back() = ring.front();
                 }
         }
+        std::size_t stationary_samples = 0, collapsed_axis_triangles = 0;
+        if (rotational) {
+            const auto base = rows.front();
+            require(rotation_bands < options.max_points, "rotational sweep row budget");
+            std::size_t row_corners = 0;
+            for (const auto &ring : base) {
+                require(ring.size() <= options.max_corners - row_corners,
+                        "rotational sweep row index budget");
+                row_corners += ring.size();
+            }
+            require(row_corners > 0 &&
+                        std::size_t(rotation_bands) + 1 <= options.max_corners / row_corners,
+                    "rotational sweep row index budget");
+            for (unsigned row = 1; row <= rotation_bands; ++row) {
+                auto next = base;
+                if (!(rotation_joined && row == rotation_bands)) {
+                    const double angle = rotation_sweep * (double(row) / rotation_bands);
+                    const double cosine = std::cos(angle), sine = std::sin(angle);
+                    for (std::size_t l = 0; l < base.size(); ++l)
+                        for (std::size_t e = 0; e < base[l].size(); ++e) {
+                            if (e + 1 == base[l].size() && first.loops[l].type != 1) {
+                                next[l][e] = next[l].front();
+                                continue;
+                            }
+                            const auto delta = minus(vertices[base[l][e]], axis_origin);
+                            const auto tangent = cross(axis_direction, delta);
+                            if (tangent == Point3{}) {
+                                ++stationary_samples;
+                                continue;
+                            }
+                            const double axial = dot(axis_direction, delta);
+                            Point3 point{};
+                            for (unsigned k = 0; k < 3; ++k)
+                                point[k] = axis_origin[k] + cosine * delta[k] + sine * tangent[k] +
+                                           (1 - cosine) * axial * axis_direction[k];
+                            next[l][e] = vertex(point);
+                        }
+                }
+                rows.push_back(std::move(next));
+            }
+        }
         std::vector<Triangle> triangles;
         std::vector<FaceId> ids;
         auto emit = [&](Triangle t, FaceId id) {
+            if (rotational && (t[0] == t[1] || t[0] == t[2] || t[1] == t[2])) {
+                ++collapsed_axis_triangles;
+                return;
+            }
             require(triangles.size() < options.max_triangles &&
                         triangles.size() < options.max_corners / 3,
                     "sweep derived triangle/corner budget");
@@ -405,9 +476,22 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
                                        {"caps_emitted", capped}});
             auto a = std::move(bottom_mesh.faces), b = std::move(top_mesh.faces);
             require(!a.empty() && !b.empty(), "sweep empty caps");
-            const auto direction =
-                minus(vertices[rows[1][group.front()][0]], vertices[rows[0][group.front()][0]]);
-            const auto orientation = dot(bottom_mesh.report.at("normal").get<Point3>(), direction);
+            const auto normal = bottom_mesh.report.at("normal").get<Point3>();
+            double orientation = 0;
+            for (auto index : rows[0][group.front()]) {
+                if (!rotational) {
+                    orientation = dot(normal, minus(vertices[rows[1][group.front()][0]],
+                                                    vertices[rows[0][group.front()][0]]));
+                    break;
+                }
+                // Tangent at V=0 remains well-defined even for a full turn and
+                // when the first boundary sample lies on the rotation axis.
+                orientation =
+                    dot(normal, cross(axis_direction, minus(vertices[index], axis_origin))) *
+                    rotation_sweep;
+                if (orientation != 0)
+                    break;
+            }
             require(std::isfinite(orientation) && orientation != 0,
                     "sweep initial section has no transverse direction");
             if (orientation < 0)
@@ -453,9 +537,9 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
             }
         }
         std::size_t derived_bands = 0;
-        for (std::size_t row = 0; row + 1 < profiles.size(); ++row) {
+        for (std::size_t row = 0; row + 1 < rows.size(); ++row) {
             unsigned bands = 1;
-            for (std::size_t l = 0; l < first.loops.size(); ++l)
+            for (std::size_t l = 0; !rotational && l < first.loops.size(); ++l)
                 for (std::size_t e = 0; e < edges[l].size(); ++e) {
                     const auto a = vertices[rows[row][l][e]], b = vertices[rows[row][l][e + 1]],
                                c = vertices[rows[row + 1][l][e]],
@@ -489,8 +573,8 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
                         const auto a = previous[l][e], b = previous[l][e + 1], c = next[l][e],
                                    d = next[l][e + 1];
                         const auto source = edges[l][e];
-                        FaceId id{std::int64_t(row), std::int64_t(source.primitive),
-                                  std::int64_t(source.component)};
+                        FaceId id{rotational ? 0 : std::int64_t(row),
+                                  std::int64_t(source.primitive), std::int64_t(source.component)};
                         Triangle x{a, b, d}, y{a, d, c};
                         if (reverse[l]) {
                             std::swap(x[1], x[2]);
@@ -532,6 +616,17 @@ SolidMeshResult mesh_bgfb_sweep(const Json &table, const PolyfaceMeshOptions &op
         out.derived.report["curve_work_steps"] = reader.curve_work;
         out.derived.report["curve_denominators"] = std::move(reader.denominator_reports);
         out.derived.report["bspline_sampling"] = "uniform_fraction_with_corresponding_knot_breaks";
+        if (rotational) {
+            out.derived.report["scope"] = "derived_rotational_curve_sweep";
+            out.derived.report["rotation_bands"] = rotation_bands;
+            out.derived.report["native_full_circle"] = rotation_full;
+            out.derived.report["native_has_caps"] = capped;
+            out.derived.report["rotation_seam_joined"] = rotation_joined;
+            out.derived.report["stationary_axis_sample_visits"] = stationary_samples;
+            out.derived.report["collapsed_axis_triangles_omitted"] = collapsed_axis_triangles;
+            out.derived.report["source_num_v_rules"] = table.value("numVRules", Json());
+            out.derived.report["native_v_rule_sampling"] = "not_reproduced";
+        }
         if (out.derived.status == "meshed")
             out.face_indices = std::move(ids);
     } catch (const std::exception &e) {
