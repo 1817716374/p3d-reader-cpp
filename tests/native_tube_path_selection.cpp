@@ -1,4 +1,5 @@
 #include "native_tube_path_selection.hpp"
+#include "native_curve_planarity.hpp"
 #include <future>
 using namespace p3d;
 using namespace p3d::swept_detail;
@@ -153,14 +154,19 @@ unsigned native_tube_path_selection_tests() {
     auto before = sources.path.path;
     const auto prior = b.work;
     const auto r = select_tube_path_candidate(sources, b);
-    const auto total = b.work;
-    check(total > prior && sources.path.path == before,
+    check(b.work > prior && sources.path.path == before,
           "selection shares budget and does not mutate prepared sources");
+    auto planarity = curve_detail::native_primitive_planarity(
+        sources.path.path.at("curves").at(r.index).at("geometry"), b.max_control_points,
+        {b.work, b.max_work});
+    planarity["working_index"] = r.index;
+    const auto total = b.work;
     TubeBudget exact;
     exact.max_work = total;
     auto all = prepare_tube_facet_path(fallback, path, exact);
     check(exact.work == total && all.selection.report == r.report,
           "combined preparation uses identical cumulative budget and report");
+    check(all.selected_member_planarity == planarity, "combined selected member planarity");
     rejects(
         [&] {
             TubeBudget small;

@@ -1,6 +1,7 @@
 #include "native_tube_path_selection.hpp"
 #include "native_curve_closest.hpp"
 #include "native_curve_plane.hpp"
+#include "native_curve_planarity.hpp"
 namespace p3d::swept_detail {
 namespace {
 double finite(double x) {
@@ -117,6 +118,10 @@ TubePathSelection select_tube_path_candidate(const TubeFacetSources &sources, Tu
 TubeFacetPath prepare_tube_facet_path(const Json &profile, const Json &path, TubeBudget &budget) {
     auto sources = prepare_tube_facet_sources(profile, path, budget);
     auto selection = select_tube_path_candidate(sources, budget);
-    return {std::move(sources), std::move(selection)};
+    auto planarity = curve_detail::native_primitive_planarity(
+        sources.path.path.at("curves").at(selection.index).at("geometry"),
+        budget.max_control_points, {budget.work, budget.max_work});
+    planarity["working_index"] = selection.index;
+    return {std::move(sources), std::move(selection), std::move(planarity)};
 }
 } // namespace p3d::swept_detail

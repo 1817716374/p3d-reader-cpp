@@ -18,8 +18,10 @@ TubePathSelection select_tube_path_candidate(const TubeFacetSources &, TubeBudge
 struct TubeFacetPath {
     TubeFacetSources sources;
     TubePathSelection selection;
+    Json selected_member_planarity;
 };
 // Reference and path copying followed by candidate selection, sharing budget.
-// Actual splitting, frame construction and surface assembly are subsequent.
+// Includes original selected member frame/range planarity. Actual point/tangent,
+// splitting and surface assembly are subsequent.
 TubeFacetPath prepare_tube_facet_path(const Json &profile, const Json &path, TubeBudget &);
 } // namespace p3d::swept_detail
