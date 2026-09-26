@@ -21,6 +21,14 @@ Point3 cartesian(H);
 Curve open_periodic(const BsplineCurve &, unsigned limit, Json *report = nullptr);
 // Boundary opening retains native weights, discontinuities and special-seam domains.
 Curve open_periodic_boundary(const BsplineCurve &, unsigned limit, Json *report = nullptr);
+struct CurveClosure {
+    Curve curve;
+    bool success = false, closed = false;
+    Json report;
+};
+// Native closure for normalized, clamped, continuous working curves. Retains
+// homogeneous controls (including zero W); does not reopen a periodic result.
+CurveClosure close_normalized_curve(Curve, unsigned limit);
 Curve close_reopen(Curve, unsigned limit, Json &report);
 void compatible(std::vector<Curve *> curves, unsigned limit);
 Curve append(Curve a, Curve b, bool length_weighted, unsigned limit);

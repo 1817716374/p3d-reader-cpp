@@ -77,12 +77,14 @@ void special(Curve &c) {
     c.knots = std::move(u);
 }
 } // namespace
-Curve close_reopen(Curve c, unsigned limit, Json &report) {
-    c.check(limit);
-    report = {{"method", "retained_open"}, {"input_pole_count", c.poles.size()}};
-    if (c.degree == 1 && c.poles.size() == 2)
+CurveClosure close_normalized_curve(Curve c, unsigned limit) {
+    c.check(limit, false);
+    Json report = {{"method", "retained_open"}, {"input_pole_count", c.poles.size()}};
+    bool success = false, closed = false;
+    if (c.degree == 1 && c.poles.size() == 2) {
         report["reason"] = "two_pole_line";
-    else if (std::abs(c.poles.front()[3] - c.poles.back()[3]) >= 1e-10)
+        success = true;
+    } else if (std::abs(c.poles.front()[3] - c.poles.back()[3]) >= 1e-10)
         report["reason"] = "endpoint_weight_mismatch";
     else if (!same_endpoint(c))
         report["reason"] = "endpoint_position_mismatch";
@@ -92,14 +94,30 @@ Curve close_reopen(Curve c, unsigned limit, Json &report) {
             c.knots[0] = c.knots[1] - (c.knots[n] - c.knots[n - 1]);
             c.knots[n + 1] = c.knots[n] + (c.knots[2] - c.knots[1]);
             c.poles.pop_back();
-            report["method"] = "linear_periodic_reopened";
+            report["method"] = "linear_periodic";
         } else if (regular(c))
-            report["method"] = "regular_periodic_reopened";
+            report["method"] = "regular_periodic";
         else {
             special(c);
-            report["method"] = "special_periodic_reopened";
+            report["method"] = "special_periodic";
         }
         report["closed_pole_count"] = c.poles.size();
+        success = closed = true;
+    }
+    for (const auto &h : c.poles)
+        for (double value : h)
+            require(std::isfinite(value), "nonfinite periodic closure control");
+    for (double k : c.knots)
+        require(std::isfinite(k), "nonfinite periodic closure knot");
+    return {std::move(c), success, closed, std::move(report)};
+}
+Curve close_reopen(Curve c, unsigned limit, Json &report) {
+    c.check(limit);
+    auto closure = close_normalized_curve(std::move(c), limit);
+    c = std::move(closure.curve);
+    report = std::move(closure.report);
+    if (closure.closed) {
+        report["method"] = report.at("method").get<std::string>() + "_reopened";
         auto table = c.table();
         table["closed"] = true;
         Json opening;

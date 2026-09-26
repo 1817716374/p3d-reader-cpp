@@ -44,4 +44,10 @@ TubeTrace prepare_tube_trace(const BsplineCurve &trace, TubeBudget &budget);
 // B-spline trace. This is not the P3DSweptBody profile-placement/face API.
 TubePatch tube_surface(const BsplineCurve &section, const BsplineCurve &trace, bool rigid,
                        TubeBudget &budget);
+// Separate closed-trace postprocessing used by the swept-body route. The
+// general tube_surface above deliberately keeps its open V representation.
+// Open V must be clamped and normalized; input is an untrimmed tube surface.
+// Native closure failures retain the entire input, with applied=false in the
+// report. A native zero return code alone does not prove that closure applied.
+TubeAssembly close_tube_surface_v(const BsplineSurface &surface, TubeBudget &budget);
 } // namespace p3d::swept_detail
