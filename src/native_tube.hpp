@@ -84,11 +84,16 @@ struct TubeSurfaces {
     BsplineCurve trace;
     Json report;
 };
+// Native two-pass source checks for converted sweep source kinds and nested
+// groups, also covering PointString/Akima point arrays. Unsupported kinds and
+// malformed decoded layouts throw; native rejection is returned in the report.
+// Passing this check does not certify conversion, topology or sweepability.
+Json validate_tube_sources(const Json &profile, const Json &path, TubeBudget &);
 // Internal preparation: carries native trace state across source rings, closes
 // V for closed traces, queries the carried trace's native start tangent, and
 // applies area orientation. Report distinguishes native success from visiting
-// every ring. No source isValidGeom/isValidNum dispatch, caps or native face
-// enumeration is applied here; failure retains generated/partly oriented data.
+// every ring. Source validation precedes conversion. No caps or native face
+// enumeration is applied here; orientation failure retains partly oriented data.
 TubeSurfaces prepare_swept_tube_surfaces(const Json &profile, const Json &path, TubeBudget &);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order

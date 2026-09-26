@@ -90,6 +90,10 @@ TubePlacement place_tube_profile(const Json &profile, const BsplineCurve &trace,
 
 TubeSurfaces prepare_swept_tube_surfaces(const Json &profile, const Json &path,
                                          TubeBudget &budget) {
+    auto validation = validate_tube_sources(profile, path, budget);
+    if (!validation.at("accepted").get<bool>())
+        throw std::runtime_error("native swept source validation failed at " +
+                                 validation.at("failure_path").get<std::string>());
     auto converted_path = convert_tube_curve_array(path, budget);
     auto placed = place_tube_profile(profile, converted_path.curve, budget);
     std::vector<Json> surfaces;
@@ -128,7 +132,7 @@ TubeSurfaces prepare_swept_tube_surfaces(const Json &profile, const Json &path,
              {"rings", std::move(rings)},
              {"total_control_points", total},
              {"work_used", budget.work},
-             {"source_validation", "native_geom_num_dispatch_not_applied"},
+             {"source_validation", std::move(validation)},
              {"orientation_applied", complete},
              {"native_generation_result", native_result},
              {"orientation", std::move(orientation.report)},
