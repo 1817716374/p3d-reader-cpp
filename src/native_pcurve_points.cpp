@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "native_pcurve_points.hpp"
+#include "native_surface_iso.hpp"
 
 namespace p3d::detail {
 namespace {
@@ -54,23 +55,20 @@ Point3 finite(Point3 p) {
         require(std::isfinite(x), "native PCurve non-finite evaluated point");
     return p;
 }
-} // namespace
-
-NativePCurvePoint pcurve_point(const BsplineCurve &curve, double fraction) {
-    require(std::isfinite(fraction), "native PCurve non-finite curve fraction");
-    const auto domain = curve.knot_domain();
-    const double t = (1 - fraction) * domain[0] + fraction * domain[1];
-    const auto b = blend(curve.order(), curve.knots(), curve.periodic_pole_shift(), domain[1], t);
+NativePCurvePoint evaluate(const Blend &b, std::size_t count, bool closed,
+                           const std::vector<Point3> &poles, const std::vector<double> &weights,
+                           std::size_t first, std::size_t stride) {
     NativePCurvePoint result{};
     double weight = 0;
-    for (unsigned i = 0; i < curve.order(); ++i) {
-        const auto index = pole(b.first + i, curve.poles().size(), curve.closed());
+    for (std::size_t i = 0; i < b.values.size(); ++i) {
+        const auto index = first + stride * pole(b.first + i, count, closed);
         for (unsigned k = 0; k < 3; ++k)
-            result.point[k] += b.values[i] * curve.poles()[index][k];
-        if (curve.rational())
-            weight += b.values[i] * curve.weights()[index];
+            result.point[k] += b.values[i] * poles[index][k];
+        if (!weights.empty())
+            weight += b.values[i] * weights[index];
     }
-    if (curve.rational()) {
+    if (!weights.empty()) {
+        result.weight = weight;
         // This native curve-point caller replaces exactly zero W with one.
         // The surface-point caller below deliberately has no such fallback.
         result.zero_weight_fallback = weight == 0;
@@ -81,6 +79,64 @@ NativePCurvePoint pcurve_point(const BsplineCurve &curve, double fraction) {
     }
     result.point = finite(result.point);
     return result;
+}
+} // namespace
+
+NativePCurvePoint pcurve_point(const BsplineCurve &curve, double fraction) {
+    require(std::isfinite(fraction), "native PCurve non-finite curve fraction");
+    const auto domain = curve.knot_domain();
+    const double t = (1 - fraction) * domain[0] + fraction * domain[1];
+    const auto b = blend(curve.order(), curve.knots(), curve.periodic_pole_shift(), domain[1], t);
+    return evaluate(b, curve.poles().size(), curve.closed(), curve.poles(), curve.weights(), 0, 1);
+}
+
+// Isocurve construction adapted from Bentley imodel-native bspconv.cpp,
+// Copyright (c) Bentley Systems, Incorporated. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// Changes: shared read-only basis, direct strided evaluation, bounded output.
+// See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
+NativeIsoCurve native_iso_v_curve(const BsplineSurface &surface, double fraction,
+                                  curve_detail::BezierWork work, std::size_t max_control_points) {
+    const auto &u = surface.u(), &v = surface.v();
+    const auto nu = u.pole_count(), nv = v.pole_count();
+    require(std::isfinite(fraction), "native isocurve nonfinite fraction");
+    require(nu >= 2 && nv >= 2 && nu <= INT32_MAX && nv <= INT32_MAX && nu <= max_control_points &&
+                v.order() <= 26,
+            "native isocurve order or control budget exceeded");
+    work.charge(u.knots().size());
+    work.charge(v.knots().size());
+    work.charge(std::size_t(8) * v.order() * v.order());
+    const auto cost = std::size_t(8) * v.order() + 12;
+    require(nu <= (work.limit - work.used) / cost, "native isocurve work budget exceeded");
+    work.charge(nu * cost);
+    const auto domain = v.knot_domain();
+    const double t = fraction * domain[1] + (1 - fraction) * domain[0];
+    // Every source column uses the same read-only basis. Compute it once and
+    // read strided controls directly instead of copying/reparsing V curves.
+    const auto b = blend(v.order(), v.knots(), v.periodic_pole_shift(), domain[1], t);
+    Json xyz = Json::array(), weights = Json::array();
+    std::size_t fallbacks = 0;
+    for (std::size_t i = 0; i < nu; ++i) {
+        auto p = evaluate(b, nv, v.closed(), surface.poles(), surface.weights(), i, nu);
+        fallbacks += p.zero_weight_fallback;
+        if (surface.rational()) {
+            require(std::isfinite(p.weight), "native isocurve nonfinite evaluated weight");
+            for (auto &x : p.point)
+                x *= p.weight;
+            p.point = finite(p.point);
+            weights.push_back(p.weight);
+        }
+        for (double x : p.point)
+            xyz.push_back(x);
+    }
+    return {
+        BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
+                                 {"order", u.order()},
+                                 {"closed", u.closed()},
+                                 {"knots", u.knots()},
+                                 {"poles", std::move(xyz)},
+                                 {"weights", surface.rational() ? std::move(weights) : Json()}}),
+        fallbacks};
 }
 
 Point3 pcurve_surface_point(const BsplineSurface &surface, double u, double v) {

@@ -137,3 +137,4 @@
 !/tests/native_tube_placement.cpp
 !/tests/native_bezier.cpp
 !/tests/native_bspline_area.cpp
+!/tests/native_surface_iso.cpp

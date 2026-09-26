@@ -1,5 +1,6 @@
 #include "loft_curve.hpp"
 #include "native_pcurve_points.hpp"
+#include "native_surface_iso.hpp"
 
 namespace p3d {
 namespace {
@@ -22,16 +23,12 @@ loft_detail::Curve endpoint_curve(const BsplineSurface &surface, bool top, unsig
     curve.rational = surface.rational();
     curve.knots = u.knots();
     require(u.pole_count() <= limit, "loft cap control budget");
-    const auto row = top ? v.pole_count() - 1 : 0;
+    std::size_t work = 0;
+    const auto iso = detail::native_iso_v_curve(
+        surface, top ? 1. : 0., {work, std::numeric_limits<std::size_t>::max()}, limit);
     for (std::size_t i = 0; i < u.pole_count(); ++i) {
-        const auto index = row * u.pole_count() + i;
-        auto p = surface.poles()[index];
-        const double weight = curve.rational ? surface.weights()[index] : 1;
-        // Native isocurve evaluation returns the original W separately from
-        // its curve-point zero-W fallback, then multiplies the point by W.
-        if (curve.rational && weight == 0)
-            for (auto &x : p)
-                x *= weight;
+        const auto &p = iso.curve.poles()[i];
+        const double weight = curve.rational ? iso.curve.weights()[i] : 1;
         curve.poles.push_back({p[0], p[1], p[2], weight});
     }
     curve.check(limit, false);
