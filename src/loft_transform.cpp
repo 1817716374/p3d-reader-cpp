@@ -62,7 +62,7 @@ struct Placement {
             j[key + "XYZ"[a]] = p[a];
         return p;
     }
-    void packed(Json &j, const Json *weights, bool skip) {
+    void packed(Json &j, const Json *weights, bool skip, bool bspline = false) {
         require(j.is_array() && j.size() % 3 == 0, "loft transform XYZ count");
         const auto count = j.size() / 3;
         require(count <= options.max_points - points, "loft transform point budget exceeded");
@@ -78,7 +78,12 @@ struct Placement {
                 ++points;
                 continue;
             }
-            const auto q = point(p, w);
+            Point3 q;
+            if (bspline && !rational) {
+                ++points;
+                q = curve_detail::affine_polynomial_point(matrix, p);
+            } else
+                q = point(p, w);
             for (unsigned a = 0; a < 3; ++a)
                 j[3 * i + a] = q[a];
         }
@@ -106,7 +111,7 @@ struct Placement {
             packed(j.at("points"), nullptr, false);
         else if (type == "BsplineCurve") {
             const auto it = j.find("weights");
-            packed(j.at("poles"), it == j.end() ? nullptr : &*it, bspline_identity);
+            packed(j.at("poles"), it == j.end() ? nullptr : &*it, bspline_identity, true);
             skipped += bspline_identity;
         } else if (type == "EllipticArc") {
             auto &arc = j.at("arc");

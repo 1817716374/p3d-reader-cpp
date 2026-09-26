@@ -138,6 +138,7 @@
 !/tests/native_tube_validation.cpp
 !/tests/native_tube_caps.cpp
 !/tests/native_tube_facets.cpp
+!/tests/native_tube_transform.cpp
 !/tests/native_bezier.cpp
 !/tests/native_bspline_area.cpp
 !/tests/native_curve_area.cpp

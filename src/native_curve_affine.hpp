@@ -20,11 +20,29 @@ inline Point3 affine_point(const Matrix4 &m, const Point3 &p, double weight) {
     }
     return result;
 }
+// Native unweighted array transform (Base 3162) adds translation after the
+// X term; the weighted array transform above adds W*translation last, even
+// when all stored weights equal one. Do not select this branch by W's value.
+inline Point3 affine_polynomial_point(const Matrix4 &m, const Point3 &p) {
+    Point3 result{};
+    for (unsigned r = 0; r < 3; ++r) {
+        result[r] = ((m[r][0] * p[0] + m[r][3]) + m[r][1] * p[1]) + m[r][2] * p[2];
+        require(std::isfinite(result[r]), "native polynomial affine coordinate overflow");
+    }
+    return result;
+}
 // Preserve the source direction representation, including implicit knots and
 // periodic indexing conventions. This never normalizes or opens the curve.
 inline BsplineCurve with_poles(const BsplineCurve &source, const std::vector<Point3> &poles) {
     require(poles.size() == source.poles().size(), "native curve replacement control count");
-    if (poles == source.poles())
+    const bool unchanged = std::equal(
+        poles.begin(), poles.end(), source.poles().begin(), [](const Point3 &a, const Point3 &b) {
+            for (unsigned i = 0; i < 3; ++i)
+                if (a[i] != b[i] || std::signbit(a[i]) != std::signbit(b[i]))
+                    return false;
+            return true;
+        });
+    if (unchanged)
         return source;
     Json flat = Json::array();
     for (const auto &p : poles)

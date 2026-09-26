@@ -68,8 +68,10 @@ TubePlacement place_tube_profile(const Json &profile, const BsplineCurve &trace,
         if (!skip) {
             auto poles = section.poles();
             for (std::size_t i = 0; i < poles.size(); ++i)
-                poles[i] = curve_detail::affine_point(
-                    placement, poles[i], section.rational() ? section.weights()[i] : 1.);
+                poles[i] =
+                    section.rational()
+                        ? curve_detail::affine_point(placement, poles[i], section.weights()[i])
+                        : curve_detail::affine_polynomial_point(placement, poles[i]);
             section = curve_detail::with_poles(section, poles);
         }
     }
