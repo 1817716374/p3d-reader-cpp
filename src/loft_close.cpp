@@ -1,4 +1,5 @@
 #include "loft_curve.hpp"
+#include "native_curve_conversion.hpp"
 namespace p3d::loft_detail {
 namespace {
 bool same_endpoint(const Curve &c) {
@@ -25,7 +26,8 @@ bool regular(Curve &c) {
         for (int j = int(i); j >= 0; --j) {
             const auto k = p - 1 - i + unsigned(j);
             const double a = (u[p] - u[k]) / (u[p + j + 1] - u[k]);
-            if (!std::isfinite(a) || a == 1)
+            require(std::isfinite(a), "nonfinite native closure unclamping ratio");
+            if (a == 1)
                 return false;
             const double b = 1 / (1 - a), d = -a * b;
             for (unsigned axis = 0; axis < (c.rational ? 4u : 3u); ++axis)
@@ -38,7 +40,8 @@ bool regular(Curve &c) {
         for (int j = int(i); j >= 0; --j) {
             const auto k = n - j;
             const double a = (u[n + 1] - u[k]) / (u[n + 2 + i - j] - u[k]);
-            if (!std::isfinite(a) || a == 0)
+            require(std::isfinite(a), "nonfinite native closure unclamping ratio");
+            if (a == 0)
                 return false;
             const double b = 1 / a, d = (a - 1) * b;
             for (unsigned axis = 0; axis < (c.rational ? 4u : 3u); ++axis)
@@ -58,8 +61,10 @@ bool regular(Curve &c) {
     const auto count = h.size() - p;
     for (unsigned i = 0; i < p; ++i) {
         const auto &a = h[i], &b = h[count + i];
-        if (std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > tolerance ||
-            (c.rational && a[3] - b[3] > 1e-10))
+        const double x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+        const double distance = std::sqrt((x * x + y * y) + z * z);
+        require(std::isfinite(distance), "nonfinite native closure control distance");
+        if (distance > tolerance || (c.rational && a[3] - b[3] > 1e-10))
             return false;
     }
     h.resize(count);
@@ -76,9 +81,7 @@ void special(Curve &c) {
     }
     c.knots = std::move(u);
 }
-} // namespace
-CurveClosure close_normalized_curve(Curve c, unsigned limit) {
-    c.check(limit, false);
+CurveClosure close_working_curve(Curve c, bool normalize) {
     Json report = {{"method", "retained_open"}, {"input_pole_count", c.poles.size()}};
     bool success = false, closed = false;
     if (c.degree == 1 && c.poles.size() == 2) {
@@ -89,6 +92,11 @@ CurveClosure close_normalized_curve(Curve c, unsigned limit) {
     else if (!same_endpoint(c))
         report["reason"] = "endpoint_position_mismatch";
     else {
+        if (normalize) {
+            const double low = c.knots[c.degree], high = c.knots[c.poles.size()];
+            if (!curve_detail::normalized_domain(low, high))
+                curve_detail::fraction_knots(c.knots, low, high);
+        }
         if (c.degree == 1) {
             const auto n = c.poles.size();
             c.knots[0] = c.knots[1] - (c.knots[n] - c.knots[n - 1]);
@@ -110,6 +118,26 @@ CurveClosure close_normalized_curve(Curve c, unsigned limit) {
     for (double k : c.knots)
         require(std::isfinite(k), "nonfinite periodic closure knot");
     return {std::move(c), success, closed, std::move(report)};
+}
+} // namespace
+CurveClosure close_normalized_curve(Curve c, unsigned limit) {
+    c.check(limit, false);
+    return close_working_curve(std::move(c), false);
+}
+CurveClosure close_native_curve(const BsplineCurve &source, unsigned limit) {
+    require(source.poles().size() <= limit, "native curve closure control budget");
+    Curve c;
+    c.degree = source.order() - 1;
+    c.rational = source.rational();
+    c.knots = source.knots();
+    for (std::size_t i = 0; i < source.poles().size(); ++i) {
+        const auto &p = source.poles()[i];
+        c.poles.push_back({p[0], p[1], p[2], source.rational() ? source.weights()[i] : 1.});
+    }
+    if (source.closed())
+        return {std::move(c), true, true, {{"method", "already_closed_copy"}}};
+    require(source.order() <= 26, "native curve closure supported order exceeded");
+    return close_working_curve(std::move(c), true);
 }
 Curve close_reopen(Curve c, unsigned limit, Json &report) {
     c.check(limit);

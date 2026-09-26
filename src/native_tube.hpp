@@ -56,6 +56,17 @@ TubeCurve elevate_open_tube_curve(const BsplineCurve &, unsigned degree, TubeBud
 // zero, elevate the lower degree, then combine with native endpoint rules.
 TubeCurve combine_tube_curves(const BsplineCurve &, const BsplineCurve &, bool force_contiguous,
                               bool reparameterize, TubeBudget &);
+// Source CurveVector types 0..3, converted in original member order. Source
+// endpoint agreement requests native closure, whose failure retains the open
+// combined curve. Internal member gaps are not repaired or rejected by closure.
+TubeCurve convert_tube_curve_array(const Json &, TubeBudget &);
+struct TubeProfile {
+    std::vector<BsplineCurve> curves;
+    Json report;
+};
+// Simple group or parity group (type 4) of closed type-2/3 children. Source ring
+// order is retained; no nesting inference, orientation or spatial sorting.
+TubeProfile convert_tube_profile(const Json &, TubeBudget &);
 // General tube-surface assembly callback, not the separate native face-patch
 // enumeration. Inputs come from one trace/profile: matching U layout, V order
 // and rational flags. patch is one normalized Bezier V span; assembled contains

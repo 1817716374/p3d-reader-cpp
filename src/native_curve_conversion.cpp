@@ -1,4 +1,5 @@
 #include "native_curve_conversion.hpp"
+#include "native_pcurve_points.hpp"
 
 namespace p3d::curve_detail {
 namespace {
@@ -17,6 +18,64 @@ double magnitude(const Point3 &p) {
     return length;
 }
 } // namespace
+bool normalized_domain(double low, double high) {
+    return std::abs(low) <= 1e-14 && std::abs(high - 1) <= 1e-14;
+}
+void fraction_knots(std::vector<double> &knots, double low, double high) {
+    for (auto &u : knots) {
+        u = (u - low) / (high - low);
+        require(std::isfinite(u), "native knot normalization nonfinite result");
+        if (std::abs(u) < 1e-12)
+            u = 0;
+        else if (std::abs(u - 1) < 1e-12)
+            u = 1;
+    }
+}
+std::optional<std::array<Point3, 2>> primitive_endpoints(const Json &v, const BsplineCurve *c) {
+    const auto type = v.at("_type").get<std::string>();
+    std::array<Point3, 2> out{};
+    if (type == "LineSegment") {
+        out = {point(v.at("segment"), "point0"), point(v.at("segment"), "point1")};
+    } else if (type == "LineString" || type == "PointString") {
+        const auto &p = v.at("points");
+        require(p.is_array() && p.size() % 3 == 0, "native source endpoint XYZ layout");
+        if (p.empty())
+            return {};
+        for (unsigned k = 0; k < 3; ++k) {
+            out[0][k] = number(p[k]);
+            out[1][k] = number(p[p.size() - 3 + k]);
+        }
+    } else if (type == "EllipticArc") {
+        const auto &a = v.at("arc");
+        const auto origin = point(a, "center"), x = point(a, "vector0"), y = point(a, "vector90");
+        const double start = number(a.at("startRadians")),
+                     end = start + number(a.at("sweepRadians"));
+        require(std::isfinite(end), "native source ellipse endpoint angle overflow");
+        for (unsigned k = 0; k < 3; ++k) {
+            out[0][k] = (origin[k] + x[k] * std::cos(start)) + y[k] * std::sin(start);
+            out[1][k] = (origin[k] + x[k] * std::cos(end)) + y[k] * std::sin(end);
+        }
+    } else if (c) {
+        out = {detail::pcurve_point(*c, 0).point, detail::pcurve_point(*c, 1).point};
+    } else
+        return {};
+    for (auto p : out)
+        for (double x : p)
+            require(std::isfinite(x), "native source endpoint nonfinite point");
+    return out;
+}
+bool endpoint_pair_closed(const Point3 &a, const Point3 &b) {
+    const double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    const double distance = (dy * dy + dx * dx) + dz * dz;
+    double scale = a[0] * a[0] + a[1] * a[1];
+    scale += a[2] * a[2];
+    scale += b[0] * b[0];
+    scale += b[1] * b[1];
+    scale += b[2] * b[2];
+    scale += 1;
+    require(std::isfinite(distance) && std::isfinite(scale), "native source closure overflow");
+    return distance < scale * 1.0000000000000001e-20;
+}
 BsplineCurve ellipse_to_bspline(const Json &value) {
     const auto &a = value.at("arc");
     const auto center = point(a, "center"), x = point(a, "vector0"), y = point(a, "vector90");

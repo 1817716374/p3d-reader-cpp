@@ -29,6 +29,9 @@ struct CurveClosure {
 // Native closure for normalized, clamped, continuous working curves. Retains
 // homogeneous controls (including zero W); does not reopen a periodic result.
 CurveClosure close_normalized_curve(Curve, unsigned limit);
+// Full curve-close entry: preserves already-closed/two-pole copies, normalizes
+// only after endpoint agreement, and permits non-clamped/discontinuous storage.
+CurveClosure close_native_curve(const BsplineCurve &, unsigned limit);
 Curve close_reopen(Curve, unsigned limit, Json &report);
 void compatible(std::vector<Curve *> curves, unsigned limit);
 Curve append(Curve a, Curve b, bool length_weighted, unsigned limit);

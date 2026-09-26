@@ -33,15 +33,6 @@ BsplineCurve polyline(const Json &poles) {
                                     {"weights", nullptr},
                                     {"knots", nullptr}});
 }
-bool closed_points(const Point3 &a, const Point3 &b) {
-    double distance = 0, scale = 1;
-    for (unsigned k = 0; k < 3; ++k) {
-        distance += (a[k] - b[k]) * (a[k] - b[k]);
-        scale += a[k] * a[k] + b[k] * b[k];
-    }
-    require(std::isfinite(distance) && std::isfinite(scale), "native boundary closure overflow");
-    return distance < scale * 1e-20;
-}
 struct Boundaries {
     const BsplineSurface &surface;
     const PCurveBoundaryStrokeOptions &options;
@@ -120,34 +111,18 @@ struct Boundaries {
             }
             return found;
         }
-        if (type == "LineString" || type == "PointString") {
-            const auto &p = v.at("points");
-            require(p.is_array() && p.size() % 3 == 0, "native boundary endpoint XYZ triplets");
-            if (p.empty())
-                return false;
-            for (unsigned k = 0; k < 3; ++k) {
-                first[k] = number(p[k]);
-                last[k] = number(p[p.size() - 3 + k]);
-            }
-            return true;
-        }
-        if (type == "EllipticArc") {
-            const auto &a = v.at("arc");
-            const auto c = point(a, "center"), x = point(a, "vector0"), y = point(a, "vector90");
-            const double start = number(a.at("startRadians")),
-                         end = start + number(a.at("sweepRadians"));
-            require(std::isfinite(end), "native boundary ellipse endpoint angle overflow");
-            for (unsigned k = 0; k < 3; ++k) {
-                first[k] = (c[k] + x[k] * std::cos(start)) + y[k] * std::sin(start);
-                last[k] = (c[k] + x[k] * std::cos(end)) + y[k] * std::sin(end);
-            }
+        if (const auto pair = curve_detail::primitive_endpoints(v)) {
+            first = (*pair)[0];
+            last = (*pair)[1];
             return true;
         }
         const auto &c = convert(v);
         if (!c)
             return false;
-        first = detail::pcurve_point(*c, 0).point;
-        last = detail::pcurve_point(*c, 1).point;
+        const auto pair = curve_detail::primitive_endpoints(v, &*c);
+        require(pair.has_value(), "native converted primitive has no endpoints");
+        first = (*pair)[0];
+        last = (*pair)[1];
         return true;
     }
     void collect(const Json &v, const std::string &path, unsigned depth = 0) {
@@ -181,7 +156,7 @@ struct Boundaries {
         }
         if (type == 1) {
             Point3 a{}, b{};
-            if (!endpoints(v, a, b, depth) || !closed_points(a, b)) {
+            if (!endpoints(v, a, b, depth) || !curve_detail::endpoint_pair_closed(a, b)) {
                 ignored.push_back({{"source_path", path}, {"reason", "open_boundary_not_closed"}});
                 return;
             }

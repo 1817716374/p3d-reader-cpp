@@ -4,6 +4,7 @@
 // storage and reports replace native allocations; P3D arithmetic is retained.
 #include "native_tube.hpp"
 #include "loft_curve.hpp"
+#include "native_curve_conversion.hpp"
 
 namespace p3d::swept_detail {
 namespace {
@@ -28,9 +29,6 @@ BsplineCurve table(unsigned order, const std::vector<Point3> &poles,
                                     {"poles", std::move(flat)},
                                     {"weights", weights.empty() ? Json(nullptr) : Json(weights)},
                                     {"knots", knots}});
-}
-bool normalized(double low, double high) {
-    return std::abs(low) <= 1e-14 && std::abs(high - 1) <= 1e-14;
 }
 BsplineCurve opened(const BsplineCurve &c, TubeBudget &budget, Json &report) {
     require(c.poles().size() <= budget.max_control_points &&
@@ -72,15 +70,9 @@ TubeCurve elevate_open_tube_curve(const BsplineCurve &source, unsigned degree, T
     report["method"] = "native_derivatives_and_symmetric_functions";
     auto knots = source.knots();
     const auto domain = source.knot_domain();
-    const bool normalize = !normalized(domain[0], domain[1]);
+    const bool normalize = !curve_detail::normalized_domain(domain[0], domain[1]);
     if (normalize)
-        for (auto &u : knots) {
-            u = finite((u - domain[0]) / (domain[1] - domain[0]));
-            if (std::abs(u) < 1e-12)
-                u = 0;
-            else if (std::abs(u - 1) < 1e-12)
-                u = 1;
-        }
+        curve_detail::fraction_knots(knots, domain[0], domain[1]);
     const auto c = table(source.order(), source.poles(), source.weights(), knots);
     const auto first = c.poles().front();
     auto working = c.poles();
@@ -165,7 +157,8 @@ TubeCurve elevate_open_tube_curve(const BsplineCurve &source, unsigned degree, T
         weights.back() = source.weights().back();
         weights.front() = source.weights().front();
     }
-    const bool restore = normalize && normalized(output_knots[degree], output_knots[nc]);
+    const bool restore =
+        normalize && curve_detail::normalized_domain(output_knots[degree], output_knots[nc]);
     if (restore)
         for (auto &u : output_knots)
             u = finite(domain[0] + (domain[1] - domain[0]) * u);
