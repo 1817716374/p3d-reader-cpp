@@ -1,5 +1,7 @@
 #include "native_tube_path_branches.hpp"
 #include "native_curve_planarity.hpp"
+#include "native_curve_segment.hpp"
+#include "native_curve_affine.hpp"
 namespace p3d::swept_detail {
 namespace {
 bool near(double x, double y) {
@@ -15,24 +17,56 @@ Json pieces(const std::vector<TubePathPiece> &v) {
     return out;
 }
 TubePathBranch assemble(const std::vector<TubePathPiece> &pieces,
-                        const std::vector<BsplineCurve> &curves, TubeBudget &budget) {
+                        const std::vector<BsplineCurve> &curves, TubeBudget &budget,
+                        const curve_detail::NativeCurveSegment *segment = nullptr) {
     TubePathBranch out;
     out.report = {{"status", "complete"}, {"present", !pieces.empty()}, {"joins", Json::array()}};
     if (pieces.empty())
         return out;
     for (const auto &piece : pieces)
-        require(piece.whole && piece.index < curves.size(), "native branch whole-member assembly");
-    out.reused_curve_index = pieces.front().index;
-    out.report["initial_reused_working_index"] = *out.reused_curve_index;
-    const BsplineCurve *current = &curves[*out.reused_curve_index];
+        require(piece.index < curves.size() && (piece.whole || segment),
+                "native branch member/segment assembly");
+    if (pieces.front().whole) {
+        out.reused_curve_index = pieces.front().index;
+        out.report["initial_reused_working_index"] = *out.reused_curve_index;
+    } else {
+        out.constructed = segment->curve;
+    }
+    if (segment)
+        out.report["subcurve"] = segment->report;
+    const BsplineCurve *current = out.reused_curve_index ? &curves[*out.reused_curve_index]
+                                  : out.constructed      ? &*out.constructed
+                                                         : nullptr;
     for (std::size_t i = 1; i < pieces.size(); ++i) {
-        auto joined = combine_tube_curves(*current, curves[pieces[i].index], false, true, budget);
+        const auto &piece = pieces[i];
+        const BsplineCurve *incoming = piece.whole      ? &curves[piece.index]
+                                       : segment->curve ? &*segment->curve
+                                                        : nullptr;
+        // The native wrapper delivers an allocated object even on segment
+        // failure. Its null-poles case participates in explicit copy branches.
+        if (!current || !incoming) {
+            require(current || incoming, "native combination of two empty curve objects");
+            curve_detail::BezierWork{budget.work, budget.max_work}.charge(
+                (current ? current : incoming)->poles().size());
+            out.report["joins"].push_back(
+                {{"incoming_working_index", piece.index},
+                 {"method", current ? "empty_right_copy_left" : "empty_left_copy_right"}});
+            if (!current) {
+                out.constructed = *incoming;
+                out.reused_curve_index.reset();
+                current = &*out.constructed;
+            }
+            continue;
+        }
+        auto joined = combine_tube_curves(*current, *incoming, false, true, budget);
         joined.report["incoming_working_index"] = pieces[i].index;
         out.report["joins"].push_back(std::move(joined.report));
         out.constructed = std::move(joined.curve);
         out.reused_curve_index.reset();
         current = &*out.constructed;
     }
+    out.empty_curve_object = !current;
+    out.report["empty_curve_object"] = out.empty_curve_object;
     out.report["unchanged_member_reused"] = out.reused_curve_index.has_value();
     return out;
 }
@@ -86,21 +120,30 @@ TubeFacetPathBranches prepare_tube_facet_path_branches(const Json &profile, cons
     out.whole_path_planarity = curve_detail::native_curve_vector_planarity(
         path, budget.max_control_points, {budget.work, budget.max_work});
     out.path = prepare_tube_facet_path(profile, path, budget);
-    const auto &s = out.path.selection;
+    auto &s = out.path.selection;
     out.plan = plan_tube_path_branches(
         s.curves.size(), s.index, s.fraction, out.whole_path_planarity.at("planar").get<bool>(),
         out.path.selected_member_planarity.at("planar").get<bool>(), budget);
     const auto partial = [](const auto &v) {
         return std::any_of(v.begin(), v.end(), [](const auto &p) { return !p.whole; });
     };
+    std::optional<curve_detail::NativeCurveSegment> prefix, suffix;
     if (partial(out.plan.prefix) || partial(out.plan.suffix)) {
-        out.report = {{"status", "not_evaluated"},
-                      {"reason", "native_subcurve_construction_pending"}};
-        out.prefix.report = out.suffix.report = out.report;
-        return out;
+        require(budget.max_control_points <= UINT32_MAX, "native subcurve control limit");
+        auto &selected = s.curves[s.index];
+        // Both native segment calls precede ALL joins. The second tolerance
+        // query observes the first call's source unweight/reweight round trip.
+        prefix = curve_detail::native_curve_segment(selected, 0, s.fraction,
+                                                    unsigned(budget.max_control_points),
+                                                    {budget.work, budget.max_work});
+        selected = curve_detail::with_poles(selected, prefix->working_poles);
+        suffix = curve_detail::native_curve_segment(selected, s.fraction, 1,
+                                                    unsigned(budget.max_control_points),
+                                                    {budget.work, budget.max_work});
+        selected = curve_detail::with_poles(selected, suffix->working_poles);
     }
-    out.prefix = assemble(out.plan.prefix, s.curves, budget);
-    out.suffix = assemble(out.plan.suffix, s.curves, budget);
+    out.prefix = assemble(out.plan.prefix, s.curves, budget, prefix ? &*prefix : nullptr);
+    out.suffix = assemble(out.plan.suffix, s.curves, budget, suffix ? &*suffix : nullptr);
     out.report = {{"status", "complete"},
                   {"scope", "branch_curve_assembly"},
                   {"subsequent_frames_evaluated", false},

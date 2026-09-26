@@ -17,6 +17,8 @@ struct TubePathBranch {
     // A single whole source is referenced by index rather than cloned or deduped.
     std::optional<std::size_t> reused_curve_index;
     std::optional<BsplineCurve> constructed;
+    // Distinguishes an allocated native subcurve with null poles from no branch.
+    bool empty_curve_object = false;
     Json report;
 };
 struct TubeFacetPathBranches {
@@ -28,6 +30,6 @@ struct TubeFacetPathBranches {
 };
 // Planarity on the original path precedes work-copy preparation. Whole-member
 // branches are combined with native opening/elevation/length rules. Interior
-// nonplanar subcurve construction remains explicit not_evaluated; no substitute.
+// members use ordered native subcurve queries, including empty-object results.
 TubeFacetPathBranches prepare_tube_facet_path_branches(const Json &, const Json &, TubeBudget &);
 } // namespace p3d::swept_detail

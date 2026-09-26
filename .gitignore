@@ -147,6 +147,7 @@
 !/tests/native_curve_planarity.cpp
 !/tests/native_tube_path_selection.cpp
 !/tests/native_tube_path_branches.cpp
+!/tests/native_curve_segment.cpp
 !/tests/native_bezier.cpp
 !/tests/native_bspline_area.cpp
 !/tests/native_curve_area.cpp

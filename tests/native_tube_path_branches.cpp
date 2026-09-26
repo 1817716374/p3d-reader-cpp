@@ -1,6 +1,8 @@
 #include "native_tube_path_branches.hpp"
 #include "native_tube_transform.hpp"
 #include "native_curve_planarity.hpp"
+#include "native_curve_segment.hpp"
+#include "native_curve_affine.hpp"
 #include <future>
 using namespace p3d;
 using namespace p3d::swept_detail;
@@ -146,9 +148,54 @@ unsigned native_tube_path_branches_tests() {
     auto c = BsplineCurve::from_bgfb(spline);
     result = build(group({spline}), c.point_at(.5));
     check(result.plan.report.at("branch") == "nonplanar_interior" &&
-              result.report.at("status") == "not_evaluated" && !result.prefix.constructed &&
-              !result.suffix.constructed,
-          "unimplemented native subcurve is explicit without partial geometry");
+              result.report.at("status") == "complete" && result.prefix.constructed &&
+              result.suffix.constructed,
+          "nonplanar interior native subcurve assembly");
+    for (unsigned i = 0; i <= 10; ++i) {
+        const auto f = result.path.selection.fraction;
+        const auto a = result.prefix.constructed->point_at(i / 10.);
+        const auto b = result.suffix.constructed->point_at(i / 10.);
+        const auto pa = c.point_at(f * i / 10.);
+        const auto pb = c.point_at(f + (1 - f) * i / 10.);
+        for (unsigned k = 0; k < 3; ++k)
+            check(near(a[k], pa[k]) && near(b[k], pb[k]), "split branch source parameter geometry");
+    }
+    auto tiny_spline = spline;
+    tiny_spline["knots"] = {0., 0., 0., 0., 1.5e-10, 1.5e-10, 1.5e-10, 1.5e-10};
+    result = build(group({tiny_spline}), c.point_at(.5));
+    check(result.prefix.empty_curve_object && result.suffix.empty_curve_object &&
+              result.prefix.report.at("present") == true &&
+              result.suffix.report.at("present") == true,
+          "failed normalization retains two allocated empty curve objects");
+    result = build(group({line({-2, 0, 0}, {0, 0, 0}), tiny_spline, line({2, 2, 0}, {4, 2, 0})}),
+                   c.point_at(.5));
+    check(result.path.selection.index == 1 && result.prefix.reused_curve_index == 0 &&
+              !result.prefix.empty_curve_object && result.suffix.constructed &&
+              !result.suffix.empty_curve_object &&
+              result.prefix.report.at("joins").back().at("method") == "empty_right_copy_left" &&
+              result.suffix.report.at("joins").front().at("method") == "empty_left_copy_right",
+          "native empty segment participates in branch copy rules");
+    auto rational_spline = spline;
+    rational_spline["weights"] = {.7, 1.9, 2.3, .8};
+    for (unsigned i = 0; i < 4; ++i)
+        for (unsigned k = 0; k < 3; ++k)
+            rational_spline["poles"][3 * i + k] = spline["poles"][3 * i + k].get<double>() *
+                                                  rational_spline["weights"][i].get<double>();
+    const auto rational_source = rational_spline;
+    auto rational_curve = BsplineCurve::from_bgfb(rational_spline);
+    result = build(group({rational_spline}), rational_curve.point_at(.5));
+    std::size_t segment_work = 0;
+    const double selected_fraction = result.path.selection.fraction;
+    auto expected_prefix = curve_detail::native_curve_segment(rational_curve, 0, selected_fraction,
+                                                              10000, {segment_work, 10000000});
+    auto expected_suffix = curve_detail::native_curve_segment(
+        curve_detail::with_poles(rational_curve, expected_prefix.working_poles), selected_fraction,
+        1, 10000, {segment_work, 10000000});
+    check(result.prefix.constructed->poles() == expected_prefix.curve->poles() &&
+              result.suffix.constructed->poles() == expected_suffix.curve->poles() &&
+              result.path.selection.curves[0].poles() == expected_suffix.working_poles &&
+              rational_spline == rational_source,
+          "branch assembly carries ordered rational working state without source mutation");
     TubePathSelection selection;
     selection.curves.push_back(BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
                                                         {"order", 2},
