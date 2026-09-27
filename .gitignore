@@ -10,6 +10,7 @@
 !/tests/native_vu_near_vertices.cpp
 !/tests/native_vu_intersections.cpp
 !/tests/native_vu_connections.cpp
+!/tests/native_vu_regularize.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp

@@ -21,6 +21,16 @@ std::size_t mate(const NativeVuGraph &g, std::size_t index) {
     node_index(g, result);
     return result;
 }
+void twist_nodes(NativeVuGraph &g, std::size_t a, std::size_t b) {
+    node_index(g, a);
+    node_index(g, b);
+    const auto va = g.nodes[a].vertex_next, vb = g.nodes[b].vertex_next;
+    const auto fa = mate(g, va), fb = mate(g, vb);
+    g.nodes[a].vertex_next = vb;
+    g.nodes[b].vertex_next = va;
+    g.nodes[fa].face_next = b;
+    g.nodes[fb].face_next = a;
+}
 void reserve_pair(NativeVuGraph &g, TubeBudget &budget) {
     const auto count = g.nodes.size();
     std::size_t needed = 2, free = g.free_head;
@@ -195,14 +205,29 @@ std::pair<std::size_t, std::size_t> split_native_vu_edge(NativeVuGraph &g, std::
 void twist_native_vu_vertices(NativeVuGraph &g, std::size_t a, std::size_t b, TubeBudget &budget) {
     const curve_detail::BezierWork work{budget.work, budget.max_work};
     work.charge(12);
+    twist_nodes(g, a, b);
+}
+std::pair<std::size_t, std::size_t> join_native_vu_sectors(NativeVuGraph &g, std::size_t a,
+                                                       std::size_t b, TubeBudget &budget) {
+    const curve_detail::BezierWork work{budget.work, budget.max_work};
+    work.charge(48);
     node_index(g, a);
     node_index(g, b);
-    const auto va = g.nodes[a].vertex_next, vb = g.nodes[b].vertex_next;
-    const auto fa = mate(g, va), fb = mate(g, vb);
-    g.nodes[a].vertex_next = vb;
-    g.nodes[b].vertex_next = va;
-    g.nodes[fa].face_next = b;
-    g.nodes[fb].face_next = a;
+    mate(g, g.nodes[a].vertex_next);
+    mate(g, g.nodes[b].vertex_next);
+    for (double x : g.nodes[a].point)
+        finite(x);
+    for (double x : g.nodes[b].point)
+        finite(x);
+    reserve_pair(g, budget);
+    const auto start = append_node(g), end = append_node(g);
+    g.nodes[start].face_next = end;
+    g.nodes[end].face_next = start;
+    twist_nodes(g, start, a);
+    g.nodes[start].point = g.nodes[a].point;
+    twist_nodes(g, end, b);
+    g.nodes[end].point = g.nodes[b].point;
+    return {start, end};
 }
 NativeVuInput build_native_vu_input(const std::vector<Point3> &points, double tolerance,
                                     TubeBudget &budget) {

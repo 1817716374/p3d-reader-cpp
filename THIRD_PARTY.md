@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_vu_regularize.cpp` 的双向面规则化与扇区判定参考下表固定 Bentley 提交中的 `vureg.cpp`、`vucoord.cpp`，连接边插入同时参考 `vu.cpp`。保留 Bentley 版权及 Apache-2.0 标记；实现按 P3D 的极值排序、活动链删除、端点插值和掩码返回顺序改写。排序状态与工作数组均为调用局部数据，不依赖厂商运行库。
+
 `src/native_vu_connections.cpp` 的簇边收集与顶点连接参考下表固定 Bentley 提交中的 `vucluster.cpp`；`src/native_vu_graph.cpp` 的标记边删除与空闲节点复用同时参考 `vumem.cpp`。保留 Bentley 版权及 Apache-2.0 标记，并按 P3D 的重复边模式、双次排序、掩码和链表顺序实现。节点存储槽位复用不代表源几何去重。
 
 `src/native_vu_intersections.cpp` 的横向交点扫描及缩放二维方程求解参考下表固定 Bentley 提交中的 `vumerge2.cpp`、`bsibasegeom_for_vu_static.c`，保留 Bentley 版权及 Apache-2.0 标记。实现保留 P3D 的退化阈值、运算顺序、边范围及分组顺序，与近顶点投影共用原生边分裂内核；交点分裂不等于顶点连接或完整面生成。

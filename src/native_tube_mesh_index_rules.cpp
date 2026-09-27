@@ -6,6 +6,7 @@
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_bezier_support.hpp"
 #include "native_vu_cluster.hpp"
+#include "native_vu_regularize.hpp"
 #include <set>
 namespace p3d::swept_detail {
 NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
@@ -59,6 +60,8 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         if (out.projection->frame_succeeded) {
             out.input_graph = build_native_vu_input(out.projection->points, 0, budget);
             prepare_native_vu_merge(*out.input_graph, budget);
+            out.input_graph->report["regularization"] =
+                regularize_native_vu_graph(out.input_graph->graph, budget);
         }
     }
     // Larger faces require the original projected-loop triangulator. Never

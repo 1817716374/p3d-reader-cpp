@@ -31,6 +31,10 @@ std::size_t free_marked_native_vu_edges(NativeVuGraph &, std::uint32_t mask, Tub
 std::pair<std::size_t, std::size_t> split_native_vu_edge(NativeVuGraph &, std::size_t,
                                                          TubeBudget &);
 void twist_native_vu_vertices(NativeVuGraph &, std::size_t, std::size_t, TubeBudget &);
+// Inserts an edge between two existing face sectors. New nodes copy endpoint
+// XYZ only: the fresh graph has zero join-copy mask and no label inheritance.
+std::pair<std::size_t, std::size_t> join_native_vu_sectors(NativeVuGraph &, std::size_t,
+                                                       std::size_t, TubeBudget &);
 struct NativeVuInputLoop {
     std::size_t begin = 0, end = 0; // Source half-open interval before markers.
     std::size_t trimmed_end = 0, base = native_vu_null, inserted_vertices = 0;
