@@ -33,6 +33,7 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
             out.indices.push_back(std::int32_t(i + 1));
         out.indices.push_back(0);
         out.completed = true;
+        out.native_succeeded = true;
     } else if (points.size() == 4) {
         require(budget.max_control_points >= 8, "native quad index output budget");
         work.charge(64);
@@ -55,6 +56,7 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         out.indices = d0 > d1 ? std::vector<std::int32_t>{1, 2, -3, 0, -1, 3, 4, 0}
                               : std::vector<std::int32_t>{1, -2, 4, 0, -4, 2, 3, 0};
         out.completed = true;
+        out.native_succeeded = true;
     }
     if (points.size() > 4) {
         require(points.size() < budget.max_control_points && points.size() < INT32_MAX,
@@ -78,12 +80,13 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
                 flip_native_vu_triangles(out.input_graph->graph, budget);
             auto source = collect_native_vu_source_indices(out.input_graph->graph, budget);
             out.input_graph->report["source_index_output"] = source.report;
+            out.native_succeeded = source.succeeded;
             out.completed = source.succeeded && source.report.at("all_emitted_faces_triangular") == true;
             out.input_graph->report["triangulated"] = out.completed;
             if (out.completed) {
                 out.route = NativeFacetIndexPlan::Route::projected_loops;
                 out.indices = std::move(source.indices);
-            }
+            } else out.incomplete_indices = std::move(source.indices);
         }
     }
     // Failed source numbering or residual nontriangular faces retain their

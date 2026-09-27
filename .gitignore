@@ -15,6 +15,8 @@
 !/tests/native_vu_triangulate.cpp
 !/tests/native_vu_flip.cpp
 !/tests/native_vu_indices.cpp
+!/tests/native_polyface_triangulate.cpp
+!/tests/native_tube_mesh_trim_output.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp

@@ -46,6 +46,8 @@ unsigned native_vu_exterior_tests();
 unsigned native_vu_triangulate_tests();
 unsigned native_vu_flip_tests();
 unsigned native_vu_indices_tests();
+unsigned native_polyface_triangulate_tests();
+unsigned native_tube_mesh_trim_output_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2937,6 +2939,8 @@ int main() {
         checks += native_vu_triangulate_tests();
         checks += native_vu_flip_tests();
         checks += native_vu_indices_tests();
+        checks += native_polyface_triangulate_tests();
+        checks += native_tube_mesh_trim_output_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();

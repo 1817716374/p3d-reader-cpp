@@ -8,6 +8,10 @@ struct NativeFacetIndexPlan {
     enum class Route { passthrough, quad, projected_loops_required, projected_loops };
     Route route = Route::projected_loops_required;
     bool completed = false;
+    bool native_succeeded = false;
+    // Retained low-level output when native numbering fails or leaves a
+    // nontriangular face. Native consumers must check native_succeeded.
+    std::vector<std::int32_t> incomplete_indices;
     // Local signed 1-based indices, zero-terminated. Large-face indices refer
     // to the visitor's wrapped point list (input plus its automatic closure).
     // Empty on unresolved large-face output; inspect input_graph reports.
