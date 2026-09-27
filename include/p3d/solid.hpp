@@ -14,7 +14,7 @@ struct SolidMeshResult {
     std::vector<std::optional<std::array<Point2, 3>>> surface_parameters;
 };
 // Derived faces for DgnBox, DgnCone, DgnSphere, DgnTorusPipe,
-// DgnExtrusion, DgnRuledSweep, DgnRotationalSweep and P3DSectionLoft.
+// DgnExtrusion, DgnRuledSweep, DgnRotationalSweep, P3DSectionLoft and P3DSweptBody.
 // Requires a nondegenerate frame. Boxes need nonzero widths with consistent
 // signs between the two ends. Other solids and collapsed/crossing boxes are reported
 // as not meshed. Cones use an explicit uniform angular segment count (>=3),
@@ -42,6 +42,12 @@ struct SolidMeshResult {
 // its source-curve, denominator, join and planar-cap requirements still apply.
 // Side surface parameters and original native face IDs are retained separately
 // from material UVs. CSG rebuilds transformed curve-based sources into snapshots.
+// P3DSweptBody uses mesh_bgfb_swept_body's native sampling/assembly, with chord
+// tolerance .01 and angle tolerance 2*pi/circle_segments. max_curve_work bounds
+// the whole source reconstruction. Use swept_mesh.hpp for explicit tolerances
+// and original signed indices. Native runtime face data/layout are retained in
+// derived.report.native_mesh_metadata; grouped-facet face_indices stay empty
+// because that separate query has not been mapped to this mesh route.
 SolidMeshResult mesh_bgfb_solid(const Json &table, const PolyfaceMeshOptions &options = {},
                                 unsigned circle_segments = 64);
 struct SolidTransformResult {

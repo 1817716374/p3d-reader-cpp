@@ -38,6 +38,9 @@ Json source(const std::string &kind, bool bent = false) {
                 {"extrusionVector", {{"x", 0}, {"y", 0}, {"z", 3}}}};
     if (kind == "DgnRuledSweep")
         return {{"_type", kind}, {"curves", {bottom, top}}, {"capped", true}};
+    if (kind == "P3DSweptBody")
+        return {{"_type", kind}, {"profile", bottom},
+                {"path", cv({line({0, 0, 0}, {0, 0, 3})}, 1)}, {"capped", true}};
     return {{"_type", "P3DSectionLoft"},
             {"section0", bottom},
             {"section1", top},
@@ -108,7 +111,7 @@ unsigned csg_curve_solid_tests() {
     };
     CsgMeshTreeOptions options;
     options.solid_circle_segments = 3;
-    for (const std::string kind : {"DgnExtrusion", "DgnRuledSweep", "P3DSectionLoft"}) {
+    for (const std::string kind : {"DgnExtrusion", "DgnRuledSweep", "P3DSectionLoft", "P3DSweptBody"}) {
         auto m = identity();
         m[0][0] = 2;
         m[0][1] = .25;
