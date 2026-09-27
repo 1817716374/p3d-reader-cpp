@@ -34,6 +34,9 @@ struct NativePolyfaceMesh {
     std::uint32_t mesh_style = 1, num_per_row = 0;
 };
 struct NativePolyfaceVisitedData {
+    // Native declared edge count, before appended wrap. It may exceed the
+    // valid point prefix when indexed post-wrap acceptance masks a bad point.
+    std::size_t edge_count = 0;
     // Values include the visitor's actual wrap. Some original visitors produce
     // values without client indices, or read multiple color representations.
     std::vector<Point3> normals, double_colors;
@@ -68,6 +71,17 @@ using NativePolyfaceFacetConsumer = std::function<void(
 NativePolyfaceVisit consume_native_polyface(const NativePolyfaceMesh &, TubeBudget &,
                                             const NativePolyfaceFacetConsumer &,
                                             bool all_data = true, std::uint32_t wrap = 0);
+using NativePolyfaceReadConsumer = std::function<bool(
+    std::size_t, const NativePolyfaceVisitorFacet &, const NativePolyfaceVisitedData &)>;
+// Starts directly at the native read index (offset for style 1, ordinal for raw
+// styles). A false consumer return stops after loading that face. Completeness
+// describes only the visited range. No earlier faces are read. The face-data
+// generation channel may be selected to permit live face-record/index updates;
+// other source arrays and layout must remain unchanged.
+NativePolyfaceVisit
+consume_native_polyface_from(const NativePolyfaceMesh &, TubeBudget &,
+                             std::uint32_t first_read_index, const NativePolyfaceReadConsumer &,
+                             std::size_t ignored_channel = polyface_channel_count);
 // Internal generation traversal: all data, wrap zero. The consumer runs between
 // native advances and may update only the selected normal/UV pool, its index
 // values and parameter ranges. Do not change source points or layout. Missing

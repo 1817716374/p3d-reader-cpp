@@ -1,5 +1,6 @@
 #pragma once
 #include "native_polyface_face_data.hpp"
+#include "native_polyface_visitor.hpp"
 namespace p3d::swept_detail {
 struct NativePolyfaceEdgeChains {
     NativePolyfaceFaceDataState output;
@@ -14,4 +15,13 @@ struct NativePolyfaceEdgeChains {
 NativePolyfaceEdgeChains build_native_polyface_edge_chains(const NativePolyfaceFaceDataState &,
                                                            std::size_t draw_method_index,
                                                            TubeBudget &);
+struct NativePolyfaceMeshEdgeChains {
+    NativePolyfaceMesh output;
+    std::uint32_t native_status = 1;
+    bool native_succeeded = false, complete = false;
+    Json report;
+};
+NativePolyfaceMeshEdgeChains build_native_polyface_mesh_edge_chains(const NativePolyfaceMesh &,
+                                                                    std::size_t draw_method_index,
+                                                                    TubeBudget &);
 } // namespace p3d::swept_detail

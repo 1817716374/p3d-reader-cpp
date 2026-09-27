@@ -23,8 +23,8 @@ struct NativePreparedPolyfaceAssembly {
     bool native_succeeded = false, complete = false;
     Json report;
 };
-// Original outer preparation on indexed-query sources. Other original styles
-// require their own query visitors; do not silently preconvert such input.
+// Original outer preparation on styles 1/3/4/5/6 through their own visitors.
+// No silent preconversion: only the original conditional triangulation converts.
 // Native failures in a preparation step do not suppress subsequent steps.
 NativePolyfacePreparation
 prepare_native_polyface_for_builder(const NativePolyfaceMesh &,
@@ -32,7 +32,7 @@ prepare_native_polyface_for_builder(const NativePolyfaceMesh &,
 // Sources already have placement applied. Coordinate map settings belong to
 // the builder; the per-source coordinate batch retains its caller-owned scope
 // and normal transform controls even when native query-copy is needed.
-// Prepared sources are returned separately. Untransferred color/extensions
+// Prepared sources are returned separately. Untransferred raw layouts or color/extensions
 // prevent complete; values omitted by native query-copy remain in the unchanged
 // caller-owned inputs and are diagnosed by that preparation step.
 NativePreparedPolyfaceAssembly

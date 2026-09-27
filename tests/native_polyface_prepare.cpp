@@ -251,7 +251,7 @@ unsigned native_polyface_prepare_tests() {
         check(many.complete && many.assembled.coordinates.points.size() == 4 &&
                   many.assembled.indices.indices[point_channel].size() == 16,
               "shared builder applies only its native coordinate map across prepared sources");
-        s.mesh_style = 5;
+        s.mesh_style = 2;
         rejects([&] { prepare(s, o); });
         TubeBudget budget;
         budget.max_control_points = 4;

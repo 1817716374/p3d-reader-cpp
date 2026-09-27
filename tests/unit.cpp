@@ -65,6 +65,7 @@ unsigned native_polyface_prepare_tests();
 unsigned native_polyface_raw_visitor_tests();
 unsigned native_polyface_mesh_attributes_tests();
 unsigned native_polyface_mesh_connectivity_tests();
+unsigned native_polyface_mesh_records_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2975,6 +2976,7 @@ int main() {
         checks += native_polyface_raw_visitor_tests();
         checks += native_polyface_mesh_attributes_tests();
         checks += native_polyface_mesh_connectivity_tests();
+        checks += native_polyface_mesh_records_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();

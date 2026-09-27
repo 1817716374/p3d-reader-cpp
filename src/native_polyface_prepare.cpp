@@ -1,6 +1,7 @@
 #include "native_polyface_prepare.hpp"
 #include "native_polyface_smooth_normals.hpp"
 #include "native_polyface_mesh_attributes.hpp"
+#include "native_polyface_mesh_face_data.hpp"
 #include "native_polyface_edge_chains.hpp"
 #include "native_polygon_convexity.hpp"
 #include "native_bezier.hpp"
@@ -9,20 +10,6 @@ namespace p3d::swept_detail {
 namespace {
 std::int64_t signed_setting(std::uint32_t value) {
     return value <= INT32_MAX ? std::int64_t(value) : std::int64_t(value) - 0x100000000LL;
-}
-NativePolyfaceFaceDataState state(const NativePolyfaceMesh &m) {
-    NativePolyfaceFaceDataState s;
-    s.mesh = m.data;
-    s.parameter_pool_active = m.pool_active[native_parameter_pool];
-    s.normal_pool_active = m.pool_active[native_normal_pool];
-    s.face_data_pool_active = m.pool_active[native_face_data_pool];
-    return s;
-}
-void adopt(NativePolyfaceMesh &m, NativePolyfaceFaceDataState &&s) {
-    m.data = std::move(s.mesh);
-    m.pool_active[native_parameter_pool] = s.parameter_pool_active;
-    m.pool_active[native_normal_pool] = s.normal_pool_active;
-    m.pool_active[native_face_data_pool] = s.face_data_pool_active;
 }
 void count_mesh(const NativePolyfaceMesh &m, std::size_t &count, TubeBudget &budget) {
     const curve_detail::BezierWork work{budget.work, budget.max_work};
@@ -61,7 +48,9 @@ NativePolyfacePreparation
 prepare_native_polyface_for_builder(const NativePolyfaceMesh &source,
                                     const NativePolyfacePreparationOptions &options,
                                     TubeBudget &budget) {
-    require(source.mesh_style == 1, "native outer preparation requires indexed query visitor");
+    require(source.mesh_style == 1 || source.mesh_style == 3 || source.mesh_style == 4 ||
+                source.mesh_style == 5 || source.mesh_style == 6,
+            "native outer preparation unsupported query visitor");
     std::size_t storage = 0;
     count_mesh(source, storage, budget);
     const curve_detail::BezierWork work{budget.work, budget.max_work};
@@ -85,7 +74,7 @@ prepare_native_polyface_for_builder(const NativePolyfaceMesh &source,
     out.complete = visited.complete;
     out.copied = normals || parameters || faces || edges || oversized;
     Json steps = Json::array();
-    out.report = {{"scope", "native_indexed_builder_preparation"},
+    out.report = {{"scope", "native_builder_preparation"},
                   {"copied", out.copied},
                   {"max_facet_size", maximum},
                   {"signed_edge_limit", limit},
@@ -129,10 +118,10 @@ prepare_native_polyface_for_builder(const NativePolyfaceMesh &source,
         out.output = std::move(result.output);
     }
     if (faces) {
-        auto result = build_native_polyface_face_data(state(out.output), budget);
+        auto result = build_native_polyface_mesh_face_data(out.output, budget);
         out.complete = out.complete && result.complete;
         steps.push_back({{"step", "face_data"}, {"result", std::move(result.report)}});
-        adopt(out.output, std::move(result.output));
+        out.output = std::move(result.output);
     }
     bool convex = true;
     for (const auto &f : visited.facets) {
@@ -158,11 +147,10 @@ prepare_native_polyface_for_builder(const NativePolyfaceMesh &source,
     }
     if (edges) {
         auto result =
-            build_native_polyface_edge_chains(state(out.output), options.draw_method_index, budget);
+            build_native_polyface_mesh_edge_chains(out.output, options.draw_method_index, budget);
         out.complete = out.complete && result.complete;
         steps.push_back({{"step", "edge_chains"}, {"result", std::move(result.report)}});
-        adopt(out.output, std::move(result.output));
-        // Native pushes edge records without setting the edge vector active flag.
+        out.output = std::move(result.output);
     }
     out.report["complete"] = out.complete;
     out.report["steps"] = std::move(steps);
@@ -178,12 +166,14 @@ NativePreparedPolyfaceAssembly assemble_native_prepared_polyfaces(
     NativePreparedPolyfaceAssembly out;
     out.complete = true;
     std::vector<NativeBuilderPolyface> prepared;
-    std::vector<std::size_t> untransferred;
+    std::vector<std::size_t> untransferred, untransferred_layouts;
     for (std::size_t i = 0; i < sources.size(); ++i) {
         auto result = prepare_native_polyface_for_builder(sources[i], options, budget);
         out.complete = out.complete && result.complete;
         if (has_untransferred_metadata(sources[i]))
             untransferred.push_back(i);
+        if (result.output.mesh_style != 1)
+            untransferred_layouts.push_back(i);
         prepared.push_back(result.output.data);
         out.sources.push_back(std::move(result));
     }
@@ -193,12 +183,14 @@ NativePreparedPolyfaceAssembly assemble_native_prepared_polyfaces(
     matched.parameters_required = options.parameters_required;
     out.assembled = assemble_native_builder_polyfaces(prepared, matched, budget);
     out.native_succeeded = out.assembled.native_succeeded;
-    out.complete = out.complete && out.assembled.complete && untransferred.empty();
-    out.report = {{"scope", "native_indexed_outer_builder_assembly"},
+    out.complete = out.complete && out.assembled.complete && untransferred.empty() &&
+                   untransferred_layouts.empty();
+    out.report = {{"scope", "native_outer_builder_assembly"},
                   {"native_succeeded", out.native_succeeded},
                   {"complete", out.complete},
                   {"source_count", sources.size()},
                   {"untransferred_metadata_sources", std::move(untransferred)},
+                  {"untransferred_raw_layout_sources", std::move(untransferred_layouts)},
                   {"matched", out.assembled.report}};
     return out;
 }

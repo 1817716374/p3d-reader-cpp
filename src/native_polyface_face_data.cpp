@@ -12,7 +12,6 @@
 #include "native_polygon_projection.hpp"
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
-#include <map>
 
 namespace p3d::swept_detail {
 namespace {
@@ -608,169 +607,21 @@ NativePolyfaceEdgeChains build_native_polyface_edge_chains(const NativePolyfaceF
                                                            std::size_t draw_method_index,
                                                            TubeBudget &budget) {
     Context context(input, budget);
-    auto &mesh = context.state.mesh;
+    NativePolyfaceMesh typed;
+    typed.data = std::move(context.state.mesh);
+    typed.pool_active[native_normal_pool] = input.normal_pool_active;
+    typed.pool_active[native_parameter_pool] = input.parameter_pool_active;
+    typed.pool_active[native_face_data_pool] = input.face_data_pool_active;
+    auto result = build_native_polyface_mesh_edge_chains(typed, draw_method_index, budget);
     NativePolyfaceEdgeChains out;
-    Json report{{"operation", "native_build_edge_chains"},
-                {"draw_method_index", draw_method_index},
-                {"draw_method_used", false},
-                {"visitor_wrap_count", 1}};
-    auto finish = [&](bool native, bool complete, const char *reason) {
-        out.native_status = native ? 0 : 1;
-        out.native_succeeded = native;
-        out.complete = complete;
-        report["native_status"] = out.native_status;
-        report["native_succeeded"] = native;
-        report["complete"] = complete;
-        report["reason"] = reason;
-        out.output = std::move(context.state);
-        out.report = std::move(report);
-        return std::move(out);
-    };
-    if (!mesh.edge_chains.empty())
-        return finish(false, false, "edge_chains_already_exist");
-    const auto &indices = mesh.indices.indices[point_channel];
-    using Key = std::pair<std::size_t, std::size_t>;
-    struct Faces {
-        std::size_t first, last, occurrences;
-    };
-    auto less = [&](const Key &a, const Key &b) {
-        context.work.charge(1);
-        return a < b;
-    };
-    std::map<Key, Faces, decltype(less)> edge_faces(less);
-    auto grow = [&](std::size_t count) {
-        require(count <= budget.max_control_points - context.storage,
-                "native edge-chain storage budget");
-        context.storage += count;
-        context.work.charge(count);
-    };
-    auto vertex = [&](std::size_t read) {
-        context.work.charge(1);
-        const auto n = static_cast<std::int64_t>(indices[read]);
-        const auto index = static_cast<std::uint64_t>(n < 0 ? -n : n) - 1;
-        require(index < static_cast<std::uint64_t>(INT32_MAX),
-                "native edge-chain point index overflow");
-        return static_cast<std::size_t>(index);
-    };
-    auto key = [](std::size_t a, std::size_t b) { return a < b ? Key{a, b} : Key{b, a}; };
-    Diagnostics passes[2];
-    std::size_t visited[2]{}, qualified[2]{}, skipped[2]{};
-    std::size_t visible = 0, unique = 0, shared = 0, over_two = 0, boundary = 0;
-    {
-        Visitor visitor(mesh, context.work, passes[0]);
-        Facet face;
-        std::size_t next = 0, facet_index = 0;
-        while (visitor.read(next, face)) {
-            next = face.next;
-            visited[0] += face.count;
-            if (face.count < 3) {
-                ++skipped[0];
-                continue;
-            }
-            ++qualified[0];
-            ++facet_index;
-            for (std::size_t i = 0; i < face.count; ++i) {
-                context.work.charge(1);
-                if (indices[face.read + i] <= 0)
-                    continue;
-                ++visible;
-                const auto edge =
-                    key(vertex(face.read + i), vertex(face.read + (i + 1) % face.count));
-                const auto found = edge_faces.find(edge);
-                if (found == edge_faces.end()) {
-                    grow(1);
-                    edge_faces.emplace(edge, Faces{facet_index, facet_index, 1});
-                    ++unique;
-                } else {
-                    auto &f = found->second;
-                    ++f.occurrences;
-                    if (facet_index < f.first) {
-                        f.last = f.first;
-                        f.first = facet_index;
-                    } else
-                        f.last = facet_index;
-                }
-            }
-            // Preserved original increment at both ends: qualified faces are 1,3,5,...
-            ++facet_index;
-        }
-    }
-    Json emitted = Json::array();
-    {
-        Visitor visitor(mesh, context.work, passes[1]);
-        Facet face;
-        std::size_t next = 0;
-        while (visitor.read(next, face)) {
-            next = face.next;
-            visited[1] += face.count;
-            if (face.count < 3) {
-                ++skipped[1];
-                continue;
-            }
-            ++qualified[1];
-            for (std::size_t i = 0; i < face.count; ++i) {
-                const auto a = vertex(face.read + i), b = vertex(face.read + (i + 1) % face.count);
-                const auto found = edge_faces.find(key(a, b));
-                if (found == edge_faces.end())
-                    continue;
-                const auto &f = found->second;
-                // The second pass deliberately ignores this half-edge's visibility.
-                NativeBuilderEdgeChain chain;
-                if (f.first == f.last) {
-                    chain.topology_type = 24;
-                    chain.topology_ids = {static_cast<std::uint32_t>(a),
-                                          static_cast<std::uint32_t>(b)};
-                    ++boundary;
-                } else {
-                    chain.topology_type = 4;
-                    chain.topology_ids = {static_cast<std::uint32_t>(f.first),
-                                          static_cast<std::uint32_t>(f.last)};
-                    ++shared;
-                }
-                chain.point_indices = {static_cast<std::int32_t>(a + 1),
-                                       static_cast<std::int32_t>(b + 1)};
-                if (f.occurrences > 2)
-                    ++over_two;
-                grow(5);
-                mesh.edge_chains.push_back(std::move(chain));
-                emitted.push_back({{"read_index", face.read + i},
-                                   {"visible_occurrences", f.occurrences},
-                                   {"first_visible_facet", f.first},
-                                   {"last_visible_facet", f.last},
-                                   {"emitted_from_hidden_half_edge", indices[face.read + i] < 0}});
-                edge_faces.erase(found);
-                --context.storage;
-            }
-        }
-    }
-    std::size_t nonzero = 0;
-    for (auto i : indices) {
-        context.work.charge(1);
-        if (i)
-            ++nonzero;
-    }
-    bool complete = edge_faces.empty();
-    Json pass_reports = Json::array();
-    for (unsigned p = 0; p < 2; ++p) {
-        const auto &d = passes[p];
-        complete = complete && visited[p] == nonzero && d.invalid_points == 0 &&
-                   d.truncated_attributes == 0;
-        pass_reports.push_back({{"visited_facets", d.visited},
-                                {"qualified_facets", qualified[p]},
-                                {"skipped_short_facets", skipped[p]},
-                                {"unvisited_nonzero_indices", nonzero - visited[p]},
-                                {"invalid_point_facets", d.invalid_points},
-                                {"truncated_attribute_visits", d.truncated_attributes}});
-    }
-    report["passes"] = std::move(pass_reports);
-    report["emitted"] = std::move(emitted);
-    report["visible_half_edge_occurrences"] = visible;
-    report["registered_edges"] = unique;
-    report["unemitted_edges"] = edge_faces.size();
-    report["shared_edge_records"] = shared;
-    report["vertex_edge_records"] = boundary;
-    report["edges_with_over_two_visible_occurrences"] = over_two;
-    return finish(true, complete, "completed");
+    out.output = std::move(context.state);
+    out.output.mesh = std::move(result.output.data);
+    out.native_status = result.native_status;
+    out.native_succeeded = result.native_succeeded;
+    out.complete = result.complete;
+    out.report = std::move(result.report);
+    out.report["operation"] = "native_build_edge_chains";
+    return out;
 }
 NativePolyfaceFacetQueries query_native_polyface_facets(const NativePolyfaceFaceDataState &input,
                                                         TubeBudget &budget) {

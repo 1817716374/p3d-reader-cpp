@@ -132,6 +132,8 @@ unsigned native_polyface_edge_chains_tests() {
               "variable leading zeros and unterminated final face preserve source read positions");
         s = source;
         s.mesh.indices.indices[point_channel] = {1, 2, 3, 0, 1, 2, 99, 0, 1, 3, 4, 0};
+        rejects([&] { run(s); }); // Post-wrap acceptance would read a missing closing client index.
+        s.mesh.indices.indices[point_channel] = {1, 2, 3, 0, 99, 1, 2, 0, 1, 3, 4, 0};
         r = run(s);
         check(r.native_succeeded && !r.complete && r.output.mesh.edge_chains.size() == 3 &&
                   r.report["passes"][0]["unvisited_nonzero_indices"] == 6 &&
@@ -181,10 +183,9 @@ unsigned native_polyface_edge_chains_tests() {
         s.mesh.indices.indices[face_channel] = {9, 9, 9, 0, 9, 9, 9, 0};
         s.mesh.indices.indices[color_channel] = {5, 5, 5, 0, 5, 5, 5, 0};
         auto unchanged = run(s);
-        check(
-            unchanged.complete && unchanged.output.mesh.face_data[0].source_index == 1234 &&
-                unchanged.output.mesh.indices.indices == s.mesh.indices.indices,
-            "face records and unrelated channels are preserved, not used for generated facet IDs");
+        check(!unchanged.complete && unchanged.output.mesh.face_data[0].source_index == 1234 &&
+                  unchanged.output.mesh.indices.indices == s.mesh.indices.indices,
+              "face records and channels are preserved; invalid face references remain diagnosed");
         expect(unchanged.output.mesh.edge_chains[2], 4, {1, 3}, {3, 1});
     }
     {

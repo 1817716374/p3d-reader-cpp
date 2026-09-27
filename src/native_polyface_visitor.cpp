@@ -22,19 +22,26 @@ struct Context {
     TubeBudget &budget;
     curve_detail::BezierWork work;
     std::size_t storage = 0;
-    Context(const NativePolyfaceMesh &m, TubeBudget &b) : budget(b), work{b.work, b.max_work} {
+    Context(const NativePolyfaceMesh &m, TubeBudget &b, bool charge_input = true)
+        : budget(b), work{b.work, b.max_work} {
+        auto input = [&](std::size_t n) {
+            require(n <= budget.max_control_points - storage,
+                    "native visitor input storage budget");
+            storage += n;
+            work.charge(charge_input ? n : 1);
+        };
         for (auto n : pool_counts(m))
-            grow(n);
+            input(n);
         for (const auto &v : m.data.indices.indices)
-            grow(v.size());
-        grow(m.face_uv_points.size());
-        grow(m.face_material_ids.size());
-        grow(m.face_smooth_groups.size());
-        grow(m.illumination_name.size());
-        grow(m.data.edge_chains.size());
+            input(v.size());
+        input(m.face_uv_points.size());
+        input(m.face_material_ids.size());
+        input(m.face_smooth_groups.size());
+        input(m.illumination_name.size());
+        input(m.data.edge_chains.size());
         for (const auto &e : m.data.edge_chains) {
-            grow(e.topology_ids.size());
-            grow(e.point_indices.size());
+            input(e.topology_ids.size());
+            input(e.point_indices.size());
         }
     }
     void grow(std::size_t n) {
@@ -68,9 +75,10 @@ void apply_layout(NativePolyfaceMesh &m, NativePolyfaceLayout &&l) {
 }
 NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &budget,
                                     bool all_data, std::uint32_t requested_wrap,
-                                    const NativePolyfaceFacetConsumer *consumer,
-                                    std::size_t ignored_channel) {
-    Context context(mesh, budget);
+                                    const NativePolyfaceReadConsumer *consumer,
+                                    std::size_t ignored_channel, std::uint32_t start = 0,
+                                    bool ranged = false) {
+    Context context(mesh, budget, !ranged);
     const bool blocked = mesh.mesh_style == 3 || mesh.mesh_style == 4;
     require(blocked || mesh.mesh_style == 5 || mesh.mesh_style == 6,
             "native visitor unsupported mesh style");
@@ -89,7 +97,7 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
         }
     if (!blocked)
         require(mesh.num_per_row != 1, "native grid visitor divides by zero at row width one");
-    std::vector<std::uint8_t> used(points.size(), 0);
+    std::vector<std::uint8_t> used(ranged ? 0 : points.size(), 0);
     context.grow(used.size());
     NativePolyfaceVisit out;
     std::size_t incomplete_attributes = 0;
@@ -97,7 +105,8 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
     const bool ignored_faces = blocked && all_data && !mesh.data.face_data.empty();
     const bool ignored_table =
         !blocked && !mesh.integer_colors.empty() && !mesh.color_table.empty();
-    for (std::size_t ordinal = 0;; ++ordinal) {
+    bool stopped = false;
+    for (std::size_t ordinal = start;; ++ordinal) {
         context.work.charge(1);
         const auto retained_storage = context.storage;
         require(ordinal < UINT32_MAX, "native raw visitor facet ordinal overflow");
@@ -138,6 +147,7 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
         }
         NativePolyfaceVisitorFacet f;
         NativePolyfaceVisitedData d;
+        d.edge_count = corners;
         context.grow(corners);
         context.grow(indices.size());
         context.grow(indices.size());
@@ -148,7 +158,8 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
             f.visible.push_back(1);
             if (i < corners) {
                 f.points.push_back(points[k]);
-                used[k] = 1;
+                if (!ranged)
+                    used[k] = 1;
             }
         }
         if (blocked) {
@@ -210,7 +221,7 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
                    normal_channel);
             values(d.parameters, mesh.data.coordinates.parameters,
                    mesh.data.coordinates.parameters.size(), parameter_channel);
-            values(d.face_data, mesh.data.face_data, counts[native_face_data_pool], face_channel);
+            values(d.face_data, mesh.data.face_data, mesh.data.face_data.size(), face_channel);
             values(d.double_colors, mesh.double_colors, color_count, color_channel);
             // Double RGB is independent; integer RGB takes priority over table.
             if (last <= color_count && !mesh.integer_colors.empty())
@@ -221,8 +232,7 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
                 ++incomplete_attributes;
         }
         context.grow(3);
-        if (consumer)
-            (*consumer)(ordinal, f, d);
+        const bool keep_going = !consumer || (*consumer)(ordinal, f, d);
         out.read_indices.push_back(ordinal);
         if (consumer) {
             context.storage = retained_storage;
@@ -231,14 +241,18 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
             out.facets.push_back(std::move(f));
             out.data.push_back(std::move(d));
         }
+        if (!keep_going) {
+            stopped = true;
+            break;
+        }
     }
     std::size_t unused = 0;
     for (auto u : used) {
         context.work.charge(1);
         unused += !u;
     }
-    out.complete =
-        !unused && !incomplete_attributes && !ignored_float && !ignored_faces && !ignored_table;
+    out.complete = (ranged || !unused) && !incomplete_attributes && !ignored_float &&
+                   (!ignored_faces || ignored_channel == face_channel) && !ignored_table;
     out.report = {{"scope", "native_unindexed_polyface_visitor"},
                   {"mesh_style", mesh.mesh_style},
                   {"complete", out.complete},
@@ -255,17 +269,22 @@ NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &
                   {"color_query_count", color_count},
                   {"global_num_per_row", mesh.num_per_row},
                   {"face_count", out.read_indices.size()},
+                  {"first_read_index", start},
+                  {"stopped_by_consumer", stopped},
+                  {"complete_scope", ranged ? "visited_range" : "whole_source"},
                   {"values_consumed_incrementally", consumer != nullptr}};
     return out;
 }
 } // namespace
 static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget &budget,
                                       bool all_data, std::uint32_t wrap,
-                                      const NativePolyfaceFacetConsumer *consumer,
-                                      std::size_t ignored_channel) {
+                                      const NativePolyfaceReadConsumer *consumer,
+                                      std::size_t ignored_channel, std::uint32_t start = 0,
+                                      bool ranged = false) {
     if (mesh.mesh_style != 1)
-        return visit_unindexed(mesh, budget, all_data, wrap, consumer, ignored_channel);
-    Context context(mesh, budget);
+        return visit_unindexed(mesh, budget, all_data, wrap, consumer, ignored_channel, start,
+                               ranged);
+    Context context(mesh, budget, !ranged);
     require(mesh.mesh_style == 1, "native indexed visitor requires converted mesh style");
     const auto &m = mesh.data;
     const auto &indices = m.indices.indices;
@@ -292,13 +311,16 @@ static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget
     const auto color_count =
         color_count_pool == native_polyface_pool_count ? 0 : counts[color_count_pool];
     NativePolyfaceVisit out;
-    std::size_t cursor = 0, covered = 0, expected = 0, invalid_points = 0, incomplete_channels = 0;
+    std::size_t cursor = start, covered = 0, expected = 0, invalid_points = 0,
+                incomplete_channels = 0;
+    bool stopped = false;
     std::array<std::size_t, polyface_channel_count> truncated{};
     Json reports = Json::array();
-    for (auto i : pi) {
-        context.work.charge(1);
-        expected += i != 0;
-    }
+    if (!ranged)
+        for (auto i : pi) {
+            context.work.charge(1);
+            expected += i != 0;
+        }
     while (cursor < pi.size()) {
         context.work.charge(1);
         const auto retained_storage = context.storage;
@@ -324,8 +346,11 @@ static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget
         }
         if (!count)
             break;
+        if (ranged)
+            expected += count;
         NativePolyfaceVisitorFacet f;
         NativePolyfaceVisitedData data;
+        data.edge_count = count;
         std::array<std::size_t, polyface_channel_count> collected{};
         auto collect = [&](std::size_t channel, const std::vector<std::int32_t> &source,
                            std::size_t native_index_count, std::size_t native_pool_count,
@@ -390,7 +415,7 @@ static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget
                 collect(channel, src, pi.size(), current_counts[pool], current_counts[pool]);
             }
             collect(face_channel, indices[face_channel], indices[face_channel].size(),
-                    counts[native_face_data_pool], counts[native_face_data_pool]);
+                    current_counts[native_face_data_pool], current_counts[native_face_data_pool]);
             if (color_pool != native_polyface_pool_count)
                 collect(color_channel, indices[color_channel], pi.size(), color_count,
                         counts[color_pool]);
@@ -398,7 +423,7 @@ static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget
                 const auto pool_count =
                     channel == parameter_channel ? mesh.data.coordinates.parameters.size()
                     : channel == normal_channel  ? mesh.data.coordinates.normals.size()
-                    : channel == face_channel    ? counts[native_face_data_pool]
+                    : channel == face_channel    ? current_counts[native_face_data_pool]
                     : color_pool == native_polyface_pool_count ? 0
                                                                : counts[color_pool];
                 if ((pool_count || m.indices.active[channel] || !indices[channel].empty()) &&
@@ -426,8 +451,7 @@ static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget
         }
         covered += collected[point_channel];
         context.grow(3); // facet, values and source-read records
-        if (consumer)
-            (*consumer)(first, f, data);
+        const bool keep_going = !consumer || (*consumer)(first, f, data);
         reports.push_back({{"read_index", first},
                            {"source_corner_count", count},
                            {"collected_corner_counts", collected}});
@@ -440,6 +464,10 @@ static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget
             out.data.push_back(std::move(data));
         }
         cursor = next;
+        if (!keep_going) {
+            stopped = true;
+            break;
+        }
     }
     out.complete = covered == expected && invalid_points == 0 && incomplete_channels == 0;
     out.report = {{"scope", "native_indexed_polyface_visitor"},
@@ -447,6 +475,9 @@ static NativePolyfaceVisit visit_impl(const NativePolyfaceMesh &mesh, TubeBudget
                   {"all_data", all_data},
                   {"wrap", wrap},
                   {"source_corners", expected},
+                  {"first_read_index", start},
+                  {"stopped_by_consumer", stopped},
+                  {"complete_scope", ranged ? "visited_range" : "whole_source"},
                   {"covered_point_corners", covered},
                   {"invalid_point_facets", invalid_points},
                   {"truncated_attribute_facets", truncated},
@@ -467,12 +498,28 @@ visit_native_polyface_attribute_updates(NativePolyfaceMesh &mesh, TubeBudget &bu
                                         const NativePolyfaceFacetConsumer &consumer) {
     require(channel == normal_channel || channel == parameter_channel,
             "native attribute visitor requires normal or parameter channel");
-    return visit_impl(mesh, budget, true, 0, &consumer, channel);
+    NativePolyfaceReadConsumer update = [&](auto read, const auto &f, const auto &d) {
+        consumer(read, f, d);
+        return true;
+    };
+    return visit_impl(mesh, budget, true, 0, &update, channel);
 }
 NativePolyfaceVisit consume_native_polyface(const NativePolyfaceMesh &mesh, TubeBudget &budget,
                                             const NativePolyfaceFacetConsumer &consumer,
                                             bool all_data, std::uint32_t wrap) {
-    return visit_impl(mesh, budget, all_data, wrap, &consumer, polyface_channel_count);
+    NativePolyfaceReadConsumer read = [&](auto at, const auto &f, const auto &d) {
+        consumer(at, f, d);
+        return true;
+    };
+    return visit_impl(mesh, budget, all_data, wrap, &read, polyface_channel_count);
+}
+NativePolyfaceVisit consume_native_polyface_from(const NativePolyfaceMesh &mesh, TubeBudget &budget,
+                                                 std::uint32_t start,
+                                                 const NativePolyfaceReadConsumer &consumer,
+                                                 std::size_t ignored_channel) {
+    require(ignored_channel == polyface_channel_count || ignored_channel == face_channel,
+            "native ranged visitor only permits face-data generation updates");
+    return visit_impl(mesh, budget, true, 0, &consumer, ignored_channel, start, true);
 }
 NativePolyfaceMeshTriangulation triangulate_native_polyface_mesh(const NativePolyfaceMesh &input,
                                                                  TubeBudget &budget,
