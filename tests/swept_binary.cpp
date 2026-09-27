@@ -167,6 +167,123 @@ unsigned swept_binary_tests() {
         entry.insert(entry.end(), b.begin(), b.end());
         return graphics_entry_native_input(entry).at(project ? "with_project" : "without_project");
     };
+    auto akima = [](const std::vector<Point3> &points, std::optional<std::uint32_t> scalars = {}) {
+        Packet p;
+        const auto root = p.table({4, 8}, 12);
+        p.reference(8, root);
+        write(p.b, root + 4, std::uint8_t(19));
+        const auto curve = p.table({4}, 8);
+        p.reference(root + 8, curve);
+        p.align();
+        put(p.b, std::uint32_t(0));
+        const auto vector = p.b.size();
+        put(p.b, scalars.value_or(std::uint32_t(points.size() * 3)));
+        p.reference(curve + 4, vector);
+        for (auto point : points)
+            for (auto x : point)
+                put(p.b, x);
+        return p.b;
+    };
+    const std::vector<Point3> akima_line = {{-2, 0, 0}, {-1, 0, 0}, {0, 0, 0},
+                                            {1, 0, 0},  {2, 0, 0},  {3, 0, 0}};
+    for (bool project : {false, true}) {
+        for (unsigned tail = 0; tail < 3; ++tail) {
+            const auto binary = akima(akima_line, 18 + tail);
+            const auto result = native_curve(binary, 1, project);
+            const auto &c = result.at("construction"), &copy = result.at("parametric_append_input");
+            check(result.at("status") == "geometry_constructed" &&
+                      result.at("entry_restore").at("status") == "retained" &&
+                      c.at("point_count") == 6 && c.at("ignored_tail_scalars") == tail &&
+                      c.at("source_points_copied") == true && c.at("copied_bytes") == 144,
+                  "Akima consumes complete triples and retains all original source points");
+            check(c.at("fit").at("first_interpolated_source_index") == 2 &&
+                      c.at("fit").at("last_interpolated_source_index") == 3 &&
+                      c.at("fitted_bspline").at("order") == 4 &&
+                      c.at("fitted_bspline").at("closed") == false &&
+                      c.at("fitted_bspline").at("pole_count") == 4 &&
+                      c.at("fitted_bspline").at("knot_count") == 8 &&
+                      c.at("fitted_bspline").at("weight_count") == 0,
+                  "six collinear Akima points produce one open cubic with two supports each end");
+            check(copy.at("status") == "appended" &&
+                      copy.at("geometry_operation") == "refit_akima_and_copy_source_points" &&
+                      copy.at("akima_copy").at("point_count") == 6 &&
+                      copy.at("akima_copy").at("source_points_filtered") == false &&
+                      copy.at("akima_copy").at("fitted_bspline_regenerated") == true &&
+                      copy.at("akima_copy").at("source_arrays_reused") == false,
+                  "Akima clone refits from copied original points rather than reusing its cache");
+            const auto raw = native_curve(binary, 4, project);
+            check(raw.at("status") == "rejected" && raw.at("material_footer") == "not_read" &&
+                      raw.at("bspline_pointer_extraction").at("status") == "null" &&
+                      raw.at("construction").at("native_fit_result") == 0,
+                  "saved-B-spline entry does not accept Akima even after successful fitting");
+        }
+        for (auto scalars : {0u, 1u, 2u, 3u, 15u, 17u, 15003u, UINT32_MAX}) {
+            // No coordinate storage: the point-count guard must run first.
+            const auto result = native_curve(akima({}, scalars), 1, project);
+            const auto &c = result.at("construction");
+            check(result.at("status") == "rejected" && c.at("geometry_pointer") == "null" &&
+                      c.at("source_points_copied") == false &&
+                      c.at("factory_called") == (scalars >= 3) &&
+                      result.at("material_footer") == "not_read" &&
+                      result.at("entry_restore").at("status") == "rejected",
+                  "Akima reader/count guards reject before reading unavailable coordinate data");
+            check(native_curve(akima({}, scalars), 4, project).at("status") == "rejected",
+                  "raw-B-spline entry also rejects a null Akima construction");
+        }
+    }
+    for (unsigned count : {6u, 7u, 5000u}) {
+        std::vector<Point3> points;
+        for (unsigned i = 0; i < count; ++i)
+            points.push_back({double(i), 0, 0});
+        check(
+            native_curve(akima(points)).at("construction").at("fitted_bspline").at("pole_count") ==
+                3 * (count - 5) + 1,
+            "Akima includes both accepted source-count endpoints and the multi-span case");
+    }
+    auto filtered_points = akima_line;
+    filtered_points.insert(filtered_points.begin() + 3, filtered_points[2]);
+    filtered_points.insert(filtered_points.begin(), {std::numeric_limits<double>::max(), 0, 0});
+    const auto filtered_binary = akima(filtered_points);
+    const auto filtered_akima = native_curve(filtered_binary);
+    check(
+        filtered_akima.at("construction").at("point_count") == 8 &&
+            filtered_akima.at("construction").at("fit").at("ignored_points").size() == 2 &&
+            filtered_akima.at("construction").at("fitted_bspline").at("pole_count") == 4 &&
+            filtered_akima.at("parametric_append_input").at("akima_copy").at("point_count") == 8,
+        "fit filters disconnect and adjacent duplicate without altering the copied source vector");
+    const auto collapsed_binary = akima(std::vector<Point3>(6, {0, 0, 0}));
+    const auto collapsed = native_curve(collapsed_binary);
+    check(collapsed.at("status") == "rejected" &&
+              collapsed.at("construction").at("reason") ==
+                  "native_akima_filtered_point_count_guard" &&
+              collapsed.at("construction").at("fit").at("native_filtered_point_count") == 2,
+          "native duplicate-first fallback still fails the six-point post-filter guard");
+    auto short_filtered = akima_line;
+    short_filtered.back() = short_filtered[4];
+    check(native_curve(akima(short_filtered))
+                  .at("construction")
+                  .at("fit")
+                  .at("retained_point_count") == 5,
+          "five distinct points after proximity filtering reject the factory");
+    for (auto bad : {std::numeric_limits<double>::quiet_NaN(),
+                     std::numeric_limits<double>::infinity(), 1e200}) {
+        auto points = akima_line;
+        points[3][0] = bad;
+        const auto result = native_curve(akima(points));
+        check(result.at("status") == "not_evaluated" &&
+                  result.at("construction").at("geometry_pointer") == "unknown" &&
+                  !result.at("construction").contains("native_fit_result"),
+              "nonfinite and overflowing mathematics never masquerade as native factory rejection");
+    }
+    check(native_curve(akima({}, 18)).at("status") == "not_evaluated",
+          "an accepted source count needs its complete coordinate storage");
+    auto missing_points = akima(akima_line);
+    const auto akima_root = 8 + Reader(missing_points, 8).u32();
+    const auto akima_table = akima_root + 8 + Reader(missing_points, akima_root + 8).u32();
+    const auto akima_vt = akima_table - Reader(missing_points, akima_table).i32();
+    write(missing_points, akima_vt + 4, std::uint16_t(0));
+    check(native_curve(missing_points).at("status") == "not_evaluated",
+          "missing Akima vector is an unsafe dereference, not the explicit empty-vector guard");
     auto surface = [](bool closed_u, bool closed_v, std::optional<int> weights,
                       std::optional<int> knots_u, std::optional<int> knots_v, int boundary = 0) {
         Packet p;
@@ -469,6 +586,18 @@ unsigned swept_binary_tests() {
         base.insert(base.end(), group.begin(), group.end());
         return base;
     };
+    const auto repeated_akima = native_curve(collection(filtered_binary, 2), 2);
+    check(repeated_akima.at("construction").at("output_member_count") == 2 &&
+              repeated_akima.at("parametric_append_input").at("status") == "appended" &&
+              repeated_akima.at("construction").at("members").at(1).at("output_member_index") == 1,
+          "repeated Akima source references retain separate constructed and copied group members");
+    const auto rejected_akima = native_curve(collection(collapsed_binary, 2), 2);
+    check(rejected_akima.at("construction").at("output_member_count") == 0 &&
+              rejected_akima.at("construction").at("members").at(0).at("action") == "skip_null" &&
+              rejected_akima.at("parametric_append_input").at("status") == "appended",
+          "confirmed null Akima is filtered out before copying the surviving empty group");
+    check(native_curve(collection(missing_points, 1), 2).at("status") == "not_evaluated",
+          "unknown Akima construction must not be silently filtered from a curve group");
     auto plane = valid_surface;
     const auto plane_table = surface_table(plane);
     const auto plane_poles = plane_table + 4 + Reader(plane, plane_table + 4).u32();
@@ -479,6 +608,28 @@ unsigned swept_binary_tests() {
             write(plane, at + 8, .5 * v);
             write(plane, at + 16, 0.);
         }
+    const auto akima_trim =
+        native_curve(attach_boundary(plane, collection(akima(akima_line), 1)), 5);
+    check(akima_trim.at("status") == "geometry_constructed" &&
+              akima_trim.at("construction").at("initial_boundary_cache").at("status") == "complete",
+          "binary Akima construction reaches initial surface boundary sampling");
+    const auto &akima_loop =
+        akima_trim.at("construction").at("initial_boundary_cache").at("loops").at(0);
+    check(akima_loop.front().at("parameter") == Json::array({0., 0., 0.}) &&
+              akima_loop.back().at("parameter") == Json::array({1., 0., 0.}),
+          "Akima trim uses interpolated central endpoints rather than its outer support points");
+    const auto &akima_trim_copy =
+        akima_trim.at("parametric_append_input").at("boundary_storage_copy");
+    check(
+        akima_trim.at("parametric_append_input").at("status") == "appended" &&
+            akima_trim_copy.at("loops").at(0).at("curves").at(0).at("order") == 4 &&
+            akima_trim_copy.at("loops").at(0).at("curves").at(0).at("pole_count") == 4 &&
+            akima_trim_copy.at("resampled") == false,
+        "surface clone copies prepared Akima cubic boundary instead of cloning the source wrapper");
+    check(native_curve(attach_boundary(plane, collection(collapsed_binary, 1)), 5)
+                  .at("construction")
+                  .at("trim_operation") == "clear_empty_root",
+          "rejected Akima trim member leaves the actual constructed boundary group empty");
     auto primitive = [](unsigned tag) {
         Packet p;
         const auto root = p.table({4, 8}, 12);

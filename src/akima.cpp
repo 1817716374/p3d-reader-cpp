@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "akima_internal.hpp"
 namespace p3d {
 namespace {
 constexpr double disconnect = std::numeric_limits<double>::max();
@@ -38,7 +38,7 @@ Point3 tangent(const std::vector<Point3> &directions, std::size_t point) {
     return result;
 }
 } // namespace
-AkimaCurve AkimaCurve::from_bgfb(const Json &table) {
+akima_detail::Fit akima_detail::fit(const Json &table) {
     require(table.at("_type") == "AkimaCurve", "expected BGFB AkimaCurve table");
     const auto &values = table.at("points");
     require(values.is_array() && values.size() % 3 == 0, "Akima XYZ triplets");
@@ -74,7 +74,20 @@ AkimaCurve AkimaCurve::from_bgfb(const Json &table) {
         points.push_back(source[i]);
         indices.push_back(i);
     }
-    require(points.size() >= 6, "native Akima has fewer than six points after filtering");
+    if (points.size() < 6)
+        return {std::nullopt,
+                std::move(source),
+                std::move(indices),
+                {{"status", "rejected"},
+                 {"reason", "native_akima_filtered_point_count_guard"},
+                 {"source_point_count", count},
+                 {"retained_point_count", points.size()},
+                 // The native filter duplicates a sole surviving point before
+                 // checking the minimum count. Neither case produces a curve.
+                 {"native_filtered_point_count", points.size() == 1 ? 2 : points.size()},
+                 {"ignored_points", ignored},
+                 {"central_range_size", scale},
+                 {"proximity_threshold_squared", threshold}}};
     std::vector<Point3> directions;
     std::vector<double> lengths;
     for (std::size_t i = 1; i < points.size(); ++i) {
@@ -119,27 +132,36 @@ AkimaCurve AkimaCurve::from_bgfb(const Json &table) {
     }
     for (unsigned k = 0; k < 4; ++k)
         knots.push_back(1.);
-    AkimaCurve result(BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
-                                               {"order", 4},
-                                               {"closed", false},
-                                               {"poles", poles},
-                                               {"weights", nullptr},
-                                               {"knots", knots}}));
-    result.source_points_ = std::move(source);
-    result.retained_indices_ = std::move(indices);
-    result.report_ = {
-        {"status", "valid"},
-        {"representation", "derived_open_cubic_bspline"},
-        {"source_point_count", count},
-        {"retained_point_indices", result.retained_indices_},
-        {"ignored_points", ignored},
-        {"central_range_size", scale},
-        {"proximity_threshold_squared", threshold},
-        {"first_interpolated_source_index", result.retained_indices_[2]},
-        {"last_interpolated_source_index", result.retained_indices_[points.size() - 3]},
-        {"support_points_each_end", 2},
-        {"knot_spacing", "interpolation_chord_length"},
-        {"derived_pole_count", result.bspline_.poles().size()}};
+    Fit result;
+    result.curve = BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
+                                            {"order", 4},
+                                            {"closed", false},
+                                            {"poles", poles},
+                                            {"weights", nullptr},
+                                            {"knots", knots}});
+    result.source = std::move(source);
+    result.retained_indices = std::move(indices);
+    result.report = {{"status", "valid"},
+                     {"representation", "derived_open_cubic_bspline"},
+                     {"source_point_count", count},
+                     {"retained_point_indices", result.retained_indices},
+                     {"ignored_points", ignored},
+                     {"central_range_size", scale},
+                     {"proximity_threshold_squared", threshold},
+                     {"first_interpolated_source_index", result.retained_indices[2]},
+                     {"last_interpolated_source_index", result.retained_indices[points.size() - 3]},
+                     {"support_points_each_end", 2},
+                     {"knot_spacing", "interpolation_chord_length"},
+                     {"derived_pole_count", result.curve->poles().size()}};
+    return result;
+}
+AkimaCurve AkimaCurve::from_bgfb(const Json &table) {
+    auto fitted = akima_detail::fit(table);
+    require(fitted.curve.has_value(), "native Akima has fewer than six points after filtering");
+    AkimaCurve result(std::move(*fitted.curve));
+    result.source_points_ = std::move(fitted.source);
+    result.retained_indices_ = std::move(fitted.retained_indices);
+    result.report_ = std::move(fitted.report);
     return result;
 }
 } // namespace p3d

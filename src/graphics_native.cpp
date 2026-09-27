@@ -1,4 +1,5 @@
 #include "graphics_native.hpp"
+#include "akima_internal.hpp"
 #include "p3d/pcurve.hpp"
 
 namespace p3d {
@@ -271,7 +272,7 @@ struct GeometryConstruction {
                 if (member.at("action") == "append_curve" ||
                     member.at("action") == "wrap_nested_curve_vector")
                     table["curves"].push_back({{"geometry", trim_curve(member)}});
-        } else if (name == "LineString" || name == "PointString") {
+        } else if (name == "LineString" || name == "PointString" || name == "AkimaCurve") {
             table["points"] = trim_values(source.at("data_offset"),
                                           source.at("point_count").get<std::size_t>() * 3);
         } else if (name == "BsplineCurve") {
@@ -338,6 +339,54 @@ struct GeometryConstruction {
                         {{"parameter", point.parameter}, {"position", point.position}});
                 out["loops"].push_back(std::move(samples));
             }
+        return out;
+    }
+    Json akima(std::size_t table) {
+        const auto vector = child(table, 0);
+        require(vector.has_value(), "native_akima_requires_point_vector");
+        const auto scalars = b.at<std::uint32_t>(*vector), count = scalars / 3;
+        auto out = object("AkimaCurve", "curve");
+        out.update({{"operation", "fit_akima_and_copy_source_points"},
+                    {"source_scalar_count", scalars},
+                    {"point_count", count},
+                    {"ignored_tail_scalars", scalars % 3},
+                    {"data_offset", *vector + 4},
+                    {"source_points_copied", false}});
+        // Zero points stop at the reader. Other out-of-range counts reach the
+        // factory guard before it reads any coordinates, even on truncated data.
+        if (count < 6 || count > 5000) {
+            out.update({{"geometry_pointer", "null"},
+                        {"factory_called", count != 0},
+                        {"native_fit_result", count ? Json(1) : Json()},
+                        {"reason", "native_akima_source_point_count_guard"}});
+            return out;
+        }
+        out["factory_called"] = true;
+        try {
+            const auto values = trim_values(*vector + 4, std::size_t(count) * 3);
+            auto fitted = akima_detail::fit({{"_type", "AkimaCurve"}, {"points", values}});
+            out["fit"] = std::move(fitted.report);
+            if (!fitted.curve) {
+                out.update({{"geometry_pointer", "null"},
+                            {"native_fit_result", 1},
+                            {"reason", "native_akima_filtered_point_count_guard"}});
+                return out;
+            }
+            const auto &curve = *fitted.curve;
+            out.update({{"native_fit_result", 0},
+                        {"source_points_copied", true},
+                        {"copied_bytes", std::uint64_t(count) * 24},
+                        {"fitted_bspline",
+                         {{"order", curve.order()},
+                          {"closed", curve.closed()},
+                          {"pole_count", curve.poles().size()},
+                          {"knot_count", curve.knots().size()},
+                          {"weight_count", 0}}}});
+        } catch (const std::exception &e) {
+            // A mathematical API exception is not evidence of a native null
+            // return (nonfinite values and arithmetic overflow in particular).
+            out.update({{"geometry_pointer", "unknown"}, {"reason", e.what()}});
+        }
         return out;
     }
     Json bspline_surface(std::size_t table, unsigned depth) {
@@ -497,7 +546,8 @@ struct GeometryConstruction {
             return out;
         }
         require(tag == 1 || tag == 2 || tag == 3 || tag == 4 || tag == 5 || tag == 10 ||
-                    tag == 11 || tag == 12 || tag == 14 || tag == 18 || tag == 20 || tag == 21,
+                    tag == 11 || tag == 12 || tag == 14 || tag == 18 || tag == 19 || tag == 20 ||
+                    tag == 21,
                 "native_geometry_construction_not_supported");
         const auto table = child(root, 1);
         if (tag == 5)
@@ -505,6 +555,8 @@ struct GeometryConstruction {
         require(table.has_value(), "native_geometry_reader_requires_union_data");
         if (tag == 14)
             return bspline_surface(*table, depth);
+        if (tag == 19)
+            return akima(*table);
         if (tag == 3) {
             const auto order_field = b.field(*table, 0, 4);
             const auto order = order_field ? b.at<std::int32_t>(*order_field) : 0;
@@ -690,7 +742,7 @@ void copy_curve_vector_input(const Json &source, bool nullable = false) {
         else if (action == "append_curve") {
             const auto type = member.at("geometry_type");
             require(type == "LineSegment" || type == "EllipticArc" || type == "LineString" ||
-                        type == "PointString" || type == "BsplineCurve",
+                        type == "PointString" || type == "BsplineCurve" || type == "AkimaCurve",
                     "native_curve_copy_not_supported");
         }
     }
@@ -725,7 +777,16 @@ Json parametric_append_input(const Json &input) {
             operation = "copy_fixed_detail";
         else if (name == "LineString" || name == "PointString")
             operation = "copy_point_storage";
-        else if (name == "BsplineCurve") {
+        else if (name == "AkimaCurve") {
+            // Clone invokes the same factory on the unchanged complete source
+            // point vector; it does not share or directly copy the fitted cache.
+            operation = "refit_akima_and_copy_source_points";
+            out["akima_copy"] = {{"point_count", source.at("point_count")},
+                                 {"source_points_filtered", false},
+                                 {"fitted_bspline_regenerated", true},
+                                 {"source_arrays_reused", false},
+                                 {"fitted_bspline", source.at("fitted_bspline")}};
+        } else if (name == "BsplineCurve") {
             // Both the curve wrapper's clone and the raw B-spline append
             // allocate independent poles, knots and (when rational) weights.
             // Input construction already checked their storage and allocation sizes.
@@ -950,6 +1011,11 @@ Json native_input(const Bytes &entry, bool model_has_project) {
         if (type == 5 && out.at("construction").at("geometry_pointer") == "null") {
             out["material_footer"] = "not_read";
             reject("native_bspline_surface_factory_rejected");
+            return out;
+        }
+        if (tag == 19 && out.at("construction").at("geometry_pointer") == "null") {
+            out["material_footer"] = "not_read";
+            reject("native_akima_construction_rejected");
             return out;
         }
         if (type == 4) {
