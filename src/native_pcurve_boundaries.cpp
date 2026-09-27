@@ -132,8 +132,17 @@ struct Boundaries {
             return;
         require(v.at("_type") == "CurveVector", "native boundary requires CurveVector");
         const auto &t = v.at("type");
-        require(t.is_number_integer() && t >= 0 && t <= 5, "unknown native boundary type");
-        const auto type = t.get<unsigned>();
+        require(t.is_number_integer() && t >= INT32_MIN && t <= INT32_MAX,
+                "native boundary type is not int32");
+        const auto type = t.get<std::int32_t>();
+        // Native ring selection only recognizes 1..5; its Open endpoint query
+        // first checks type==1, so unknown integers do not query their members.
+        if (type < 0 || type > 5) {
+            ignored.push_back({{"source_path", path},
+                               {"source_boundary_type", type},
+                               {"reason", "boundary_type_not_selected"}});
+            return;
+        }
         const auto &entries = v.at("curves");
         require(entries.is_null() || entries.is_array(), "native boundary member array");
         if (type == 4 || type == 5) {
@@ -222,7 +231,7 @@ struct Boundaries {
         }
         sources.push_back({{"source_path", path},
                            {"source_boundary_type", type},
-                           {"effective_boundary_type", type == 1 ? 2u : type},
+                           {"effective_boundary_type", type == 1 ? 2 : type},
                            {"members", provenance}});
         loops.push_back(std::move(loop));
     }

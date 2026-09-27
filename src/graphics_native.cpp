@@ -1,4 +1,5 @@
 #include "graphics_native.hpp"
+#include "p3d/pcurve.hpp"
 
 namespace p3d {
 namespace {
@@ -224,6 +225,7 @@ Json leaf_construction(const GeometryBytes &b, std::size_t root, unsigned tag) {
 struct GeometryConstruction {
     const GeometryBytes &b;
     std::size_t remaining = 1000000;
+    std::size_t trim_scalars_remaining = 2000000;
     void visit(unsigned depth) {
         require(depth <= 80, "native_geometry_construction_depth_limit");
         require(remaining > 0, "native_geometry_construction_work_limit");
@@ -243,6 +245,100 @@ struct GeometryConstruction {
     bool flag(std::size_t table, unsigned field) const {
         const auto p = b.field(table, field, 1);
         return p && b.at<std::uint8_t>(*p) != 0;
+    }
+    Json trim_values(const Json &offset, std::size_t count) {
+        require(count <= trim_scalars_remaining, "native_surface_trim_scalar_budget");
+        trim_scalars_remaining -= count;
+        Json values = Json::array();
+        if (count) {
+            const auto start = offset.get<std::size_t>();
+            b.range(start, count * 8);
+            for (std::size_t i = 0; i < count; ++i)
+                values.push_back(b.at<double>(start + 8 * i));
+        }
+        return values;
+    }
+    // Build the actual reader output for conversion, not the unfiltered source
+    // BGFB tree. Its paths use output_member_index; boundary_input retains the
+    // corresponding source_member_index, including every skipped source member.
+    Json trim_curve(const Json &source) {
+        const auto name = source.at("geometry_type").get<std::string>();
+        Json table = {{"_type", name}};
+        if (name == "CurveVector") {
+            table["type"] = source.at("boundary_type");
+            table["curves"] = Json::array();
+            for (const auto &member : source.at("members"))
+                if (member.at("action") == "append_curve" ||
+                    member.at("action") == "wrap_nested_curve_vector")
+                    table["curves"].push_back({{"geometry", trim_curve(member)}});
+        } else if (name == "LineString" || name == "PointString") {
+            table["points"] = trim_values(source.at("data_offset"),
+                                          source.at("point_count").get<std::size_t>() * 3);
+        } else if (name == "BsplineCurve") {
+            table["order"] = source.at("order");
+            table["closed"] = source.at("closed");
+            table["poles"] = trim_values(source.at("pole_data_offset"),
+                                         source.at("pole_count").get<std::size_t>() * 3);
+            table["weights"] = trim_values(source.at("weight_data_offset"),
+                                           source.at("copied_weight_count").get<std::size_t>());
+            table["knots"] =
+                trim_values(source.at("knot_data_offset"),
+                            std::size_t(source.at("source_knot_count_signed").get<std::int32_t>()));
+        } else if (name == "LineSegment" || name == "EllipticArc") {
+            const char *line_names[] = {"point0X", "point0Y", "point0Z",
+                                        "point1X", "point1Y", "point1Z"};
+            const char *arc_names[] = {"centerX",   "centerY",      "centerZ",     "vector0X",
+                                       "vector0Y",  "vector0Z",     "vector90X",   "vector90Y",
+                                       "vector90Z", "startRadians", "sweepRadians"};
+            const bool line = name == "LineSegment";
+            const auto values = trim_values(source.at("detail_offset"), line ? 6 : 11);
+            auto &detail = table[line ? "segment" : "arc"];
+            for (std::size_t i = 0; i < values.size(); ++i)
+                detail[line ? line_names[i] : arc_names[i]] = values[i];
+        } else
+            require(false, "native_surface_trim_curve_preparation_not_supported");
+        return table;
+    }
+    Json initial_surface_trim(const Json &source) {
+        const auto &u = source.at("u"), &v = source.at("v");
+        Json table = {{"_type", "BsplineSurface"},
+                      {"numPolesU", u.at("num_poles")},
+                      {"numPolesV", v.at("num_poles")},
+                      {"orderU", u.at("order")},
+                      {"orderV", v.at("order")},
+                      {"closedU", u.at("closed")},
+                      {"closedV", v.at("closed")},
+                      {"numRulesU", u.at("num_rules")},
+                      {"numRulesV", v.at("num_rules")},
+                      // setTrim writes this only AFTER sampling; the source
+                      // holeOrigin override is later still. Sampling does not
+                      // consult it, so don't report the final flag as an input.
+                      {"holeOrigin", 0},
+                      {"boundaries", trim_curve(source.at("boundary_input"))},
+                      {"poles", trim_values(source.at("pole_data_offset"),
+                                            source.at("pole_count").get<std::size_t>() * 3)}};
+        const char *keys[] = {"weights", "knots_u", "knots_v"};
+        const char *fields[] = {"weights", "knotsU", "knotsV"};
+        for (unsigned i = 0; i < 3; ++i) {
+            const auto &vector = source.at("source_vectors").at(keys[i]);
+            table[fields[i]] =
+                trim_values(vector.at("data_offset"), vector.at("copied_count").get<std::size_t>());
+        }
+        const auto surface = BsplineSurface::from_bgfb(table);
+        const auto sampled = sample_native_initial_surface_boundaries(surface);
+        Json out = {{"sampling", sampled.report},
+                    {"status", sampled.report.at("status")},
+                    {"member_path_basis", "constructed_boundary_tree_output_member_index"},
+                    {"loops", Json::array()}};
+        if (sampled.report.at("status") == "complete")
+            for (const auto &loop : sampled.loops) {
+                Json samples = Json::array();
+                for (const auto &point : loop)
+                    samples.push_back(
+                        {{"parameter", point.parameter}, {"position", point.position}});
+                out["loops"].push_back(std::move(samples));
+            }
+        return out;
     }
     Json bspline_surface(std::size_t table, unsigned depth) {
         auto scalar = [&](unsigned field) {
@@ -313,8 +409,7 @@ struct GeometryConstruction {
         // A nonempty root still resamples even if later ring selection is empty.
         const auto &boundary = out.at("boundary_input");
         const bool trim_present = boundary.at("geometry_pointer") != "null";
-        require(!trim_present || boundary.at("output_member_count") == 0,
-                "native_surface_nonempty_trim_construction_not_evaluated");
+        const bool trim_nonempty = trim_present && boundary.at("output_member_count") != 0;
         out["u"].update({{"effective_knot_count", knots_u},
                          {"knots_source", counts[1] ? "copied" : "generated_uniform"},
                          {"num_rules", rules_u}});
@@ -332,6 +427,25 @@ struct GeometryConstruction {
                     {"reader_overrides_applied", true},
                     {"trim_operation", trim_present ? "clear_empty_root" : "not_called"},
                     {"boundary_sampling_performed", false}});
+        if (trim_nonempty) {
+            try {
+                out["initial_boundary_cache"] = initial_surface_trim(out);
+            } catch (const std::exception &e) {
+                out["initial_boundary_cache"] = {
+                    {"status", "incomplete"}, {"reason", e.what()}, {"loops", Json::array()}};
+            }
+            const auto &cache = out.at("initial_boundary_cache");
+            out["trim_operation"] = "convert_and_sample_initial_boundaries";
+            out["boundary_sampling_performed"] =
+                cache.contains("sampling") && cache.at("sampling").contains("sampling_performed")
+                    ? cache.at("sampling").at("sampling_performed")
+                    : Json();
+            if (cache.at("status") != "complete") {
+                out["geometry_pointer"] = "unknown";
+                out["reader_overrides_applied"] = nullptr;
+                out["reason"] = "native_surface_trim_completion_not_evaluated";
+            }
+        }
         return out;
     }
     Json curve_vector(std::optional<std::size_t> table, unsigned depth) {
@@ -351,6 +465,8 @@ struct GeometryConstruction {
         std::size_t appended = 0;
         for (std::uint32_t i = 0; i < count; ++i) {
             auto member = variant(b.indirect(*vector + 4 + std::size_t(i) * 4), depth + 1);
+            require(member.at("geometry_pointer") != "unknown",
+                    "native_member_construction_not_evaluated");
             member["source_member_index"] = i;
             if (member.at("geometry_pointer") == "null")
                 member["action"] = "skip_null";
@@ -762,6 +878,10 @@ Json native_input(const Bytes &entry, bool model_has_project) {
             return out;
         }
         out["construction"] = GeometryConstruction{b}.variant(root);
+        if (out.at("construction").at("geometry_pointer") == "unknown") {
+            out["reason"] = out.at("construction").at("reason");
+            return out;
+        }
         if (type == 5 && out.at("construction").at("geometry_pointer") == "null") {
             out["material_footer"] = "not_read";
             reject("native_bspline_surface_factory_rejected");

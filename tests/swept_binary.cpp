@@ -340,9 +340,13 @@ unsigned swept_binary_tests() {
     }
     for (int boundary : {2, 4}) {
         const auto result = native_curve(surface(false, false, {}, {}, {}, boundary), 5);
-        check(result.at("status") == "not_evaluated" &&
-                  result.at("reason") == "native_surface_nonempty_trim_construction_not_evaluated",
-              "nonempty trim and nested empty group cannot bypass native trim processing");
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("boundary_sampling_performed") == true &&
+                  result.at("construction").at("initial_boundary_cache").at("status") == "complete",
+              "nonempty trim and nested empty group both enter native initial-cache processing");
+        check(result.at("construction").at("initial_boundary_cache").at("loops").size() ==
+                  (boundary == 2 ? 1u : 0u),
+              "nested CurveVector member is not flattened into the ring's converted chain");
     }
     changed_surface = surface(false, false, {}, {}, {}, 2);
     write(changed_surface, surface_table(changed_surface) + 28, std::int32_t(1));
@@ -432,6 +436,188 @@ unsigned swept_binary_tests() {
             p.reference(array + 4 + 4 * i, variant);
         return p.b;
     };
+    auto attach_boundary = [&](Bytes base, const Bytes &group) {
+        const auto table = surface_table(base);
+        const auto vt = table - Reader(base, table).i32();
+        write(base, vt + 26, std::uint16_t(48));
+        while (base.size() % 8)
+            base.push_back(0);
+        const auto offset = base.size();
+        const auto root = 8 + Reader(group, 8).u32();
+        const auto target = root + 8 + Reader(group, root + 8).u32();
+        write(base, table + 48, std::uint32_t(offset + target - table - 48));
+        base.insert(base.end(), group.begin(), group.end());
+        return base;
+    };
+    auto plane = valid_surface;
+    const auto plane_table = surface_table(plane);
+    const auto plane_poles = plane_table + 4 + Reader(plane, plane_table + 4).u32();
+    for (unsigned v = 0; v < 3; ++v)
+        for (unsigned u = 0; u < 2; ++u) {
+            const auto at = plane_poles + 4 + 24 * (v * 2 + u);
+            write(plane, at, double(u));
+            write(plane, at + 8, .5 * v);
+            write(plane, at + 16, 0.);
+        }
+    auto primitive = [](unsigned tag) {
+        Packet p;
+        const auto root = p.table({4, 8}, 12);
+        p.reference(8, root);
+        write(p.b, root + 4, std::uint8_t(tag));
+        if (tag == 1 || tag == 2) {
+            const auto shape = p.table({8}, tag == 1 ? 56 : 96);
+            p.reference(root + 8, shape);
+            const std::vector<double> values =
+                tag == 1
+                    ? std::vector<double>{.25, .25, 0, .75, .25, 0}
+                    : std::vector<double>{.5, .5, 0, .25, 0, 0, 0, .25, 0, 0, 6.283185307179586};
+            for (std::size_t i = 0; i < values.size(); ++i)
+                write(p.b, shape + 8 + 8 * i, values[i]);
+        } else {
+            const auto shape = p.table({4}, 8);
+            p.reference(root + 8, shape);
+            p.align();
+            put(p.b, std::uint32_t(0));
+            const auto points = p.b.size();
+            put(p.b, std::uint32_t(12));
+            for (double x : {.25, .25, 0., .75, .25, 0., .5, .75, 0., .25, .25, 0.})
+                put(p.b, x);
+            p.reference(shape + 4, points);
+        }
+        return p.b;
+    };
+    for (unsigned tag : {1u, 2u, 4u, 18u, 3u}) {
+        const auto member = tag == 3 ? spline(2, false, {}, {}) : primitive(tag);
+        const auto binary = attach_boundary(plane, collection(member, 1));
+        const auto result = native_curve(binary, 5);
+        check(result.at("status") == "geometry_constructed",
+              "binary line, ellipse, polyline, point-string and B-spline trim reach the reader");
+        const auto &c = result.at("construction"), &cache = c.at("initial_boundary_cache");
+        check(cache.at("status") == "complete" && c.at("boundary_sampling_performed") == true &&
+                  cache.at("loops").size() == (tag == 18 ? 0u : 1u),
+              "native PointString conversion is skipped while actual curve members are sampled");
+        for (const auto &loop : cache.at("loops"))
+            for (const auto &sample : loop) {
+                const auto uv = sample.at("parameter").get<Point3>();
+                const auto xyz = sample.at("position").get<Point3>();
+                check(std::abs(xyz[0] - std::clamp(uv[0], 0., 1.)) < 1e-12 &&
+                          std::abs(xyz[1] - std::clamp(uv[1], 0., 1.)) < 1e-12 &&
+                          std::abs(xyz[2]) < 1e-12,
+                      "initial boundary cache agrees with the independent planar surface map");
+                if (tag == 2)
+                    check(std::abs(std::hypot(uv[0] - .5, uv[1] - .5) - .25) < 1e-12,
+                          "native ellipse conversion retains the analytic UV circle");
+            }
+        check(c.at("source_hole_origin") == -7 && c.at("outer_boundary_active") == false &&
+                  cache.at("sampling").at("outer_boundary_active") == true,
+              "source hole origin overrides the initial surface flag only after trim sampling");
+        check(native_curve(binary, 5, false).at("construction") == c,
+              "initial boundary cache is independent of conditional Entry header size");
+    }
+    auto open_boundary = collection(primitive(1), 1);
+    auto root = 8 + Reader(open_boundary, 8).u32();
+    auto group_table = root + 8 + Reader(open_boundary, root + 8).u32();
+    write(open_boundary, group_table + 4, std::int32_t(1));
+    const auto open_trim = native_curve(attach_boundary(plane, open_boundary), 5);
+    check(open_trim.at("status") == "geometry_constructed" &&
+              open_trim.at("construction").at("initial_boundary_cache").at("loops").empty() &&
+              open_trim.at("construction").at("boundary_sampling_performed") == true,
+          "unclosed Open region is ignored but a nonempty root still invokes restroking");
+    const auto periodic_trim =
+        native_curve(attach_boundary(plane, collection(spline(2, true, {}, {}), 1)), 5);
+    check(periodic_trim.at("status") == "geometry_constructed" &&
+              periodic_trim.at("construction")
+                      .at("initial_boundary_cache")
+                      .at("sampling")
+                      .at("boundary_sources")
+                      .at(0)
+                      .at("members")
+                      .at(0)
+                      .at("source_curve_closed") == true,
+          "closed binary B-spline trim reaches native opening before initial cache sampling");
+    for (std::int32_t type : {INT32_MIN, -1, 0, 6, INT32_MAX}) {
+        auto ignored_boundary = open_boundary;
+        write(ignored_boundary, group_table + 4, type);
+        const auto ignored_trim = native_curve(attach_boundary(plane, ignored_boundary), 5);
+        check(ignored_trim.at("status") == "geometry_constructed" &&
+                  ignored_trim.at("construction").at("initial_boundary_cache").at("loops").empty(),
+              "native ring selection ignores unselected signed boundary codes");
+    }
+    auto nonunit_plane = plane;
+    const auto plane_vt = plane_table - Reader(nonunit_plane, plane_table).i32();
+    write(nonunit_plane, plane_vt + 8, std::uint16_t(12));
+    while (nonunit_plane.size() % 8)
+        nonunit_plane.push_back(0);
+    put(nonunit_plane, std::uint32_t(0));
+    const auto u_knots = nonunit_plane.size();
+    put(nonunit_plane, std::uint32_t(4));
+    for (double knot : {0., 0., 2., 2.})
+        put(nonunit_plane, knot);
+    write(nonunit_plane, plane_table + 12, std::uint32_t(u_knots - plane_table - 12));
+    const auto nonunit_trim =
+        native_curve(attach_boundary(nonunit_plane, collection(primitive(1), 1)), 5);
+    check(nonunit_trim.at("status") == "geometry_constructed",
+          "nonunit source knots reach the initial cache without normalization");
+    for (const auto &sample :
+         nonunit_trim.at("construction").at("initial_boundary_cache").at("loops").at(0)) {
+        const auto uv = sample.at("parameter").get<Point3>();
+        const auto xyz = sample.at("position").get<Point3>();
+        check(std::abs(xyz[0] - .5 * uv[0]) < 1e-12 && std::abs(xyz[1] - uv[1]) < 1e-12,
+              "initial-cache world positions use original [0,2] source knots and unchanged UV");
+    }
+    auto filtered_group = collection(primitive(4), 2);
+    const auto filtered_root = 8 + Reader(filtered_group, 8).u32();
+    const auto filtered_table = filtered_root + 8 + Reader(filtered_group, filtered_root + 8).u32();
+    const auto filtered_vector =
+        filtered_table + 8 + Reader(filtered_group, filtered_table + 8).u32();
+    Packet null_member;
+    const auto null_root = null_member.table({4, 0}, 8);
+    null_member.reference(8, null_root);
+    while (filtered_group.size() % 8)
+        filtered_group.push_back(0);
+    const auto null_at = filtered_group.size();
+    write(filtered_group, filtered_vector + 4,
+          std::uint32_t(null_at + null_root - filtered_vector - 4));
+    filtered_group.insert(filtered_group.end(), null_member.b.begin(), null_member.b.end());
+    const auto filtered_trim = native_curve(attach_boundary(plane, filtered_group), 5);
+    const auto &filtered_input = filtered_trim.at("construction").at("boundary_input");
+    check(filtered_input.at("source_member_count") == 2 &&
+              filtered_input.at("output_member_count") == 1 &&
+              filtered_input.at("members").at(0).at("action") == "skip_null" &&
+              filtered_input.at("members").at(1).at("source_member_index") == 1 &&
+              filtered_input.at("members").at(1).at("output_member_index") == 0 &&
+              filtered_trim.at("construction")
+                      .at("initial_boundary_cache")
+                      .at("sampling")
+                      .at("boundary_sources")
+                      .at(0)
+                      .at("members")
+                      .at(0)
+                      .at("source_path") == "/curves/0/geometry",
+          "filtered cache paths map to retained member indices without losing source positions");
+    auto region = collection(collection(primitive(4), 1), 2);
+    root = 8 + Reader(region, 8).u32();
+    group_table = root + 8 + Reader(region, root + 8).u32();
+    write(region, group_table + 4, std::int32_t(4));
+    const auto rings = native_curve(attach_boundary(plane, region), 5);
+    const auto &ring_cache = rings.at("construction").at("initial_boundary_cache");
+    check(rings.at("status") == "geometry_constructed" && ring_cache.at("loops").size() == 2 &&
+              ring_cache.at("loops").at(0) == ring_cache.at("loops").at(1),
+          "repeated source region members remain separate cached loops without new sharing");
+    check(ring_cache.at("sampling").at("boundary_sources").at(1).at("source_path") ==
+                  "/curves/1/geometry" &&
+              ring_cache.at("member_path_basis") == "constructed_boundary_tree_output_member_index",
+          "boundary cache paths retain the constructed member positions and declared basis");
+    auto malformed_trim = attach_boundary(plane, collection(primitive(1), 1));
+    write(malformed_trim, plane_poles + 4, UINT64_C(0x7ff8000000000001));
+    const auto incomplete_trim = native_curve(malformed_trim, 5);
+    check(incomplete_trim.at("status") == "not_evaluated" &&
+              incomplete_trim.at("construction").at("native_populate_result") == 0 &&
+              incomplete_trim.at("construction").at("initial_boundary_cache").at("loops").empty() &&
+              incomplete_trim.at("construction").at("reader_overrides_applied").is_null(),
+          "unsafe trim evaluation retains proven population but does not invent a null factory");
+    check(native_curve(collection(malformed_trim, 1), 2).at("status") == "not_evaluated",
+          "unproved nested surface construction cannot be ignored as a safely returned noncurve");
     const auto grouped = native_curve(collection(spline(2, false, 2, {}), 2), 2);
     check(grouped.at("construction").at("output_member_count") == 2 &&
               grouped.at("parametric_append_input").at("status") == "appended" &&
