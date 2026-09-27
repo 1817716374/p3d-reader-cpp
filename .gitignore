@@ -31,6 +31,7 @@
 !/tests/native_polyface_visitor.cpp
 !/tests/native_polyface_copy.cpp
 !/tests/native_polyface_prepare.cpp
+!/tests/native_polyface_raw_visitor.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp

@@ -32,8 +32,19 @@ struct NativePolyfaceMesh {
     bool edge_chain_active = false;
     std::uint32_t mesh_style = 1, num_per_row = 0;
 };
+struct NativePolyfaceVisitedData {
+    // Values include the visitor's actual wrap. Some original visitors produce
+    // values without client indices, or read multiple color representations.
+    std::vector<Point3> normals, double_colors;
+    std::vector<Point2> parameters;
+    std::vector<std::array<float, 3>> float_colors;
+    std::vector<std::uint32_t> integer_colors, color_table;
+    std::vector<NativeBuilderFaceData> face_data;
+    std::vector<std::size_t> index_positions;
+};
 struct NativePolyfaceVisit {
     std::vector<NativePolyfaceVisitorFacet> facets;
+    std::vector<NativePolyfaceVisitedData> data;
     std::vector<std::size_t> read_indices;
     bool complete = false;
     Json report;
@@ -43,9 +54,10 @@ struct NativePolyfaceMeshTriangulation {
     bool native_succeeded = false, complete = false;
     Json report;
 };
-// Indexed style only. A failed advance stops traversal; wrap is independent of
-// all_data. Facet points exclude the actual appended wrap, while client indices
-// and visibility retain it. Pool values remain in the input without conversion.
+// Original styles 1/3/4/5/6, without conversion. Facet points exclude the actual
+// appended wrap; values and client indices retain it. Grid visitors ignore
+// all_data and clamp wrap to ten. Source read indices are offsets for style 1,
+// facet ordinals otherwise. Unsafe original array reads are explicitly rejected.
 NativePolyfaceVisit visit_native_polyface(const NativePolyfaceMesh &, TubeBudget &,
                                           bool all_data = true, std::uint32_t wrap = 1);
 // Convert layout, activate available data, extract the original independent

@@ -66,9 +66,190 @@ void apply_layout(NativePolyfaceMesh &m, NativePolyfaceLayout &&l) {
         m.pool_active[i] = l.pools[i].active;
     }
 }
+NativePolyfaceVisit visit_unindexed(const NativePolyfaceMesh &mesh, TubeBudget &budget,
+                                    bool all_data, std::uint32_t requested_wrap) {
+    Context context(mesh, budget);
+    const bool blocked = mesh.mesh_style == 3 || mesh.mesh_style == 4;
+    require(blocked || mesh.mesh_style == 5 || mesh.mesh_style == 6,
+            "native visitor unsupported mesh style");
+    require(requested_wrap <= budget.max_control_points && requested_wrap <= INT32_MAX,
+            "native raw visitor wrap extent");
+    const auto wrap = blocked ? requested_wrap : std::min(requested_wrap, std::uint32_t(10));
+    const auto &points = mesh.data.coordinates.points;
+    require(points.size() < INT32_MAX, "native raw visitor point index extent");
+    const auto counts = pool_counts(mesh);
+    std::size_t color_count = 0;
+    for (auto p : {native_float_color_pool, native_double_color_pool, native_integer_color_pool,
+                   native_color_table_pool})
+        if (mesh.pool_active[p]) {
+            color_count = counts[p];
+            break;
+        }
+    if (!blocked)
+        require(mesh.num_per_row != 1, "native grid visitor divides by zero at row width one");
+    std::vector<std::uint8_t> used(points.size(), 0);
+    context.grow(used.size());
+    NativePolyfaceVisit out;
+    std::size_t incomplete_attributes = 0;
+    const bool ignored_float = !mesh.float_colors.empty() && (!blocked || all_data);
+    const bool ignored_faces = blocked && all_data && !mesh.data.face_data.empty();
+    const bool ignored_table =
+        !blocked && !mesh.integer_colors.empty() && !mesh.color_table.empty();
+    for (std::size_t ordinal = 0;; ++ordinal) {
+        context.work.charge(1);
+        require(ordinal < UINT32_MAX, "native raw visitor facet ordinal overflow");
+        std::vector<std::size_t> indices;
+        std::size_t last = 0, first = 0;
+        if (blocked) {
+            const auto count = mesh.mesh_style == 3 ? 3u : 4u;
+            require(ordinal <= (UINT32_MAX - count) / count,
+                    "native blocked visitor offset overflow");
+            first = ordinal * count;
+            if (first + count > points.size())
+                break;
+            for (std::size_t i = 0; i < count; ++i)
+                indices.push_back(first + i);
+            last = first + count - 1;
+        } else {
+            const auto quad = mesh.mesh_style == 5 ? ordinal >> 1 : ordinal;
+            const auto width = std::size_t(mesh.num_per_row);
+            // Width zero retains native unsigned width-1. Width one was rejected.
+            first = quad + quad / (width - 1);
+            const auto lower = first + width;
+            last = lower + 1;
+            // Original tests >, not >=; actual reads below still need bounds.
+            if (last > points.size())
+                break;
+            indices.push_back(mesh.mesh_style == 5 && (ordinal & 1) ? lower : first);
+            indices.push_back(first + 1);
+            indices.push_back(mesh.mesh_style == 6 || (ordinal & 1) ? last : lower);
+            if (mesh.mesh_style == 6)
+                indices.push_back(lower);
+        }
+        const auto corners = indices.size();
+        context.grow(corners);
+        context.grow(wrap);
+        for (std::size_t i = 0; i < wrap; ++i) {
+            const auto k = indices[i];
+            indices.push_back(k); // Growing-array wrap, including repeated cycles.
+        }
+        NativePolyfaceVisitorFacet f;
+        NativePolyfaceVisitedData d;
+        context.grow(corners);
+        context.grow(indices.size());
+        context.grow(indices.size());
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            const auto k = indices[i];
+            require(k < points.size(), "native grid visitor point read outside source");
+            f.client_indices[point_channel].push_back(static_cast<std::int32_t>(k));
+            f.visible.push_back(1);
+            if (i < corners) {
+                f.points.push_back(points[k]);
+                used[k] = 1;
+            }
+        }
+        if (blocked) {
+            context.grow(indices.size());
+            for (std::size_t i = 0; i < indices.size(); ++i)
+                d.index_positions.push_back(first + i); // Native does not wrap these positions.
+            if (all_data) {
+                auto values = [&](auto &dest, const auto &pool, std::size_t query_count) {
+                    if (pool.empty() || !query_count)
+                        return;
+                    for (std::size_t i = 0; i < corners && first + i < query_count; ++i) {
+                        require(first + i < pool.size(),
+                                "native blocked visitor pool read outside source");
+                        context.grow(1);
+                        dest.push_back(pool[first + i]);
+                    }
+                    if (dest.size() != corners)
+                        ++incomplete_attributes;
+                    context.grow(wrap);
+                    for (std::size_t i = 0; i < wrap; ++i) {
+                        require(i < dest.size(),
+                                "native blocked visitor wraps an empty attribute prefix");
+                        const auto value = dest[i];
+                        dest.push_back(value);
+                    }
+                };
+                values(d.normals, mesh.data.coordinates.normals, counts[native_normal_pool]);
+                values(d.parameters, mesh.data.coordinates.parameters,
+                       counts[native_parameter_pool]);
+                values(d.double_colors, mesh.double_colors, color_count);
+                values(d.integer_colors, mesh.integer_colors, color_count);
+                values(d.color_table, mesh.color_table, color_count);
+                if (!color_count && (!mesh.double_colors.empty() || !mesh.integer_colors.empty() ||
+                                     !mesh.color_table.empty()))
+                    ++incomplete_attributes;
+                // Constructor activates only PointIndex. AddSequentialBlock
+                // is activity-gated, so all four attribute index arrays stay empty.
+            }
+        } else {
+            // No allData condition in this original grid advance implementation.
+            auto values = [&](auto &dest, const auto &pool, std::size_t query_count,
+                              std::size_t channel) {
+                if (last > query_count || pool.empty()) {
+                    if (!pool.empty())
+                        ++incomplete_attributes;
+                    return;
+                }
+                context.grow(indices.size());
+                context.grow(indices.size());
+                for (const auto k : indices) {
+                    require(k < pool.size(), "native grid visitor attribute read outside source");
+                    dest.push_back(pool[k]);
+                    f.client_indices[channel].push_back(static_cast<std::int32_t>(k));
+                }
+            };
+            values(d.normals, mesh.data.coordinates.normals, counts[native_normal_pool],
+                   normal_channel);
+            values(d.parameters, mesh.data.coordinates.parameters, counts[native_parameter_pool],
+                   parameter_channel);
+            values(d.face_data, mesh.data.face_data, counts[native_face_data_pool], face_channel);
+            values(d.double_colors, mesh.double_colors, color_count, color_channel);
+            // Double RGB is independent; integer RGB takes priority over table.
+            if (last <= color_count && !mesh.integer_colors.empty())
+                values(d.integer_colors, mesh.integer_colors, color_count, color_channel);
+            else
+                values(d.color_table, mesh.color_table, color_count, color_channel);
+            if (!mesh.integer_colors.empty() && last > color_count)
+                ++incomplete_attributes;
+        }
+        context.grow(3);
+        out.read_indices.push_back(ordinal);
+        out.facets.push_back(std::move(f));
+        out.data.push_back(std::move(d));
+    }
+    std::size_t unused = 0;
+    for (auto u : used) {
+        context.work.charge(1);
+        unused += !u;
+    }
+    out.complete =
+        !unused && !incomplete_attributes && !ignored_float && !ignored_faces && !ignored_table;
+    out.report = {{"scope", "native_unindexed_polyface_visitor"},
+                  {"mesh_style", mesh.mesh_style},
+                  {"complete", out.complete},
+                  {"all_data_requested", all_data},
+                  {"all_data_effective", blocked ? all_data : true},
+                  {"requested_wrap", requested_wrap},
+                  {"actual_wrap", wrap},
+                  {"read_index_kind", "facet_ordinal"},
+                  {"unused_source_points", unused},
+                  {"incomplete_attribute_reads", incomplete_attributes},
+                  {"ignored_float_color_values", ignored_float ? mesh.float_colors.size() : 0},
+                  {"ignored_face_data_values", ignored_faces ? mesh.data.face_data.size() : 0},
+                  {"ignored_color_table_values", ignored_table ? mesh.color_table.size() : 0},
+                  {"color_query_count", color_count},
+                  {"global_num_per_row", mesh.num_per_row},
+                  {"face_count", out.facets.size()}};
+    return out;
+}
 } // namespace
 NativePolyfaceVisit visit_native_polyface(const NativePolyfaceMesh &mesh, TubeBudget &budget,
                                           bool all_data, std::uint32_t wrap) {
+    if (mesh.mesh_style != 1)
+        return visit_unindexed(mesh, budget, all_data, wrap);
     Context context(mesh, budget);
     require(mesh.mesh_style == 1, "native indexed visitor requires converted mesh style");
     const auto &m = mesh.data;
@@ -127,6 +308,7 @@ NativePolyfaceVisit visit_native_polyface(const NativePolyfaceMesh &mesh, TubeBu
         if (!count)
             break;
         NativePolyfaceVisitorFacet f;
+        NativePolyfaceVisitedData data;
         std::array<std::size_t, polyface_channel_count> collected{};
         auto collect = [&](std::size_t channel, const std::vector<std::int32_t> &source,
                            std::size_t native_index_count, std::size_t native_pool_count,
@@ -175,6 +357,12 @@ NativePolyfaceVisit visit_native_polyface(const NativePolyfaceMesh &mesh, TubeBu
             f.visible.push_back(pi[first + i] > 0);
         for (std::size_t i = 0; i < wrap; ++i)
             f.visible.push_back(pi[first + i % count] > 0);
+        context.grow(count);
+        context.grow(wrap);
+        for (std::size_t i = 0; i < count; ++i)
+            data.index_positions.push_back(first + i);
+        for (std::size_t i = 0; i < wrap; ++i)
+            data.index_positions.push_back(first + i % count);
         if (all_data) {
             for (auto channel : {normal_channel, parameter_channel}) {
                 const auto pool =
@@ -202,14 +390,31 @@ NativePolyfaceVisit visit_native_polyface(const NativePolyfaceMesh &mesh, TubeBu
                     ++incomplete_channels;
                 }
             }
+            auto values = [&](auto &dest, const auto &pool, std::size_t channel) {
+                context.grow(f.client_indices[channel].size());
+                for (auto k : f.client_indices[channel])
+                    dest.push_back(pool[std::size_t(k)]);
+            };
+            values(data.normals, m.coordinates.normals, normal_channel);
+            values(data.parameters, m.coordinates.parameters, parameter_channel);
+            values(data.face_data, m.face_data, face_channel);
+            if (color_pool == native_double_color_pool)
+                values(data.double_colors, mesh.double_colors, color_channel);
+            else if (color_pool == native_float_color_pool)
+                values(data.float_colors, mesh.float_colors, color_channel);
+            else if (color_pool == native_integer_color_pool)
+                values(data.integer_colors, mesh.integer_colors, color_channel);
+            else if (color_pool == native_color_table_pool)
+                values(data.color_table, mesh.color_table, color_channel);
         }
         covered += collected[point_channel];
-        context.grow(2); // facet and source-read records
+        context.grow(3); // facet, values and source-read records
         reports.push_back({{"read_index", first},
                            {"source_corner_count", count},
                            {"collected_corner_counts", collected}});
         out.read_indices.push_back(first);
         out.facets.push_back(std::move(f));
+        out.data.push_back(std::move(data));
         cursor = next;
     }
     out.complete = covered == expected && invalid_points == 0 && incomplete_channels == 0;
