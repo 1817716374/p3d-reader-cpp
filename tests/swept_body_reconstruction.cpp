@@ -14,10 +14,10 @@ Json line(Point3 a, Point3 z) {
     }
     return {{"_type", "LineSegment"}, {"segment", s}};
 }
-Json group(std::vector<Json> values, unsigned type = 1) {
+Json group(std::initializer_list<Json> values, unsigned type = 1) {
     Json entries = Json::array();
-    for (auto &v : values)
-        entries.push_back({{"geometry", std::move(v)}});
+    for (const auto &v : values)
+        entries.push_back({{"geometry", v}});
     return {{"_type", "CurveVector"}, {"type", type}, {"curves", entries}};
 }
 Json rectangle(double lo = -1, double hi = 1) {
@@ -122,10 +122,15 @@ unsigned swept_body_reconstruction_tests() {
         body(rectangle(), group({arc, line({-20, 0, 0}, {-25, 0, 0})}), false));
     check(trimmed.status == "reconstructed" && trimmed.surfaces.size() == 8,
           "arc to straight corner constructs all final side surfaces");
-    for (const auto &s : trimmed.surfaces)
+    for (const auto &s : trimmed.surfaces) {
         check(s.geometry["boundaries"].is_null() && s.boundary_points.size() == 1 &&
                   s.boundary_points[0].size() >= 5 && s.boundary_curves.empty(),
               "runtime UV cache remains available separately from null BGFB and pcurve records");
+        const auto boundary = extract_swept_body_surface_boundary(s);
+        check(boundary.status == "extracted" && !boundary.curves.empty() &&
+                  !boundary.report["spans"].empty() && boundary.report["outer"].empty(),
+              "actual reconstructed curved corner retains a usable spatial trim boundary");
+    }
     auto native_failed =
         reconstruct_bgfb_swept_body(body(group({line({-1, 0, 0}, {1, 0, 0})}), path));
     check(native_failed.status == "native_failure" && !native_failed.surfaces.empty() &&

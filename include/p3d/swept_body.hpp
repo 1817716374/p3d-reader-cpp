@@ -51,4 +51,25 @@ struct SweptBodyResult {
 // failure propagates. Runtime trim arrays must accompany their surface table.
 // No triangulation, material assignment or native planar-face conversion.
 SweptBodyResult reconstruct_bgfb_swept_body(const Json &, const SweptBodyOptions & = {});
+struct SweptBodyBoundaryOptions {
+    std::size_t max_control_points = 1000000;
+    std::size_t max_work = 10000000;
+    std::size_t max_curves = 1000000;
+    bool include_outer = true;
+};
+struct SweptBodyBoundaryResult {
+    std::string status = "not_extracted"; // extracted / native_empty / not_extracted
+    // Unstructured ordered spatial curves, not classified outer/inner loops.
+    std::vector<BsplineCurve> curves;
+    Json report = Json::object();
+};
+// Native unstructured boundary extraction with fitting disabled. Consumes the
+// active UV point caches; boundary_curves do not replace them. Constant-U/V
+// spans use native isocurve segmentation, others evaluate saved UV vertices
+// into an open degree-one curve. Optional parameter-domain edges follow native
+// closed-U/V and hole-origin rules, without deduplication or hole inference.
+// No plane test, curve fitting, triangulation or certified curve error bound.
+// Unsupported/data/resource failures clear curves; allocation failure throws.
+SweptBodyBoundaryResult extract_swept_body_surface_boundary(const SweptBodySurface &,
+                                                            const SweptBodyBoundaryOptions & = {});
 } // namespace p3d

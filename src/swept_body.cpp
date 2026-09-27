@@ -1,5 +1,6 @@
 #include <p3d/swept_body.hpp>
 #include "native_tube_facet_caps.hpp"
+#include "native_surface_boundary.hpp"
 #include <limits>
 #include <unordered_map>
 
@@ -122,6 +123,29 @@ SweptBodyResult reconstruct_bgfb_swept_body(const Json &table, const SweptBodyOp
         out.faces.clear();
         out.status = "not_reconstructed";
         out.report["native_result"] = nullptr;
+        out.report["reason"] = e.what();
+    }
+    out.report["work_used"] = budget.work;
+    return out;
+}
+SweptBodyBoundaryResult
+extract_swept_body_surface_boundary(const SweptBodySurface &source,
+                                    const SweptBodyBoundaryOptions &options) {
+    SweptBodyBoundaryResult out;
+    swept_detail::TubeBudget budget{options.max_control_points, options.max_work, 0};
+    try {
+        require(options.max_work > 0, "swept surface boundary work limit must be positive");
+        auto boundary = swept_detail::native_surface_boundary(
+            BsplineSurface::from_bgfb(source.geometry), source.boundary_points,
+            options.include_outer, budget, options.max_curves);
+        out.curves = std::move(boundary.curves);
+        out.report = std::move(boundary.report);
+        out.status = out.curves.empty() ? "native_empty" : "extracted";
+    } catch (const std::bad_alloc &) {
+        throw;
+    } catch (const std::exception &e) {
+        out.curves.clear();
+        out.status = "not_extracted";
         out.report["reason"] = e.what();
     }
     out.report["work_used"] = budget.work;
