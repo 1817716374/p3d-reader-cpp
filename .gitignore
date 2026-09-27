@@ -182,3 +182,5 @@
 !/tests/swept_body_boundary.cpp
 !/tests/swept_body_surface_face.cpp
 !/tests/swept_body_uv.cpp
+!/tests/swept_patches.cpp
+!/tests/native_tube_patches.cpp
