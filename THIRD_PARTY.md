@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_polyface_smooth_normals.cpp` 的邻接扇区法向计算参考下表固定 Bentley 提交中的 `polyfaceAddNormals.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的节点倒序遍历、单边角度余量、扇区接受条件、索引身份与可见性规则，以及失败时保留逐面准备结果的行为。
+
 `src/native_polyface_face_data.cpp` 中的索引式网格邻接转换同时参考固定 Bentley 提交中的 `pf_halfEdgeArray.h` 和 `MTGGraph.cpp`。保留原生半边排序、边分组、四边退化配对、来源角点标签及顶点连接操作；不按坐标重新合并顶点，不以流形修复替换原生配对规则。
 
 `src/native_polyface_face_data.cpp` 的面记录生成、参数距离统计和逐面法向／UV 生成参考下表固定 Bentley 提交中的 `Polyface.cpp`、`FacetFaceData.cpp`、`PolyfaceVisitor.cpp` 和 `polyfaceAddNormals.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保留 P3D 的空间及法向范围、连续顶点统计、活动标志和参数范围改写顺序，不引入较新参考版本的活动标志清理或退化面默认法向。
