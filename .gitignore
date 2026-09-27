@@ -184,3 +184,5 @@
 !/tests/swept_body_uv.cpp
 !/tests/swept_patches.cpp
 !/tests/native_tube_patches.cpp
+!/tests/native_curve_sampling.cpp
+!/tests/native_tube_mesh_sampling.cpp
