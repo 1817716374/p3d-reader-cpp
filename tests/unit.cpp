@@ -19,6 +19,7 @@ unsigned torus_tests();
 unsigned sweep_tests();
 unsigned rotational_tests();
 unsigned swept_body_tests();
+unsigned swept_body_reconstruction_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2883,6 +2884,7 @@ int main() {
         checks += native_tube_path_groups_tests();
         checks += native_tube_facet_assembly_tests();
         checks += native_tube_facet_caps_tests();
+        checks += swept_body_reconstruction_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();

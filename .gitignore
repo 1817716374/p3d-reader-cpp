@@ -178,3 +178,4 @@
 !/tests/native_curve_xy.cpp
 !/tests/native_tube_facet_assembly.cpp
 !/tests/native_tube_facet_caps.cpp
+!/tests/swept_body_reconstruction.cpp
