@@ -198,8 +198,9 @@ TubeFacetProfile partition_tube_facet_profile(std::shared_ptr<const Json> source
         {"face_indices", nullptr}};
     return out;
 }
-Json enumerate_tube_facet_indices(const TubeFacetGroups &groups, std::size_t cap_count,
-                                  bool generation_succeeded, TubeBudget &b) {
+template <class Groups>
+static Json enumerate_facet_indices(const Groups &groups, std::size_t cap_count,
+                                    bool generation_succeeded, TubeBudget &b) {
     Json indices = Json::array(), locations = Json::array();
     if (generation_succeeded) {
         // Native emits at most two cap indices, even if a caller supplies more
@@ -229,5 +230,14 @@ Json enumerate_tube_facet_indices(const TubeFacetGroups &groups, std::size_t cap
             {"face_indices", std::move(indices)},
             {"side_locations", std::move(locations)},
             {"work_used", b.work}};
+}
+Json enumerate_tube_facet_indices(const TubeFacetGroups &groups, std::size_t cap_count,
+                                  bool generation_succeeded, TubeBudget &b) {
+    return enumerate_facet_indices(groups, cap_count, generation_succeeded, b);
+}
+Json enumerate_tube_facet_reference_indices(
+    const std::vector<std::vector<std::vector<std::size_t>>> &groups, std::size_t cap_count,
+    bool generation_succeeded, TubeBudget &b) {
+    return enumerate_facet_indices(groups, cap_count, generation_succeeded, b);
 }
 } // namespace p3d::swept_detail

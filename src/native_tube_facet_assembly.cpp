@@ -252,6 +252,11 @@ TubeFacetGroupAssembly assemble_tube_facet_groups(TubeFacetGroupGeneration gener
 }
 TubeFacetGroupAssembly assemble_tube_facet_groups(TubeFacetGroupGeneration generated,
                                                   TubeBudget &b) {
+    if (!generated.success) {
+        TubeFacetPathClassification unavailable;
+        unavailable.report = {{"reason", "surface_generation_failed"}};
+        return assemble_tube_facet_groups(std::move(generated), std::move(unavailable), b);
+    }
     auto classified = classify_generated_tube_facet_groups(generated, b);
     return assemble_tube_facet_groups(std::move(generated), std::move(classified), b);
 }

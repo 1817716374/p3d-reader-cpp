@@ -39,4 +39,9 @@ using TubeFacetGroups = std::vector<std::vector<std::vector<Json>>>;
 // Each returned side mapping retains its group/member/patch location.
 Json enumerate_tube_facet_indices(const TubeFacetGroups &, std::size_t cap_count,
                                   bool generation_succeeded, TubeBudget &);
+// Same native enumeration over assembled object references; never copies or
+// inspects geometry merely to count output patches.
+Json enumerate_tube_facet_reference_indices(
+    const std::vector<std::vector<std::vector<std::size_t>>> &, std::size_t cap_count,
+    bool generation_succeeded, TubeBudget &);
 } // namespace p3d::swept_detail
