@@ -1,4 +1,4 @@
-#include "native_tube_mesh_edges.hpp"
+#include "native_tube_mesh_trim_edges.hpp"
 // Grid-index construction follows Bentley imodel-native BlockedVector.cpp.
 // Copyright (c) Bentley Systems, Incorporated. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
@@ -28,10 +28,10 @@ TubeMeshEdgeState make_tube_mesh_edge_state(std::size_t patches, std::size_t str
     }
     return s;
 }
-TubeMeshRegularMesh connect_tube_mesh_regular_vertices(const TubeMeshRegularVertices &grid,
-                                                       TubeMeshEdgeState &original,
-                                                       const TubeMeshEdgeOptions &opt,
-                                                       TubeBudget &budget) {
+namespace {
+template <typename Output, typename Traverse, typename Finalize>
+Output connect_vertices(TubeMeshEdgeState &original, const TubeMeshEdgeOptions &opt,
+                        TubeBudget &budget, Traverse traverse, Finalize finalize) {
     const curve_detail::BezierWork work{budget.work, budget.max_work};
     const auto pi = original.next_patch, si = original.next_strip;
     require(original.patch_count && original.strip_count && original.patch_count <= INT32_MAX &&
@@ -41,11 +41,6 @@ TubeMeshRegularMesh connect_tube_mesh_regular_vertices(const TubeMeshRegularVert
                     (original.profile_closed ? original.patch_count : 0) &&
                 original.path_seam.size() == (original.path_closed ? original.strip_count : 0),
             "native mesh edge state position or shape");
-    require(grid.u_count >= 2 && grid.v_count >= 2 && grid.u_count <= INT32_MAX &&
-                grid.v_count <= INT32_MAX &&
-                grid.u_count <= budget.max_control_points / grid.v_count &&
-                grid.vertices.size() == grid.u_count * grid.v_count,
-            "native mesh edge grid dimensions");
     std::size_t stored = 0;
     auto count = [&](std::size_t n) {
         require(n <= budget.max_control_points - stored,
@@ -133,7 +128,7 @@ TubeMeshRegularMesh connect_tube_mesh_regular_vertices(const TubeMeshRegularVert
         append(state.column, last(old_row));
     if (si > 0)
         append(state.rows[si], last(state.rows[si - 1]));
-    TubeMeshRegularMesh out;
+    Output out;
     auto emit = [&](Point3 p) {
         work.charge(1);
         require(out.points.size() < budget.max_control_points,
@@ -149,125 +144,201 @@ TubeMeshRegularMesh connect_tube_mesh_regular_vertices(const TubeMeshRegularVert
             append(state.end_points, p);
     };
     std::size_t replacements = 0;
-    for (std::size_t j = 0; j < grid.v_count; ++j)
-        for (std::size_t i = 0; i < grid.u_count; ++i) {
-            work.charge(32);
-            const auto &vertex = grid.vertices[j * grid.u_count + i];
-            const auto p = vertex.point;
-            for (double x : p)
-                require(std::isfinite(x), "native mesh nonfinite source point");
-            bool inserted = false;
-            const bool first_u = i == 0, last_u = i + 1 == grid.u_count, first_v = j == 0,
-                       last_v = j + 1 == grid.v_count;
-            if (pc) {
-                if (si == 0 && first_u && (pi == 0 || !first_v))
-                    append(state.profile_seam[pi], p);
-                if (last_strip && last_u) {
-                    auto q = get(state.profile_seam[pi], j);
-                    emit(q);
-                    ++replacements;
-                    inserted = true;
-                    if (first_v)
-                        cap_start(get(state.profile_seam[pi], 0));
-                    if (last_v)
-                        cap_end(q);
-                }
-            }
-            if (si > 0 && first_u) {
-                if (!(vc && last_patch && last_v)) {
-                    emit(get(old_column, j));
-                    ++replacements;
-                }
-                if (first_v)
-                    cap_start(get(old_column, 0));
-                if (last_v)
-                    cap_end(get(old_column, j));
-                inserted = true;
-            }
-            if (last_u && (pi == 0 || !first_v)) {
-                if (vc && last_patch && last_v)
-                    append(state.column, last(state.path_seam[si]));
-                else
-                    append(state.column, p);
-            }
-            if (vc) {
-                if (pi == 0 && first_v && (si == 0 || !first_u))
-                    append(state.path_seam[si], p);
-                if (last_patch && last_v) {
-                    emit(get(state.path_seam[si], i));
-                    ++replacements;
-                    inserted = true;
-                }
-            }
-            if (pi > 0 && (si == 0 || !first_u) && !(pc && last_strip && last_u) && first_v) {
-                auto q = get(old_row, i);
+    auto visit = [&](std::size_t i, std::size_t j, std::size_t nu, std::size_t nv,
+                     const TubeMeshVertex &vertex) {
+        work.charge(32);
+        const auto p = vertex.point;
+        for (double x : p)
+            require(std::isfinite(x), "native mesh nonfinite source point");
+        bool inserted = false;
+        const bool first_u = i == 0, last_u = i + 1 == nu, first_v = j == 0, last_v = j + 1 == nv;
+        if (pc) {
+            if (si == 0 && first_u && (pi == 0 || !first_v))
+                append(state.profile_seam[pi], p);
+            if (last_strip && last_u) {
+                auto q = get(state.profile_seam[pi], j);
                 emit(q);
                 ++replacements;
                 inserted = true;
-                cap_start(q);
-            }
-            if (last_v && (si == 0 || !first_u)) {
-                if (pc && last_strip && last_u)
-                    append(state.rows[si], get(state.rows[0], 0));
-                else
-                    append(state.rows[si], p);
-            }
-            if (!inserted) {
-                emit(p);
                 if (first_v)
-                    cap_start(p);
+                    cap_start(get(state.profile_seam[pi], 0));
                 if (last_v)
-                    cap_end(p);
-            }
-            if (opt.normals) {
-                for (double x : vertex.normal)
-                    require(std::isfinite(x), "native mesh nonfinite normal");
-                out.normals.push_back(vertex.normal);
-            }
-            if (opt.parameters) {
-                for (double x : vertex.parameter)
-                    require(std::isfinite(x), "native mesh nonfinite parameter");
-                out.parameters.push_back(vertex.parameter);
+                    cap_end(q);
             }
         }
-    // 24e9e0 / 28ef20: integer division counts COMPLETE coordinate rows.
-    // At the double-closed final corner both native seam branches can append;
-    // keep the extra original point instead of forcing one point per sample.
-    const auto rows = out.points.size() / grid.u_count;
-    require(rows >= 2 && out.points.size() <= INT32_MAX, "native triangle grid coordinate extent");
-    const auto cells = (rows - 1) * (grid.u_count - 1);
-    require(cells <= budget.max_control_points / 8, "native triangle grid index budget");
-    work.charge(cells * 8);
-    out.point_indices.reserve(cells * 8);
-    for (std::size_t j = 1; j < rows; ++j)
-        for (std::size_t i = 1; i < grid.u_count; ++i) {
-            const auto a = std::int32_t((j - 1) * grid.u_count + i), b = a + 1,
-                       c = std::int32_t(j * grid.u_count + i), d = c + 1;
-            // Keep the conversion helper's original order, distinct from the
-            // direct implicit-grid visitor's cyclic ordering of the second face.
-            for (auto n : {a, b, c, 0, b, d, c, 0})
-                out.point_indices.push_back(n);
+        if (si > 0 && first_u) {
+            if (!(vc && last_patch && last_v)) {
+                emit(get(old_column, j));
+                ++replacements;
+            }
+            if (first_v)
+                cap_start(get(old_column, 0));
+            if (last_v)
+                cap_end(get(old_column, j));
+            inserted = true;
         }
-    if (opt.normals)
-        out.normal_indices = out.point_indices;
-    if (opt.parameters)
-        out.parameter_indices = out.point_indices;
-    out.report = {{"scope", "native_swept_regular_strip_mesh"},
-                  {"patch", pi},
-                  {"strip", si},
-                  {"input_vertices", grid.vertices.size()},
-                  {"coordinates", out.points.size()},
-                  {"complete_rows", rows},
-                  {"unused_tail_coordinates", out.points.size() % grid.u_count},
-                  {"correspondence_writes", replacements},
-                  {"triangles", cells * 2},
-                  {"coordinate_combination_applied", false},
-                  {"caps_generated", false}};
+        if (last_u && (pi == 0 || !first_v)) {
+            if (vc && last_patch && last_v)
+                append(state.column, last(state.path_seam[si]));
+            else
+                append(state.column, p);
+        }
+        if (vc) {
+            if (pi == 0 && first_v && (si == 0 || !first_u))
+                append(state.path_seam[si], p);
+            if (last_patch && last_v) {
+                emit(get(state.path_seam[si], i));
+                ++replacements;
+                inserted = true;
+            }
+        }
+        if (pi > 0 && (si == 0 || !first_u) && !(pc && last_strip && last_u) && first_v) {
+            auto q = get(old_row, i);
+            emit(q);
+            ++replacements;
+            inserted = true;
+            cap_start(q);
+        }
+        if (last_v && (si == 0 || !first_u)) {
+            if (pc && last_strip && last_u)
+                append(state.rows[si], get(state.rows[0], 0));
+            else
+                append(state.rows[si], p);
+        }
+        if (!inserted) {
+            emit(p);
+            if (first_v)
+                cap_start(p);
+            if (last_v)
+                cap_end(p);
+        }
+        if (opt.normals) {
+            for (double x : vertex.normal)
+                require(std::isfinite(x), "native mesh nonfinite normal");
+            out.normals.push_back(vertex.normal);
+        }
+        if (opt.parameters) {
+            for (double x : vertex.parameter)
+                require(std::isfinite(x), "native mesh nonfinite parameter");
+            out.parameters.push_back(vertex.parameter);
+        }
+    };
+    traverse(visit);
+    finalize(out, replacements);
     if (++state.next_strip == state.strip_count) {
         state.next_strip = 0;
         ++state.next_patch;
     }
     rollback.committed = true;
     return out;
+}
+} // namespace
+TubeMeshRegularMesh connect_tube_mesh_regular_vertices(const TubeMeshRegularVertices &grid,
+                                                       TubeMeshEdgeState &original,
+                                                       const TubeMeshEdgeOptions &opt,
+                                                       TubeBudget &budget) {
+    require(grid.u_count >= 2 && grid.v_count >= 2 && grid.u_count <= INT32_MAX &&
+                grid.v_count <= INT32_MAX &&
+                grid.u_count <= budget.max_control_points / grid.v_count &&
+                grid.vertices.size() == grid.u_count * grid.v_count,
+            "native mesh edge grid dimensions");
+    const curve_detail::BezierWork work{budget.work, budget.max_work};
+    const auto pi = original.next_patch, si = original.next_strip;
+    auto traverse = [&](auto visit) {
+        for (std::size_t j = 0; j < grid.v_count; ++j)
+            for (std::size_t i = 0; i < grid.u_count; ++i)
+                visit(i, j, grid.u_count, grid.v_count, grid.vertices[j * grid.u_count + i]);
+    };
+    auto finalize = [&](TubeMeshRegularMesh &out, std::size_t replacements) {
+        // 24e9e0 / 28ef20: integer division counts COMPLETE coordinate rows.
+        // At the double-closed final corner both native seam branches can append;
+        // keep the extra original point instead of forcing one point per sample.
+        const auto rows = out.points.size() / grid.u_count;
+        require(rows >= 2 && out.points.size() <= INT32_MAX,
+                "native triangle grid coordinate extent");
+        const auto cells = (rows - 1) * (grid.u_count - 1);
+        require(cells <= budget.max_control_points / 8, "native triangle grid index budget");
+        work.charge(cells * 8);
+        out.point_indices.reserve(cells * 8);
+        for (std::size_t j = 1; j < rows; ++j)
+            for (std::size_t i = 1; i < grid.u_count; ++i) {
+                const auto a = std::int32_t((j - 1) * grid.u_count + i), b = a + 1,
+                           c = std::int32_t(j * grid.u_count + i), d = c + 1;
+                // Keep the conversion helper's original order, distinct from the
+                // direct implicit-grid visitor's cyclic ordering of the second face.
+                for (auto n : {a, b, c, 0, b, d, c, 0})
+                    out.point_indices.push_back(n);
+            }
+        if (opt.normals)
+            out.normal_indices = out.point_indices;
+        if (opt.parameters)
+            out.parameter_indices = out.point_indices;
+        out.report = {{"scope", "native_swept_regular_strip_mesh"},
+                      {"patch", pi},
+                      {"strip", si},
+                      {"input_vertices", grid.vertices.size()},
+                      {"coordinates", out.points.size()},
+                      {"complete_rows", rows},
+                      {"unused_tail_coordinates", out.points.size() % grid.u_count},
+                      {"correspondence_writes", replacements},
+                      {"triangles", cells * 2},
+                      {"coordinate_combination_applied", false},
+                      {"caps_generated", false}};
+    };
+    return connect_vertices<TubeMeshRegularMesh>(original, opt, budget, traverse, finalize);
+}
+TubeMeshTrimConnected connect_tube_mesh_trim_vertices(const TubeMeshTrimVertices &grid,
+                                                      const std::vector<double> &v,
+                                                      TubeMeshEdgeState &original,
+                                                      const TubeMeshEdgeOptions &opt,
+                                                      TubeBudget &budget) {
+    // Facet preparation validates every column count/offset before mutation.
+    auto facets = prepare_tube_mesh_trim_facets(grid.plan, budget);
+    require(grid.vertices.size() == grid.plan.vertex_count,
+            "native trimmed connection vertex extent");
+    const curve_detail::BezierWork work{budget.work, budget.max_work};
+    work.charge(grid.vertices.size());
+    for (const auto &column : grid.plan.columns)
+        for (std::size_t j = 0; j < column.count; ++j)
+            require(std::int64_t(grid.vertices[column.offset + j].row) ==
+                        std::int64_t(column.first_interior) - 1 + std::int64_t(j),
+                    "native trimmed connection original row labels");
+    const auto pi = original.next_patch, si = original.next_strip;
+    std::vector<Point2> parameters;
+    if (opt.parameters)
+        parameters =
+            evaluate_tube_mesh_trim_parameters(grid.plan, v, pi, original.patch_count, budget);
+    auto traverse = [&](auto visit) {
+        for (std::size_t i = 0; i < grid.plan.columns.size(); ++i) {
+            const auto &column = grid.plan.columns[i];
+            for (std::size_t j = 0; j < column.count; ++j) {
+                const auto at = column.offset + j;
+                const auto &node = grid.vertices[at];
+                const TubeMeshVertex sample{node.point, node.normal, {}, node.normal_fallback};
+                visit(i, j, grid.plan.columns.size(), column.count, sample);
+            }
+        }
+    };
+    auto finalize = [&](TubeMeshTrimConnected &out, std::size_t replacements) {
+        out.parameters = std::move(parameters);
+        out.facets = std::move(facets);
+        out.facets.report["shared_coordinates_applied"] = true;
+        out.report = {{"scope", "native_swept_trimmed_strip_connection"},
+                      {"patch", pi},
+                      {"strip", si},
+                      {"input_vertices", grid.vertices.size()},
+                      {"coordinates", out.points.size()},
+                      {"correspondence_writes", replacements},
+                      {"shared_coordinates_applied", true},
+                      {"triangulated", false},
+                      {"caps_generated", false},
+                      {"coordinate_combination_applied", false}};
+    };
+    // Parameters were already validated/generated in original column order;
+    // transfer their storage instead of allocating and copying a second pool.
+    auto connection_options = opt;
+    connection_options.parameters = false;
+    return connect_vertices<TubeMeshTrimConnected>(original, connection_options, budget, traverse,
+                                                   finalize);
 }
 } // namespace p3d::swept_detail
