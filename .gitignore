@@ -27,6 +27,7 @@
 !/tests/native_polyface_smooth_normals.cpp
 !/tests/native_polyface_edge_chains.cpp
 !/tests/native_polygon_convexity.cpp
+!/tests/native_polyface_layout.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp
