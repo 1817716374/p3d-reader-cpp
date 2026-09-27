@@ -48,6 +48,7 @@ TubeMeshTrimOutput emit_tube_mesh_trimmed_strip(const TubeMeshTrimConnected &inp
     TubeMeshTrimOutput out;
     out.mesh.points = input.points;
     out.mesh.point_indices = std::move(triangles.output.indices[point_channel]);
+    out.mesh.point_index_active = triangles.output.active[point_channel];
     if (options.normals) {
         work.charge(out.mesh.point_indices.size());
         out.mesh.normals = input.normals;

@@ -240,13 +240,17 @@ assemble_native_builder_polyfaces(const std::vector<NativeBuilderPolyface> &sour
                options.coordinates.parameter_relative_tolerance, work),
         normals(1e-14, 1e-6, work);
     NativeBuilderPolyfaceOutput out;
-    out.indices.active = {true, options.parameters_required, options.normals_required, false,
-                          options.parameters_required};
-    out.parameter_pool_active = options.parameters_required;
-    out.normal_pool_active = options.normals_required;
+    const bool initial_parameters =
+        options.attributes_enabled_at_construction && options.parameters_required;
+    const bool initial_normals =
+        options.attributes_enabled_at_construction && options.normals_required;
+    out.indices.active = {true, initial_parameters, initial_normals, false, initial_parameters};
+    out.parameter_pool_active = initial_parameters;
+    out.normal_pool_active = initial_normals;
     out.native_succeeded = true;
     std::size_t rejected = 0, discarded_face_indices = 0, ignored_colors = 0;
     std::size_t suppressed_attributes = 0, missing_edge_keys = 0;
+    std::size_t unrepresented_attributes = 0;
     std::array<std::size_t, polyface_channel_count> missing_keys{};
     Json reports = Json::array();
     auto append_index = [&](std::size_t channel, std::int32_t value) {
@@ -316,10 +320,29 @@ assemble_native_builder_polyfaces(const std::vector<NativeBuilderPolyface> &sour
             report["discarded_face_indices"] = face_indices->size();
             face_indices = nullptr;
         }
-        if (!src[normal_channel].empty() && normal_indices != &src[normal_channel])
-            suppressed_attributes += src[normal_channel].size();
-        if (!src[parameter_channel].empty() && parameter_indices != &src[parameter_channel])
-            suppressed_attributes += src[parameter_channel].size();
+        auto suppressed = [&](std::size_t channel, const std::vector<std::int32_t> *selected) {
+            const auto &original = src[channel];
+            if (original.empty() || selected == &original)
+                return;
+            suppressed_attributes += original.size();
+            // A disabled initial channel may use the original point-index
+            // fallback. An equivalent independent index array loses no data;
+            // report its bypass, but do not call the resulting values missing.
+            bool equivalent = selected && selected->size() == original.size();
+            if (equivalent)
+                for (std::size_t i = 0; i < original.size(); ++i) {
+                    work.charge(1);
+                    const auto a = std::int64_t(original[i]), b = std::int64_t((*selected)[i]);
+                    if ((a < 0 ? -a : a) != (b < 0 ? -b : b)) {
+                        equivalent = false;
+                        break;
+                    }
+                }
+            if (!equivalent)
+                unrepresented_attributes += original.size();
+        };
+        suppressed(normal_channel, normal_indices);
+        suppressed(parameter_channel, parameter_indices);
         ignored_colors += src[color_channel].size();
         report["normal_index_source"] = normal_fallback  ? "point_fallback"
                                         : normal_indices ? "explicit"
@@ -415,7 +438,7 @@ assemble_native_builder_polyfaces(const std::vector<NativeBuilderPolyface> &sour
     for (const auto count : missing_keys)
         all_keys_present = all_keys_present && count == 0;
     out.complete = out.native_succeeded && discarded_face_indices == 0 && ignored_colors == 0 &&
-                   suppressed_attributes == 0 && aligned && bounded && all_keys_present;
+                   unrepresented_attributes == 0 && aligned && bounded && all_keys_present;
     out.coordinates.report = {{"operation", "native_builder_coordinate_insertion"},
                               {"batches", out.coordinates.batches.size()},
                               {"points", points.report()},
@@ -429,6 +452,7 @@ assemble_native_builder_polyfaces(const std::vector<NativeBuilderPolyface> &sour
                   {"discarded_face_indices", discarded_face_indices},
                   {"ignored_color_indices", ignored_colors},
                   {"suppressed_attribute_indices", suppressed_attributes},
+                  {"unrepresented_attribute_indices", unrepresented_attributes},
                   {"missing_remap_keys", missing_keys},
                   {"missing_edge_remap_keys", missing_edge_keys},
                   {"active_index_channels_aligned", aligned},

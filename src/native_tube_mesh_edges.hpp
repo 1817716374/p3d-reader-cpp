@@ -13,6 +13,7 @@ struct TubeMeshRegularMesh {
     std::vector<Point3> points, normals;
     std::vector<Point2> parameters;
     std::vector<std::int32_t> point_indices, normal_indices, parameter_indices;
+    bool point_index_active = false;
     Json report;
 };
 struct TubeMeshEdgeOptions {

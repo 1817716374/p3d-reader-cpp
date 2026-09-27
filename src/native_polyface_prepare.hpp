@@ -11,6 +11,7 @@ struct NativePolyfacePreparationOptions {
     std::uint32_t max_edges_per_face = 3;
     std::int32_t parameter_mode = 0;
     std::size_t draw_method_index = 0;
+    bool attributes_enabled_at_construction = true;
 };
 struct NativePolyfacePreparation {
     NativePolyfaceMesh output;

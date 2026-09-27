@@ -181,6 +181,7 @@ NativePreparedPolyfaceAssembly assemble_native_prepared_polyfaces(
     matched.coordinates = coordinate_options;
     matched.normals_required = options.normals_required;
     matched.parameters_required = options.parameters_required;
+    matched.attributes_enabled_at_construction = options.attributes_enabled_at_construction;
     out.assembled = assemble_native_builder_polyfaces(prepared, matched, budget);
     out.native_succeeded = out.assembled.native_succeeded;
     out.complete = out.complete && out.assembled.complete && untransferred.empty() &&

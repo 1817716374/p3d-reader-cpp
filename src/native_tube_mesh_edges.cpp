@@ -269,6 +269,7 @@ TubeMeshRegularMesh connect_tube_mesh_regular_vertices(const TubeMeshRegularVert
                 for (auto n : {a, b, c, 0, b, d, c, 0})
                     out.point_indices.push_back(n);
             }
+        out.point_index_active = !out.point_indices.empty();
         if (opt.normals)
             out.normal_indices = out.point_indices;
         if (opt.parameters)

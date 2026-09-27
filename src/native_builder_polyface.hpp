@@ -28,6 +28,9 @@ struct NativeBuilderPolyface {
 struct NativeBuilderPolyfaceOptions {
     NativeBuilderCoordinateOptions coordinates;
     bool normals_required = true, parameters_required = true;
+    // Some callers construct the builder before enabling its settings. The
+    // matched path then discovers source attributes through its native fallback.
+    bool attributes_enabled_at_construction = true;
 };
 struct NativeBuilderPolyfaceOutput {
     NativeBuilderCoordinates coordinates;
