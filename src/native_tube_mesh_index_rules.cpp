@@ -5,6 +5,7 @@
 // P3D arithmetic order, low-count branch and edge visibility are preserved.
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_bezier_support.hpp"
+#include "native_vu_cluster.hpp"
 #include <set>
 namespace p3d::swept_detail {
 NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
@@ -55,8 +56,10 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         auto wrapped = points;
         wrapped.push_back(points.front()); // Native visitor wrap count is one.
         out.projection = prepare_native_polygon_projection(wrapped, budget);
-        if (out.projection->frame_succeeded)
+        if (out.projection->frame_succeeded) {
             out.input_graph = build_native_vu_input(out.projection->points, 0, budget);
+            prepare_native_vu_merge(*out.input_graph, budget);
+        }
     }
     // Larger faces require the original projected-loop triangulator. Never
     // replace that branch with an arbitrary triangle fan or claim completion.

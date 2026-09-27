@@ -37,6 +37,7 @@ unsigned native_tube_mesh_trim_edges_tests();
 unsigned native_tube_mesh_index_rules_tests();
 unsigned native_polygon_projection_tests();
 unsigned native_vu_graph_tests();
+unsigned native_vu_cluster_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2919,6 +2920,7 @@ int main() {
         checks += native_tube_mesh_index_rules_tests();
         checks += native_polygon_projection_tests();
         checks += native_vu_graph_tests();
+        checks += native_vu_cluster_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();
