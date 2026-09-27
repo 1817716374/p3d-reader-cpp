@@ -1,6 +1,7 @@
 #pragma once
 #include "native_builder_polyface.hpp"
 #include "native_polyface_layout.hpp"
+#include <functional>
 
 namespace p3d::swept_detail {
 struct NativePolyfaceVectorTags {
@@ -60,6 +61,17 @@ struct NativePolyfaceMeshTriangulation {
 // facet ordinals otherwise. Unsafe original array reads are explicitly rejected.
 NativePolyfaceVisit visit_native_polyface(const NativePolyfaceMesh &, TubeBudget &,
                                           bool all_data = true, std::uint32_t wrap = 1);
+using NativePolyfaceFacetConsumer = std::function<void(
+    std::size_t, const NativePolyfaceVisitorFacet &, const NativePolyfaceVisitedData &)>;
+// Internal generation traversal: all data, wrap zero. The consumer runs between
+// native advances and may update only the selected normal/UV pool, its index
+// values and parameter ranges. Do not change source points or layout. Missing
+// reads of the generated channel are not truncation errors; unsafe reads still
+// fail. Later faces query the current attribute arrays, not a frozen snapshot.
+// Returns read positions and diagnostics; consumed facet/value arrays stay empty.
+NativePolyfaceVisit visit_native_polyface_attribute_updates(NativePolyfaceMesh &, TubeBudget &,
+                                                            std::size_t selected_channel,
+                                                            const NativePolyfaceFacetConsumer &);
 // Convert layout, activate available data, extract the original independent
 // client indices and run the edge-limit consumer. Existing pools are preserved.
 // Unsupported mesh styles are rejected before the native null-visitor access.

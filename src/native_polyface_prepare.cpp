@@ -1,5 +1,6 @@
 #include "native_polyface_prepare.hpp"
 #include "native_polyface_smooth_normals.hpp"
+#include "native_polyface_mesh_attributes.hpp"
 #include "native_polyface_edge_chains.hpp"
 #include "native_polygon_convexity.hpp"
 #include "native_bezier.hpp"
@@ -125,8 +126,10 @@ prepare_native_polyface_for_builder(const NativePolyfaceMesh &source,
     }
     if (parameters) {
         const auto selector = options.parameter_mode == 0 ? 2 : options.parameter_mode == 1 ? 3 : 1;
-        attributes("parameters",
-                   build_native_polyface_parameters(state(out.output), selector, budget));
+        auto result = build_native_polyface_mesh_parameters(out.output, selector, budget);
+        out.complete = out.complete && result.complete;
+        steps.push_back({{"step", "parameters"}, {"result", std::move(result.report)}});
+        out.output = std::move(result.output);
     }
     if (faces) {
         auto result = build_native_polyface_face_data(state(out.output), budget);

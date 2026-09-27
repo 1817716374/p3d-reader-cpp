@@ -4,6 +4,8 @@
 
 `src/native_polyface_visitor.cpp` 的索引式、连续面块和行列网格逐面读取参考同一固定提交中的 `PolyfaceVisitor.cpp` 和 `BlockedVector.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的颜色指针与计数的独立选择、不同样式的属性读取及闭合行为、网格三角面起点和属性索引范围，加入实际数组边界和资源预算检查；不依赖 Bentley 运行库。
 
+`src/native_polyface_mesh_attributes.cpp` 的逐面法向与 UV 生成参考同一固定提交的 `polyfaceAddNormals.cpp`，保留 Bentley 版权及 Apache-2.0 标记。P3D 的动态属性读取、回写位置边界、直接存储的面范围编号和失败行为按原生规则实现。
+
 `src/native_polygon_convexity.cpp` 的空间凸面判断参考下表固定 Bentley 提交中的 `polygon3d.cpp`，相关网格查询参考 `PolyfaceQuery.cpp`；保留 Bentley 版权及 Apache-2.0 标记。实现采用原生精确闭合点比较、最大叉积选择、相对转角阈值，以及点数据专用访问器的短面与提前结束规则。
 
 `src/native_polyface_face_data.cpp` 中的边链生成参考下表固定 Bentley 提交中的 `PolyfaceEdgeChain.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保留原生的两遍可见边登记与输出、双重面号递增、顶点身份、共享面标识及单边记录顺序，不使用参考代码中另外的长边链连接操作。
