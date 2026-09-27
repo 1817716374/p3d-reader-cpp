@@ -78,6 +78,7 @@ struct Sweep {
     curve_detail::BezierWork work;
     std::uint32_t up, downward;
     std::vector<Node> minima, left, right, peaks;
+    std::size_t peak_read_index = 0;
     std::size_t joins = 0, rejections = 0, peak_joins = 0, right_joins = 0, left_joins = 0;
     Sweep(NativeVuGraph &graph, TubeBudget &b, std::uint32_t u, std::uint32_t d)
         : g(graph), budget(b), work{b.work, b.max_work}, up(u), downward(d) {}
@@ -180,6 +181,7 @@ struct Sweep {
         return first;
     }
     Node highest_peak(Node l, Node r) {
+        peak_read_index = peaks.size(); // Native arrayOpen/read exhausts this array.
         Node top = none;
         for (auto p : peaks) {
             work.charge(32);
@@ -308,13 +310,20 @@ Json regularize_native_vu_graph(NativeVuGraph &graph, TubeBudget &budget) {
     const curve_detail::BezierWork work{budget.work, budget.max_work};
     work.charge(graph.nodes.size());
     auto g = graph;
+    std::size_t peak_cursor = 0;
     auto sweep = [&](std::uint32_t up, std::uint32_t down) {
         Sweep state(g, budget, up, down);
-        return state.run();
+        state.peak_read_index = peak_cursor;
+        auto report = state.run();
+        peak_cursor = state.peak_read_index;
+        return report;
     };
     const auto up = sweep(0x40000000u, 0x20000000u);
     rotate(g, budget);
     // returnMask(up), then returnMask(downward) reverses the mask-stack order.
+    // The second peak array reuses the first sweep's exhausted minimum array.
+    // Native grabArray clears elements but does not reset the read cursor.
+    peak_cursor = up.at("minimum_count").get<std::size_t>();
     const auto down = sweep(0x20000000u, 0x40000000u);
     rotate(g, budget);
     const auto all = validate_native_vu_split_graph(g, budget);
@@ -324,6 +333,7 @@ Json regularize_native_vu_graph(NativeVuGraph &graph, TubeBudget &budget) {
                 {"triangulated", false},
                 {"upward_sweep", up},
                 {"downward_sweep", down},
+                {"candidate_array_read_index", peak_cursor},
                 {"joined_edges", up.at("joined_edges").get<std::size_t>() +
                                      down.at("joined_edges").get<std::size_t>()},
                 {"active_node_count", all.size()},

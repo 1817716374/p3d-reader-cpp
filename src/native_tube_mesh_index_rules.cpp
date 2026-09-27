@@ -7,6 +7,7 @@
 #include "native_bezier_support.hpp"
 #include "native_vu_cluster.hpp"
 #include "native_vu_regularize.hpp"
+#include "native_vu_exterior.hpp"
 #include <set>
 namespace p3d::swept_detail {
 NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
@@ -62,6 +63,10 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
             prepare_native_vu_merge(*out.input_graph, budget);
             out.input_graph->report["regularization"] =
                 regularize_native_vu_graph(out.input_graph->graph, budget);
+            const auto cursor = out.input_graph->report.at("regularization")
+                                    .at("candidate_array_read_index").get<std::size_t>();
+            out.input_graph->report["exterior_classification"] =
+                mark_native_vu_exterior(out.input_graph->graph, cursor, budget);
         }
     }
     // Larger faces require the original projected-loop triangulator. Never

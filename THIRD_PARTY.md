@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_vu_exterior.cpp` 的面积初筛、候选面选择和边界奇偶遍历参考下表固定 Bentley 提交中的 `vumerge.cpp`、`vusubset.cpp`。保留 Bentley 版权及 Apache-2.0 标记，实现采用 P3D 的零面积阈值、临时数组读取位置及遍历顺序；以局部有界工作栈和事务式掩码更新实现，不依赖厂商运行库。
+
 `src/native_vu_regularize.cpp` 的双向面规则化与扇区判定参考下表固定 Bentley 提交中的 `vureg.cpp`、`vucoord.cpp`，连接边插入同时参考 `vu.cpp`。保留 Bentley 版权及 Apache-2.0 标记；实现按 P3D 的极值排序、活动链删除、端点插值和掩码返回顺序改写。排序状态与工作数组均为调用局部数据，不依赖厂商运行库。
 
 `src/native_vu_connections.cpp` 的簇边收集与顶点连接参考下表固定 Bentley 提交中的 `vucluster.cpp`；`src/native_vu_graph.cpp` 的标记边删除与空闲节点复用同时参考 `vumem.cpp`。保留 Bentley 版权及 Apache-2.0 标记，并按 P3D 的重复边模式、双次排序、掩码和链表顺序实现。节点存储槽位复用不代表源几何去重。
