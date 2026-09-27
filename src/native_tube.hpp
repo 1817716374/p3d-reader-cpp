@@ -55,6 +55,10 @@ TubeCurve combine_open_tube_curves(const BsplineCurve &left, const BsplineCurve 
 // exactly; elevation preserves native knot grouping and endpoint reassignment.
 // Non-clamped layouts leaving native knot storage unwritten fail explicitly.
 TubeCurve elevate_open_tube_curve(const BsplineCurve &, unsigned degree, TubeBudget &);
+// Untrimmed surface V elevation. The first V column supplies the shared knot
+// plan; each column starts from its own untouched controls. Actual elevation
+// currently requires open V. Same-degree copies preserve periodic V as well.
+TubeAssembly elevate_tube_surface_v(const BsplineSurface &, unsigned degree, TubeBudget &);
 // Outer native two-curve combination: open closed inputs at source parameter
 // zero, elevate the lower degree, then combine with native endpoint rules.
 TubeCurve combine_tube_curves(const BsplineCurve &, const BsplineCurve &, bool force_contiguous,
