@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_vu_flip.cpp` 的对角线调整与候选边集合参考下表固定 Bentley 提交中的 `vutriang.cpp`、`vusubset.cpp`；`src/native_vu_indices.cpp` 的内面源索引输出参考 `vupoly.cpp`、`vusubset.cpp`。保留 Bentley 版权及 Apache-2.0 标记，实现按 P3D 的运算顺序、候选顺序、原生固定边掩码和首个已编号顶点扇区选择规则改写；不采用较新实现的整顶点环编号传播和退化面掩码改写。
+
 `src/native_vu_triangulate.cpp` 的竖向扫描三角化和质心回退参考下表固定 Bentley 提交中的 `vumod2.cpp`、`vucoord.cpp`，独立边对的创建同时参考 `vu.cpp`。保留 Bentley 版权及 Apache-2.0 标记；按 P3D 的浮点顺序、质心面积返回值、首条可见性向量及新节点载荷实现，使用调用局部状态与有界工作预算。
 
 `src/native_vu_exterior.cpp` 的面积初筛、候选面选择和边界奇偶遍历参考下表固定 Bentley 提交中的 `vumerge.cpp`、`vusubset.cpp`。保留 Bentley 版权及 Apache-2.0 标记，实现采用 P3D 的零面积阈值、临时数组读取位置及遍历顺序；以局部有界工作栈和事务式掩码更新实现，不依赖厂商运行库。

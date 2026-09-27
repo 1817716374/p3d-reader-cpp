@@ -5,10 +5,12 @@
 #include <optional>
 namespace p3d::swept_detail {
 struct NativeFacetIndexPlan {
-    enum class Route { passthrough, quad, projected_loops_required };
+    enum class Route { passthrough, quad, projected_loops_required, projected_loops };
     Route route = Route::projected_loops_required;
-    // Local signed 1-based indices, zero-terminated. Input points do not
-    // include the visitor's automatically appended closure point.
+    bool completed = false;
+    // Local signed 1-based indices, zero-terminated. Large-face indices refer
+    // to the visitor's wrapped point list (input plus its automatic closure).
+    // Empty on unresolved large-face output; inspect input_graph reports.
     std::vector<std::int32_t> indices;
     // Large-face preparation includes the visitor's extra closing point.
     std::optional<NativePolygonProjection> projection;

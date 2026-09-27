@@ -150,11 +150,11 @@ unsigned native_polygon_projection_tests() {
     TubeBudget b;
     auto prepared = native_facet_index_plan(duplicate, b);
     check(
-        prepared.route == NativeFacetIndexPlan::Route::projected_loops_required &&
-            prepared.indices.empty() && prepared.projection &&
+        prepared.route == NativeFacetIndexPlan::Route::projected_loops &&
+            prepared.completed && !prepared.indices.empty() && prepared.projection &&
             prepared.projection->frame_succeeded &&
             prepared.projection->report.at("triangulated") == false,
-        "large facet dispatch performs projection while explicitly leaving triangulation pending");
+        "large facet completes triangulation while projection report describes only preparation");
     auto short_plan = native_facet_index_plan(rectangle, b);
     check(!short_plan.projection, "quad path does not run polygon projection");
     check(prepared.projection->points.size() == duplicate.size() + 1 &&

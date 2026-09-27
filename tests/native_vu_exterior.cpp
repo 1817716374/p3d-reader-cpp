@@ -261,8 +261,8 @@ unsigned native_vu_exterior_tests() {
               "parity masks and depth-first stacks are local to concurrent calls");
     TubeBudget b;
     auto plan = native_facet_index_plan({{0, 0, 0}, {3, 0, 0}, {4, 2, 0}, {2, 4, 0}, {0, 2, 0}}, b);
-    check(plan.indices.empty() && plan.input_graph->report.at("exterior_classification")
+    check(plan.completed && !plan.indices.empty() && plan.input_graph->report.at("exterior_classification")
                                           .at("exterior_classification_completed") == true,
-          "large-facet route runs exterior classification without substitute triangulation");
+          "large-facet route classifies exterior before native triangle source output");
     return checks;
 }

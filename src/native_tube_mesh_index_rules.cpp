@@ -9,6 +9,8 @@
 #include "native_vu_regularize.hpp"
 #include "native_vu_exterior.hpp"
 #include "native_vu_triangulate.hpp"
+#include "native_vu_flip.hpp"
+#include "native_vu_indices.hpp"
 #include <set>
 namespace p3d::swept_detail {
 NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
@@ -30,6 +32,7 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         for (std::size_t i = 0; i < points.size(); ++i)
             out.indices.push_back(std::int32_t(i + 1));
         out.indices.push_back(0);
+        out.completed = true;
     } else if (points.size() == 4) {
         require(budget.max_control_points >= 8, "native quad index output budget");
         work.charge(64);
@@ -51,6 +54,7 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         out.route = NativeFacetIndexPlan::Route::quad;
         out.indices = d0 > d1 ? std::vector<std::int32_t>{1, 2, -3, 0, -1, 3, 4, 0}
                               : std::vector<std::int32_t>{1, -2, 4, 0, -4, 2, 3, 0};
+        out.completed = true;
     }
     if (points.size() > 4) {
         require(points.size() < budget.max_control_points && points.size() < INT32_MAX,
@@ -70,10 +74,20 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
                 mark_native_vu_exterior(out.input_graph->graph, cursor, budget);
             out.input_graph->report["interior_triangulation"] =
                 triangulate_native_vu_interiors(out.input_graph->graph, budget);
+            out.input_graph->report["edge_adjustment"] =
+                flip_native_vu_triangles(out.input_graph->graph, budget);
+            auto source = collect_native_vu_source_indices(out.input_graph->graph, budget);
+            out.input_graph->report["source_index_output"] = source.report;
+            out.completed = source.succeeded && source.report.at("all_emitted_faces_triangular") == true;
+            out.input_graph->report["triangulated"] = out.completed;
+            if (out.completed) {
+                out.route = NativeFacetIndexPlan::Route::projected_loops;
+                out.indices = std::move(source.indices);
+            }
         }
     }
-    // Larger faces require the original projected-loop triangulator. Never
-    // replace that branch with an arbitrary triangle fan or claim completion.
+    // Failed source numbering or residual nontriangular faces retain their
+    // diagnostics, but do not publish a partial large-face index buffer.
     return out;
 }
 TubeMeshVisibleIndices apply_tube_mesh_edge_visibility(const std::vector<std::int32_t> &input,

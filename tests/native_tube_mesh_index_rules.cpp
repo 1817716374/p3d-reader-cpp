@@ -69,9 +69,9 @@ unsigned native_tube_mesh_index_rules_tests() {
     check(plan({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}).indices == std::vector<std::int32_t>{1, 2, 3, 0},
           "triangle branch preserves original vertex order");
     auto large = plan({{0, 0, 0}, {1, 0, 0}, {2, 1, 0}, {1, 2, 0}, {0, 1, 0}});
-    check(large.route == NativeFacetIndexPlan::Route::projected_loops_required &&
-              large.indices.empty(),
-          "larger polygons retain unresolved native projection requirement without invented fan");
+    check(large.route == NativeFacetIndexPlan::Route::projected_loops &&
+              large.completed && large.indices.size() == 12,
+          "larger polygon completes native projected-loop triangulation and source indices");
     TubeMeshVisibilityLayout rect{3, 2, 6, 0, 0, false, true, true};
     std::vector<std::int32_t> grid{1, 2, 4, 0, 2, 5, 4, 0, 2, 3, 5, 0, 3, 6, 5, 0};
     auto visible = [&](const std::vector<std::int32_t> &input, TubeMeshVisibilityLayout l) {

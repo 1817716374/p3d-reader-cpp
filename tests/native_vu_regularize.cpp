@@ -280,8 +280,8 @@ unsigned native_vu_regularize_tests() {
               "scratch masks and equal-key comparator state are local to each call");
     TubeBudget b;
     auto plan = native_facet_index_plan(concave, b);
-    check(plan.indices.empty() &&
+    check(plan.completed && !plan.indices.empty() &&
               plan.input_graph->report.at("regularization").at("regularization_completed") == true,
-          "large facet route consumes regularization but keeps unfinished triangle output empty");
+          "large facet route consumes regularization and resolves triangle output");
     return checks;
 }
