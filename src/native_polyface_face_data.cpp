@@ -5,6 +5,8 @@
 // Original P3D ranges, activity flags, visitor bounds and operation order.
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_polyface_face_data.hpp"
+#include "native_polyface_attributes.hpp"
+#include "native_polygon_projection.hpp"
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
 
@@ -58,6 +60,7 @@ class Visitor {
     const NativeBuilderPolyface &mesh;
     Work work;
     Diagnostics &diagnostics;
+    std::size_t ignored_truncation_channel;
     template <std::size_t N>
     std::vector<std::array<double, N>> collect(const std::vector<std::array<double, N>> &pool,
                                                const std::vector<std::int32_t> &indices,
@@ -83,8 +86,9 @@ class Visitor {
     }
 
   public:
-    Visitor(const NativeBuilderPolyface &m, Work w, Diagnostics &d)
-        : mesh(m), work(w), diagnostics(d) {}
+    Visitor(const NativeBuilderPolyface &m, Work w, Diagnostics &d,
+            std::size_t ignored = polyface_channel_count)
+        : mesh(m), work(w), diagnostics(d), ignored_truncation_channel(ignored) {}
     bool read(std::size_t first, Facet &out) {
         work.charge(1);
         const auto &indices = mesh.indices.indices;
@@ -129,7 +133,7 @@ class Visitor {
                                   ? point_indices
                                   : indices[which];
             auto values = collect(pool, src, first, count);
-            if (!src.empty() && values.size() < count)
+            if (!src.empty() && values.size() < count && which != ignored_truncation_channel)
                 ++diagnostics.truncated_attributes;
             return values;
         };
@@ -385,5 +389,130 @@ build_native_polyface_face_data(const NativePolyfaceFaceDataState &input, TubeBu
     // This native version leaves FaceData activity unchanged and FaceIndex
     // active even for empty data. Do not import newer upstream flag cleanup.
     return context.finish("native_build_per_face_face_data", true);
+}
+namespace {
+NativePolyfaceAttributes build_attributes(const NativePolyfaceFaceDataState &input, bool parameters,
+                                          int selector, TubeBudget &budget) {
+    Context context(input, budget);
+    auto &state = context.state;
+    auto &mesh = state.mesh;
+    auto &coordinates = mesh.coordinates;
+    const auto &points = mesh.indices.indices[point_channel];
+    const auto channel = parameters ? parameter_channel : normal_channel;
+    auto &indices = mesh.indices.indices[channel];
+    NativePolyfaceAttributes out;
+    out.report = {{"operation", parameters ? "native_build_per_face_parameters"
+                                           : "native_build_per_face_normals"},
+                  {"coordinate_selector", parameters ? selector : 0},
+                  {"visitor_wrap_count", 0}};
+    if (points.empty()) {
+        out.report["reason"] = "empty_point_index_array";
+        out.report["native_succeeded"] = false;
+        out.report["complete"] = false;
+        out.output = std::move(state);
+        return out;
+    }
+    context.storage -= indices.size();
+    context.storage -= parameters ? coordinates.parameters.size() : coordinates.normals.size();
+    auto grow = [&](std::size_t n) {
+        require(n <= budget.max_control_points - context.storage,
+                "native attribute output storage budget");
+        context.storage += n;
+        context.work.charge(n);
+    };
+    grow(points.size());
+    indices.assign(points.size(), 0);
+    mesh.indices.active[channel] = true;
+    if (parameters) {
+        coordinates.parameters.clear();
+        state.parameter_pool_active = true;
+        for (auto &f : mesh.face_data) {
+            context.work.charge(1);
+            f.parameter_range = null_range<2>();
+        }
+    } else {
+        coordinates.normals.clear();
+        state.normal_pool_active = true;
+    }
+    Visitor visitor(mesh, context.work, context.diagnostics, channel);
+    Facet face;
+    std::size_t next = 0, failed_frames = 0, range_updates = 0, range_skipped = 0;
+    Json frames = Json::array();
+    while (visitor.read(next, face)) {
+        next = face.next;
+        auto frame = prepare_native_polygon_projection(face.points, budget,
+                                                       parameters ? selector : 0, parameters);
+        frames.push_back({{"read_index", face.read}, {"frame", std::move(frame.report)}});
+        if (!frame.frame_succeeded)
+            ++failed_frames;
+        if (parameters) {
+            for (std::size_t i = 0; i < face.count; ++i) {
+                grow(1);
+                require(coordinates.parameters.size() < static_cast<std::size_t>(INT32_MAX),
+                        "native parameter index overflow");
+                const Point2 uv = frame.frame_succeeded
+                                      ? Point2{frame.points[i][0], frame.points[i][1]}
+                                      : Point2{};
+                coordinates.parameters.push_back(uv);
+                const std::size_t read = face.read + i;
+                indices[read] = static_cast<std::int32_t>(coordinates.parameters.size());
+                const auto &face_indices = mesh.indices.indices[face_channel];
+                if (mesh.indices.active[face_channel] && read < face_indices.size()) {
+                    // Native 252407 reads the signed stored value directly,
+                    // with no one-based adjustment, then uses an unsigned bound.
+                    const auto key = face_indices[read];
+                    if (key >= 0 && static_cast<std::size_t>(key) < mesh.face_data.size()) {
+                        extend(mesh.face_data[static_cast<std::size_t>(key)].parameter_range, uv,
+                               context.work);
+                        ++range_updates;
+                    } else
+                        ++range_skipped;
+                }
+            }
+        } else if (frame.frame_succeeded) {
+            grow(1);
+            require(coordinates.normals.size() < static_cast<std::size_t>(INT32_MAX),
+                    "native normal index overflow");
+            coordinates.normals.push_back({frame.local_to_world[0][2], frame.local_to_world[1][2],
+                                           frame.local_to_world[2][2]});
+            for (std::size_t i = 0; i < face.count; ++i) {
+                context.work.charge(1);
+                indices[face.read + i] = static_cast<std::int32_t>(coordinates.normals.size());
+            }
+        }
+    }
+    std::size_t missing = 0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        context.work.charge(1);
+        if (points[i] != 0 && indices[i] == 0)
+            ++missing;
+    }
+    out.native_succeeded = true;
+    out.complete = missing == 0 && failed_frames == 0 && range_skipped == 0 &&
+                   context.diagnostics.invalid_points == 0 &&
+                   context.diagnostics.truncated_attributes == 0;
+    out.report["native_succeeded"] = out.native_succeeded;
+    out.report["complete"] = out.complete;
+    out.report["frames"] = std::move(frames);
+    out.report["failed_frames"] = failed_frames;
+    out.report["unassigned_nonzero_indices"] = missing;
+    out.report["invalid_point_facets"] = context.diagnostics.invalid_points;
+    out.report["truncated_attribute_visits"] = context.diagnostics.truncated_attributes;
+    if (parameters) {
+        out.report["face_range_indexing"] = "native_direct_stored_index";
+        out.report["face_range_updates"] = range_updates;
+        out.report["face_range_updates_skipped"] = range_skipped;
+    }
+    out.output = std::move(state);
+    return out;
+}
+} // namespace
+NativePolyfaceAttributes build_native_polyface_normals(const NativePolyfaceFaceDataState &input,
+                                                       TubeBudget &budget) {
+    return build_attributes(input, false, 0, budget);
+}
+NativePolyfaceAttributes build_native_polyface_parameters(const NativePolyfaceFaceDataState &input,
+                                                          int selector, TubeBudget &budget) {
+    return build_attributes(input, true, selector, budget);
 }
 } // namespace p3d::swept_detail

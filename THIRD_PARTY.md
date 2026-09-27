@@ -1,6 +1,6 @@
 # 第三方依赖说明
 
-`src/native_polyface_face_data.cpp` 的面记录生成与参数距离统计参考下表固定 Bentley 提交中的 `Polyface.cpp`、`FacetFaceData.cpp`、`PolyfaceVisitor.cpp` 和 `polyfaceAddNormals.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保留 P3D 的空间及法向范围、连续顶点统计、活动标志和参数范围改写顺序，不引入较新参考版本的活动标志清理。
+`src/native_polyface_face_data.cpp` 的面记录生成、参数距离统计和逐面法向／UV 生成参考下表固定 Bentley 提交中的 `Polyface.cpp`、`FacetFaceData.cpp`、`PolyfaceVisitor.cpp` 和 `polyfaceAddNormals.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保留 P3D 的空间及法向范围、连续顶点统计、活动标志和参数范围改写顺序，不引入较新参考版本的活动标志清理或退化面默认法向。
 
 `src/native_builder_coordinates.cpp` 的坐标比较、插入和网格匹配追加流程参考下表固定 Bentley 提交中的 `PolyfaceCoordinateMap.cpp` 和 `PolyfaceAdd.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现使用 P3D 的法向专用容差、显式红黑树遍历和参数作用域，不采用较新参考实现中的统一法向容差配置。
 
@@ -26,7 +26,7 @@
 
 `src/native_vu_graph.cpp` 的索引环构造、边分裂与顶点重接参考下表固定 Bentley 提交中的 `VuOps.cpp`、`vu.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现采用有界节点索引存储，保留 P3D 的节点遍历顺序、掩码及源角点编号，不依赖厂商分配器或运行库。
 
-`src/native_polygon_projection.cpp` 的多边形法向及三点环中点分支参考下表固定 Bentley 提交中的 `PolygonOps.cpp`、`polygon3d.cpp`，保留 Bentley 版权及 Apache-2.0 标记。坐标系采用 P3D 的首环、首个合格边和退化回退规则；未采用较新参考实现的秩分类和直线回退。投影准备不包含原生平面图三角化。
+`src/native_polygon_projection.cpp` 的多边形法向及三点环中点分支参考下表固定 Bentley 提交中的 `PolygonOps.cpp`、`polygon3d.cpp`，坐标系原点和尺度调整同时参考 `reftransform.cpp`，保留 Bentley 版权及 Apache-2.0 标记。坐标系采用 P3D 的首环、首个合格边、近似相等判定和退化回退规则；未采用较新参考实现的秩分类和直线回退。投影准备不包含原生平面图三角化。
 
 `src/native_tube_mesh_index_rules.cpp` 的四边形对角线与带符号三角索引选择参考下表固定 Bentley 提交中的 `Polyface.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的点积算序和低边数保留规则改写，独立处理原生首末列的边可见性；未采用较新参考实现的平面性筛选和可选面过滤器。
 

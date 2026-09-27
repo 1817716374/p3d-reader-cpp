@@ -1,6 +1,6 @@
 #include "native_polygon_projection.hpp"
 // Polygon normal and triad algorithms also follow Bentley imodel-native
-// polygon3d.cpp / PolygonOps.cpp. Native P3D branch and arithmetic differences
+// polygon3d.cpp / PolygonOps.cpp / reftransform.cpp. Native P3D differences
 // are preserved. Copyright (c) Bentley Systems, Incorporated. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
@@ -97,7 +97,8 @@ Matrix3 axes(Point3 normal, Point3 edge, bool &normalized) {
 }
 } // namespace
 NativePolygonProjection prepare_native_polygon_projection(const std::vector<Point3> &points,
-                                                          TubeBudget &budget) {
+                                                          TubeBudget &budget, int selector,
+                                                          bool project_points) {
     require(points.size() <= budget.max_control_points && points.size() <= INT32_MAX,
             "native polygon projection point extent");
     const curve_detail::BezierWork work{budget.work, budget.max_work};
@@ -167,7 +168,7 @@ NativePolygonProjection prepare_native_polygon_projection(const std::vector<Poin
             }
         }
     }
-    if (out.frame_succeeded) {
+    if (out.frame_succeeded && (project_points || selector != 0)) {
         work.charge(points.size());
         out.points = points;
         for (auto &p : out.points) {
@@ -187,9 +188,83 @@ NativePolygonProjection prepare_native_polygon_projection(const std::vector<Poin
             p = local;
         }
     }
+    bool shifted = false, scaled = false;
+    Point3 scale{1, 1, 1};
+    if (out.frame_succeeded && selector != 0) {
+        std::array<Point3, 2> range;
+        range[0].fill(std::numeric_limits<double>::max());
+        range[1].fill(-std::numeric_limits<double>::max());
+        for (const auto &p : out.points) {
+            work.charge(12);
+            if (disconnect(p))
+                continue;
+            for (unsigned i = 0; i < 3; ++i) {
+                if (range[0][i] > p[i])
+                    range[0][i] = p[i];
+                if (p[i] > range[1][i])
+                    range[1][i] = p[i];
+            }
+        }
+        work.charge(180);
+        const Point3 diagonal = difference(range[1], range[0]);
+        const Point3 origin{out.local_to_world[0][3], out.local_to_world[1][3],
+                            out.local_to_world[2][3]};
+        const Point3 to_high = difference(range[1], origin);
+        // Native AlmostEqual compares this mixed-frame origin-to-high vector,
+        // not localRange.low against zero. Preserve its strict squared test.
+        double sum = finite(diagonal[0] * diagonal[0]);
+        for (unsigned i = 1; i < 3; ++i)
+            sum = finite(sum + finite(diagonal[i] * diagonal[i]));
+        for (double x : to_high)
+            sum = finite(sum + finite(x * x));
+        const double tolerance = finite(finite(sum + 1.0) * 1.0000000000000001e-20);
+        if (!(tolerance > squared(difference(diagonal, to_high)))) {
+            const Point3 low = range[0];
+            for (unsigned i = 0; i < 3; ++i) {
+                out.world_to_local[i][3] = finite(out.world_to_local[i][3] - low[i]);
+                const auto &row = out.local_to_world[i];
+                const double translation =
+                    finite(finite(finite(low[1] * row[1]) + finite(low[0] * row[0])) +
+                           finite(low[2] * row[2]));
+                out.local_to_world[i][3] = finite(translation + row[3]);
+            }
+            shifted = true;
+        }
+        if (selector == 2)
+            scale = {diagonal[0], diagonal[1], 1};
+        else if (selector == 3)
+            scale = {std::max(std::abs(diagonal[0]), std::abs(diagonal[1])),
+                     std::max(std::abs(diagonal[0]), std::abs(diagonal[1])), 1};
+        scale[2] = finite(std::sqrt(finite(scale[0] * scale[1])));
+        // All three guarded reciprocal tests must succeed before any scaling.
+        if ((scale[0] != 1 || scale[1] != 1) && std::abs(scale[0]) > 1e-15 &&
+            std::abs(scale[1]) > 1e-15 && std::abs(scale[2]) > 1e-15) {
+            for (unsigned i = 0; i < 3; ++i) {
+                const double inverse = finite(1 / scale[i]);
+                for (unsigned j = 0; j < 3; ++j)
+                    out.local_to_world[j][i] = finite(scale[i] * out.local_to_world[j][i]);
+                for (unsigned j = 0; j < 4; ++j)
+                    out.world_to_local[i][j] = finite(inverse * out.world_to_local[i][j]);
+            }
+            scaled = true;
+        }
+        // Apply the adjusted matrix to the original input, as the caller does.
+        for (std::size_t k = 0; k < points.size(); ++k) {
+            work.charge(25);
+            if (disconnect(points[k]))
+                continue;
+            for (unsigned i = 0; i < 3; ++i) {
+                const auto &row = out.world_to_local[i];
+                out.points[k][i] = finite(
+                    finite(finite(finite(points[k][1] * row[1]) + finite(points[k][0] * row[0])) +
+                           finite(points[k][2] * row[2])) +
+                    row[3]);
+            }
+        }
+    }
     out.report = {{"scope", "native_polygon_projection_preparation"},
                   {"frame_succeeded", out.frame_succeeded},
-                  {"coordinate_selector", 0},
+                  {"coordinate_selector", selector},
                   {"first_loop_points", count},
                   {"normal", normal},
                   {"native_area", area},
@@ -202,6 +277,13 @@ NativePolygonProjection prepare_native_polygon_projection(const std::vector<Poin
                   {"disconnect_markers_preserved", markers},
                   {"triangulated", false},
                   {"work_used", budget.work}};
+    if (selector != 0) {
+        out.report["origin_shifted"] = shifted;
+        out.report["range_scale_applied"] = scaled;
+        out.report["requested_axis_scales"] = scale;
+    }
+    if (!project_points)
+        out.points.clear();
     return out;
 }
 } // namespace p3d::swept_detail

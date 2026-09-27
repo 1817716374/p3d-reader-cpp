@@ -7,6 +7,7 @@ struct NativePolyfaceFaceDataState {
     // 0 and 1 use zero-delimited faces in the original visitor.
     NativeBuilderPolyface mesh;
     bool parameter_pool_active = false, face_data_pool_active = false;
+    bool normal_pool_active = false;
 };
 struct NativePolyfaceFaceDataResult {
     NativePolyfaceFaceDataState output;
