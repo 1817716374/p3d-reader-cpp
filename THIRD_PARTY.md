@@ -1,6 +1,6 @@
 # 第三方依赖说明
 
-`src/native_builder_coordinates.cpp` 的坐标比较与插入流程参考下表固定 Bentley 提交中的 `PolyfaceCoordinateMap.cpp` 和 `PolyfaceAdd.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现使用 P3D 的法向专用容差、显式红黑树遍历和参数作用域，不采用较新参考实现中的统一法向容差配置。
+`src/native_builder_coordinates.cpp` 的坐标比较、插入和网格匹配追加流程参考下表固定 Bentley 提交中的 `PolyfaceCoordinateMap.cpp` 和 `PolyfaceAdd.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现使用 P3D 的法向专用容差、显式红黑树遍历和参数作用域，不采用较新参考实现中的统一法向容差配置。
 
 `src/native_coordinate_cluster.cpp` 的坐标排序扫描与归并后打包参考下表固定 Bentley 提交中的 `DPoint3dOps.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的浮点运算顺序、原生排序相等键处理、独立通道活动条件及有符号索引回写规则适配。
 
