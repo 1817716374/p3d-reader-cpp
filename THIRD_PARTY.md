@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_vu_near_vertices.cpp` 的近顶点边分裂参考下表固定 Bentley 提交中的 `vumerge2.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保留原生候选范围、投影阈值、分数组合、插值及节点顺序；不把投影分裂视为完整交点连接。
+
 `src/native_vu_cluster.cpp` 的坐标分组参考下表固定 Bentley 提交中的 `vucluster.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的严格平面距离、排序交换、访问顺序及整组 XYZ 回写规则处理，并复用本库已确认的原生排序内核；不把坐标分组视为完整拓扑合并。
 
 `src/native_vu_graph.cpp` 的索引环构造、边分裂与顶点重接参考下表固定 Bentley 提交中的 `VuOps.cpp`、`vu.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现采用有界节点索引存储，保留 P3D 的节点遍历顺序、掩码及源角点编号，不依赖厂商分配器或运行库。

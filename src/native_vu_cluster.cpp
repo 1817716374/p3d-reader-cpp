@@ -7,6 +7,7 @@
 #include "native_attribute_sort.hpp"
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
+#include "native_vu_near_vertices.hpp"
 #include <numeric>
 namespace p3d::swept_detail {
 namespace {
@@ -166,8 +167,13 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
 void prepare_native_vu_merge(NativeVuInput &input, TubeBudget &budget) {
     const double tolerance = native_vu_merge_tolerance(input.graph, 0, 1e-9, budget);
     auto report = consolidate_native_vu_coordinates(input.graph, tolerance, 0x40000000u, budget);
+    auto splits = split_native_vu_edges_near_vertices(input.graph, tolerance, tolerance, tolerance,
+                                                      0x40000000u, budget);
+    auto second = consolidate_native_vu_coordinates(input.graph, tolerance, 0x40000000u, budget);
     input.report["merge_preparation"] = {{"tolerance", tolerance},
                                          {"initial_consolidation", std::move(report)},
+                                         {"near_vertex_splitting", std::move(splits)},
+                                         {"second_consolidation", std::move(second)},
                                          {"edge_splitting_completed", false},
                                          {"merge_completed", false}};
 }
