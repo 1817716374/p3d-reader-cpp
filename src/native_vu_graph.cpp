@@ -243,8 +243,8 @@ std::pair<std::size_t, std::size_t> join_native_vu_sectors(NativeVuGraph &g, std
     g.nodes[end].point = g.nodes[b].point;
     return {start, end};
 }
-NativeVuInput build_native_vu_input(const std::vector<Point3> &points, double tolerance,
-                                    TubeBudget &budget) {
+static NativeVuInput build_input(const std::vector<Point3> &points, double tolerance,
+                                 TubeBudget &budget, bool xy_only) {
     require(points.size() <= budget.max_control_points && points.size() <= INT32_MAX,
             "native VU source point extent");
     require(std::isfinite(tolerance) && tolerance >= 0, "native VU XY tolerance");
@@ -255,13 +255,17 @@ NativeVuInput build_native_vu_input(const std::vector<Point3> &points, double to
             finite(x);
     // 134630 computes unsigned end = first_marker - 1. At index zero this
     // underflows; the space-loop caller normally rejects the short prefix.
-    require(points.empty() || !disconnect(points.front()),
+    require(xy_only || points.empty() || !disconnect(points.front()),
             "native VU initial disconnect underflow");
+    auto is_disconnect = [&](const Point3 &p) {
+        const auto marker = std::numeric_limits<double>::max();
+        return xy_only ? p[0] == marker || p[1] == marker : disconnect(p);
+    };
     NativeVuInput out;
     std::size_t pos = 0, markers = 0, trimmed = 0, adjacent = 0;
     while (pos < points.size()) {
         const auto begin = pos;
-        while (pos < points.size() && !disconnect(points[pos])) {
+        while (pos < points.size() && !is_disconnect(points[pos])) {
             work.charge(1);
             ++pos;
         }
@@ -319,6 +323,16 @@ NativeVuInput build_native_vu_input(const std::vector<Point3> &points, double to
                   {"merged", false},
                   {"triangulated", false},
                   {"work_used", budget.work}};
+    if (xy_only)
+        out.report["scope"] = "native_vu_general_polygon_input_loops";
     return out;
+}
+NativeVuInput build_native_vu_input(const std::vector<Point3> &points, double tolerance,
+                                    TubeBudget &budget) {
+    return build_input(points, tolerance, budget, false);
+}
+NativeVuInput build_native_vu_polygon_input(const std::vector<Point3> &points, double tolerance,
+                                           TubeBudget &budget) {
+    return build_input(points, tolerance, budget, true);
 }
 } // namespace p3d::swept_detail

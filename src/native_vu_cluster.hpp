@@ -13,4 +13,6 @@ double native_vu_merge_tolerance(const NativeVuGraph &, double absolute_toleranc
 // first consolidation, near-vertex splits, second consolidation, intersections.
 // Completes native merge2002; regularization and triangulation are separate.
 void prepare_native_vu_merge(NativeVuInput &, TubeBudget &);
+void prepare_native_vu_merge(NativeVuInput &, TubeBudget &, double absolute_tolerance,
+                             double relative_tolerance);
 } // namespace p3d::swept_detail

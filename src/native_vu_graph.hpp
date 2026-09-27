@@ -51,4 +51,8 @@ struct NativeVuInput {
 // Builds the original indexed input loops only. Source points are immutable;
 // XY suppression changes graph nodes, not the input array or its indexing.
 NativeVuInput build_native_vu_input(const std::vector<Point3> &, double xy_tolerance, TubeBudget &);
+// General XY polygon constructor: only X/Y disconnects, signed loop bounds
+// allow an initial marker. Otherwise shares original point and mask insertion.
+NativeVuInput build_native_vu_polygon_input(const std::vector<Point3> &, double xy_tolerance,
+                                           TubeBudget &);
 } // namespace p3d::swept_detail

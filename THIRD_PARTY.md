@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_projected_polygon.cpp` 与 `src/native_vu_indices.cpp` 的坐标输出通路参考下表固定 Bentley 提交的 `vupoly.cpp`。保留 Bentley 版权及 Apache-2.0 标记，按 P3D 的两分量断开判断、独立合并容差、编号传播、交点追加及矩阵乘加顺序实现。仅源编号拆面和带坐标的多边形通路分别保持原生规则，不将一种调用的行为替换到另一种。
+
 `src/native_tube_mesh_cap_input.cpp` 的折线端盖输入准备参考下表固定 Bentley 提交中的 `CurveVector.cpp`、`IPolyfaceConstruction_Add.cpp` 和 `PolyfaceAddTriangulation.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的环次序、闭合点替换、细分计数及插值顺序改写，保留末尾断开标记和原生点数检查位置，不采用较新参考实现的断开标记清理与压缩后数量筛选。
 
 `src/native_polyface_layout.cpp` 的布局转换参考下表固定 Bentley 提交中的 `Polyface.cpp` 和 `BlockedVector.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的独立通道行宽、颜色池条件及活动标志，不引入较新参考版本中的索引自动启用、池行宽重设或末尾分隔符补齐。

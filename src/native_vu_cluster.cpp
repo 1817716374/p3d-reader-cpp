@@ -157,7 +157,12 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
     return report;
 }
 void prepare_native_vu_merge(NativeVuInput &input, TubeBudget &budget) {
-    const double tolerance = native_vu_merge_tolerance(input.graph, 0, 1e-9, budget);
+    prepare_native_vu_merge(input, budget, 0, 1e-9);
+}
+void prepare_native_vu_merge(NativeVuInput &input, TubeBudget &budget, double absolute_tolerance,
+                             double relative_tolerance) {
+    const double tolerance = native_vu_merge_tolerance(input.graph, absolute_tolerance,
+                                                       relative_tolerance, budget);
     auto report = consolidate_native_vu_coordinates(input.graph, tolerance, 0x40000000u, budget);
     auto splits = split_native_vu_edges_near_vertices(input.graph, tolerance, tolerance, tolerance,
                                                       0x40000000u, budget);
