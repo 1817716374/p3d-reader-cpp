@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_tube_mesh_index_rules.cpp` 的四边形对角线与带符号三角索引选择参考下表固定 Bentley 提交中的 `Polyface.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的点积算序和低边数保留规则改写，独立处理原生首末列的边可见性；未采用较新参考实现的平面性筛选和可选面过滤器。
+
 本项目原创解析代码采用 [MIT 许可证](LICENSE)。以下依赖继续适用各自的许可证；许可证正文和版权声明保留原文。
 
 `src/native_curve_sampling.cpp` 的节点压缩、不连续点查询和独立 Bézier 分段参考下表固定 Bentley 提交中的 `MSBsplineCurve.cpp`、`MSBsplineCurve_ByBezier.cpp` 和 `bsputil.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的单侧端点、切线容差、齐次控制多边形距离、近单位权重处理及非单位节点域换算规则改写，使用有界独立工作存储。
