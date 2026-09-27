@@ -9,14 +9,23 @@ struct NativeVuNode {
     std::uint32_t mask = 0;
     std::int32_t source_index = 0;
     Point3 point{};
+    bool active = true;
+    std::int32_t internal_data = 0;
 };
 // Stable indices express the original node identity, not geometric equality.
-// The list tail stays at the first allocated node; new nodes are inserted
-// after it, preserving the original all-node traversal order.
+// New nodes are inserted after the current tail. Deletion preserves survivor
+// order and selects the last survivor as tail; freed slots can be reused.
 struct NativeVuGraph {
     std::vector<NativeVuNode> nodes;
     std::size_t tail = native_vu_null;
+    std::size_t free_head = native_vu_null;
 };
+// Validated active traversal; inactive slots must occur exactly once in the
+// original free chain. Slots are never compacted or geometrically deduplicated.
+std::vector<std::size_t> native_vu_all_nodes(const NativeVuGraph &, TubeBudget &);
+// Removes both sides of marked edges. Preserves active traversal and native
+// free-list reuse order. Failure leaves the graph unchanged.
+std::size_t free_marked_native_vu_edges(NativeVuGraph &, std::uint32_t mask, TubeBudget &);
 // Fresh triangulation graph defaults: new-loop masks 1/1, split-copy 0x54ef,
 // no callbacks or user-data inheritance. New coordinates/labels start at zero.
 std::pair<std::size_t, std::size_t> split_native_vu_edge(NativeVuGraph &, std::size_t,
@@ -29,7 +38,7 @@ struct NativeVuInputLoop {
 struct NativeVuInput {
     NativeVuGraph graph;
     std::vector<NativeVuInputLoop> loops;
-    std::size_t first_loop = native_vu_null;
+    std::size_t first_loop = native_vu_null; // Input seed; may be deleted by a later merge.
     Json report;
 };
 // Builds the original indexed input loops only. Source points are immutable;

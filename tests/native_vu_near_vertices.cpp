@@ -166,8 +166,8 @@ unsigned native_vu_near_vertices_tests() {
     check(working.report.at("merge_preparation").at("near_vertex_splitting").at("split_count") ==
                   1 &&
               working.report.at("merge_preparation").contains("second_consolidation") &&
-              working.report.at("merged") == false,
-          "merge preparation connects projection splitting then second coordinate consolidation");
+              working.report.at("merged") == true,
+          "merge connects projection splitting and coordinate consolidation");
     auto original = before;
     const auto saved = snapshot(original);
     TubeBudget measured;

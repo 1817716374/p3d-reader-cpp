@@ -5,11 +5,12 @@ namespace p3d::swept_detail {
 // relabeling, or intersection solving. Nonzero scratch mask is caller-owned.
 // Invalid input, arithmetic, or work budget leaves the graph unchanged.
 Json consolidate_native_vu_coordinates(NativeVuGraph &, double tolerance, std::uint32_t visit_mask,
-                                       TubeBudget &);
+                                       TubeBudget &,
+                                       std::vector<std::size_t> *cluster_nodes = nullptr);
 double native_vu_merge_tolerance(const NativeVuGraph &, double absolute_tolerance,
                                  double relative_tolerance, TubeBudget &);
 // Fresh indexed triangulation graph: original absolute/relative defaults and
 // first consolidation, near-vertex splits, second consolidation, intersections.
-// Vertex connection and later merge operations stay pending.
+// Completes native merge2002; regularization and triangulation are separate.
 void prepare_native_vu_merge(NativeVuInput &, TubeBudget &);
 } // namespace p3d::swept_detail

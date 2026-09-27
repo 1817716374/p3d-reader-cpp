@@ -9,36 +9,16 @@
 #include "native_bezier_support.hpp"
 #include "native_vu_near_vertices.hpp"
 #include "native_vu_intersections.hpp"
+#include "native_vu_connections.hpp"
 #include <numeric>
 namespace p3d::swept_detail {
 namespace {
 using curve_detail::bezier_support::finite;
 std::vector<std::size_t> all_nodes(const NativeVuGraph &g, TubeBudget &budget) {
-    require(g.nodes.size() <= budget.max_control_points && g.nodes.size() <= INT32_MAX,
-            "native VU cluster graph extent");
-    const curve_detail::BezierWork work{budget.work, budget.max_work};
-    std::vector<std::size_t> order;
-    if (g.nodes.empty()) {
-        require(g.tail == native_vu_null, "native VU empty graph tail");
-        return order;
-    }
-    require(g.tail < g.nodes.size(), "native VU cluster tail");
-    work.charge(g.nodes.size());
-    std::vector<bool> seen(g.nodes.size());
-    order.reserve(g.nodes.size());
-    auto node = g.nodes[g.tail].all_next;
-    for (;;) {
-        work.charge(1);
-        require(node < g.nodes.size() && !seen[node], "native VU all-node cycle");
-        seen[node] = true;
-        order.push_back(node);
-        for (double x : g.nodes[node].point)
+    auto order = native_vu_all_nodes(g, budget);
+    for (auto n : order)
+        for (auto x : g.nodes[n].point)
             finite(x);
-        if (node == g.tail)
-            break;
-        node = g.nodes[node].all_next;
-    }
-    require(order.size() == g.nodes.size(), "native VU disconnected all-node list");
     return order;
 }
 struct Key {
@@ -64,7 +44,8 @@ double native_vu_merge_tolerance(const NativeVuGraph &g, double absolute_toleran
     return std::max(absolute_tolerance, finite(largest * relative_tolerance));
 }
 Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::uint32_t visit_mask,
-                                       TubeBudget &budget) {
+                                       TubeBudget &budget,
+                                       std::vector<std::size_t> *cluster_nodes) {
     require(std::isfinite(tolerance) && tolerance >= 0, "native VU cluster tolerance");
     require(visit_mask && !(visit_mask & (visit_mask - 1)) &&
                 !(visit_mask & (native_vu_numbered_mask | native_vu_boundary_mask)),
@@ -89,7 +70,8 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
         auto node = seed;
         do {
             work.charge(1);
-            require(node < g.nodes.size() && !visited[node], "native VU cluster vertex cycle");
+            require(node < g.nodes.size() && g.nodes[node].active && !visited[node],
+                    "native VU cluster vertex cycle");
             visited[node] = true;
             node = g.nodes[node].vertex_next;
         } while (node != seed);
@@ -108,6 +90,7 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
     NativeAttributeSort<decltype(less)> sorter(sorted, less);
     sorter.sort(0, sorted.size(), sorted.size());
     std::size_t clusters = 0, absorbed = 0;
+    std::vector<std::size_t> members;
     for (std::size_t i = 0; i < sorted.size(); ++i) {
         work.charge(1);
         auto &pivot = keys[sorted[i]];
@@ -115,6 +98,8 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
             continue;
         ++clusters;
         pivot.clustered = true;
+        if (cluster_nodes)
+            members.push_back(pivot.node);
         const double limit = finite(band + pivot.coordinate);
         const auto xyz = g.nodes[pivot.node].point;
         for (std::size_t j = i + 1; j < sorted.size(); ++j) {
@@ -131,6 +116,8 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
             if (!(finite(tolerance * tolerance) > finite(finite(dy * dy) + finite(dx * dx))))
                 continue;
             candidate.clustered = true;
+            if (cluster_nodes)
+                members.push_back(candidate.node);
             ++absorbed;
             auto node = candidate.node;
             do {
@@ -139,9 +126,11 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
                 node = g.nodes[node].vertex_next;
             } while (node != candidate.node);
         }
+        if (cluster_nodes)
+            members.push_back(native_vu_null);
     }
     std::size_t changed = 0;
-    for (std::size_t i = 0; i < g.nodes.size(); ++i) {
+    for (auto i : all) {
         work.charge(1);
         if (replacement[i] != g.nodes[i].point)
             ++changed;
@@ -158,11 +147,13 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &g, double tolerance, std::
                    {"sort_heap_ranges", sorter.heap_count},
                    {"topology_changed", false},
                    {"work_used", budget.work}};
-    for (std::size_t i = 0; i < g.nodes.size(); ++i) {
+    for (auto i : all) {
         g.nodes[i].point = replacement[i];
         // The original scratch bit remains set after returning it to the pool.
         g.nodes[i].mask |= visit_mask;
     }
+    if (cluster_nodes)
+        *cluster_nodes = std::move(members);
     return report;
 }
 void prepare_native_vu_merge(NativeVuInput &input, TubeBudget &budget) {
@@ -173,12 +164,15 @@ void prepare_native_vu_merge(NativeVuInput &input, TubeBudget &budget) {
     auto second = consolidate_native_vu_coordinates(input.graph, tolerance, 0x40000000u, budget);
     auto intersections =
         split_native_vu_edges_at_intersections(input.graph, tolerance, tolerance, budget);
+    auto connections = connect_native_vu_vertices(input.graph, tolerance, 1, 0x40000000u, budget);
     input.report["merge_preparation"] = {{"tolerance", tolerance},
                                          {"initial_consolidation", std::move(report)},
                                          {"near_vertex_splitting", std::move(splits)},
                                          {"second_consolidation", std::move(second)},
                                          {"intersection_splitting", std::move(intersections)},
                                          {"edge_splitting_completed", true},
-                                         {"merge_completed", false}};
+                                         {"vertex_connection", std::move(connections)},
+                                         {"merge_completed", true}};
+    input.report["merged"] = true;
 }
 } // namespace p3d::swept_detail

@@ -22,35 +22,21 @@ double distance_squared(const Point3 &a, const Point3 &b) {
 } // namespace
 std::vector<std::size_t> validate_native_vu_split_graph(const NativeVuGraph &g,
                                                         TubeBudget &budget) {
-    require(g.nodes.size() <= budget.max_control_points && g.nodes.size() <= INT32_MAX,
-            "native VU split graph size");
+    const auto all = native_vu_all_nodes(g, budget);
     const Work work{budget.work, budget.max_work};
-    std::vector<std::size_t> all;
-    if (g.nodes.empty()) {
-        require(g.tail == native_vu_null, "native VU empty tail");
-        return all;
-    }
-    require(g.tail < g.nodes.size(), "native VU split tail");
-    work.charge(g.nodes.size() * 4);
-    std::vector<bool> seen(g.nodes.size()), faces(g.nodes.size()), vertices(g.nodes.size());
-    auto p = g.nodes[g.tail].all_next;
-    for (;;) {
+    work.charge(g.nodes.size() * 2);
+    std::vector<bool> faces(g.nodes.size()), vertices(g.nodes.size());
+    for (auto p : all) {
         work.charge(1);
-        require(p < g.nodes.size() && !seen[p], "native VU split all cycle");
-        seen[p] = true;
         const auto &n = g.nodes[p];
-        require(n.face_next < g.nodes.size() && n.vertex_next < g.nodes.size(),
-                "native VU split successor");
+        require(n.face_next < g.nodes.size() && n.vertex_next < g.nodes.size() &&
+                    g.nodes[n.face_next].active && g.nodes[n.vertex_next].active,
+                "native VU active successor");
         require(!faces[n.face_next] && !vertices[n.vertex_next], "native VU split permutations");
         faces[n.face_next] = vertices[n.vertex_next] = true;
-        for (double x : n.point)
+        for (auto x : n.point)
             finite(x);
-        all.push_back(p);
-        if (p == g.tail)
-            break;
-        p = n.all_next;
     }
-    require(all.size() == g.nodes.size(), "native VU split disconnected list");
     for (auto n : all) {
         work.charge(1);
         auto mate = g.nodes[g.nodes[n].face_next].vertex_next;

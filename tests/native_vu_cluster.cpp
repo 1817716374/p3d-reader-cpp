@@ -132,8 +132,9 @@ unsigned native_vu_cluster_tests() {
           "large facet route executes initial native coordinate consolidation");
     check(plan.projection->points[4][1] == 1 + 1e-10 &&
               plan.input_graph->graph.nodes[8].point[1] == 1 && plan.indices.empty() &&
-              plan.input_graph->report.at("merged") == false,
-          "source projected coordinates remain intact and unfinished merging stays explicit");
+              plan.input_graph->report.at("merged") == true,
+          "source projected coordinates remain intact and source merging completes before "
+          "triangulation");
     // Shared vertex loops: consolidation must copy pivot XYZ to every candidate
     // vertex use, but must not normalize different coordinates within pivot itself.
     auto shared = graph({{0, 0, 1}, {.1, 0, 2}, {.2, 0, 3}});

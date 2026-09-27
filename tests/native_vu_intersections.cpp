@@ -135,14 +135,14 @@ unsigned native_vu_intersections_tests() {
         check(run(near_end).at("split_count") == ((f > 1e-13 && f < .9999999999999) ? 4 : 0),
               "strict native interior-fraction band suppresses near-end transverse crossings");
     }
-    // The public preparation chain still reports incomplete angle connection.
+    // The preparation chain now continues through angular vertex connection.
     auto prepared = input(bow);
     TubeBudget merge;
     prepare_native_vu_merge(prepared, merge);
     const auto &prep = prepared.report.at("merge_preparation");
-    check(prep.at("edge_splitting_completed") == true && prep.at("merge_completed") == false &&
+    check(prep.at("edge_splitting_completed") == true && prep.at("merge_completed") == true &&
               prep.at("intersection_splitting").at("split_count") == 2,
-          "merge preparation reaches actual crossing splits without claiming complete vertex "
+          "merge preparation reaches actual crossing splits and subsequent vertex "
           "connection");
     auto original = before;
     const auto saved = snapshot(original);

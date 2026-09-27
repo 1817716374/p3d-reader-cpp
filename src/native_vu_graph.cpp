@@ -6,11 +6,12 @@
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
+#include "native_vu_split_support.hpp"
 namespace p3d::swept_detail {
 namespace {
 using curve_detail::bezier_support::finite;
 void node_index(const NativeVuGraph &g, std::size_t index) {
-    require(index < g.nodes.size(), "native VU node index");
+    require(index < g.nodes.size() && g.nodes[index].active, "native VU node index");
 }
 std::size_t mate(const NativeVuGraph &g, std::size_t index) {
     node_index(g, index);
@@ -22,22 +23,35 @@ std::size_t mate(const NativeVuGraph &g, std::size_t index) {
 }
 void reserve_pair(NativeVuGraph &g, TubeBudget &budget) {
     const auto count = g.nodes.size();
-    require(count <= budget.max_control_points && budget.max_control_points - count >= 2 &&
-                count <= std::size_t(INT32_MAX) - 2,
+    std::size_t needed = 2, free = g.free_head;
+    while (needed && free != native_vu_null) {
+        require(free < count && !g.nodes[free].active, "native VU free slot");
+        const auto next = g.nodes[free].all_next;
+        require(next != free && (needed == 2 || next != g.free_head), "native VU free cycle");
+        free = next;
+        --needed;
+    }
+    require(count <= budget.max_control_points && budget.max_control_points - count >= needed &&
+                count <= std::size_t(INT32_MAX) - needed,
             "native VU node allocation budget");
     // Reserve both before mutating links. Growth is bounded and amortized,
     // rather than reallocating the entire graph for every split.
-    if (g.nodes.capacity() - count < 2) {
+    if (g.nodes.capacity() - count < needed) {
         const auto extra = std::max<std::size_t>(count / 2, 16);
         const auto growth = std::min(extra, budget.max_control_points - count);
         g.nodes.reserve(count + growth);
     }
 }
 std::size_t append_node(NativeVuGraph &g) {
-    const auto id = g.nodes.size();
+    const auto id = g.free_head == native_vu_null ? g.nodes.size() : g.free_head;
     NativeVuNode node;
     node.all_next = node.face_next = node.vertex_next = id;
-    g.nodes.push_back(node);
+    if (id == g.nodes.size())
+        g.nodes.push_back(node);
+    else {
+        g.free_head = g.nodes[id].all_next;
+        g.nodes[id] = node;
+    }
     if (g.tail == native_vu_null)
         g.tail = id;
     else {
@@ -66,6 +80,87 @@ void mask_face(NativeVuGraph &g, std::size_t base, std::uint32_t mask,
     } while (current != base);
 }
 } // namespace
+std::vector<std::size_t> native_vu_all_nodes(const NativeVuGraph &g, TubeBudget &budget) {
+    require(g.nodes.size() <= budget.max_control_points && g.nodes.size() <= INT32_MAX,
+            "native VU storage extent");
+    const curve_detail::BezierWork work{budget.work, budget.max_work};
+    work.charge(g.nodes.size());
+    std::vector<bool> seen(g.nodes.size());
+    std::vector<std::size_t> order;
+    if (g.tail != native_vu_null) {
+        node_index(g, g.tail);
+        auto n = g.nodes[g.tail].all_next;
+        for (;;) {
+            work.charge(1);
+            node_index(g, n);
+            require(!seen[n], "native VU active cycle");
+            seen[n] = true;
+            order.push_back(n);
+            if (n == g.tail)
+                break;
+            n = g.nodes[n].all_next;
+        }
+    }
+    auto n = g.free_head;
+    while (n != native_vu_null) {
+        work.charge(1);
+        require(n < g.nodes.size() && !g.nodes[n].active && !seen[n], "native VU free chain");
+        seen[n] = true;
+        n = g.nodes[n].all_next;
+    }
+    for (bool present : seen)
+        require(present, "native VU orphan slot");
+    return order;
+}
+std::size_t free_marked_native_vu_edges(NativeVuGraph &graph, std::uint32_t mask,
+                                        TubeBudget &budget) {
+    const auto all = validate_native_vu_split_graph(graph, budget);
+    if (!mask)
+        return 0;
+    const curve_detail::BezierWork work{budget.work, budget.max_work};
+    work.charge(graph.nodes.size());
+    auto g = graph;
+    bool found = false;
+    for (auto n : all) {
+        work.charge(1);
+        if (!(g.nodes[n].mask & mask))
+            continue;
+        found = true;
+        const auto m = mate(g, n);
+        g.nodes[m].mask |= mask;
+        auto pred = g.nodes[m].face_next;
+        if (pred != n)
+            twist_native_vu_vertices(g, n, pred, budget);
+        pred = g.nodes[mate(g, m)].face_next;
+        // Native second comparison is against the original node, not mate.
+        if (pred != n)
+            twist_native_vu_vertices(g, m, pred, budget);
+    }
+    if (!found)
+        return 0;
+    g.tail = native_vu_null;
+    std::size_t first = native_vu_null, removed = 0;
+    for (auto n : all) {
+        work.charge(1);
+        if (g.nodes[n].mask & mask) {
+            g.nodes[n].active = false;
+            g.nodes[n].all_next = g.free_head;
+            g.free_head = n;
+            ++removed;
+        } else {
+            if (first == native_vu_null)
+                first = n;
+            else
+                g.nodes[g.tail].all_next = n;
+            g.tail = n;
+        }
+    }
+    if (g.tail != native_vu_null)
+        g.nodes[g.tail].all_next = first;
+    validate_native_vu_split_graph(g, budget);
+    graph = std::move(g);
+    return removed;
+}
 std::pair<std::size_t, std::size_t> split_native_vu_edge(NativeVuGraph &g, std::size_t base,
                                                          TubeBudget &budget) {
     const curve_detail::BezierWork work{budget.work, budget.max_work};
@@ -74,7 +169,7 @@ std::pair<std::size_t, std::size_t> split_native_vu_edge(NativeVuGraph &g, std::
         node_index(g, g.tail);
         node_index(g, g.nodes[g.tail].all_next);
     } else
-        require(g.nodes.empty(), "native VU missing list tail");
+        require(g.nodes.empty() || g.free_head != native_vu_null, "native VU missing list tail");
     auto opposite = native_vu_null;
     if (base != native_vu_null) {
         opposite = mate(g, base);
