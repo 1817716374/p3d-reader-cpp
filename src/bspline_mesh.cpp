@@ -269,6 +269,16 @@ double patch_knot(double fraction, Cut first, Cut last, const BsplineDirection &
 } // namespace
 
 BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const {
+    return mesh_impl(options, nullptr);
+}
+BsplineSurfaceMesh
+BsplineSurface::mesh_runtime_boundaries(const std::vector<std::vector<Point2>> &boundaries,
+                                        const BsplineMeshOptions &options) const {
+    return mesh_impl(options, &boundaries);
+}
+BsplineSurfaceMesh
+BsplineSurface::mesh_impl(const BsplineMeshOptions &options,
+                          const std::vector<std::vector<Point2>> *runtime) const {
     require(std::isfinite(options.uv_tolerance) && options.uv_tolerance > 0 &&
                 std::isfinite(options.max_uv_edge) && options.max_uv_edge > 0,
             "surface mesh tolerances must be finite and positive");
@@ -284,7 +294,45 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
                      {"trim_domain_policy", "source_uv_clipped_to_active_domain"},
                      {"periodic_seam_vertices", "separate_parameter_coordinates"}};
     try {
-        const auto region = trim_normalized(options.uv_tolerance, options.max_trim_segments);
+        BsplineTrim region;
+        if (!runtime)
+            region = trim_normalized(options.uv_tolerance, options.max_trim_segments);
+        else {
+            require(boundaries_.is_null(), "runtime mesh cannot merge a BGFB boundary tree");
+            require(runtime->size() <= options.max_trim_segments, "runtime mesh record budget");
+            std::size_t segments = 0;
+            Json sources = Json::array(), empty = Json::array();
+            for (std::size_t index = 0; index < runtime->size(); ++index) {
+                const auto &source = runtime->at(index);
+                if (source.empty()) {
+                    empty.push_back(index);
+                    continue;
+                }
+                require(source.size() >= 2, "runtime mesh has a singleton boundary record");
+                const bool close = source.front() != source.back();
+                const auto count = source.size() - 1 + std::size_t(close);
+                require(count <= options.max_trim_segments - segments,
+                        "runtime mesh segment budget");
+                segments += count;
+                for (const auto &p : source)
+                    for (double x : p)
+                        require(std::isfinite(x), "runtime mesh UV must be finite");
+                region.loops_.push_back(source);
+                if (close)
+                    region.loops_.back().push_back(source.front());
+                sources.push_back({{"runtime_record", index}, {"implicit_closure", close}});
+            }
+            region.report_ = {{"status", "complete"},
+                              {"coordinate_space", "surface_fractions"},
+                              {"representation", "runtime_uv_polygons"},
+                              {"fill_rule", "parity"},
+                              {"segments", segments},
+                              {"loops", std::move(sources)},
+                              {"empty_records", std::move(empty)},
+                              {"outer_boundary_active", outer_boundary_active()},
+                              {"parameter_curve_error_bound", nullptr}};
+            result.report["trim_domain_policy"] = "runtime_fractions_clipped_to_active_domain";
+        }
         result.report["trim"] = region.report();
         require(region.report().at("status") == "complete", "surface trim conversion incomplete");
         // This derived mesh clips source-coordinate contours to the active
@@ -299,7 +347,8 @@ BsplineSurfaceMesh BsplineSurface::mesh(const BsplineMeshOptions &options) const
         for (std::size_t i = 1; i + 1 < cuts_v.size(); ++i)
             result.report["discontinuity_knots"]["v"].push_back(cuts_v[i].knot);
         result.report["discontinuity_boundary_vertices"] = "separate_per_patch";
-        result.report["denominator"] = certify_surface_denominator(*this, options.max_denominator_steps);
+        result.report["denominator"] =
+            certify_surface_denominator(*this, options.max_denominator_steps);
         require(result.report["denominator"].at("status") == "verified",
                 "surface denominator sign not established for mesh");
         const Loop square{{0, 0}, {1, 0}, {1, 1}, {0, 1}};

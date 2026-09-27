@@ -11,7 +11,7 @@ struct SweptBodySurface {
     // Derived BsplineSurface table. Its null BGFB boundaries field does NOT
     // mean untrimmed: generated runtime trims are in the two arrays below.
     Json geometry;
-    std::vector<std::vector<Point2>> boundary_points;
+    std::vector<std::vector<Point2>> boundary_points; // Generated runtime surface fractions.
     // Parallel to boundary_points when nonempty; empty means all null lists.
     // These are parameter-space curves, not texture coordinates.
     std::vector<std::vector<BsplineCurve>> boundary_curves;
@@ -89,4 +89,29 @@ struct SweptBodySurfaceFaceResult {
 // Unsupported/data/resource failures clear output; allocation failure throws.
 SweptBodySurfaceFaceResult extract_swept_body_surface_face(const SweptBodySurface &,
                                                            const SweptBodyBoundaryOptions & = {});
+struct SweptBodyUVBoundaryOptions {
+    std::size_t max_control_points = 1000000;
+    std::size_t max_work = 10000000;
+    std::size_t max_curves = 1000000;
+    bool include_outer = true;
+    bool prefer_parameter_curves = true;
+};
+struct SweptBodyUVBoundaryResult {
+    std::string status = "not_extracted"; // extracted / not_extracted
+    Json region; // Native type-4 CurveVector of type-2 children, possibly empty.
+    Json report = Json::object();
+};
+// Native UV-boundary query: optional unit rectangle when holeOrigin==0,
+// then one child per active record. Prefer stored pcurves when requested and
+// present; otherwise copy UV points to a line string and close its endpoints
+// using the native near-equality rule. No fitting, orientation repair, hole
+// classification or knot-domain conversion. Coordinates remain parameters.
+SweptBodyUVBoundaryResult extract_swept_body_uv_boundaries(const SweptBodySurface &,
+                                                           const SweptBodyUVBoundaryOptions & = {});
+// Derived side mesh consuming the generated runtime UV point caches, whose
+// coordinates are surface fractions. Pcurves do not replace those polygons.
+// Retains UV and discontinuity seams; no body welding/caps/material assignment,
+// native tessellation equivalence or world-space chord-error claim.
+BsplineSurfaceMesh mesh_swept_body_surface(const SweptBodySurface &,
+                                           const BsplineMeshOptions & = {});
 } // namespace p3d

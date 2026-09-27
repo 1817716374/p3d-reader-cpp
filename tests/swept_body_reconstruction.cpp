@@ -131,6 +131,12 @@ unsigned swept_body_reconstruction_tests() {
                   s.boundary_points[0].size() >= 5 && s.boundary_curves.empty(),
               "runtime UV cache remains available separately from null BGFB and pcurve records");
         const auto boundary = extract_swept_body_surface_boundary(s);
+        BsplineMeshOptions mesh_options;
+        mesh_options.max_uv_edge = .25;
+        const auto mesh = mesh_swept_body_surface(s, mesh_options);
+        check(mesh.report["status"] == "complete" && !mesh.faces.empty() &&
+                  mesh.report["trim"]["loops"].size() == s.boundary_points.size(),
+              "actual curved corner mesh consumes every runtime UV record");
         check(boundary.status == "extracted" && !boundary.curves.empty() &&
                   !boundary.report["spans"].empty() && boundary.report["outer"].empty(),
               "actual reconstructed curved corner retains a usable spatial trim boundary");

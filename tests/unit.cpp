@@ -22,6 +22,7 @@ unsigned swept_body_tests();
 unsigned swept_body_reconstruction_tests();
 unsigned swept_body_boundary_tests();
 unsigned swept_body_surface_face_tests();
+unsigned swept_body_uv_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2889,6 +2890,7 @@ int main() {
         checks += swept_body_reconstruction_tests();
         checks += swept_body_boundary_tests();
         checks += swept_body_surface_face_tests();
+        checks += swept_body_uv_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();

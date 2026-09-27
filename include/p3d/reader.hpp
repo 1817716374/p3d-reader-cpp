@@ -501,10 +501,18 @@ class BsplineSurface {
     // edge refinement. max_uv_edge is not a bound on world-space chord error.
     // Incomplete conversion returns no mesh; inspect report before use.
     BsplineSurfaceMesh mesh(const BsplineMeshOptions &options = {}) const;
+    // Mesh explicitly supplied runtime UV polygons in surface fractions. These
+    // are authoritative cached polygons, not approximations generated from the
+    // BGFB boundary tree. Requires boundaries()==null; never merges both sets.
+    // Same derived parity/domain clipping and error limits as mesh().
+    BsplineSurfaceMesh mesh_runtime_boundaries(const std::vector<std::vector<Point2>> &,
+                                               const BsplineMeshOptions &options = {}) const;
 
   private:
     BsplineSurface() = default;
     BsplineTrim trim_impl(double uv_tolerance, unsigned max_segments, bool normalized) const;
+    BsplineSurfaceMesh mesh_impl(const BsplineMeshOptions &,
+                                 const std::vector<std::vector<Point2>> *) const;
     BsplineDirection u_, v_;
     std::vector<Point3> poles_;
     std::vector<double> weights_;
