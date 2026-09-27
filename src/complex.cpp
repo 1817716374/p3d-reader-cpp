@@ -1,6 +1,66 @@
 #include "blob_internal.hpp"
 namespace p3d {
 static Json component_text(const Bytes &b, bool ansi = true);
+static Json component_cache_sequence(const Json &instances, const char *context) {
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "component_instance_cache_fallback"},
+                {"selection_assumption", "cache_fallback_selected"},
+                {"model_context_assumption", "valid_target_model"},
+                {"allocation_assumption", "successful"},
+                {"service_return_assumption", "normal"},
+                {"destination_transform_enabled", false},
+                {"source_container_transform", "not_applied"},
+                {"entries", Json::array()},
+                {"skipped_containers", Json::array()},
+                {"skipped_entries", Json::array()}};
+    Json sequence = Json::array();
+    for (std::size_t source = 0; source < instances.size(); ++source) {
+        const auto &instance = instances.at(source);
+        const auto &restore = instance.at("native_entry_restore").at(context);
+        if (restore.at("status") == "rejected") {
+            out["skipped_containers"].push_back(
+                {{"source_instance_index", source}, {"reason", "restore_returned_null"}});
+            continue;
+        }
+        if (restore.at("status") != "restored") {
+            out["stopping_instance_index"] = source;
+            out["reason"] = "source_container_restore_not_established";
+            return out;
+        }
+        const auto &packets = instance.at("geometry_packets");
+        if (packets.empty()) {
+            out["skipped_containers"].push_back(
+                {{"source_instance_index", source}, {"reason", "empty_source_container"}});
+            continue;
+        }
+        for (const auto &index : restore.at("entry_indices")) {
+            const auto &packet = packets.at(index.get<std::size_t>());
+            const auto &input = packet.at("native_geometry_input").at(context);
+            const auto &append = input.at("parametric_append_input");
+            Json item = {{"source_instance_index", source},
+                         {"source_entry_index", index},
+                         {"source_object_id", instance.at("object_id")},
+                         {"entry_geometry_type", input.at("entry_geometry_type")}};
+            if (append.at("status") == "skipped") {
+                item["reason"] = "entry_type_not_dispatched";
+                out["skipped_entries"].push_back(std::move(item));
+            } else if (append.at("status") == "appended") {
+                item["rebuilt_entry_index"] = sequence.size();
+                sequence.push_back(std::move(item));
+            } else {
+                out["stopping_instance_index"] = source;
+                out["stopping_entry_index"] = index;
+                out["reason"] = "entry_append_not_established";
+                return out;
+            }
+        }
+    }
+    // No partial index list is published when an earlier source has an unknown
+    // result. Equal payloads/references still create separate native Entries.
+    out["entries"] = std::move(sequence);
+    out["status"] = "rebuilt";
+    return out;
+}
 static Json list(Reader &r, std::function<Json()> f, std::size_t min = 1, char fmt = 'Q') {
     auto n = r.count(fmt, min);
     Json out = Json::array();
@@ -1415,6 +1475,10 @@ Json complex_blob(const std::string &name, const Bytes &b) {
                {"footer_hex", hex(slice(b, footer_start, b.size() - footer_start))},
                {"note", "Reference list and serialized graphics entries retain their source order. "
                         "Cached payloads are not added again to the visible scene."}};
+        out["cache_rebuild"] = {{"active_graphics_selection", "not_established"},
+                                {"owning_element_part_mapping_status", "not_established"}};
+        for (const auto *context : {"with_project", "without_project"})
+            out["cache_rebuild"][context] = component_cache_sequence(out.at("instances"), context);
     } else
         throw std::runtime_error("unsupported complex field");
     r.finish();

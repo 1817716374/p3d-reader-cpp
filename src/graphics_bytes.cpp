@@ -27,6 +27,52 @@ Json source_name(std::int32_t source) {
         return nullptr;
     }
 }
+Json restored_entries(const Json &graphics, const char *context) {
+    Json out = {{"status", "not_evaluated"},
+                {"model_context_assumption", "valid"},
+                {"allocation_assumption", "successful"},
+                {"service_return_assumption", "normal"},
+                {"handler_scope", "builtin_physical_graphics"},
+                {"entry_indices", Json::array()},
+                {"finish_result", "ignored_by_reader"}};
+    const auto &packets = graphics.at("geometry_packets");
+    for (const auto &packet : packets) {
+        const auto &restore = packet.at("native_geometry_input").at(context).at("entry_restore");
+        if (restore.at("status") != "retained") {
+            out["stopping_entry_index"] = packet.at("entry_index");
+            if (restore.at("status") == "rejected") {
+                out["status"] = "rejected";
+                out["reason"] = "null_entry_rejects_entire_container";
+            } else
+                out["reason"] = "entry_restore_not_established";
+            return out;
+        }
+    }
+    const auto &footer = graphics.at("native_footer_input");
+    if (footer.at("status") != "read" && footer.at("status") != "not_present") {
+        out["reason"] = "container_footer_not_established";
+        return out;
+    }
+    for (const auto &packet : packets) {
+        const auto &input = packet.at("native_geometry_input").at(context);
+        const auto type = input.at("entry_geometry_type").get<std::int32_t>();
+        if (((type >= 1 && type <= 7) || type == 10) &&
+            input.at("status") != "geometry_constructed") {
+            out["stopping_entry_index"] = packet.at("entry_index");
+            out["reason"] = "finish_geometry_input_not_established";
+            return out;
+        }
+    }
+    // The factory appends each non-null Entry in source order and rejects the
+    // entire container on null. Built-in finish emits into a separate entity;
+    // its range pass consumes that entity's command stream (or visits the same
+    // source Entries again for an empty stream), without editing this vector.
+    for (const auto &packet : packets)
+        out["entry_indices"].push_back(packet.at("entry_index"));
+    out["status"] = "restored";
+    out["entry_order"] = "serialized_order";
+    return out;
+}
 void material(Reader &r, std::size_t size, Json &out) {
     out["inline_material"] = nullptr;
     if (!size)
@@ -183,6 +229,9 @@ Json decode_graphics_bytes(const Bytes &b) {
                 {{"status", "rejected"}, {"rejecting_entry_index", packet.at("entry_index")}});
             break;
         }
+    out["native_entry_restore"] = {{"scope", "serialized_graphics_factory_return"}};
+    for (const auto *context : {"with_project", "without_project"})
+        out["native_entry_restore"][context] = restored_entries(out, context);
     r.finish();
     return out;
 }

@@ -399,16 +399,100 @@ unsigned graphics_bytes_tests() {
     const auto &sweep_packet = sweep_container.at("geometry_packets").at(0);
     check(sweep_packet.at("geometry_status") == "decoded" &&
               sweep_packet.at("geometry_type") == 6 &&
-              sweep_packet.at("inline_material") == j.at("geometry_packets").at(0).at("inline_material") &&
+              sweep_packet.at("inline_material") ==
+                  j.at("geometry_packets").at(0).at("inline_material") &&
               sweep_packet.at("layer_id") == 0xfffffff1u,
           "binary sweep geometry leaves material and layer footer independently intact");
     const auto sweep_mesh = mesh_bgfb_swept_body(sweep_packet.at("geometry").at("geometry"));
     check(sweep_mesh.status == "meshed" && sweep_mesh.point_indices.size() == 48 &&
               sweep_container.at("transform_3x4_rows") == j.at("transform_3x4_rows") &&
               sweep_container.at("owning_element_part_mapping_status") == "not_established",
-          "binary graphics sweep exposes local mesh without guessing container placement or material parts");
+          "binary graphics sweep exposes local mesh without guessing container placement or "
+          "material parts");
     check(sweep_mesh.report.at("material_part_mapping_status") == "not_evaluated" &&
               sweep_mesh.points.front()[0] < 10,
           "serialized graphics placement is not silently applied to standalone source geometry");
+    const auto restored = [](const Json &value) -> const Json & {
+        return value.at("native_entry_restore").at("with_project");
+    };
+    check(
+        restored(sweep_container).at("status") == "restored" &&
+            restored(sweep_container).at("entry_indices") == Json::array({0}) &&
+            restored(sweep_container).at("finish_result") == "ignored_by_reader",
+        "container restore exposes actual retained source sequence independently of finish status");
+    check(restored(short_j).at("status") == "rejected" &&
+              restored(short_j).at("entry_indices").empty(),
+          "null source Entry rejects the container rather than filtering one packet");
+    check(restored(decode_graphics_bytes(graphics({entry()}))).at("status") == "not_evaluated",
+          "retained Entry with unread geometry is not proof of successful container finish");
+    check(restored(decode_graphics_bytes(graphics({e, short_entry}))).at("status") ==
+              "not_evaluated",
+          "an unknown earlier read prevents claiming execution reached a later null Entry");
+    auto cache = [&](const std::vector<Bytes> &containers) {
+        Bytes b(11); // null type reference
+        put<std::uint32_t>(b, containers.size());
+        for (const auto &container : containers) {
+            b.insert(b.end(), {0x7c, 0x23, 0x40});
+            put<std::uint64_t>(b, 42); // intentionally repeated object references
+            put<std::uint32_t>(b, container.size());
+            b.insert(b.end(), container.begin(), container.end());
+        }
+        b.insert(b.end(), 25, 0); // empty component footer
+        return complex_blob("ParaCmptInstance", b);
+    };
+    auto ignored = entry();
+    ignored[4] = 8;
+    const auto repeated_source = graphics({sweep_entry, ignored, sweep_entry}, true, mat);
+    const auto mapped = cache(
+        {repeated_source, graphics({short_entry, sweep_entry}), graphics({}), repeated_source});
+    const auto &rebuild = mapped.at("cache_rebuild").at("with_project");
+    check(rebuild.at("status") == "rebuilt" && rebuild.at("entries").size() == 4,
+          "cache reconstruction skips rejected containers and unhandled types in source order");
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto &item = rebuild.at("entries").at(i);
+        check(item.at("rebuilt_entry_index") == i &&
+                  item.at("source_instance_index") == (i < 2 ? 0 : 3) &&
+                  item.at("source_entry_index") == (i % 2 ? 2 : 0) &&
+                  item.at("source_object_id") == 42 && item.at("entry_geometry_type") == 6,
+              "cache mapping preserves repeated payloads and references without fabricated reuse");
+    }
+    check(rebuild.at("skipped_containers").size() == 2 &&
+              rebuild.at("skipped_containers").at(0).at("source_instance_index") == 1 &&
+              rebuild.at("skipped_containers").at(1).at("reason") == "empty_source_container" &&
+              rebuild.at("skipped_entries").size() == 2,
+          "cache skip reasons preserve provenance for omitted sources");
+    check(rebuild.at("destination_transform_enabled") == false &&
+              rebuild.at("source_container_transform") == "not_applied" &&
+              mapped.at("instances").at(0).at("transform_enabled") == true &&
+              mapped.at("instances").at(0).at("geometry_packets").size() == 3 &&
+              mapped.at("cache_rebuild").at("active_graphics_selection") == "not_established" &&
+              mapped.at("cache_rebuild").at("owning_element_part_mapping_status") ==
+                  "not_established",
+          "cache branch provenance does not choose visible geometry or silently apply source "
+          "placement");
+    const auto uncertain = cache({repeated_source, graphics({entry()}), repeated_source});
+    const auto &unknown = uncertain.at("cache_rebuild").at("with_project");
+    check(unknown.at("status") == "not_evaluated" && unknown.at("entries").empty() &&
+              unknown.at("stopping_instance_index") == 1,
+          "unknown source restore never publishes a partial or guessed rebuilt index list");
+    const auto empty_cache = cache({graphics({ignored}), graphics({short_entry}), graphics({})});
+    check(empty_cache.at("cache_rebuild").at("with_project").at("status") == "rebuilt" &&
+              empty_cache.at("cache_rebuild").at("with_project").at("entries").empty(),
+          "known empty merged output differs from unknown reconstruction");
+    // Valid empty curve-vector object: a nonempty Entry vector must not be
+    // filtered by whether the emitted geometry contains points or triangles.
+    const Bytes empty_group = {'b', 'g', '0', '0', '0', '1', 'f', 'b', 12, 0, 0, 0, 8,
+                               0,   12,  0,   4,   0,   8,   0,   8,   0,  0, 0, 5, 0,
+                               0,   0,   12,  0,   0,   0,   8,   0,   8,  0, 0, 0, 4,
+                               0,   8,   0,   0,   0,   4,   0,   0,   0,  0, 0, 0, 0};
+    auto empty_group_entry = entry({}, empty_group);
+    empty_group_entry[4] = 2;
+    const auto with_empty_group = cache({graphics({empty_group_entry, sweep_entry})});
+    const auto &empty_group_order = with_empty_group.at("cache_rebuild").at("with_project");
+    check(empty_group_order.at("status") == "rebuilt" &&
+              empty_group_order.at("entries").size() == 2 &&
+              empty_group_order.at("entries").at(1).at("rebuilt_entry_index") == 1 &&
+              empty_group_order.at("skipped_containers").empty(),
+          "an empty but constructed curve group occupies its native rebuilt Entry slot");
     return checks + graphics_native_tests() + text_bytes_tests() + swept_binary_tests();
 }
