@@ -284,6 +284,155 @@ unsigned swept_binary_tests() {
     write(missing_points, akima_vt + 4, std::uint16_t(0));
     check(native_curve(missing_points).at("status") == "not_evaluated",
           "missing Akima vector is an unsafe dereference, not the explicit empty-vector guard");
+    auto interpolation = [](const std::vector<Point3> &points, bool closed = false,
+                            std::optional<int> knots = {}) {
+        Packet p;
+        const auto root = p.table({4, 8}, 12);
+        p.reference(8, root);
+        write(p.b, root + 4, std::uint8_t(16));
+        const auto curve =
+            p.table({4, 8, 12, 16, 20, 24, 28, 52, 76, std::uint16_t(knots ? 80 : 0)}, 88);
+        p.reference(root + 8, curve);
+        write(p.b, curve + 4, std::int32_t(17)); // source order is inactive in fitting
+        write(p.b, curve + 8, std::uint8_t(closed));
+        write(p.b, curve + 12, std::int32_t(-1));
+        write(p.b, curve + 16, std::int32_t(-2));
+        write(p.b, curve + 20, std::int32_t(7));
+        for (unsigned i = 0; i < 6; ++i)
+            write(p.b, curve + 28 + 8 * i, std::numeric_limits<double>::quiet_NaN());
+        p.align();
+        put(p.b, std::uint32_t(0));
+        const auto vector = p.b.size();
+        put(p.b, std::uint32_t(points.size() * 3));
+        p.reference(curve + 76, vector);
+        for (auto point : points)
+            for (auto x : point)
+                put(p.b, x);
+        if (knots) {
+            p.align();
+            put(p.b, std::uint32_t(0));
+            const auto k = p.b.size();
+            put(p.b, std::int32_t(*knots));
+            p.reference(curve + 80, k);
+            for (int i = 0; i < *knots; ++i)
+                put(p.b, std::numeric_limits<double>::quiet_NaN());
+        }
+        return p.b;
+    };
+    auto interpolation_table = [](const Bytes &b) {
+        const auto root = 8 + Reader(b, 8).u32();
+        return root + 8 + Reader(b, root + 8).u32();
+    };
+    const std::vector<Point3> interpolation_line = {{0, .25, 0}, {1, .75, 0}};
+    const auto good_interpolation = interpolation(interpolation_line);
+    for (bool project : {false, true})
+        for (bool closed : {false, true})
+            for (const auto k : {std::optional<int>{}, std::optional<int>{-1},
+                                 std::optional<int>{0}, std::optional<int>{3}}) {
+                const auto b = interpolation(interpolation_line, closed, k);
+                const auto result = native_curve(b, 1, project);
+                const auto &c = result.at("construction");
+                check(result.at("status") == "geometry_constructed" &&
+                          result.at("entry_restore").at("status") == "retained" &&
+                          c.at("point_count") == 2 &&
+                          c.at("fitted_bspline_pointer") == "non_null" &&
+                          c.at("native_fit_result") == 0,
+                      "interpolation constructs a wrapper and independently fitted cubic");
+                check(c.at("parameters").at("order") == 17 &&
+                          c.at("parameters").at("closed") == closed &&
+                          c.at("parameters").at("isChordLenKnots") == -1 &&
+                          c.at("parameters").at("isColinearTangents") == -2 &&
+                          c.at("fitted_bspline").at("order") == 4 &&
+                          c.at("fitted_bspline").at("closed") == false &&
+                          c.at("fitted_bspline").at("pole_count") == 4,
+                      "source options retain signed values independently of two-point open fit");
+                const auto &copy = result.at("parametric_append_input");
+                check(copy.at("status") == "appended" &&
+                          copy.at("interpolation_copy").at("point_count") == 2 &&
+                          copy.at("interpolation_copy").at("knot_count") ==
+                              (k && *k > 0 ? *k : 0) &&
+                          copy.at("interpolation_copy").at("source_arrays_reused") == false &&
+                          copy.at("interpolation_copy").at("fitted_bspline_reused") == false,
+                      "clone copies inactive knot storage too and attempts fitting from its own "
+                      "data");
+                check(native_curve(b, 4, project).at("status") == "rejected",
+                      "InterpolationCurve never exposes its fit through raw-B-spline extraction");
+            }
+    for (const auto points :
+         {std::vector<Point3>{}, std::vector<Point3>{{NAN, 0, 0}},
+          std::vector<Point3>(2, {0, 0, 0}), std::vector<Point3>{{0, 0, 0}, {1e-5, 0, 0}}}) {
+        const auto result = native_curve(interpolation(points, true, 3));
+        const auto &c = result.at("construction");
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("entry_restore").at("status") == "retained" &&
+                  c.at("geometry_pointer") == "non_null" &&
+                  c.at("fitted_bspline_pointer") == "null" &&
+                  c.at("fit_called") == !points.empty() &&
+                  result.at("parametric_append_input").at("status") == "appended",
+              "missing interpolation cache does not reject its source wrapper or clone");
+    }
+    const std::vector<Point3> interpolation_square = {
+        {.25, .25, 0}, {.75, .25, 0}, {.75, .75, 0}, {.25, .75, 0}};
+    for (bool closed : {false, true})
+        for (unsigned flags = 0; flags < 16; ++flags) {
+            auto b = interpolation(interpolation_square, closed);
+            const auto table = interpolation_table(b);
+            for (unsigned i = 0; i < 4; ++i)
+                write(b, table + 12 + 4 * i, std::int32_t(flags & (1u << i) ? -7 : 0));
+            const auto result = native_curve(b);
+            const auto &c = result.at("construction");
+            check(c.at("native_fit_result") == 0 && c.at("fitted_bspline").at("closed") == closed &&
+                      c.at("fitted_bspline").at("pole_count") == (closed ? 4 : 6) &&
+                      c.at("fit").at("endpoint_condition") ==
+                          (closed      ? "periodic_c2"
+                           : flags & 8 ? "natural_second_derivative_zero"
+                                       : "bessel_quadratic"),
+                  "native option fields reach open and periodic interpolation cache generation");
+        }
+    for (unsigned n : {4998u, 4999u}) {
+        std::vector<Point3> points;
+        for (unsigned i = 0; i < n; ++i)
+            points.push_back({double(i), 0, 0});
+        const auto result = native_curve(interpolation(points));
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("native_fit_result") == (n == 4998 ? 0 : 1),
+              "prepared interpolation count limit affects cache, not source wrapper retention");
+    }
+    auto changed_interpolation = good_interpolation;
+    const auto it = interpolation_table(changed_interpolation);
+    const auto ivt = it - Reader(changed_interpolation, it).i32();
+    const auto ivector = it + 76 + Reader(changed_interpolation, it + 76).u32();
+    for (unsigned tail : {1u, 2u}) {
+        changed_interpolation = good_interpolation;
+        write(changed_interpolation, ivector, std::uint32_t(6 + tail));
+        check(native_curve(changed_interpolation).at("construction").at("ignored_tail_scalars") ==
+                  tail,
+              "interpolation point vector consumes complete triples without demanding tail bytes");
+    }
+    for (unsigned field = 0; field < 6; ++field) {
+        changed_interpolation = good_interpolation;
+        write(changed_interpolation, ivt + 4 + 2 * field, std::uint16_t(0));
+        check(native_curve(changed_interpolation).at("construction").at("native_fit_result") == 0,
+              "omitted interpolation scalar options use native zero defaults");
+    }
+    for (unsigned field : {6u, 7u}) {
+        changed_interpolation = good_interpolation;
+        write(changed_interpolation, ivt + 4 + 2 * field, std::uint16_t(65535));
+        check(native_curve(changed_interpolation).at("status") == "geometry_constructed",
+              "native reader does not dereference inactive endpoint tangent fields");
+    }
+    changed_interpolation = good_interpolation;
+    write(changed_interpolation, ivt + 20, std::uint16_t(0));
+    check(native_curve(changed_interpolation).at("status") == "not_evaluated",
+          "missing interpolation point vector is not an explicit empty vector");
+    changed_interpolation = interpolation({}, false, 3);
+    changed_interpolation.pop_back();
+    check(native_curve(changed_interpolation).at("status") == "not_evaluated",
+          "inactive source knots are still copied before an empty fit can be skipped");
+    changed_interpolation = good_interpolation;
+    write(changed_interpolation, ivector + 4, std::numeric_limits<double>::infinity());
+    check(native_curve(changed_interpolation).at("status") == "not_evaluated",
+          "unconfirmed nonfinite fitting is not silently classified as absent cache");
     auto surface = [](bool closed_u, bool closed_v, std::optional<int> weights,
                       std::optional<int> knots_u, std::optional<int> knots_v, int boundary = 0) {
         Packet p;
@@ -599,6 +748,13 @@ unsigned swept_binary_tests() {
     check(native_curve(collection(missing_points, 1), 2).at("status") == "not_evaluated",
           "unknown Akima construction must not be silently filtered from a curve group");
     auto plane = valid_surface;
+    for (const auto member :
+         {good_interpolation, interpolation({}), interpolation({{0, 0, 0}, {0, 0, 0}})}) {
+        const auto group = native_curve(collection(member, 2), 2);
+        check(group.at("construction").at("output_member_count") == 2 &&
+                  group.at("parametric_append_input").at("status") == "appended",
+              "interpolation group keeps separate wrappers even when their fit caches are absent");
+    }
     const auto plane_table = surface_table(plane);
     const auto plane_poles = plane_table + 4 + Reader(plane, plane_table + 4).u32();
     for (unsigned v = 0; v < 3; ++v)
@@ -630,6 +786,40 @@ unsigned swept_binary_tests() {
                   .at("construction")
                   .at("trim_operation") == "clear_empty_root",
           "rejected Akima trim member leaves the actual constructed boundary group empty");
+    for (const auto member :
+         {good_interpolation, interpolation({}), interpolation({{0, 0, 0}, {0, 0, 0}})}) {
+        const auto result = native_curve(attach_boundary(plane, collection(member, 1)), 5);
+        const auto &c = result.at("construction"), &cache = c.at("initial_boundary_cache");
+        const bool fitted = member == good_interpolation;
+        check(result.at("status") == "geometry_constructed" && cache.at("status") == "complete" &&
+                  c.at("boundary_input").at("output_member_count") == 1 &&
+                  cache.at("loops").size() == (fitted ? 1u : 0u),
+              "surface keeps the interpolation member but skips conversion of absent cache");
+        const auto &copy = result.at("parametric_append_input");
+        check(copy.at("status") == "appended" &&
+                  copy.at("boundary_storage_copy").at("curve_count") == (fitted ? 1u : 0u),
+              "surface copy contains only successfully prepared interpolation boundaries");
+        if (fitted) {
+            const auto &loop = cache.at("loops").at(0);
+            check(loop.front().at("parameter") == Json::array({0., .25, 0.}) &&
+                      loop.back().at("parameter") == Json::array({1., .75, 0.}),
+                  "two-point interpolation boundary has independently known line endpoints");
+        }
+    }
+    const auto periodic_interpolation = native_curve(
+        attach_boundary(plane, collection(interpolation(interpolation_square, true), 1)), 5);
+    const auto &periodic_member = periodic_interpolation.at("construction")
+                                      .at("initial_boundary_cache")
+                                      .at("sampling")
+                                      .at("boundary_sources")
+                                      .at(0)
+                                      .at("members")
+                                      .at(0);
+    check(periodic_interpolation.at("status") == "geometry_constructed" &&
+              periodic_member.at("source_curve_closed") == true &&
+              periodic_member.at("prepared_closed") == false &&
+              periodic_interpolation.at("parametric_append_input").at("status") == "appended",
+          "periodic interpolation cache is opened before boundary storage is copied");
     auto primitive = [](unsigned tag) {
         Packet p;
         const auto root = p.table({4, 8}, 12);

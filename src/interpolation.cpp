@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "interpolation_internal.hpp"
 namespace p3d {
 namespace {
 constexpr double tolerance = 1e-5;
@@ -80,7 +80,10 @@ InterpolationCurve InterpolationCurve::from_bgfb(const Json &table) {
     const auto &flat = table.at("fitPoints");
     require(flat.is_array() && flat.size() % 3 == 0, "interpolation XYZ triplets");
     const auto count = flat.size() / 3;
-    require(count >= 2 && count <= std::size_t(std::numeric_limits<int>::max()),
+    if (count < 2)
+        throw interpolation_detail::FitRejected("interpolation source point count",
+                                                "native_interpolation_source_count_guard");
+    require(count <= std::size_t(std::numeric_limits<int>::max()),
             "interpolation source point count");
     std::vector<Point3> points;
     std::vector<std::size_t> indices;
@@ -102,7 +105,9 @@ InterpolationCurve InterpolationCurve::from_bgfb(const Json &table) {
     }
     // The native ensure-two-points fallback duplicates the first point, which
     // then fails the endpoint distance check. Reject without inventing geometry.
-    require(points.size() >= 2, "interpolation coincident fit points");
+    if (points.size() < 2)
+        throw interpolation_detail::FitRejected("interpolation coincident fit points",
+                                                "native_interpolation_endpoint_distance_guard");
     double end_distance = std::sqrt(distance_squared(points.front(), points.back()));
     if (points.size() == 3 && end_distance <= tolerance) {
         ignored.push_back(
@@ -113,7 +118,10 @@ InterpolationCurve InterpolationCurve::from_bgfb(const Json &table) {
     }
     bool appended = false;
     if (points.size() <= 2) {
-        require(end_distance > tolerance, "interpolation endpoints within native tolerance");
+        if (end_distance <= tolerance)
+            throw interpolation_detail::FitRejected(
+                "interpolation endpoints within native tolerance",
+                "native_interpolation_endpoint_distance_guard");
         closed = false;
     } else if (closed) {
         if (end_distance > tolerance) {
@@ -125,7 +133,10 @@ InterpolationCurve InterpolationCurve::from_bgfb(const Json &table) {
             closed = false;
     }
     const auto n = points.size();
-    require(n <= 4998, "native interpolation prepared point count exceeds 4998");
+    if (n > 4998)
+        throw interpolation_detail::FitRejected(
+            "native interpolation prepared point count exceeds 4998",
+            "native_interpolation_prepared_count_guard");
     std::vector<double> parameters(n, 0);
     if (closed && !chord) {
         // The native default knot generator accumulates the uniform increment.

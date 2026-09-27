@@ -1,5 +1,6 @@
 #include "graphics_native.hpp"
 #include "akima_internal.hpp"
+#include "interpolation_internal.hpp"
 #include "p3d/pcurve.hpp"
 
 namespace p3d {
@@ -275,6 +276,8 @@ struct GeometryConstruction {
         } else if (name == "LineString" || name == "PointString" || name == "AkimaCurve") {
             table["points"] = trim_values(source.at("data_offset"),
                                           source.at("point_count").get<std::size_t>() * 3);
+        } else if (name == "InterpolationCurve") {
+            table = interpolation_table(source);
         } else if (name == "BsplineCurve") {
             table["order"] = source.at("order");
             table["closed"] = source.at("closed");
@@ -339,6 +342,76 @@ struct GeometryConstruction {
                         {{"parameter", point.parameter}, {"position", point.position}});
                 out["loops"].push_back(std::move(samples));
             }
+        return out;
+    }
+    Json interpolation_table(const Json &source) {
+        auto table = source.at("parameters");
+        table["_type"] = "InterpolationCurve";
+        table["fitPoints"] = trim_values(source.at("point_data_offset"),
+                                         source.at("point_count").get<std::size_t>() * 3);
+        // These source fields are not inputs to the saved-cache generator.
+        // Their copied byte extents are retained in the construction report.
+        table["knots"] = nullptr;
+        return table;
+    }
+    Json interpolation(std::size_t table) {
+        const auto points = child(table, 8), knots = child(table, 9);
+        require(points.has_value(), "native_interpolation_requires_fit_point_vector");
+        const auto scalars = b.at<std::uint32_t>(*points), count = scalars / 3;
+        const auto source_knots = knots ? b.at<std::int32_t>(*knots) : 0;
+        const auto knot_count = std::uint32_t(std::max(0, source_knots));
+        // Both arrays are copied before the fit is attempted. Stored knots are
+        // inactive in fitting, but their copy still requires accessible bytes.
+        b.range(*points + 4, std::size_t(count) * 24);
+        if (knot_count)
+            b.range(*knots + 4, std::size_t(knot_count) * 8);
+        auto out = object("InterpolationCurve", "curve");
+        out.update({{"operation", "copy_interpolation_parameters_and_try_fit"},
+                    {"source_scalar_count", scalars},
+                    {"point_count", count},
+                    {"ignored_tail_scalars", scalars % 3},
+                    {"point_data_offset", *points + 4},
+                    {"copied_point_bytes", std::uint64_t(count) * 24},
+                    {"source_knot_count_signed", source_knots},
+                    {"copied_knot_count", knot_count},
+                    {"knot_data_offset", knot_count ? Json(*knots + 4) : Json()},
+                    {"fit_called", count != 0},
+                    {"fitted_bspline_pointer", "null"},
+                    {"unread_fields", {"startTangent", "endTangent"}}});
+        auto &parameters = out["parameters"];
+        parameters["closed"] = flag(table, 1);
+        const char *names[] = {"order", "isChordLenKnots", "isColinearTangents",
+                               "isChordLenTangents", "isNaturalTangents"};
+        const unsigned fields[] = {0, 2, 3, 4, 5};
+        for (unsigned i = 0; i < 5; ++i) {
+            const auto p = b.field(table, fields[i], 4);
+            parameters[names[i]] = p ? b.at<std::int32_t>(*p) : 0;
+        }
+        if (count < 2) {
+            out["native_fit_result"] = count ? Json(1) : Json();
+            out["fit"] = {{"status", count ? "rejected" : "not_called"},
+                          {"reason", "native_interpolation_source_count_guard"}};
+            return out;
+        }
+        try {
+            const auto fitted = InterpolationCurve::from_bgfb(interpolation_table(out));
+            const auto &curve = fitted.bspline();
+            out["fit"] = fitted.report();
+            out["native_fit_result"] = 0;
+            out["fitted_bspline_pointer"] = "non_null";
+            out["fitted_bspline"] = {{"order", curve.order()},
+                                     {"closed", curve.closed()},
+                                     {"pole_count", curve.poles().size()},
+                                     {"knot_count", curve.knots().size()},
+                                     {"weight_count", 0}};
+        } catch (const interpolation_detail::FitRejected &e) {
+            out["native_fit_result"] = 1;
+            out["fit"] = {{"status", "rejected"}, {"reason", e.reason}};
+        } catch (const std::exception &e) {
+            out.update({{"geometry_pointer", "unknown"},
+                        {"fitted_bspline_pointer", "unknown"},
+                        {"reason", e.what()}});
+        }
         return out;
     }
     Json akima(std::size_t table) {
@@ -546,8 +619,8 @@ struct GeometryConstruction {
             return out;
         }
         require(tag == 1 || tag == 2 || tag == 3 || tag == 4 || tag == 5 || tag == 10 ||
-                    tag == 11 || tag == 12 || tag == 14 || tag == 18 || tag == 19 || tag == 20 ||
-                    tag == 21,
+                    tag == 11 || tag == 12 || tag == 14 || tag == 16 || tag == 18 || tag == 19 ||
+                    tag == 20 || tag == 21,
                 "native_geometry_construction_not_supported");
         const auto table = child(root, 1);
         if (tag == 5)
@@ -557,6 +630,8 @@ struct GeometryConstruction {
             return bspline_surface(*table, depth);
         if (tag == 19)
             return akima(*table);
+        if (tag == 16)
+            return interpolation(*table);
         if (tag == 3) {
             const auto order_field = b.field(*table, 0, 4);
             const auto order = order_field ? b.at<std::int32_t>(*order_field) : 0;
@@ -728,6 +803,13 @@ struct GeometryConstruction {
         return out;
     }
 };
+void interpolation_copy_input(const Json &source) {
+    // Unlike the initial 64-bit array allocation, clone helpers multiply sizes
+    // in int32 storage. Do not interpret wrapped sizes as successful copies.
+    require(source.at("point_count").get<std::uint64_t>() <= INT32_MAX / 24 &&
+                source.at("copied_knot_count").get<std::uint64_t>() <= INT32_MAX / 8,
+            "native_interpolation_clone_allocation_overflow");
+}
 void copy_curve_vector_input(const Json &source, bool nullable = false) {
     if (source.at("geometry_pointer") == "null") {
         require(nullable, "native_curve_vector_copy_requires_non_null_source");
@@ -741,6 +823,10 @@ void copy_curve_vector_input(const Json &source, bool nullable = false) {
             copy_curve_vector_input(member);
         else if (action == "append_curve") {
             const auto type = member.at("geometry_type");
+            if (type == "InterpolationCurve") {
+                interpolation_copy_input(member);
+                continue;
+            }
             require(type == "LineSegment" || type == "EllipticArc" || type == "LineString" ||
                         type == "PointString" || type == "BsplineCurve" || type == "AkimaCurve",
                     "native_curve_copy_not_supported");
@@ -777,7 +863,17 @@ Json parametric_append_input(const Json &input) {
             operation = "copy_fixed_detail";
         else if (name == "LineString" || name == "PointString")
             operation = "copy_point_storage";
-        else if (name == "AkimaCurve") {
+        else if (name == "InterpolationCurve") {
+            interpolation_copy_input(source);
+            operation = "copy_interpolation_parameters_and_try_fit";
+            out["interpolation_copy"] = {
+                {"point_count", source.at("point_count")},
+                {"knot_count", source.at("copied_knot_count")},
+                {"parameters", source.at("parameters")},
+                {"source_arrays_reused", false},
+                {"fitted_bspline_reused", false},
+                {"fitted_bspline_pointer", source.at("fitted_bspline_pointer")}};
+        } else if (name == "AkimaCurve") {
             // Clone invokes the same factory on the unchanged complete source
             // point vector; it does not share or directly copy the fitted cache.
             operation = "refit_akima_and_copy_source_points";

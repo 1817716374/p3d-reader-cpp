@@ -2,6 +2,7 @@
 #include "loft_curve.hpp"
 #include "native_pcurve_points.hpp"
 #include "native_curve_conversion.hpp"
+#include "interpolation_internal.hpp"
 
 namespace p3d {
 namespace {
@@ -67,9 +68,14 @@ struct Boundaries {
             c = BsplineCurve::from_bgfb(v);
         else if (type == "AkimaCurve")
             c = AkimaCurve::from_bgfb(v).bspline();
-        else if (type == "InterpolationCurve")
-            c = InterpolationCurve::from_bgfb(v).bspline();
-        else if (type == "TransitionSpiral")
+        else if (type == "InterpolationCurve") {
+            try {
+                c = InterpolationCurve::from_bgfb(v).bspline();
+            } catch (const interpolation_detail::FitRejected &) {
+                // The wrapper survives fitting failure. Its trim conversion
+                // returns false because the saved fitted B-spline is absent.
+            }
+        } else if (type == "TransitionSpiral")
             c = TransitionSpiral::from_bgfb(v).native_fit(options.max_integration_intervals).curve;
         else if (type == "EllipticArc")
             c = curve_detail::ellipse_to_bspline(v);
