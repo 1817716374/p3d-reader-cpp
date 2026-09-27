@@ -19,6 +19,7 @@
 !/tests/native_tube_mesh_trim_output.cpp
 !/tests/native_tube_mesh_group.cpp
 !/tests/native_coordinate_cluster.cpp
+!/tests/native_builder_coordinates.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp
