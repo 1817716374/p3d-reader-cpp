@@ -35,6 +35,7 @@
 !/tests/native_polyface_mesh_attributes.cpp
 !/tests/native_polyface_mesh_connectivity.cpp
 !/tests/native_polyface_mesh_records.cpp
+!/tests/native_tube_mesh_cap_input.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp

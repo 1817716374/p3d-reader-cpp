@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_tube_mesh_cap_input.cpp` 的折线端盖输入准备参考下表固定 Bentley 提交中的 `CurveVector.cpp`、`IPolyfaceConstruction_Add.cpp` 和 `PolyfaceAddTriangulation.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的环次序、闭合点替换、细分计数及插值顺序改写，保留末尾断开标记和原生点数检查位置，不采用较新参考实现的断开标记清理与压缩后数量筛选。
+
 `src/native_polyface_layout.cpp` 的布局转换参考下表固定 Bentley 提交中的 `Polyface.cpp` 和 `BlockedVector.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的独立通道行宽、颜色池条件及活动标志，不引入较新参考版本中的索引自动启用、池行宽重设或末尾分隔符补齐。
 
 `src/native_polyface_visitor.cpp` 的索引式、连续面块和行列网格逐面读取参考同一固定提交中的 `PolyfaceVisitor.cpp` 和 `BlockedVector.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的颜色指针与计数的独立选择、不同样式的属性读取及闭合行为、网格三角面起点和属性索引范围，加入实际数组边界和资源预算检查；不依赖 Bentley 运行库。
