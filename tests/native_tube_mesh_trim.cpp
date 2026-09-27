@@ -1,4 +1,5 @@
 #include "native_tube_mesh_trim.hpp"
+#include "native_tube_mesh_trim_facets.hpp"
 #include <future>
 using namespace p3d;
 using namespace p3d::swept_detail;
@@ -178,6 +179,18 @@ unsigned native_tube_mesh_trim_tests() {
                   "trimmed geometry normal keeps local DU cross DV orientation");
         }
     }
+    auto face_plan = prepare_tube_mesh_trim_facets(actual.plan, eval);
+    auto actual_parameters =
+        evaluate_tube_mesh_trim_parameters(actual.plan, prepared.patches[0].path.parameters, 0, 1, eval);
+    check(!face_plan.facets.empty() && face_plan.indices_in_range &&
+              face_plan.column_correspondence_valid,
+          "actual curve-prepared surface columns feed native facet correspondence");
+    check(actual_parameters.size() == actual.vertices.size(),
+          "actual trimmed surface retains independent per-sample parameters");
+    for (const auto &face : face_plan.facets)
+        for (auto index : face.indices)
+            check(std::size_t(index) <= actual.vertices.size() && index > 0,
+                  "actual pre-connection facet arguments refer to evaluated column vertices");
     auto failed = prepared.patches[0];
     failed.preparation.boundaries.upper = scalar(2, 2);
     TubeBudget failed_budget;
