@@ -159,12 +159,13 @@ unsigned swept_binary_tests() {
             values(curve + 20, std::uint32_t(*knots), 5);
         return p.b;
     };
-    auto native_curve = [](const Bytes &b) {
-        Bytes entry(36);
-        write(entry, 4, std::int32_t(1));
-        write(entry, 28, std::uint64_t(b.size()));
+    auto native_curve = [](const Bytes &b, int type = 1, bool project = true) {
+        const std::size_t header = project ? 36 : 32;
+        Bytes entry(header);
+        write(entry, 4, std::int32_t(type));
+        write(entry, header - 8, std::uint64_t(b.size()));
         entry.insert(entry.end(), b.begin(), b.end());
-        return graphics_entry_native_input(entry).at("with_project");
+        return graphics_entry_native_input(entry).at(project ? "with_project" : "without_project");
     };
     for (bool closed : {false, true})
         for (const auto weights :
@@ -185,10 +186,62 @@ unsigned swept_binary_tests() {
                 check(c.at("knots_source") == (stored_knots ? "copied" : "generated_uniform") &&
                           c.at("copied_weight_count") == (weights && *weights > 0 ? 2 : 0),
                       "native B-spline ignores excess weights and generates absent knots");
-                check(result.at("entry_restore").at("status") == "retained" &&
-                          result.at("parametric_append_input").at("status") == "not_evaluated",
-                      "B-spline input construction does not assert a separately unsupported clone");
+                const auto &append = result.at("parametric_append_input");
+                check(
+                    result.at("entry_restore").at("status") == "retained" &&
+                        append.at("status") == "appended" &&
+                        append.at("geometry_operation") == "copy_bspline_storage" &&
+                        append.at("source_geometry_reused") == false &&
+                        append.at("bspline_storage_copy").at("knots_regenerated") == false,
+                    "B-spline wrapper clone copies constructed storage without regenerating knots");
+                for (bool project : {false, true}) {
+                    const auto raw = native_curve(b, 4, project);
+                    check(raw.at("status") == "geometry_constructed" &&
+                              raw.at("bspline_pointer_extraction").at("stored_object_reused") ==
+                                  true &&
+                              raw.at("bspline_pointer_extraction").at("curve_data_copied") ==
+                                  false &&
+                              raw.at("bspline_pointer_extraction").at("native_result") == 0,
+                          "raw B-spline entry retains the saved curve for either project header");
+                    check(raw.at("entry_restore").at("status") == "retained" &&
+                              raw.at("parametric_append_input").at("bspline_storage_copy") ==
+                                  append.at("bspline_storage_copy") &&
+                              raw.at("parametric_append_input").at("source_geometry_reused") ==
+                                  false,
+                          "raw B-spline append creates new arrays after reference extraction");
+                }
             }
+    auto collection = [](const Bytes &member, unsigned repetitions) {
+        Packet p;
+        const auto root = p.table({4, 8}, 12);
+        p.reference(8, root);
+        write(p.b, root + 4, std::uint8_t(5));
+        const auto group = p.table({4, 8}, 12);
+        p.reference(root + 8, group);
+        write(p.b, group + 4, std::int32_t(2));
+        p.align();
+        const auto array = p.b.size();
+        put(p.b, std::uint32_t(repetitions));
+        for (unsigned i = 0; i < repetitions; ++i)
+            put(p.b, std::uint32_t(0));
+        p.reference(group + 8, array);
+        p.align();
+        const auto source = p.b.size();
+        p.b.insert(p.b.end(), member.begin(), member.end());
+        const auto variant = source + 8 + Reader(member, 8).u32();
+        for (unsigned i = 0; i < repetitions; ++i)
+            p.reference(array + 4 + 4 * i, variant);
+        return p.b;
+    };
+    const auto grouped = native_curve(collection(spline(2, false, 2, {}), 2), 2);
+    check(grouped.at("construction").at("output_member_count") == 2 &&
+              grouped.at("parametric_append_input").at("status") == "appended" &&
+              grouped.at("parametric_append_input").at("source_geometry_reused") == false,
+          "repeated binary B-spline members survive native group construction and copying");
+    const auto nested_group = native_curve(collection(collection(spline(2, true, 2, 5), 2), 1), 2);
+    check(nested_group.at("construction").at("members").at(0).at("output_member_count") == 2 &&
+              nested_group.at("parametric_append_input").at("status") == "appended",
+          "nested B-spline group copy preserves grouping and ordered members");
     for (auto order : {INT32_MIN, -1, 0, 1, 3, INT32_MAX})
         check(native_curve(spline(order, false, {}, {})).at("reason") ==
                   "native_bspline_populate_guard_leaves_uninitialized_temporary",
@@ -212,6 +265,9 @@ unsigned swept_binary_tests() {
     truncated_spline.pop_back();
     check(native_curve(truncated_spline).at("status") == "not_evaluated",
           "every copied B-spline coordinate must lie within the source geometry bytes");
+    check(native_curve(truncated_spline, 4).at("status") == "not_evaluated" &&
+              native_curve(spline(1, false, {}, {}), 4).at("status") == "not_evaluated",
+          "raw B-spline extraction cannot turn an unproved source constructor into a null result");
     for (bool capped : {false, true}) {
         const auto binary = swept_binary_fixture(capped);
         const auto decoded = decode_bgfb(binary);

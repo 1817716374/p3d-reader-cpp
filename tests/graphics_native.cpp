@@ -361,6 +361,15 @@ unsigned graphics_native_tests() {
     const auto line = scalar_solid(1, 48);
     const auto ellipse = scalar_solid(2, 88);
     const auto polyline = point_curve(4, 6, 6);
+    for (const auto &other : {line, ellipse, polyline, point_curve(18, 6, 6)}) {
+        const auto raw = with_project(packet(4, other));
+        check(raw.at("status") == "rejected" && raw.at("reason") == "native_bspline_pointer_missing" &&
+                  raw.at("bspline_pointer_extraction").at("status") == "null" &&
+                  raw.at("bspline_pointer_extraction").at("native_result") == 1 &&
+                  raw.at("entry_restore").at("status") == "rejected" &&
+                  raw.at("material_footer") == "not_read",
+              "raw B-spline input rejects a constructed non-B-spline instead of fitting it");
+    }
     const auto empty_group = collection(5, {});
     auto missing_group = empty_group;
     write(missing_group, 46, 0, 2);

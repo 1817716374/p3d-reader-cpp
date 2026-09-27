@@ -482,7 +482,7 @@ void copy_curve_vector_input(const Json &source, bool nullable = false) {
         else if (action == "append_curve") {
             const auto type = member.at("geometry_type");
             require(type == "LineSegment" || type == "EllipticArc" || type == "LineString" ||
-                        type == "PointString",
+                        type == "PointString" || type == "BsplineCurve",
                     "native_curve_copy_not_supported");
         }
     }
@@ -517,7 +517,17 @@ Json parametric_append_input(const Json &input) {
             operation = "copy_fixed_detail";
         else if (name == "LineString" || name == "PointString")
             operation = "copy_point_storage";
-        else if (name == "Polyface")
+        else if (name == "BsplineCurve") {
+            // Both the curve wrapper's clone and the raw B-spline append
+            // allocate independent poles, knots and (when rational) weights.
+            // Input construction already checked their storage and allocation sizes.
+            operation = "copy_bspline_storage";
+            out["bspline_storage_copy"] = {{"pole_count", source.at("pole_count")},
+                                          {"knot_count", source.at("effective_knot_count")},
+                                          {"weight_count", source.at("copied_weight_count")},
+                                          {"poles_reweighted", false},
+                                          {"knots_regenerated", false}};
+        } else if (name == "Polyface")
             operation = "copy_polyface_channels";
         else if (name == "CurveVector") {
             copy_curve_vector_input(source);
@@ -659,11 +669,26 @@ Json native_input(const Bytes &entry, bool model_has_project) {
             reject("bgfb_type_not_accepted_by_entry_reader");
             return out;
         }
-        if (type != 4) {
-            out["construction"] = GeometryConstruction{b}.variant(root);
-            out["status"] = "geometry_constructed";
-            out["geometry_pointer"] = "non_null";
+        out["construction"] = GeometryConstruction{b}.variant(root);
+        if (type == 4) {
+            // BPValue obtains the wrapper's saved B-spline via virtual +0x68.
+            // It does not call the curve-to-B-spline conversion/fitting interface.
+            const bool extracted = tag == 3;
+            out["bspline_pointer_extraction"] = {
+                {"status", extracted ? "extracted" : "null"},
+                {"source_geometry_type", out.at("construction").at("geometry_type")},
+                {"operation", "get_stored_bspline_reference"},
+                {"curve_data_copied", false},
+                {"stored_object_reused", extracted},
+                {"native_result", extracted ? 0 : 1}};
+            if (!extracted) {
+                out["material_footer"] = "not_read";
+                reject("native_bspline_pointer_missing");
+                return out;
+            }
         }
+        out["status"] = "geometry_constructed";
+        out["geometry_pointer"] = "non_null";
         // Selection is not construction: child validity, native geometry creation,
         // color/model context and the material footer still need their own checks.
     } catch (const std::exception &e) {
