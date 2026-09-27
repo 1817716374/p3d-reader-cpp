@@ -172,5 +172,6 @@
 !/tests/native_tube_facet_trim.cpp
 !/tests/native_tube_facet_generation.cpp
 !/tests/native_tube_facet_output.cpp
+!/tests/native_tube_facet_groups.cpp
 !/tests/native_xy_newton.cpp
 !/tests/native_curve_xy.cpp
