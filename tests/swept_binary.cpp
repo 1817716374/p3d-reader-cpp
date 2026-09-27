@@ -167,6 +167,205 @@ unsigned swept_binary_tests() {
         entry.insert(entry.end(), b.begin(), b.end());
         return graphics_entry_native_input(entry).at(project ? "with_project" : "without_project");
     };
+    auto surface = [](bool closed_u, bool closed_v, std::optional<int> weights,
+                      std::optional<int> knots_u, std::optional<int> knots_v, int boundary = 0) {
+        Packet p;
+        const auto root = p.table({4, 8}, 12);
+        p.reference(8, root);
+        write(p.b, root + 4, std::uint8_t(14));
+        const auto s = p.table({4, std::uint16_t(weights ? 8 : 0), std::uint16_t(knots_u ? 12 : 0),
+                                std::uint16_t(knots_v ? 16 : 0), 20, 24, 28, 32, 36, 40, 44,
+                                std::uint16_t(boundary ? 48 : 0), 52, 56},
+                               64);
+        p.reference(root + 8, s);
+        write(p.b, s + 20, std::int32_t(2));
+        write(p.b, s + 24, std::int32_t(3));
+        write(p.b, s + 28, std::int32_t(2));
+        write(p.b, s + 32, std::int32_t(2));
+        write(p.b, s + 36, std::int32_t(-9));
+        write(p.b, s + 40, std::int32_t(13));
+        write(p.b, s + 44, std::int32_t(-7));
+        write(p.b, s + 52, std::uint8_t(closed_u));
+        write(p.b, s + 56, std::uint8_t(closed_v));
+        auto values = [&](std::size_t slot, int count) {
+            p.align();
+            put(p.b, std::uint32_t(0));
+            const auto at = p.b.size();
+            put(p.b, std::int32_t(count));
+            for (int i = 0; i < count; ++i)
+                put(p.b, double(i));
+            p.reference(slot, at);
+        };
+        values(s + 4, 18);
+        if (weights)
+            values(s + 8, *weights);
+        if (knots_u)
+            values(s + 12, *knots_u);
+        if (knots_v)
+            values(s + 16, *knots_v);
+        if (boundary == 2)
+            p.reference(s + 48, p.group({{0, 0, 0}, {1, 0, 0}, {0, 0, 0}}, 2));
+        else if (boundary) {
+            const auto group = p.table({4, std::uint16_t(boundary == 5 ? 0 : 8)}, 12);
+            p.reference(s + 48, group);
+            write(p.b, group + 4, std::int32_t(2));
+            p.align();
+            const auto array = p.b.size();
+            put(p.b, std::uint32_t(boundary == 3 || boundary == 4));
+            p.reference(group + 8, array);
+            if (boundary == 3 || boundary == 4) {
+                put(p.b, std::uint32_t(0));
+                const auto member = p.table({4, 8}, 12);
+                p.reference(array + 4, member);
+                if (boundary == 4) {
+                    write(p.b, member + 4, std::uint8_t(5));
+                    const auto nested = p.table({4, 8}, 12);
+                    p.reference(member + 8, nested);
+                    p.align();
+                    const auto empty = p.b.size();
+                    put(p.b, std::uint32_t(0));
+                    p.reference(nested + 8, empty);
+                }
+            }
+        }
+        return p.b;
+    };
+    auto surface_table = [](const Bytes &b) {
+        const auto root = 8 + Reader(b, 8).u32();
+        return root + 8 + Reader(b, root + 8).u32();
+    };
+    for (bool closed_u : {false, true})
+        for (bool closed_v : {false, true})
+            for (const auto weights : {std::optional<int>{}, std::optional<int>{0},
+                                       std::optional<int>{-1}, std::optional<int>{6}})
+                for (unsigned knots = 0; knots < 4; ++knots) {
+                    const auto binary =
+                        surface(closed_u, closed_v, weights,
+                                knots & 1 ? std::optional<int>(closed_u ? 5 : 4) : std::nullopt,
+                                knots & 2 ? std::optional<int>(closed_v ? 6 : 5) : std::nullopt);
+                    for (bool project : {false, true}) {
+                        const auto result = native_curve(binary, 5, project);
+                        check(result.at("status") == "geometry_constructed" &&
+                                  result.at("entry_restore").at("status") == "retained",
+                              "surface factory and Entry retain a bounded matching control net");
+                        const auto &c = result.at("construction");
+                        check(c.at("pole_count") == 6 && c.at("pole_order") == "u_fastest" &&
+                                  c.at("rational") == (weights && *weights > 0) &&
+                                  c.at("input_poles_already_weighted") == true,
+                              "surface keeps source weighted poles and independent directions");
+                        check(c.at("u").at("effective_knot_count") == (closed_u ? 5 : 4) &&
+                                  c.at("v").at("effective_knot_count") == (closed_v ? 6 : 5) &&
+                                  c.at("u").at("knots_source") ==
+                                      (knots & 1 ? "copied" : "generated_uniform") &&
+                                  c.at("v").at("knots_source") ==
+                                      (knots & 2 ? "copied" : "generated_uniform"),
+                              "each surface direction chooses its own copied or default knots");
+                        check(c.at("u").at("num_rules") == -9 && c.at("v").at("num_rules") == 13 &&
+                                  c.at("source_hole_origin") == -7 && c.at("hole_origin") == true &&
+                                  c.at("outer_boundary_active") == false &&
+                                  c.at("boundary_sampling_performed") == false,
+                              "reader overrides rules and normalizes only the hole origin flag");
+                        check(result.at("parametric_append_input").at("status") == "not_evaluated",
+                              "surface input construction does not imply downstream copy support");
+                    }
+                }
+    const auto valid_surface = surface(false, false, {}, {}, {});
+    const auto decoded_surface = decode_bgfb(valid_surface).at("geometry");
+    check(decoded_surface.at("_type") == "BsplineSurface" && decoded_surface.at("numPolesU") == 2 &&
+              decoded_surface.at("numPolesV") == 3 && decoded_surface.at("poles").size() == 18,
+          "surface constructor fixture also reaches the independent public BGFB field decoder");
+    auto changed_surface = valid_surface;
+    auto s = surface_table(changed_surface);
+    auto poles = s + 4 + Reader(changed_surface, s + 4).u32();
+    write(changed_surface, poles, std::uint32_t(20)); // only complete triples are read
+    write(changed_surface, changed_surface.size() - 8, UINT64_C(0x7ff8000000000001));
+    check(native_curve(changed_surface, 5).at("construction").at("ignored_tail_scalars") == 2,
+          "surface input ignores partial triple and copies nonfinite bits without evaluation");
+    changed_surface = valid_surface;
+    write(changed_surface, s + 44, std::int32_t(0));
+    check(native_curve(changed_surface, 5).at("construction").at("outer_boundary_active") == true,
+          "surface source hole origin zero activates the default exterior boundary");
+    for (unsigned slot : {4u, 28u, 32u, 36u, 40u, 44u, 52u, 56u}) {
+        changed_surface = valid_surface;
+        const auto vt = s - Reader(changed_surface, s).i32();
+        write(changed_surface, vt + 4 + 2 * (slot / 4 - 1), std::uint16_t(0));
+        const auto result = native_curve(changed_surface, 5);
+        check(result.at("status") == (slot <= 32 ? "rejected" : "geometry_constructed"),
+              "omitted surface vectors and scalars follow individual reader defaults");
+        if (slot == 36 || slot == 40)
+            check(result.at("construction").at(slot == 36 ? "u" : "v").at("num_rules") == 0,
+                  "missing rule field overwrites allocator's initial rule count with zero");
+    }
+    for (const auto slot : {20u, 24u, 28u, 32u}) {
+        changed_surface = valid_surface;
+        write(changed_surface, s + slot, std::int32_t(1));
+        const auto result = native_curve(changed_surface, 5);
+        check(result.at("status") == "rejected" && result.at("material_footer") == "not_read" &&
+                  result.at("construction").at("native_populate_result") == 1 &&
+                  result.at("entry_restore").at("status") == "rejected",
+              "surface dimension and order guard returns null and rejects the Entry");
+    }
+    for (auto n : {4, 5, 7}) {
+        const auto result = native_curve(surface(false, false, n, {}, {}), 5);
+        check(result.at("status") == "rejected" &&
+                  result.at("construction").at("reason") == "native_surface_weight_count_guard",
+              "surface requires exact nonempty weight count, unlike the basic curve reader");
+    }
+    for (unsigned direction : {0u, 1u}) {
+        const auto result =
+            native_curve(surface(false, false, {}, direction ? std::nullopt : std::optional<int>(3),
+                                 direction ? std::optional<int>(4) : std::nullopt),
+                         5);
+        check(result.at("status") == "rejected" &&
+                  result.at("construction").at("reason") == "native_surface_knot_count_guard",
+              "surface independently checks explicit node count in both directions");
+    }
+    check(native_curve(surface(true, true, {}, -1, -1), 5).at("status") == "geometry_constructed",
+          "surface reader skips negative signed knot counts before the factory sees vectors");
+    changed_surface = valid_surface;
+    write(changed_surface, s + 20, std::int32_t(3));
+    check(native_curve(changed_surface, 5).at("construction").at("reason") ==
+              "native_surface_control_net_size_guard",
+          "surface dimensions must multiply to the copied number of complete poles");
+    changed_surface = valid_surface;
+    write(changed_surface, s + 20, std::int32_t(65536));
+    write(changed_surface, s + 24, std::int32_t(65536));
+    check(native_curve(changed_surface, 5).at("reason") == "native_surface_pole_product_overflow",
+          "native int32 dimension product wrap does not establish safe construction");
+    for (int boundary : {1, 3}) {
+        const auto result = native_curve(surface(false, false, {}, {}, {}, boundary), 5);
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("trim_operation") == "clear_empty_root",
+              "setTrim skips sampling when the constructed root has no retained members");
+    }
+    for (int boundary : {2, 4}) {
+        const auto result = native_curve(surface(false, false, {}, {}, {}, boundary), 5);
+        check(result.at("status") == "not_evaluated" &&
+                  result.at("reason") == "native_surface_nonempty_trim_construction_not_evaluated",
+              "nonempty trim and nested empty group cannot bypass native trim processing");
+    }
+    changed_surface = surface(false, false, {}, {}, {}, 2);
+    write(changed_surface, surface_table(changed_surface) + 28, std::int32_t(1));
+    check(native_curve(changed_surface, 5).at("status") == "rejected",
+          "failed surface factory never calls setTrim on an already read nonempty boundary");
+    changed_surface = surface(false, false, {}, {}, {}, 5);
+    write(changed_surface, surface_table(changed_surface) + 28, std::int32_t(1));
+    check(native_curve(changed_surface, 5).at("status") == "not_evaluated",
+          "boundary input failure precedes and cannot be hidden by surface factory guard");
+    changed_surface = valid_surface;
+    write(changed_surface, s + 28, std::int32_t(1));
+    changed_surface.pop_back();
+    check(native_curve(changed_surface, 5).at("status") == "not_evaluated",
+          "unavailable pole bytes precede an otherwise rejecting populate guard");
+    for (unsigned slot : {8u, 12u, 16u}) {
+        changed_surface = surface(false, false, 6, 4, 5);
+        const auto table = surface_table(changed_surface);
+        const auto vector = table + slot + Reader(changed_surface, table + slot).u32();
+        write(changed_surface, vector, std::int32_t(10000));
+        write(changed_surface, table + 28, std::int32_t(1));
+        check(native_curve(changed_surface, 5).at("status") == "not_evaluated",
+              "every scalar vector must be readable before a rejecting surface factory guard");
+    }
     for (bool closed : {false, true})
         for (const auto weights :
              {std::optional<int>{}, std::optional<int>{0}, std::optional<int>{-1},
@@ -242,6 +441,17 @@ unsigned swept_binary_tests() {
     check(nested_group.at("construction").at("members").at(0).at("output_member_count") == 2 &&
               nested_group.at("parametric_append_input").at("status") == "appended",
           "nested B-spline group copy preserves grouping and ordered members");
+    const auto surface_group = native_curve(collection(valid_surface, 1), 2);
+    check(surface_group.at("construction").at("output_member_count") == 0 &&
+              surface_group.at("construction").at("members").at(0).at("action") == "skip_non_curve",
+          "generic surface member construction does not insert a surface in a curve group");
+    changed_surface = valid_surface;
+    write(changed_surface, surface_table(changed_surface) + 28, std::int32_t(1));
+    const auto failed_surface_group = native_curve(collection(changed_surface, 1), 2);
+    check(failed_surface_group.at("construction").at("output_member_count") == 0 &&
+              failed_surface_group.at("construction").at("members").at(0).at("action") ==
+                  "skip_null",
+          "surface factory null is skipped by the enclosing generic curve-group reader");
     for (auto order : {INT32_MIN, -1, 0, 1, 3, INT32_MAX})
         check(native_curve(spline(order, false, {}, {})).at("reason") ==
                   "native_bspline_populate_guard_leaves_uninitialized_temporary",

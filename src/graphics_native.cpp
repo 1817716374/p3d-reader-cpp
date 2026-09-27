@@ -244,6 +244,96 @@ struct GeometryConstruction {
         const auto p = b.field(table, field, 1);
         return p && b.at<std::uint8_t>(*p) != 0;
     }
+    Json bspline_surface(std::size_t table, unsigned depth) {
+        auto scalar = [&](unsigned field) {
+            const auto p = b.field(table, field, 4);
+            return p ? b.at<std::int32_t>(*p) : 0;
+        };
+        auto out = object("BsplineSurface", "surface");
+        out["operation"] = "populate_weighted_bspline_surface";
+        out["allocator_assumption"] = "default_native_allocator";
+        const auto nu = scalar(4), nv = scalar(5), ku = scalar(6), kv = scalar(7);
+        const auto rules_u = scalar(8), rules_v = scalar(9), hole_origin = scalar(10);
+        const bool closed_u = flag(table, 12), closed_v = flag(table, 13);
+        const auto poles = child(table, 0);
+        const auto scalars = poles ? b.at<std::uint32_t>(*poles) : 0;
+        const auto count = scalars / 3;
+        // The reader copies all four vectors BEFORE calling the surface factory.
+        // A factory guard cannot turn an earlier unavailable read into a rejection.
+        if (count)
+            b.range(*poles + 4, std::size_t(count) * 24);
+        out["source_scalar_count"] = scalars;
+        out["pole_count"] = count;
+        out["ignored_tail_scalars"] = scalars % 3;
+        out["pole_data_offset"] = poles ? Json(*poles + 4) : Json();
+        out["copied_pole_bytes"] = std::uint64_t(count) * 24;
+        const char *names[] = {"weights", "knots_u", "knots_v"};
+        std::uint32_t counts[3]{};
+        for (unsigned i = 0; i < 3; ++i) {
+            const auto vector = child(table, i + 1);
+            const auto signed_count = vector ? b.at<std::int32_t>(*vector) : 0;
+            counts[i] = static_cast<std::uint32_t>(std::max(0, signed_count));
+            if (counts[i])
+                b.range(*vector + 4, std::size_t(counts[i]) * 8);
+            out["source_vectors"][names[i]] = {
+                {"present", vector.has_value()},
+                {"source_count_signed", signed_count},
+                {"copied_count", counts[i]},
+                {"data_offset", counts[i] ? Json(*vector + 4) : Json()}};
+        }
+        out["boundary_input"] = curve_vector(child(table, 11), depth + 1);
+        out["u"] = {{"num_poles", nu}, {"order", ku}, {"closed", closed_u}};
+        out["v"] = {{"num_poles", nv}, {"order", kv}, {"closed", closed_v}};
+        auto failure = [&](const char *reason) {
+            out.update({{"geometry_pointer", "null"},
+                        {"native_populate_result", 1},
+                        {"reason", reason},
+                        {"trim_operation", "not_called"},
+                        {"reader_overrides_applied", false}});
+            return out;
+        };
+        if (ku <= 1 || kv <= 1 || nu < ku || nv < kv)
+            return failure("native_surface_order_or_pole_count_guard");
+        // Populate and the default allocator both multiply dimensions in int32.
+        // Do not infer a safe result from a wrapped native product or byte count.
+        const auto product = std::uint64_t(nu) * std::uint64_t(nv);
+        require(product <= INT32_MAX, "native_surface_pole_product_overflow");
+        if (product != count)
+            return failure("native_surface_control_net_size_guard");
+        if (counts[0] && counts[0] != count)
+            return failure("native_surface_weight_count_guard");
+        const auto knots_u = std::uint64_t(nu) + (closed_u ? 2 * std::uint64_t(ku) - 1 : ku);
+        const auto knots_v = std::uint64_t(nv) + (closed_v ? 2 * std::uint64_t(kv) - 1 : kv);
+        require(knots_u <= INT32_MAX && knots_v <= INT32_MAX, "native_surface_knot_count_overflow");
+        if ((counts[1] && counts[1] != knots_u) || (counts[2] && counts[2] != knots_v))
+            return failure("native_surface_knot_count_guard");
+        require(product * 24 <= INT32_MAX && knots_u * 8 <= INT32_MAX && knots_v * 8 <= INT32_MAX,
+                "native_surface_allocation_size_overflow");
+        // setTrim has an early return only when the CONSTRUCTED root is empty.
+        // A nonempty root still resamples even if later ring selection is empty.
+        const auto &boundary = out.at("boundary_input");
+        const bool trim_present = boundary.at("geometry_pointer") != "null";
+        require(!trim_present || boundary.at("output_member_count") == 0,
+                "native_surface_nonempty_trim_construction_not_evaluated");
+        out["u"].update({{"effective_knot_count", knots_u},
+                         {"knots_source", counts[1] ? "copied" : "generated_uniform"},
+                         {"num_rules", rules_u}});
+        out["v"].update({{"effective_knot_count", knots_v},
+                         {"knots_source", counts[2] ? "copied" : "generated_uniform"},
+                         {"num_rules", rules_v}});
+        out.update({{"native_populate_result", 0},
+                    {"rational", counts[0] != 0},
+                    {"copied_weight_count", counts[0]},
+                    {"input_poles_already_weighted", true},
+                    {"pole_order", "u_fastest"},
+                    {"source_hole_origin", hole_origin},
+                    {"hole_origin", hole_origin != 0},
+                    {"outer_boundary_active", hole_origin == 0},
+                    {"reader_overrides_applied", true},
+                    {"trim_operation", trim_present ? "clear_empty_root" : "not_called"},
+                    {"boundary_sampling_performed", false}});
+        return out;
+    }
     Json curve_vector(std::optional<std::size_t> table, unsigned depth) {
         visit(depth);
         auto out = object("CurveVector", "curve_vector", table.has_value());
@@ -290,13 +380,15 @@ struct GeometryConstruction {
             out["geometry_pointer"] = "non_null";
             return out;
         }
-        require(tag == 1 || tag == 2 || tag == 3 || tag == 4 || tag == 5 || tag == 10 || tag == 11 ||
-                    tag == 12 || tag == 18 || tag == 20 || tag == 21,
+        require(tag == 1 || tag == 2 || tag == 3 || tag == 4 || tag == 5 || tag == 10 ||
+                    tag == 11 || tag == 12 || tag == 14 || tag == 18 || tag == 20 || tag == 21,
                 "native_geometry_construction_not_supported");
         const auto table = child(root, 1);
         if (tag == 5)
             return curve_vector(table, depth + 1);
         require(table.has_value(), "native_geometry_reader_requires_union_data");
+        if (tag == 14)
+            return bspline_surface(*table, depth);
         if (tag == 3) {
             const auto order_field = b.field(*table, 0, 4);
             const auto order = order_field ? b.at<std::int32_t>(*order_field) : 0;
@@ -312,8 +404,8 @@ struct GeometryConstruction {
             // A failed guard leaves that temporary uninitialized, not a null curve.
             require(order > 1 && std::int64_t(count) >= order,
                     "native_bspline_populate_guard_leaves_uninitialized_temporary");
-            const auto expected_knots = std::uint64_t(count) +
-                                        (closed ? 2 * std::uint64_t(order) - 1 : order);
+            const auto expected_knots =
+                std::uint64_t(count) + (closed ? 2 * std::uint64_t(order) - 1 : order);
             require(knot_count == 0 || std::int64_t(knot_count) == std::int64_t(expected_knots),
                     "native_bspline_knot_count_leaves_uninitialized_temporary");
             // The default allocator multiplies in signed 32-bit storage.
@@ -523,10 +615,10 @@ Json parametric_append_input(const Json &input) {
             // Input construction already checked their storage and allocation sizes.
             operation = "copy_bspline_storage";
             out["bspline_storage_copy"] = {{"pole_count", source.at("pole_count")},
-                                          {"knot_count", source.at("effective_knot_count")},
-                                          {"weight_count", source.at("copied_weight_count")},
-                                          {"poles_reweighted", false},
-                                          {"knots_regenerated", false}};
+                                           {"knot_count", source.at("effective_knot_count")},
+                                           {"weight_count", source.at("copied_weight_count")},
+                                           {"poles_reweighted", false},
+                                           {"knots_regenerated", false}};
         } else if (name == "Polyface")
             operation = "copy_polyface_channels";
         else if (name == "CurveVector") {
@@ -670,6 +762,11 @@ Json native_input(const Bytes &entry, bool model_has_project) {
             return out;
         }
         out["construction"] = GeometryConstruction{b}.variant(root);
+        if (type == 5 && out.at("construction").at("geometry_pointer") == "null") {
+            out["material_footer"] = "not_read";
+            reject("native_bspline_surface_factory_rejected");
+            return out;
+        }
         if (type == 4) {
             // BPValue obtains the wrapper's saved B-spline via virtual +0x68.
             // It does not call the curve-to-B-spline conversion/fitting interface.
