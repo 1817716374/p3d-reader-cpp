@@ -735,6 +735,71 @@ Json parametric_append_input(const Json &input) {
                                            {"weight_count", source.at("copied_weight_count")},
                                            {"poles_reweighted", false},
                                            {"knots_regenerated", false}};
+        } else if (name == "BsplineSurface") {
+            // The raw surface copy allocates all four storage arrays. Its
+            // boundary-copy helper receives no parameter transform: it copies
+            // cached UV pairs and each already opened B-spline, without restroking.
+            Json storage = {{"pole_count", source.at("pole_count")},
+                            {"u_knot_count", source.at("u").at("effective_knot_count")},
+                            {"v_knot_count", source.at("v").at("effective_knot_count")},
+                            {"weight_count", source.at("copied_weight_count")},
+                            {"num_rules_u", source.at("u").at("num_rules")},
+                            {"num_rules_v", source.at("v").at("num_rules")},
+                            {"hole_origin", source.at("hole_origin")},
+                            {"poles_reweighted", false},
+                            {"knots_regenerated", false},
+                            {"source_arrays_reused", false}};
+            Json boundaries = {{"loop_count", 0},
+                               {"uv_sample_count", 0},
+                               {"curve_count", 0},
+                               {"loops", Json::array()},
+                               {"resampled", false},
+                               {"parameter_transform_applied", false},
+                               {"source_arrays_reused", false},
+                               {"cache_components", "parameter_xy"},
+                               {"sample_positions_copied", false}};
+            if (source.contains("initial_boundary_cache")) {
+                const auto &cache = source.at("initial_boundary_cache");
+                require(cache.at("status") == "complete", "native_surface_copy_incomplete_cache");
+                const auto &loops = cache.at("loops");
+                const auto &sources = cache.at("sampling").at("boundary_sources");
+                require(loops.size() == sources.size() && loops.size() <= INT32_MAX / 24,
+                        "native_surface_copy_boundary_layout");
+                std::size_t samples = 0, curves = 0;
+                for (std::size_t i = 0; i < loops.size(); ++i) {
+                    require(loops[i].size() <= INT32_MAX / 16,
+                            "native_surface_copy_uv_allocation_overflow");
+                    Json members = Json::array();
+                    for (const auto &member : sources[i].at("members")) {
+                        const auto poles = member.at("prepared_poles").get<std::size_t>();
+                        const auto knots = member.at("prepared_knots").get<std::size_t>();
+                        const auto weights = member.at("prepared_weights").get<std::size_t>();
+                        require(poles <= INT32_MAX / 24 && knots <= INT32_MAX / 8 &&
+                                    weights <= INT32_MAX / 8,
+                                "native_surface_copy_pcurve_allocation_overflow");
+                        members.push_back({{"curve_index", members.size()},
+                                           {"source_path", member.at("source_path")},
+                                           {"order", member.at("prepared_order")},
+                                           {"closed", member.at("prepared_closed")},
+                                           {"pole_count", poles},
+                                           {"knot_count", knots},
+                                           {"weight_count", weights}});
+                    }
+                    boundaries["loops"].push_back({{"loop_index", i},
+                                                   {"uv_sample_count", loops[i].size()},
+                                                   {"uv_storage_bytes", loops[i].size() * 16},
+                                                   {"curves", std::move(members)}});
+                    samples += loops[i].size();
+                    curves += sources[i].at("members").size();
+                }
+                boundaries["loop_count"] = loops.size();
+                boundaries["uv_sample_count"] = samples;
+                boundaries["curve_count"] = curves;
+                boundaries["member_path_basis"] = cache.at("member_path_basis");
+            }
+            operation = "copy_surface_storage_and_boundaries";
+            out["surface_storage_copy"] = std::move(storage);
+            out["boundary_storage_copy"] = std::move(boundaries);
         } else if (name == "Polyface")
             operation = "copy_polyface_channels";
         else if (name == "CurveVector") {

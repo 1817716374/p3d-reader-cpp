@@ -223,6 +223,10 @@ struct Boundaries {
                                   {"source_curve_closed", source->closed()},
                                   {"prepared_curve_knot_domain", loop.back().knot_domain()},
                                   {"prepared_poles", count},
+                                  {"prepared_order", loop.back().order()},
+                                  {"prepared_closed", loop.back().closed()},
+                                  {"prepared_knots", loop.back().knots().size()},
+                                  {"prepared_weights", loop.back().weights().size()},
                                   {"opening", opening}});
         }
         if (loop.empty()) {

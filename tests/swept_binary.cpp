@@ -265,8 +265,28 @@ unsigned swept_binary_tests() {
                                   c.at("outer_boundary_active") == false &&
                                   c.at("boundary_sampling_performed") == false,
                               "reader overrides rules and normalizes only the hole origin flag");
-                        check(result.at("parametric_append_input").at("status") == "not_evaluated",
-                              "surface input construction does not imply downstream copy support");
+                        const auto &append = result.at("parametric_append_input");
+                        check(
+                            append.at("status") == "appended" && append.at("output_count") == 1 &&
+                                append.at("geometry_operation") ==
+                                    "copy_surface_storage_and_boundaries" &&
+                                append.at("source_geometry_reused") == false,
+                            "surface append creates a new entry from independently allocated data");
+                        const auto &copy = append.at("surface_storage_copy");
+                        check(copy.at("pole_count") == 6 &&
+                                  copy.at("u_knot_count") == (closed_u ? 5 : 4) &&
+                                  copy.at("v_knot_count") == (closed_v ? 6 : 5) &&
+                                  copy.at("weight_count") == (weights && *weights > 0 ? 6 : 0) &&
+                                  copy.at("num_rules_u") == -9 && copy.at("num_rules_v") == 13 &&
+                                  copy.at("hole_origin") == true &&
+                                  copy.at("knots_regenerated") == false &&
+                                  copy.at("poles_reweighted") == false &&
+                                  copy.at("source_arrays_reused") == false,
+                              "surface copy preserves metadata and constructed storage for both "
+                              "directions");
+                        check(append.at("boundary_storage_copy").at("loop_count") == 0 &&
+                                  append.at("boundary_storage_copy").at("resampled") == false,
+                              "untrimmed surface append does not generate new boundary data");
                     }
                 }
     const auto valid_surface = surface(false, false, {}, {}, {});
@@ -496,6 +516,29 @@ unsigned swept_binary_tests() {
         check(cache.at("status") == "complete" && c.at("boundary_sampling_performed") == true &&
                   cache.at("loops").size() == (tag == 18 ? 0u : 1u),
               "native PointString conversion is skipped while actual curve members are sampled");
+        const auto &append = result.at("parametric_append_input");
+        const auto &copied = append.at("boundary_storage_copy");
+        check(append.at("status") == "appended" &&
+                  copied.at("loop_count") == (tag == 18 ? 0u : 1u) &&
+                  copied.at("curve_count") == (tag == 18 ? 0u : 1u) &&
+                  copied.at("cache_components") == "parameter_xy" &&
+                  copied.at("sample_positions_copied") == false &&
+                  copied.at("resampled") == false && copied.at("source_arrays_reused") == false,
+              "trim copy separates native UV arrays from intermediate world-point evaluations");
+        if (tag != 18) {
+            const auto &loop = copied.at("loops").at(0), &curve = loop.at("curves").at(0);
+            const auto count = cache.at("loops").at(0).size();
+            check(loop.at("uv_sample_count") == count &&
+                      loop.at("uv_storage_bytes") == count * 16 && curve.at("closed") == false &&
+                      curve.at("order") == (tag == 2 ? 3 : 2),
+                  "boundary copy keeps opened curve order and exactly sixteen bytes per UV sample");
+            check(curve.at("knot_count").get<std::size_t>() ==
+                          curve.at("pole_count").get<std::size_t>() +
+                              curve.at("order").get<unsigned>() &&
+                      (tag == 2 ? curve.at("weight_count") == curve.at("pole_count")
+                                : curve.at("weight_count") == 0),
+                  "boundary copy uses prepared B-spline storage including ellipse weights");
+        }
         for (const auto &loop : cache.at("loops"))
             for (const auto &sample : loop) {
                 const auto uv = sample.at("parameter").get<Point3>();
@@ -535,6 +578,18 @@ unsigned swept_binary_tests() {
                       .at(0)
                       .at("source_curve_closed") == true,
           "closed binary B-spline trim reaches native opening before initial cache sampling");
+    const auto &periodic_copy = periodic_trim.at("parametric_append_input")
+                                    .at("boundary_storage_copy")
+                                    .at("loops")
+                                    .at(0)
+                                    .at("curves")
+                                    .at(0);
+    check(periodic_copy.at("closed") == false &&
+              periodic_copy.at("pole_count").get<unsigned>() > 2 &&
+              periodic_copy.at("knot_count").get<unsigned>() ==
+                  periodic_copy.at("pole_count").get<unsigned>() + 2,
+          "surface boundary copy uses the opened periodic curve, not its shorter original control "
+          "list");
     for (std::int32_t type : {INT32_MIN, -1, 0, 6, INT32_MAX}) {
         auto ignored_boundary = open_boundary;
         write(ignored_boundary, group_table + 4, type);
@@ -604,6 +659,13 @@ unsigned swept_binary_tests() {
     check(rings.at("status") == "geometry_constructed" && ring_cache.at("loops").size() == 2 &&
               ring_cache.at("loops").at(0) == ring_cache.at("loops").at(1),
           "repeated source region members remain separate cached loops without new sharing");
+    const auto &copied_rings = rings.at("parametric_append_input").at("boundary_storage_copy");
+    check(copied_rings.at("loop_count") == 2 && copied_rings.at("curve_count") == 2 &&
+              copied_rings.at("loops").at(0).at("loop_index") == 0 &&
+              copied_rings.at("loops").at(1).at("loop_index") == 1 &&
+              copied_rings.at("loops").at(1).at("curves").at(0).at("source_path") ==
+                  "/curves/1/geometry/curves/0/geometry",
+          "surface copy preserves repeated boundary records and each curve's source path");
     check(ring_cache.at("sampling").at("boundary_sources").at(1).at("source_path") ==
                   "/curves/1/geometry" &&
               ring_cache.at("member_path_basis") == "constructed_boundary_tree_output_member_index",
@@ -616,6 +678,8 @@ unsigned swept_binary_tests() {
               incomplete_trim.at("construction").at("initial_boundary_cache").at("loops").empty() &&
               incomplete_trim.at("construction").at("reader_overrides_applied").is_null(),
           "unsafe trim evaluation retains proven population but does not invent a null factory");
+    check(incomplete_trim.at("parametric_append_input").at("status") == "not_evaluated",
+          "incomplete input cannot be promoted to successful surface copy");
     check(native_curve(collection(malformed_trim, 1), 2).at("status") == "not_evaluated",
           "unproved nested surface construction cannot be ignored as a safely returned noncurve");
     const auto grouped = native_curve(collection(spline(2, false, 2, {}), 2), 2);
