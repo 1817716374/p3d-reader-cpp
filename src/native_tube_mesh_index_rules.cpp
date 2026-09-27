@@ -48,6 +48,14 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         out.indices = d0 > d1 ? std::vector<std::int32_t>{1, 2, -3, 0, -1, 3, 4, 0}
                               : std::vector<std::int32_t>{1, -2, 4, 0, -4, 2, 3, 0};
     }
+    if (points.size() > 4) {
+        require(points.size() < budget.max_control_points && points.size() < INT32_MAX,
+                "native facet visitor closure budget");
+        work.charge(points.size() + 1);
+        auto wrapped = points;
+        wrapped.push_back(points.front()); // Native visitor wrap count is one.
+        out.projection = prepare_native_polygon_projection(wrapped, budget);
+    }
     // Larger faces require the original projected-loop triangulator. Never
     // replace that branch with an arbitrary triangle fan or claim completion.
     return out;

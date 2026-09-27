@@ -1,5 +1,7 @@
 #pragma once
 #include "native_tube_mesh_edges.hpp"
+#include "native_polygon_projection.hpp"
+#include <optional>
 namespace p3d::swept_detail {
 struct NativeFacetIndexPlan {
     enum class Route { passthrough, quad, projected_loops_required };
@@ -7,6 +9,8 @@ struct NativeFacetIndexPlan {
     // Local signed 1-based indices, zero-terminated. Input points do not
     // include the visitor's automatically appended closure point.
     std::vector<std::int32_t> indices;
+    // Large-face preparation includes the visitor's extra closing point.
+    std::optional<NativePolygonProjection> projection;
 };
 NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &, TubeBudget &);
 struct TubeMeshVisibilityLayout {
