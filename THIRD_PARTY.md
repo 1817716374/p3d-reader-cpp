@@ -2,6 +2,8 @@
 
 `src/native_polyface_layout.cpp` 的布局转换参考下表固定 Bentley 提交中的 `Polyface.cpp` 和 `BlockedVector.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的独立通道行宽、颜色池条件及活动标志，不引入较新参考版本中的索引自动启用、池行宽重设或末尾分隔符补齐。
 
+`src/native_polyface_visitor.cpp` 的逐面索引读取参考同一固定提交中的 `PolyfaceVisitor.cpp` 和 `BlockedVector.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的四种颜色表示、颜色指针与计数的独立选择、闭合后点数检查以及属性索引范围，加入实际数组边界和资源预算检查；不依赖 Bentley 运行库。
+
 `src/native_polygon_convexity.cpp` 的空间凸面判断参考下表固定 Bentley 提交中的 `polygon3d.cpp`，相关网格查询参考 `PolyfaceQuery.cpp`；保留 Bentley 版权及 Apache-2.0 标记。实现采用原生精确闭合点比较、最大叉积选择、相对转角阈值，以及点数据专用访问器的短面与提前结束规则。
 
 `src/native_polyface_face_data.cpp` 中的边链生成参考下表固定 Bentley 提交中的 `PolyfaceEdgeChain.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保留原生的两遍可见边登记与输出、双重面号递增、顶点身份、共享面标识及单边记录顺序，不使用参考代码中另外的长边链连接操作。
