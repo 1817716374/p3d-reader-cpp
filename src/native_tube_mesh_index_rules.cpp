@@ -55,6 +55,8 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         auto wrapped = points;
         wrapped.push_back(points.front()); // Native visitor wrap count is one.
         out.projection = prepare_native_polygon_projection(wrapped, budget);
+        if (out.projection->frame_succeeded)
+            out.input_graph = build_native_vu_input(out.projection->points, 0, budget);
     }
     // Larger faces require the original projected-loop triangulator. Never
     // replace that branch with an arbitrary triangle fan or claim completion.

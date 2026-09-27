@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_vu_graph.cpp` 的索引环构造、边分裂与顶点重接参考下表固定 Bentley 提交中的 `VuOps.cpp`、`vu.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现采用有界节点索引存储，保留 P3D 的节点遍历顺序、掩码及源角点编号，不依赖厂商分配器或运行库。
+
 `src/native_polygon_projection.cpp` 的多边形法向及三点环中点分支参考下表固定 Bentley 提交中的 `PolygonOps.cpp`、`polygon3d.cpp`，保留 Bentley 版权及 Apache-2.0 标记。坐标系采用 P3D 的首环、首个合格边和退化回退规则；未采用较新参考实现的秩分类和直线回退。投影准备不包含原生平面图三角化。
 
 `src/native_tube_mesh_index_rules.cpp` 的四边形对角线与带符号三角索引选择参考下表固定 Bentley 提交中的 `Polyface.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的点积算序和低边数保留规则改写，独立处理原生首末列的边可见性；未采用较新参考实现的平面性筛选和可选面过滤器。

@@ -5,6 +5,7 @@
 /tests/*
 !/tests/unit.cpp
 !/tests/native_polygon_projection.cpp
+!/tests/native_vu_graph.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp
