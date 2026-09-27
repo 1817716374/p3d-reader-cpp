@@ -31,15 +31,19 @@ class CoordinateMap {
         ++comparisons;
         double tol = absolute;
         if (relative != 0) {
-            double sum = finite(std::abs(a[0]) + std::abs(b[0]));
-            sum = finite(sum + std::abs(a[1]));
-            sum = finite(sum + std::abs(b[1]));
-            sum = finite(sum + std::abs(a[2]));
-            sum = finite(sum + std::abs(b[2]));
-            tol = finite(tol + finite(relative * sum));
+            // Finite source keys can include native DBL_MAX disconnects.
+            // The original comparison retains IEEE overflow in its tolerance
+            // and differences. Rejecting these intermediate infinities blocks
+            // multi-ring cap insertion; dropping the marker changes tree order.
+            double sum = std::abs(a[0]) + std::abs(b[0]);
+            sum += std::abs(a[1]);
+            sum += std::abs(b[1]);
+            sum += std::abs(a[2]);
+            sum += std::abs(b[2]);
+            tol += relative * sum;
         }
         for (int k = 2; k >= 0; --k) {
-            const double delta = finite(b[k] - a[k]);
+            const double delta = b[k] - a[k];
             if (delta > tol)
                 return false;
             if (delta < -tol)

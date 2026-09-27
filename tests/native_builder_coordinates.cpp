@@ -172,7 +172,10 @@ unsigned native_builder_coordinates_tests() {
         rejects([&] { map_native_builder_coordinates({bad}, defaults, b); });
         bad = a;
         bad.points = {{-1e308, 0, 0}, {1e308, 0, 0}};
-        rejects([&] { map_native_builder_coordinates({bad}, defaults, b); });
+        auto extreme = map_native_builder_coordinates({bad}, defaults, b);
+        check(extreme.points == std::vector<Point3>{{-1e308, 0, 0}} &&
+                  extreme.batches[0].points == std::vector<std::size_t>{0, 0},
+              "finite extreme keys retain native infinite-tolerance comparison");
         auto invalid = defaults;
         invalid.point_relative_tolerance = -1;
         rejects([&] { map_native_builder_coordinates({a}, invalid, b); });
@@ -201,6 +204,25 @@ unsigned native_builder_coordinates_tests() {
         auto empty = map_native_builder_coordinates({}, defaults, b);
         check(empty.points.empty() && empty.batches.empty(),
               "empty coordinate stream remains empty");
+    }
+    {
+        const double marker = std::numeric_limits<double>::max();
+        NativeBuilderCoordinateBatch disconnects;
+        disconnects.points = {{0, 0, 0}, {1, 0, 0}, {marker, marker, marker}, {1, 1, 0}};
+        auto result = map_native_builder_coordinates({disconnects}, defaults, b);
+        check(result.points == std::vector<Point3>{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}} &&
+                  result.batches[0].points == std::vector<std::size_t>{0, 1, 1, 2},
+              "disconnect tolerance overflow preserves original native map lookup");
+        disconnects.points = {{marker, marker, marker}, {0, 0, 0}, {1, 1, 1}};
+        result = map_native_builder_coordinates({disconnects}, defaults, b);
+        check(result.points == std::vector<Point3>{{marker, marker, marker}} &&
+                  result.batches[0].points == std::vector<std::size_t>{0, 0, 0},
+              "leading disconnect is not silently removed or repaired");
+        NativeBuilderCoordinateOptions exact;
+        exact.point_relative_tolerance = 0;
+        disconnects.points = {{-marker, 0, 0}, {marker, 0, 0}};
+        result = map_native_builder_coordinates({disconnects}, exact, b);
+        check(result.points.size() == 2, "overflowing difference still orders finite source keys");
     }
     auto run = [&] {
         TubeBudget local;
