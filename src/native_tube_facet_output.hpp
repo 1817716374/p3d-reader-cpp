@@ -6,6 +6,10 @@ struct TubeFacetSurface {
     // Independent native UV polylines. Every entry here is active; unused
     // allocation slots from the generation chain are not copied.
     std::vector<std::vector<Point2>> boundaries;
+    // Optional native trim curves parallel to boundaries. An empty outer list
+    // means all boundary records have null pcurve lists. These are runtime
+    // curves, not an inferred BGFB boundary tree.
+    std::vector<std::vector<BsplineCurve>> pcurves{};
 };
 // 1135e0 / 121190 for generated facets: deep-copy geometry and active UV
 // polylines, generating missing knot arrays. No BGFB trim-tree invention.

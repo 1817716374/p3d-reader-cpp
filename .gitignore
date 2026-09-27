@@ -176,3 +176,4 @@
 !/tests/native_tube_path_groups.cpp
 !/tests/native_xy_newton.cpp
 !/tests/native_curve_xy.cpp
+!/tests/native_tube_facet_assembly.cpp
