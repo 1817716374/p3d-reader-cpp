@@ -469,6 +469,11 @@ visit_native_polyface_attribute_updates(NativePolyfaceMesh &mesh, TubeBudget &bu
             "native attribute visitor requires normal or parameter channel");
     return visit_impl(mesh, budget, true, 0, &consumer, channel);
 }
+NativePolyfaceVisit consume_native_polyface(const NativePolyfaceMesh &mesh, TubeBudget &budget,
+                                            const NativePolyfaceFacetConsumer &consumer,
+                                            bool all_data, std::uint32_t wrap) {
+    return visit_impl(mesh, budget, all_data, wrap, &consumer, polyface_channel_count);
+}
 NativePolyfaceMeshTriangulation triangulate_native_polyface_mesh(const NativePolyfaceMesh &input,
                                                                  TubeBudget &budget,
                                                                  std::size_t max_edges) {

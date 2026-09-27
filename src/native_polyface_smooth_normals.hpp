@@ -1,5 +1,6 @@
 #pragma once
 #include "native_polyface_attributes.hpp"
+#include "native_polyface_connectivity.hpp"
 namespace p3d::swept_detail {
 // Original BuildApproximateNormals: per-face normals, native connectivity,
 // barrier/sector averaging, then optional point-index visibility replacement.
@@ -8,4 +9,10 @@ namespace p3d::swept_detail {
 NativePolyfaceAttributes build_native_polyface_approximate_normals(
     const NativePolyfaceFaceDataState &, double max_single_edge_angle, double max_accumulated_angle,
     bool mark_transitions_visible, TubeBudget &);
+// Internal continuation. The graph must be built from the supplied per-face
+// result by the native connectivity stage; no per-face regeneration occurs.
+NativePolyfaceAttributes
+smooth_native_polyface_prepared_normals(NativePolyfaceAttributes, NativePolyfaceConnectivity,
+                                        double max_single_edge_angle, double max_accumulated_angle,
+                                        bool mark_transitions_visible, TubeBudget &);
 } // namespace p3d::swept_detail

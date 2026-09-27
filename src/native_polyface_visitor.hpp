@@ -63,6 +63,11 @@ NativePolyfaceVisit visit_native_polyface(const NativePolyfaceMesh &, TubeBudget
                                           bool all_data = true, std::uint32_t wrap = 1);
 using NativePolyfaceFacetConsumer = std::function<void(
     std::size_t, const NativePolyfaceVisitorFacet &, const NativePolyfaceVisitedData &)>;
+// Read-only incremental traversal. Retains read positions and diagnostics,
+// releases each consumed facet's values. The consumer must not mutate source.
+NativePolyfaceVisit consume_native_polyface(const NativePolyfaceMesh &, TubeBudget &,
+                                            const NativePolyfaceFacetConsumer &,
+                                            bool all_data = true, std::uint32_t wrap = 0);
 // Internal generation traversal: all data, wrap zero. The consumer runs between
 // native advances and may update only the selected normal/UV pool, its index
 // values and parameter ranges. Do not change source points or layout. Missing

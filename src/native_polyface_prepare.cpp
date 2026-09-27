@@ -111,18 +111,15 @@ prepare_native_polyface_for_builder(const NativePolyfaceMesh &source,
     out.output.data.coordinates.parameter_scope = source.data.coordinates.parameter_scope;
     out.output.data.coordinates.normalize_normals = source.data.coordinates.normalize_normals;
     out.output.data.coordinates.reverse_normals = source.data.coordinates.reverse_normals;
-    auto attributes = [&](const char *name, NativePolyfaceAttributes &&result) {
-        out.complete = out.complete && result.complete;
-        steps.push_back({{"step", name}, {"result", std::move(result.report)}});
-        adopt(out.output, std::move(result.output));
-    };
     if (normals) {
         // Base DegreesToRadians is one multiplication by this exact double.
         constexpr double degrees_to_radians = 0x1.1df46a2529d39p-6;
-        attributes("approximate_normals",
-                   build_native_polyface_approximate_normals(
-                       state(out.output), 30.0 * degrees_to_radians, 90.0 * degrees_to_radians,
-                       options.hide_smooth_edges, budget));
+        auto result = build_native_polyface_mesh_approximate_normals(
+            out.output, 30.0 * degrees_to_radians, 90.0 * degrees_to_radians,
+            options.hide_smooth_edges, budget);
+        out.complete = out.complete && result.complete;
+        steps.push_back({{"step", "approximate_normals"}, {"result", std::move(result.report)}});
+        out.output = std::move(result.output);
     }
     if (parameters) {
         const auto selector = options.parameter_mode == 0 ? 2 : options.parameter_mode == 1 ? 3 : 1;

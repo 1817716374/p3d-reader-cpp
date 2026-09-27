@@ -5,6 +5,7 @@
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_polyface_mesh_attributes.hpp"
 #include "native_polygon_projection.hpp"
+#include "native_polyface_smooth_normals.hpp"
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
 
@@ -165,5 +166,35 @@ NativePolyfaceMeshAttributes build_native_polyface_mesh_parameters(const NativeP
                                                                    int selector,
                                                                    TubeBudget &budget) {
     return build(input, true, selector, budget);
+}
+NativePolyfaceMeshAttributes
+build_native_polyface_mesh_approximate_normals(const NativePolyfaceMesh &input, double max_single,
+                                               double max_accumulated,
+                                               bool mark_transitions_visible, TubeBudget &budget) {
+    curve_detail::bezier_support::finite(max_single);
+    curve_detail::bezier_support::finite(max_accumulated);
+    auto out = build_native_polyface_mesh_normals(input, budget);
+    NativePolyfaceConnectivity graph;
+    if (out.native_succeeded)
+        graph = build_native_polyface_mesh_connectivity(out.output, false, budget);
+    NativePolyfaceAttributes prepared;
+    prepared.native_succeeded = out.native_succeeded;
+    prepared.complete = out.complete;
+    prepared.report = std::move(out.report);
+    prepared.output.mesh = std::move(out.output.data);
+    prepared.output.normal_pool_active = out.output.pool_active[native_normal_pool];
+    prepared.output.parameter_pool_active = out.output.pool_active[native_parameter_pool];
+    prepared.output.face_data_pool_active = out.output.pool_active[native_face_data_pool];
+    auto smoothed =
+        smooth_native_polyface_prepared_normals(std::move(prepared), std::move(graph), max_single,
+                                                max_accumulated, mark_transitions_visible, budget);
+    out.output.data = std::move(smoothed.output.mesh);
+    out.output.pool_active[native_normal_pool] = smoothed.output.normal_pool_active;
+    out.native_succeeded = smoothed.native_succeeded;
+    out.complete = smoothed.complete;
+    out.report = std::move(smoothed.report);
+    out.report["operation"] = "native_typed_build_approximate_normals";
+    out.report["mesh_style"] = out.output.mesh_style;
+    return out;
 }
 } // namespace p3d::swept_detail

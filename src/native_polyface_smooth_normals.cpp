@@ -42,8 +42,20 @@ build_native_polyface_approximate_normals(const NativePolyfaceFaceDataState &inp
                                           bool mark_transitions_visible, TubeBudget &budget) {
     finite(max_single);
     finite(max_accumulated);
+    auto per_face = build_native_polyface_normals(input, budget);
+    NativePolyfaceConnectivity graph;
+    if (per_face.native_succeeded)
+        graph = build_native_polyface_connectivity(per_face.output, false, budget);
+    return smooth_native_polyface_prepared_normals(std::move(per_face), std::move(graph),
+                                                   max_single, max_accumulated,
+                                                   mark_transitions_visible, budget);
+}
+NativePolyfaceAttributes smooth_native_polyface_prepared_normals(
+    NativePolyfaceAttributes result, NativePolyfaceConnectivity graph, double max_single,
+    double max_accumulated, bool mark_transitions_visible, TubeBudget &budget) {
+    finite(max_single);
+    finite(max_accumulated);
     const Work work{budget.work, budget.max_work};
-    auto result = build_native_polyface_normals(input, budget);
     Json report{{"operation", "native_build_approximate_normals"},
                 {"per_face", std::move(result.report)},
                 {"max_single_edge_angle", max_single},
@@ -65,7 +77,6 @@ build_native_polyface_approximate_normals(const NativePolyfaceFaceDataState &inp
     if (!result.native_succeeded)
         return finish(false, false, "per_face_generation_failed");
     const bool per_face_complete = result.complete;
-    auto graph = build_native_polyface_connectivity(result.output, false, budget);
     report["connectivity"] = std::move(graph.report);
     if (!graph.native_succeeded)
         return finish(false, false, "connectivity_failed");

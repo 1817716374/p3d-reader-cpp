@@ -16,4 +16,7 @@ NativePolyfaceMeshAttributes build_native_polyface_mesh_normals(const NativePoly
 NativePolyfaceMeshAttributes build_native_polyface_mesh_parameters(const NativePolyfaceMesh &,
                                                                    int coordinate_selector,
                                                                    TubeBudget &);
+NativePolyfaceMeshAttributes build_native_polyface_mesh_approximate_normals(
+    const NativePolyfaceMesh &, double max_single_edge_angle, double max_accumulated_angle,
+    bool mark_transitions_visible, TubeBudget &);
 } // namespace p3d::swept_detail

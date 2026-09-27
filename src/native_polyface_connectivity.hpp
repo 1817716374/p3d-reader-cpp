@@ -28,4 +28,13 @@ struct NativePolyfaceConnectivity {
 NativePolyfaceConnectivity build_native_polyface_connectivity(const NativePolyfaceFaceDataState &,
                                                               bool ignore_degeneracies,
                                                               TubeBudget &);
+struct NativePolyfaceMesh;
+// Full original query: vertex identities and positions come from its visitor.
+NativePolyfaceConnectivity build_native_polyface_mesh_connectivity(const NativePolyfaceMesh &,
+                                                                   bool ignore_degeneracies,
+                                                                   TubeBudget &);
+// Internal shared graph stage; edges belong to the same query as points.
+NativePolyfaceConnectivity assemble_native_polyface_half_edges(const std::vector<Point3> &,
+                                                               std::vector<NativePolyfaceHalfEdge>,
+                                                               TubeBudget &);
 } // namespace p3d::swept_detail
