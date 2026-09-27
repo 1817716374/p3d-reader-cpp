@@ -30,6 +30,7 @@ unsigned native_tube_mesh_sampling_tests();
 unsigned native_tube_mesh_patch_tests();
 unsigned native_tube_mesh_path_tests();
 unsigned native_tube_mesh_vertices_tests();
+unsigned native_tube_mesh_edges_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2905,6 +2906,7 @@ int main() {
         checks += native_tube_mesh_patch_tests();
         checks += native_tube_mesh_path_tests();
         checks += native_tube_mesh_vertices_tests();
+        checks += native_tube_mesh_edges_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();

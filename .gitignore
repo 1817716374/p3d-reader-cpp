@@ -189,3 +189,4 @@
 !/tests/native_tube_mesh_patch.cpp
 !/tests/native_tube_mesh_path.cpp
 !/tests/native_tube_mesh_vertices.cpp
+!/tests/native_tube_mesh_edges.cpp

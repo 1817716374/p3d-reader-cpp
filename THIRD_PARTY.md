@@ -47,6 +47,8 @@
 
 同文件的 `native_surface_sample` 参考同一固定提交 `bspsurf.cpp` 的 `bspsurf_evaluateSurfacePoint`，保留 Bentley 版权及 Apache-2.0 标记。实现使用 P3D 的固定上界参数换算、原节点域一阶导数及 U 外层/V 内层累加顺序，采用只读数组并显式拒绝无效索引和非有限结果。
 
+`src/native_tube_mesh_edges.cpp` 的矩形网格索引构造参考同一固定提交 `BlockedVector.cpp` 的 `AddTerminatedGridBlocks`，保留 Bentley 版权与 Apache-2.0 标记。实现限定为扫掠矩形条带通路，按 P3D 的原面次序、完整坐标行和独立属性数组处理，并加入存储预算与失败回滚；共享边对应另按原生调用顺序实现。
+
 `src/native_tube_elevate.cpp` 的升阶算法参考上述固定提交的 `bspcurv.cpp` 与 `bsputil.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现复用本库求导与周期打开内核，按 P3D 的节点归一化、节点分组、指定侧求导和权重舍入行为改写，并使用有界的局部工作数组。
 
 `src/native_tube_surface_elevate.cpp` 的曲面升阶参考同一固定提交的 `bspmisc.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按第一列建立共享节点方案，保留各列独立的控制点工作状态，使用只读输入、有界局部存储及本库求导内核。
