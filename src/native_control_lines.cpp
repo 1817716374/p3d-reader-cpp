@@ -40,4 +40,20 @@ NativeControlLinePair native_control_line_pair(const Point3 &a0, const Point3 &a
     out.success = true;
     return out;
 }
+NativeRayPlaneIntersection native_ray_plane_intersection(const Point3 &origin,
+                                                         const Point3 &direction,
+                                                         const std::array<Point3, 2> &plane) {
+    for (const auto &p : {origin, direction, plane[0], plane[1]})
+        for (double v : p)
+            finite(v);
+    const double denominator = dot(plane[1], direction);
+    const double numerator = -dot(subtract(origin, plane[0]), plane[1]);
+    NativeRayPlaneIntersection out;
+    out.divided = std::abs(denominator) > std::abs(numerator) * 1e-15;
+    if (out.divided)
+        out.parameter = finite(numerator / denominator);
+    for (unsigned k = 0; k < 3; ++k)
+        out.point[k] = finite(out.parameter * direction[k] + origin[k]);
+    return out;
+}
 } // namespace p3d::swept_detail

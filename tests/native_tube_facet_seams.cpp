@@ -195,6 +195,12 @@ unsigned native_tube_facet_seams_tests() {
               failed_chain.nodes.empty() && failed_chain.seams.empty() && !failed_chain.prepared,
           "native seam failure clears the whole branch chain");
     auto partial_chain = chain({a0, b0, curved_input}, {-2, -2, 2});
+    partial_chain.seams[1].incoming = std::make_shared<TubeFacetSeamStorage<Point3>>(
+        TubeFacetSeamStorage<Point3>{{1, 0, 0}, true});
+    partial_chain.seams[1].outgoing = std::make_shared<TubeFacetSeamStorage<Point3>>(
+        TubeFacetSeamStorage<Point3>{{0, 1, 0}, true});
+    partial_chain.seams[1].plane = std::make_shared<TubeFacetSeamStorage<std::array<Point3, 2>>>(
+        TubeFacetSeamStorage<std::array<Point3, 2>>{{Point3{0, 0, 0}, Point3{1, 1, 0}}, true});
     TubeBudget partial_budget;
     auto partial_result = process_tube_facet_seams(partial_chain, partial_budget);
     check(partial_result.status == TubeFacetSeamStatus::pending_general &&

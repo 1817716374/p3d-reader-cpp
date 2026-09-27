@@ -1,4 +1,5 @@
 #include "native_tube_facet_seams.hpp"
+#include "native_tube_facet_plane.hpp"
 #include "native_control_lines.hpp"
 #include "native_curve_conversion.hpp"
 #include "native_bezier.hpp"
@@ -142,8 +143,8 @@ TubeFacetSeamResult process_tube_facet_seams(TubeFacetComposition &chain, TubeBu
             out.report["visits"].push_back(std::move(visit));
             continue;
         }
-        auto result = apply_tube_ruled_facet_seam(chain.nodes[i].surface, chain.nodes[next].surface,
-                                                  chain.seams[i], b);
+        auto result = apply_tube_facet_seam(chain.nodes[i].surface, chain.nodes[next].surface,
+                                            chain.seams[i], b);
         visit["seam"] = std::move(result.report);
         out.report["visits"].push_back(std::move(visit));
         chain.nodes[i].end_seam.classifier = chain.seams[i].classifier;
