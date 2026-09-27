@@ -1,6 +1,7 @@
 #include "internal.hpp"
 #include "native_pcurve_points.hpp"
 #include "native_surface_iso.hpp"
+#include "native_surface_sample.hpp"
 
 namespace p3d::detail {
 namespace {
@@ -228,5 +229,67 @@ Point3 pcurve_surface_point(const BsplineSurface &surface, double u, double v) {
             x /= weight;
     }
     return finite(result);
+}
+
+// Tensor-product derivatives adapted from Bentley imodel-native bspsurf.cpp,
+// Copyright (c) Bentley Systems, Incorporated. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+// Changes: original P3D knot mapping/order, immutable arrays, checked indexing.
+NativeSurfaceSample native_surface_sample(const BsplineSurface &surface, double u, double v) {
+    require(std::isfinite(u) && std::isfinite(v), "native surface nonfinite fraction");
+    const auto &su = surface.u(), &sv = surface.v();
+    const auto bu = blend(su.order(), su.knots(), su.periodic_pole_shift(), 1,
+                          (1 - u) * su.knot_domain()[0] + u, true);
+    const auto bv = blend(sv.order(), sv.knots(), sv.periodic_pole_shift(), 1,
+                          (1 - v) * sv.knot_domain()[0] + v, true);
+    // The native surface loop applies remainder to positive indices even for
+    // open axes. A negative open index would access invalid memory: reject it.
+    auto index = [](std::int64_t value, std::size_t count, bool closed) {
+        require(count && count <= INT32_MAX, "native surface control index extent");
+        if (value < 0 && closed)
+            value += std::int64_t(count);
+        require(value >= 0, "native surface negative control index");
+        return std::size_t(value) % count;
+    };
+    NativeSurfaceSample out;
+    out.weight = surface.rational() ? 0 : 1;
+    // U outside, V inside, matching the original accumulation order. The
+    // derivative is in knots, without the caller fraction's scale factor.
+    for (unsigned i = 0; i < su.order(); ++i) {
+        const auto ui = index(bu.first + i, su.pole_count(), su.closed());
+        for (unsigned j = 0; j < sv.order(); ++j) {
+            const auto vi = index(bv.first + j, sv.pole_count(), sv.closed());
+            const auto at = vi * su.pole_count() + ui;
+            const double c = bu.values[i] * bv.values[j],
+                         cu = bv.values[j] * bu.derivatives[i],
+                         cv = bu.values[i] * bv.derivatives[j];
+            for (unsigned k = 0; k < 3; ++k) {
+                const auto p = surface.poles()[at][k];
+                out.point[k] += c * p;
+                out.du[k] += cu * p;
+                out.dv[k] += cv * p;
+            }
+            if (surface.rational()) {
+                const auto w = surface.weights()[at];
+                out.weight += c * w;
+                out.weight_du += cu * w;
+                out.weight_dv += cv * w;
+            }
+        }
+    }
+    require(std::isfinite(out.weight) && std::isfinite(out.weight_du) &&
+                std::isfinite(out.weight_dv), "native surface nonfinite weight derivatives");
+    if (surface.rational()) {
+        require(out.weight != 0, "native surface zero evaluated weight");
+        for (unsigned k = 0; k < 3; ++k) {
+            out.point[k] /= out.weight;
+            out.du[k] = (out.du[k] - out.point[k] * out.weight_du) / out.weight;
+            out.dv[k] = (out.dv[k] - out.point[k] * out.weight_dv) / out.weight;
+        }
+    }
+    out.point = finite(out.point);
+    out.du = finite(out.du);
+    out.dv = finite(out.dv);
+    return out;
 }
 } // namespace p3d::detail

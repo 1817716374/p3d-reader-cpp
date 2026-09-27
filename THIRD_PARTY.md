@@ -45,6 +45,8 @@
 
 `src/native_pcurve_points.cpp` 的基函数导数递推参考同一固定提交中 `bsputil.cpp` 的 `bsputil_knotToBlendingFuncs`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的节点选择、零分母、除法及乘加顺序改写，并以独立工作数组提供点与切线查询，不对源控制点执行除权重和重新加权。
 
+同文件的 `native_surface_sample` 参考同一固定提交 `bspsurf.cpp` 的 `bspsurf_evaluateSurfacePoint`，保留 Bentley 版权及 Apache-2.0 标记。实现使用 P3D 的固定上界参数换算、原节点域一阶导数及 U 外层/V 内层累加顺序，采用只读数组并显式拒绝无效索引和非有限结果。
+
 `src/native_tube_elevate.cpp` 的升阶算法参考上述固定提交的 `bspcurv.cpp` 与 `bsputil.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现复用本库求导与周期打开内核，按 P3D 的节点归一化、节点分组、指定侧求导和权重舍入行为改写，并使用有界的局部工作数组。
 
 `src/native_tube_surface_elevate.cpp` 的曲面升阶参考同一固定提交的 `bspmisc.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按第一列建立共享节点方案，保留各列独立的控制点工作状态，使用只读输入、有界局部存储及本库求导内核。
