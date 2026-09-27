@@ -203,11 +203,11 @@ unsigned native_tube_facet_seams_tests() {
         TubeFacetSeamStorage<std::array<Point3, 2>>{{Point3{0, 0, 0}, Point3{1, 1, 0}}, true});
     TubeBudget partial_budget;
     auto partial_result = process_tube_facet_seams(partial_chain, partial_budget);
-    check(partial_result.status == TubeFacetSeamStatus::pending_general &&
-              partial_result.report["next_seam"] == 1 && partial_chain.nodes[0].surface == a &&
-              partial_chain.nodes[1].surface == b && partial_chain.nodes[2].surface == curved_input,
-          "unimplemented general branch retains preceding real seam edits with an explicit "
-          "continuation cursor");
+    check(partial_result.status == TubeFacetSeamStatus::complete &&
+              partial_result.report["next_seam"] == 3 && partial_chain.nodes[0].surface == a &&
+              partial_chain.nodes[2].surface != curved_input &&
+              partial_chain.report["seams_applied"] == true,
+          "general extension completes after preceding direct-line edits in the same chain");
     rejects([&] {
         TubeBudget b;
         process_tube_facet_seams(partial_chain, b);
@@ -217,12 +217,10 @@ unsigned native_tube_facet_seams_tests() {
         TubeBudget b;
         process_tube_facet_seams(fresh, b, 1);
     });
-    const auto completed_first = partial_chain.nodes[0].surface;
-    TubeBudget resumed_budget;
-    check(process_tube_facet_seams(partial_chain, resumed_budget, 1).status ==
-                  TubeFacetSeamStatus::pending_general &&
-              partial_chain.nodes[0].surface == completed_first,
-          "resuming a pending node does not reapply already completed control-row changes");
+    rejects([&] {
+        TubeBudget resumed_budget;
+        process_tube_facet_seams(partial_chain, resumed_budget, 1);
+    });
     const auto make_curve = [](Json points) {
         return BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
                                         {"order", 2},

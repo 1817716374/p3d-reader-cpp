@@ -18,8 +18,8 @@ struct TubeFacetPlanePreparation {
 TubeFacetPlanePreparation prepare_tube_facet_plane_seam(const Json &first, const Json &second,
                                                         const TubeFacetSeamReferences &,
                                                         TubeBudget &);
-// Direct-line branch followed by the plane branch when native control flow
-// requests it. Pending extension never commits a half-applied current seam.
+// Direct-line branch followed by plane projection and native extension when
+// requested. Invalid/unsupported extension never commits a half-applied seam.
 TubeFacetSeamResult apply_tube_facet_seam(Json &first, Json &second, TubeFacetSeamReferences &,
                                           TubeBudget &);
 } // namespace p3d::swept_detail

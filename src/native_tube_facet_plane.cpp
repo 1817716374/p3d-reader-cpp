@@ -1,4 +1,5 @@
 #include "native_tube_facet_plane.hpp"
+#include "native_tube_facet_extension.hpp"
 #include "native_control_lines.hpp"
 #include "native_curve_conversion.hpp"
 #include "native_bezier.hpp"
@@ -194,6 +195,8 @@ TubeFacetSeamResult apply_tube_facet_seam(Json &first, Json &second, TubeFacetSe
     if (direct.status != TubeFacetSeamStatus::pending_general)
         return direct;
     auto plane = prepare_tube_facet_plane_seam(first, second, seam, budget);
+    if (plane.status == TubeFacetSeamStatus::pending_general)
+        extend_tube_facet_plane_seam(plane, seam, budget);
     TubeFacetSeamResult out;
     out.status = plane.status;
     out.report = {{"direct", std::move(direct.report)}, {"plane", std::move(plane.report)}};
@@ -204,8 +207,7 @@ TubeFacetSeamResult apply_tube_facet_seam(Json &first, Json &second, TubeFacetSe
             second = std::move(plane.second);
         seam.classifier = plane.classifier;
     }
-    // Pending extension is retried from the unmodified seam inputs. The
-    // preparation API separately exposes its carried state to that consumer.
+    // Invalid/unsupported extension throws before publishing either side.
     return out;
 }
 } // namespace p3d::swept_detail

@@ -159,10 +159,10 @@ unsigned native_tube_facet_plane_tests() {
     auto higher_seam = seam(2);
     TubeBudget pending_budget;
     check(apply_tube_facet_seam(high_a, high_b, higher_seam, pending_budget).status ==
-                  TubeFacetSeamStatus::pending_general &&
-              high_a == source_a && high_b == source_b && higher_seam.classifier == -2,
-          "unimplemented extension keeps the externally carried current seam unchanged for "
-          "resumption");
+                  TubeFacetSeamStatus::complete &&
+              high_a != source_a && high_b != source_b && higher_seam.classifier == 1 &&
+              high_a["numPolesV"] == 5 && high_b["numPolesV"] == 5,
+          "higher-order plane preparation now connects extension elevation and combination");
     auto missing = seam(2);
     missing.incoming.reset();
     rejects([&] { prepare(a, b, missing); });

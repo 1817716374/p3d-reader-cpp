@@ -165,3 +165,4 @@
 !/tests/native_tube_facet_composition.cpp
 !/tests/native_tube_facet_seams.cpp
 !/tests/native_tube_facet_plane.cpp
+!/tests/native_tube_facet_extension.cpp
