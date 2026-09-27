@@ -167,3 +167,4 @@
 !/tests/native_tube_facet_plane.cpp
 !/tests/native_tube_facet_extension.cpp
 !/tests/native_tube_facet_boundaries.cpp
+!/tests/native_tube_facet_sample.cpp

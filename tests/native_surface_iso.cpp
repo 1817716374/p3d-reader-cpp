@@ -36,6 +36,10 @@ detail::NativeIsoCurve iso(const BsplineSurface &s, double v) {
     std::size_t used = 0;
     return detail::native_iso_v_curve(s, v, {used, 100000000});
 }
+detail::NativeIsoCurve iso_u(const BsplineSurface &s, double u) {
+    std::size_t used = 0;
+    return detail::native_iso_u_curve(s, u, {used, 100000000});
+}
 bool near(double a, double b) {
     return std::abs(a - b) <= 3e-11 * std::max({1., std::abs(a), std::abs(b)});
 }
@@ -73,6 +77,21 @@ unsigned native_surface_iso_tests() {
             }
         }
         check(s.poles() == original, "isocurve leaves source controls immutable");
+        for (double u : {-1., 0., .13, .5, .87, 1., 2.}) {
+            const auto c = iso_u(s, u);
+            check(c.curve.order() == s.v().order() && c.curve.closed() == s.v().closed() &&
+                      c.curve.knots() == s.v().knots() &&
+                      c.curve.poles().size() == s.v().pole_count() &&
+                      c.curve.rational() == s.rational(),
+                  "constant U retains the original V representation");
+            for (double v : {0., .04, .31, .62, .97, 1.}) {
+                const auto a = c.curve.point_at(v), b = s.point_at(std::clamp(u, 0., 1.), v);
+                for (unsigned k = 0; k < 3; ++k)
+                    check(near(a[k], b[k]),
+                          "constant U matches independent tensor-product evaluation");
+            }
+        }
+        check(s.poles() == original, "constant U does not change shared surface poles");
     };
     verify(grid(4, 5, 3, 3, false));
     verify(grid(4, 5, 3, 3, true));
@@ -91,6 +110,8 @@ unsigned native_surface_iso_tests() {
     verify(negative);
     for (unsigned order : {2u, 4u, 8u, 16u, 26u})
         verify(grid(3, order + 1, 2, order));
+    for (unsigned order : {4u, 8u, 16u, 26u})
+        verify(grid(order + 1, 3, order, 2));
 
     auto roundtrip = grid(2, 2, 2, 2);
     roundtrip["poles"] = {.1, .2, 0, 22, 0, 0, 0, 0, 11, 22, 0, 11};
@@ -100,6 +121,10 @@ unsigned native_surface_iso_tests() {
     check(rc.curve.poles()[0][0] == .10000000000000002 &&
               rc.curve.poles()[0][1] == .20000000000000004 && rs.poles()[0][0] == .1,
           "endpoint performs native divide/multiply rather than copying first row");
+    const auto ru = iso_u(rs, 0);
+    check(ru.curve.poles()[0][0] == .10000000000000002 &&
+              ru.curve.poles()[0][1] == .20000000000000004,
+          "constant U keeps the native divide/multiply endpoint roundtrip");
     auto cancel = grid(2, 2, 2, 2);
     cancel["poles"] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
     cancel["weights"] = {1, 2, -1, -2};
@@ -108,6 +133,11 @@ unsigned native_surface_iso_tests() {
     check(z.zero_weight_fallbacks == 2 && z.curve.weights() == std::vector<double>{0, 0} &&
               z.curve.poles() == std::vector<Point3>{{0, 0, 0}, {0, 0, 0}},
           "raw zero weight survives point fallback and zeros reweighted XYZ");
+    cancel["weights"] = {1, -1, 2, -2};
+    const auto zu = iso_u(BsplineSurface::from_bgfb(cancel), .5);
+    check(zu.zero_weight_fallbacks == 2 && zu.curve.weights() == std::vector<double>{0, 0} &&
+              zu.curve.poles() == std::vector<Point3>{{0, 0, 0}, {0, 0, 0}},
+          "constant U zero weights discard reweighted XYZ exactly as native construction");
     const auto cp = BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
                                              {"order", 2},
                                              {"poles", {1, 2, 3, 7, 8, 9}},
@@ -150,6 +180,9 @@ unsigned native_surface_iso_tests() {
     check(iso(BsplineSurface::from_bgfb(trimmed), 0).curve.poles() ==
               iso(BsplineSurface::from_bgfb(cylinder), 0).curve.poles(),
           "complete isocurve is not clipped by trim boundaries");
+    check(iso_u(BsplineSurface::from_bgfb(trimmed), .25).curve.poles() ==
+              iso_u(BsplineSurface::from_bgfb(cylinder), .25).curve.poles(),
+          "constant U also ignores trimming instead of truncating the isocurve");
     std::size_t used = 0;
     detail::native_iso_v_curve(rs, .4, {used, 10000000});
     const auto required = used;
@@ -177,5 +210,28 @@ unsigned native_surface_iso_tests() {
     check(parallel.curve.poles() == other.curve.poles() &&
               parallel.curve.weights() == other.curve.weights(),
           "independent isocurve calls share no mutable state");
+    used = 0;
+    detail::native_iso_u_curve(rs, .4, {used, 10000000});
+    const auto u_required = used;
+    used = 0;
+    detail::native_iso_u_curve(rs, .4, {used, u_required});
+    check(used == u_required, "constant U exact shared work budget");
+    rejects([&] {
+        std::size_t w = 0;
+        detail::native_iso_u_curve(rs, .4, {w, u_required - 1});
+    });
+    rejects([&] {
+        std::size_t w = 0;
+        detail::native_iso_u_curve(rs, .4, {w, u_required}, 1);
+    });
+    rejects([&] { iso_u(rs, std::numeric_limits<double>::infinity()); });
+    rejects([&] { iso_u(BsplineSurface::from_bgfb(grid(27, 2, 27, 2)), 0); });
+    check(iso_u(BsplineSurface::from_bgfb(grid(2, 27, 2, 27)), 0).curve.order() == 27,
+          "constant U restricts evaluated U order, not retained V order");
+    auto fu = std::async(std::launch::async, [&] { return iso_u(rs, .43); });
+    const auto parallel_u = iso_u(rs, .43), other_u = fu.get();
+    check(parallel_u.curve.poles() == other_u.curve.poles() &&
+              parallel_u.curve.weights() == other_u.curve.weights(),
+          "constant U independent calls share no mutable state");
     return n;
 }

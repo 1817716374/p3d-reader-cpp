@@ -142,29 +142,33 @@ NativePCurvePointTangent pcurve_point_tangent(const BsplineCurve &curve, double 
 // SPDX-License-Identifier: Apache-2.0
 // Changes: shared read-only basis, direct strided evaluation, bounded output.
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
-NativeIsoCurve native_iso_v_curve(const BsplineSurface &surface, double fraction,
-                                  curve_detail::BezierWork work, std::size_t max_control_points) {
+namespace {
+NativeIsoCurve iso_curve(const BsplineSurface &surface, double fraction, bool constant_u,
+                         curve_detail::BezierWork work, std::size_t max_control_points) {
     const auto &u = surface.u(), &v = surface.v();
     const auto nu = u.pole_count(), nv = v.pole_count();
+    const auto &fixed = constant_u ? u : v, &varying = constant_u ? v : u;
+    const auto count = varying.pole_count();
     require(std::isfinite(fraction), "native isocurve nonfinite fraction");
-    require(nu >= 2 && nv >= 2 && nu <= INT32_MAX && nv <= INT32_MAX && nu <= max_control_points &&
-                v.order() <= 26,
+    require(nu >= 2 && nv >= 2 && nu <= INT32_MAX && nv <= INT32_MAX &&
+                count <= max_control_points && fixed.order() <= 26,
             "native isocurve order or control budget exceeded");
     work.charge(u.knots().size());
     work.charge(v.knots().size());
-    work.charge(std::size_t(8) * v.order() * v.order());
-    const auto cost = std::size_t(8) * v.order() + 12;
-    require(nu <= (work.limit - work.used) / cost, "native isocurve work budget exceeded");
-    work.charge(nu * cost);
-    const auto domain = v.knot_domain();
+    work.charge(std::size_t(8) * fixed.order() * fixed.order());
+    const auto cost = std::size_t(8) * fixed.order() + 12;
+    require(count <= (work.limit - work.used) / cost, "native isocurve work budget exceeded");
+    work.charge(count * cost);
+    const auto domain = fixed.knot_domain();
     const double t = fraction * domain[1] + (1 - fraction) * domain[0];
-    // Every source column uses the same read-only basis. Compute it once and
-    // read strided controls directly instead of copying/reparsing V curves.
-    const auto b = blend(v.order(), v.knots(), v.periodic_pole_shift(), domain[1], t);
+    // Every source row/column uses the same read-only basis. Direct indexed
+    // evaluation avoids transposing or copying/reparsing the control grid.
+    const auto b = blend(fixed.order(), fixed.knots(), fixed.periodic_pole_shift(), domain[1], t);
     Json xyz = Json::array(), weights = Json::array();
     std::size_t fallbacks = 0;
-    for (std::size_t i = 0; i < nu; ++i) {
-        auto p = evaluate(b, nv, v.closed(), surface.poles(), surface.weights(), i, nu);
+    for (std::size_t i = 0; i < count; ++i) {
+        auto p = evaluate(b, fixed.pole_count(), fixed.closed(), surface.poles(), surface.weights(),
+                          constant_u ? i * nu : i, constant_u ? 1 : nu);
         fallbacks += p.zero_weight_fallback;
         if (surface.rational()) {
             require(std::isfinite(p.weight), "native isocurve nonfinite evaluated weight");
@@ -178,12 +182,21 @@ NativeIsoCurve native_iso_v_curve(const BsplineSurface &surface, double fraction
     }
     return {
         BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
-                                 {"order", u.order()},
-                                 {"closed", u.closed()},
-                                 {"knots", u.knots()},
+                                 {"order", varying.order()},
+                                 {"closed", varying.closed()},
+                                 {"knots", varying.knots()},
                                  {"poles", std::move(xyz)},
                                  {"weights", surface.rational() ? std::move(weights) : Json()}}),
         fallbacks};
+}
+} // namespace
+NativeIsoCurve native_iso_v_curve(const BsplineSurface &surface, double fraction,
+                                  curve_detail::BezierWork work, std::size_t max_control_points) {
+    return iso_curve(surface, fraction, false, work, max_control_points);
+}
+NativeIsoCurve native_iso_u_curve(const BsplineSurface &surface, double fraction,
+                                  curve_detail::BezierWork work, std::size_t max_control_points) {
+    return iso_curve(surface, fraction, true, work, max_control_points);
 }
 
 Point3 pcurve_surface_point(const BsplineSurface &surface, double u, double v) {

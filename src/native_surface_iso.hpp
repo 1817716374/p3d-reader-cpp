@@ -11,4 +11,8 @@ struct NativeIsoCurve {
 // the native point division and multiplication by the original evaluated W.
 NativeIsoCurve native_iso_v_curve(const BsplineSurface &, double fraction, curve_detail::BezierWork,
                                   std::size_t max_control_points = 1000000);
+// Constant-U counterpart: evaluates each stored U row, returning a V curve.
+// The original V representation is preserved, including periodic indexing.
+NativeIsoCurve native_iso_u_curve(const BsplineSurface &, double fraction, curve_detail::BezierWork,
+                                  std::size_t max_control_points = 1000000);
 } // namespace p3d::detail
