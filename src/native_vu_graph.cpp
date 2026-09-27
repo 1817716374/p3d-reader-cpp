@@ -207,6 +207,20 @@ void twist_native_vu_vertices(NativeVuGraph &g, std::size_t a, std::size_t b, Tu
     work.charge(12);
     twist_nodes(g, a, b);
 }
+std::pair<std::size_t, std::size_t> make_native_vu_pair(NativeVuGraph &g, TubeBudget &budget) {
+    const curve_detail::BezierWork work{budget.work, budget.max_work};
+    work.charge(24);
+    if (g.tail != native_vu_null) {
+        node_index(g, g.tail);
+        node_index(g, g.nodes[g.tail].all_next);
+    } else
+        require(g.nodes.empty() || g.free_head != native_vu_null, "native VU missing list tail");
+    reserve_pair(g, budget);
+    const auto start = append_node(g), end = append_node(g);
+    g.nodes[start].face_next = end;
+    g.nodes[end].face_next = start;
+    return {start, end};
+}
 std::pair<std::size_t, std::size_t> join_native_vu_sectors(NativeVuGraph &g, std::size_t a,
                                                        std::size_t b, TubeBudget &budget) {
     const curve_detail::BezierWork work{budget.work, budget.max_work};

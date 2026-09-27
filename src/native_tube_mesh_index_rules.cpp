@@ -8,6 +8,7 @@
 #include "native_vu_cluster.hpp"
 #include "native_vu_regularize.hpp"
 #include "native_vu_exterior.hpp"
+#include "native_vu_triangulate.hpp"
 #include <set>
 namespace p3d::swept_detail {
 NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
@@ -67,6 +68,8 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
                                     .at("candidate_array_read_index").get<std::size_t>();
             out.input_graph->report["exterior_classification"] =
                 mark_native_vu_exterior(out.input_graph->graph, cursor, budget);
+            out.input_graph->report["interior_triangulation"] =
+                triangulate_native_vu_interiors(out.input_graph->graph, budget);
         }
     }
     // Larger faces require the original projected-loop triangulator. Never

@@ -193,9 +193,10 @@ unsigned native_vu_graph_tests() {
     p.insert(p.begin() + 1, p.front());
     TubeBudget plan_budget;
     auto plan = native_facet_index_plan(p, plan_budget);
-    check(plan.input_graph && plan.input_graph->graph.nodes.size() == 8 && plan.indices.empty() &&
-              plan.input_graph->report.at("triangulated") == false,
-          "actual large-facet dispatch connects projection to indexed graph preparation");
+    check(plan.input_graph && plan.input_graph->graph.nodes.size() == 10 && plan.indices.empty() &&
+              plan.input_graph->report.at("triangulated") == false &&
+              plan.input_graph->report.at("interior_triangulation").at("triangle_face_count") == 2,
+          "large-facet dispatch creates triangle faces without claiming final source indices");
     auto failed = native_facet_index_plan(std::vector<Point3>(5, Point3{1, 2, 3}), plan_budget);
     check(failed.projection && !failed.projection->frame_succeeded && !failed.input_graph,
           "failed coordinate frame never publishes an input graph");

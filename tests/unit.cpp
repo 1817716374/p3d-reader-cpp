@@ -43,6 +43,7 @@ unsigned native_vu_intersections_tests();
 unsigned native_vu_connections_tests();
 unsigned native_vu_regularize_tests();
 unsigned native_vu_exterior_tests();
+unsigned native_vu_triangulate_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2931,6 +2932,7 @@ int main() {
         checks += native_vu_connections_tests();
         checks += native_vu_regularize_tests();
         checks += native_vu_exterior_tests();
+        checks += native_vu_triangulate_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();
