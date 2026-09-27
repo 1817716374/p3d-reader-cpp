@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) Bentley Systems, Incorporated. All rights reserved.
-// Adapted from Polyface.cpp, FacetFaceData.cpp, PolyfaceVisitor.cpp and
+// Adapted from Polyface.cpp, PolyfaceQuery.cpp, FacetFaceData.cpp, PolyfaceVisitor.cpp and
 // polyfaceAddNormals.cpp, PolyfaceEdgeChain.cpp, pf_halfEdgeArray.h and MTGGraph.cpp.
 // Original P3D ranges, activity flags, visitor bounds and operation order.
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
@@ -8,6 +8,7 @@
 #include "native_polyface_attributes.hpp"
 #include "native_polyface_connectivity.hpp"
 #include "native_polyface_edge_chains.hpp"
+#include "native_polygon_convexity.hpp"
 #include "native_attribute_sort.hpp"
 #include "native_polygon_projection.hpp"
 #include "native_bezier.hpp"
@@ -65,6 +66,7 @@ class Visitor {
     Work work;
     Diagnostics &diagnostics;
     std::size_t ignored_truncation_channel;
+    bool all_data;
     template <std::size_t N>
     std::vector<std::array<double, N>> collect(const std::vector<std::array<double, N>> &pool,
                                                const std::vector<std::int32_t> &indices,
@@ -91,8 +93,8 @@ class Visitor {
 
   public:
     Visitor(const NativeBuilderPolyface &m, Work w, Diagnostics &d,
-            std::size_t ignored = polyface_channel_count)
-        : mesh(m), work(w), diagnostics(d), ignored_truncation_channel(ignored) {}
+            std::size_t ignored = polyface_channel_count, bool all = true)
+        : mesh(m), work(w), diagnostics(d), ignored_truncation_channel(ignored), all_data(all) {}
     bool read(std::size_t first, Facet &out) {
         work.charge(1);
         const auto &indices = mesh.indices.indices;
@@ -141,8 +143,10 @@ class Visitor {
                 ++diagnostics.truncated_attributes;
             return values;
         };
-        out.normals = channel(coordinates.normals, normal_channel);
-        out.parameters = channel(coordinates.parameters, parameter_channel);
+        if (all_data) {
+            out.normals = channel(coordinates.normals, normal_channel);
+            out.parameters = channel(coordinates.parameters, parameter_channel);
+        }
         // Face-data consumers keep the constructor's wrap count of zero.
         // Attach(..., true) requests all data; it does not request wrapping.
         ++diagnostics.visited;
@@ -917,5 +921,62 @@ NativePolyfaceEdgeChains build_native_polyface_edge_chains(const NativePolyfaceF
     report["vertex_edge_records"] = boundary;
     report["edges_with_over_two_visible_occurrences"] = over_two;
     return finish(true, complete, "completed");
+}
+NativePolyfaceFacetQueries query_native_polyface_facets(const NativePolyfaceFaceDataState &input,
+                                                        TubeBudget &budget) {
+    Context context(input, budget);
+    NativePolyfaceFacetQueries out;
+    Diagnostics max_diagnostics, convex_diagnostics;
+    std::size_t visited = 0;
+    {
+        Visitor visitor(context.state.mesh, context.work, max_diagnostics, polyface_channel_count,
+                        false);
+        Facet face;
+        std::size_t next = 0;
+        while (visitor.read(next, face)) {
+            next = face.next;
+            visited += face.count;
+            out.max_facet_size = std::max(out.max_facet_size, face.count);
+        }
+    }
+    Json tests = Json::array();
+    {
+        Visitor visitor(context.state.mesh, context.work, convex_diagnostics,
+                        polyface_channel_count, false);
+        Facet face;
+        std::size_t next = 0;
+        while (visitor.read(next, face)) {
+            next = face.next;
+            if (face.count <= 3)
+                continue;
+            auto test = native_polygon_convexity(face.points, budget);
+            test.report["read_index"] = face.read;
+            tests.push_back(std::move(test.report));
+            if (!test.convex) {
+                out.has_convex_facets = false;
+                break;
+            }
+        }
+    }
+    std::size_t nonzero = 0;
+    for (auto i : context.state.mesh.indices.indices[point_channel]) {
+        context.work.charge(1);
+        if (i)
+            ++nonzero;
+    }
+    out.complete = visited == nonzero && max_diagnostics.invalid_points == 0 &&
+                   convex_diagnostics.invalid_points == 0;
+    out.report = {{"operation", "native_polyface_facet_queries"},
+                  {"max_facet_size", out.max_facet_size},
+                  {"has_convex_facets", out.has_convex_facets},
+                  {"complete", out.complete},
+                  {"all_data", false},
+                  {"max_query_visited_facets", max_diagnostics.visited},
+                  {"convex_query_visited_facets", convex_diagnostics.visited},
+                  {"unvisited_nonzero_indices", nonzero - visited},
+                  {"max_query_invalid_point_facets", max_diagnostics.invalid_points},
+                  {"convex_query_invalid_point_facets", convex_diagnostics.invalid_points},
+                  {"polygon_tests", std::move(tests)}};
+    return out;
 }
 } // namespace p3d::swept_detail

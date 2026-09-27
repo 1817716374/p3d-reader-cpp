@@ -8,7 +8,8 @@
 namespace p3d::swept_detail {
 NativePolyfaceTriangulation
 triangulate_native_polyface_facets(const std::vector<NativePolyfaceVisitorFacet> &facets,
-                                   const NativePolyfaceIndexState &original, TubeBudget &budget) {
+                                   const NativePolyfaceIndexState &original, TubeBudget &budget,
+                                   std::size_t max_edges_per_face) {
     const curve_detail::BezierWork work{budget.work, budget.max_work};
     require(facets.size() <= budget.max_control_points, "native polyface facet budget");
     std::size_t input_count = 0;
@@ -30,8 +31,9 @@ triangulate_native_polyface_facets(const std::vector<NativePolyfaceVisitorFacet>
     out.output = original;
     std::array<std::vector<std::int32_t>, polyface_channel_count> generated;
     std::size_t output_count = 0, errors = 0, failed_faces = 0, normal_drops = 0, color_drops = 0,
-                nontriangular = 0;
+                nontriangular = 0, retained_polygons = 0;
     Json face_reports = Json::array();
+    bool all_output_triangular = true;
     auto append = [&](std::size_t channel, std::int32_t index) {
         work.charge(1);
         require(output_count < budget.max_control_points, "native polyface output index budget");
@@ -40,7 +42,9 @@ triangulate_native_polyface_facets(const std::vector<NativePolyfaceVisitorFacet>
     };
     for (std::size_t fi = 0; fi < facets.size(); ++fi) {
         const auto &f = facets[fi];
-        auto plan = native_facet_index_plan(f.points, budget);
+        auto plan = native_facet_index_plan(f.points, budget, max_edges_per_face);
+        if (plan.route == NativeFacetIndexPlan::Route::passthrough && f.points.size() > 3)
+            ++retained_polygons;
         Json status{{"source_facet", fi},
                     {"native_succeeded", plan.native_succeeded},
                     {"triangulation_completed", plan.completed}};
@@ -52,6 +56,9 @@ triangulate_native_polyface_facets(const std::vector<NativePolyfaceVisitorFacet>
             ++errors;
             continue;
         }
+        if (!plan.completed ||
+            (plan.route == NativeFacetIndexPlan::Route::passthrough && f.points.size() != 3))
+            all_output_triangular = false;
         if (!plan.completed)
             ++nontriangular;
         const auto &local = plan.completed ? plan.indices : plan.incomplete_indices;
@@ -124,6 +131,9 @@ triangulate_native_polyface_facets(const std::vector<NativePolyfaceVisitorFacet>
                   {"normal_channel_drops", normal_drops},
                   {"color_channel_drops", color_drops},
                   {"nontriangular_facets", nontriangular},
+                  {"retained_polygon_facets", retained_polygons},
+                  {"max_edges_per_face", std::max(std::size_t(3), max_edges_per_face)},
+                  {"all_output_faces_triangular", all_output_triangular},
                   {"native_error_count", errors},
                   {"facet_results", std::move(face_reports)},
                   {"active_channels", out.output.active},

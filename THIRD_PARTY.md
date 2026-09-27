@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+`src/native_polygon_convexity.cpp` 的空间凸面判断参考下表固定 Bentley 提交中的 `polygon3d.cpp`，相关网格查询参考 `PolyfaceQuery.cpp`；保留 Bentley 版权及 Apache-2.0 标记。实现采用原生精确闭合点比较、最大叉积选择、相对转角阈值，以及点数据专用访问器的短面与提前结束规则。
+
 `src/native_polyface_face_data.cpp` 中的边链生成参考下表固定 Bentley 提交中的 `PolyfaceEdgeChain.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保留原生的两遍可见边登记与输出、双重面号递增、顶点身份、共享面标识及单边记录顺序，不使用参考代码中另外的长边链连接操作。
 
 `src/native_polyface_smooth_normals.cpp` 的邻接扇区法向计算参考下表固定 Bentley 提交中的 `polyfaceAddNormals.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现保持 P3D 的节点倒序遍历、单边角度余量、扇区接受条件、索引身份与可见性规则，以及失败时保留逐面准备结果的行为。

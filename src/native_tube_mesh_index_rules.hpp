@@ -20,7 +20,10 @@ struct NativeFacetIndexPlan {
     std::optional<NativePolygonProjection> projection;
     std::optional<NativeVuInput> input_graph;
 };
-NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &, TubeBudget &);
+// Limits below three clamp to three. Faces within the native wrapped-count
+// threshold pass through unchanged; larger faces follow the triangle path.
+NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &, TubeBudget &,
+                                             std::size_t max_edges_per_face = 3);
 struct TubeMeshVisibilityLayout {
     std::size_t u_count = 0, v_count = 0, coordinate_count = 0;
     std::int32_t first_column_count = 0, last_column_count = 0;

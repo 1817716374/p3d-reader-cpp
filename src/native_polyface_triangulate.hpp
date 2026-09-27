@@ -27,11 +27,13 @@ struct NativePolyfaceTriangulation {
     bool native_succeeded = false, complete = false;
     Json report;
 };
-// Native edge-limit-three consumer for explicitly prepared visitor facets.
+// Native configurable-edge-limit consumer for explicitly prepared visitor facets.
 // No raw mesh-style conversion or visitor extraction is implied. Failed faces
 // are skipped; successful faces remain in output even if native_succeeded=false.
-// complete also requires all requested channels and triangle generation.
+// complete also requires all requested channels and resolved index generation;
+// faces retained by a larger limit need not be triangles or convex polygons.
 NativePolyfaceTriangulation
 triangulate_native_polyface_facets(const std::vector<NativePolyfaceVisitorFacet> &,
-                                   const NativePolyfaceIndexState &, TubeBudget &);
+                                   const NativePolyfaceIndexState &, TubeBudget &,
+                                   std::size_t max_edges_per_face = 3);
 } // namespace p3d::swept_detail

@@ -13,8 +13,8 @@
 #include "native_vu_indices.hpp"
 #include <set>
 namespace p3d::swept_detail {
-NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
-                                             TubeBudget &budget) {
+NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points, TubeBudget &budget,
+                                             std::size_t max_edges_per_face) {
     using curve_detail::bezier_support::finite;
     require(!points.empty() && points.size() <= budget.max_control_points &&
                 points.size() <= INT32_MAX,
@@ -25,7 +25,11 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         for (double x : p)
             finite(x);
     NativeFacetIndexPlan out;
-    if (points.size() <= 3) {
+    const auto limit = std::max(std::size_t(3), max_edges_per_face);
+    // Native uses unsigned limit+1 against the visitor's wrapped point count.
+    // Preserve its SIZE_MAX wraparound, rather than silently treating it as unlimited.
+    const auto wrapped_limit = limit + 1;
+    if (points.size() + 1 <= wrapped_limit || points.size() == 3) {
         out.route = NativeFacetIndexPlan::Route::passthrough;
         work.charge(points.size() + 1);
         require(points.size() + 1 <= budget.max_control_points, "native facet index output budget");
@@ -58,7 +62,7 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
         out.completed = true;
         out.native_succeeded = true;
     }
-    if (points.size() > 4) {
+    if (!out.completed) {
         require(points.size() < budget.max_control_points && points.size() < INT32_MAX,
                 "native facet visitor closure budget");
         work.charge(points.size() + 1);
@@ -71,7 +75,8 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
             out.input_graph->report["regularization"] =
                 regularize_native_vu_graph(out.input_graph->graph, budget);
             const auto cursor = out.input_graph->report.at("regularization")
-                                    .at("candidate_array_read_index").get<std::size_t>();
+                                    .at("candidate_array_read_index")
+                                    .get<std::size_t>();
             out.input_graph->report["exterior_classification"] =
                 mark_native_vu_exterior(out.input_graph->graph, cursor, budget);
             out.input_graph->report["interior_triangulation"] =
@@ -81,12 +86,14 @@ NativeFacetIndexPlan native_facet_index_plan(const std::vector<Point3> &points,
             auto source = collect_native_vu_source_indices(out.input_graph->graph, budget);
             out.input_graph->report["source_index_output"] = source.report;
             out.native_succeeded = source.succeeded;
-            out.completed = source.succeeded && source.report.at("all_emitted_faces_triangular") == true;
+            out.completed =
+                source.succeeded && source.report.at("all_emitted_faces_triangular") == true;
             out.input_graph->report["triangulated"] = out.completed;
             if (out.completed) {
                 out.route = NativeFacetIndexPlan::Route::projected_loops;
                 out.indices = std::move(source.indices);
-            } else out.incomplete_indices = std::move(source.indices);
+            } else
+                out.incomplete_indices = std::move(source.indices);
         }
     }
     // Failed source numbering or residual nontriangular faces retain their
