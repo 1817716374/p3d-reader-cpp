@@ -1,8 +1,11 @@
 #include "blob_internal.hpp"
+#include <p3d/swept_mesh.hpp>
 #include <cstring>
 #include <future>
 unsigned graphics_native_tests();
 unsigned text_bytes_tests();
+p3d::Bytes swept_binary_fixture(bool capped);
+unsigned swept_binary_tests();
 namespace {
 using namespace p3d;
 template <class T> void put(Bytes &b, T v) {
@@ -390,5 +393,22 @@ unsigned graphics_bytes_tests() {
     csg = decode_graphics_bytes(graphics({csg_entry})).at("geometry_packets").at(0);
     check(csg.at("geometry_status") == "invalid" && csg.at("footer_status") == "decoded",
           "invalid CSG archive marker does not suppress independent graphics footer");
-    return checks + graphics_native_tests() + text_bytes_tests();
+    auto sweep_entry = entry(mat, swept_binary_fixture(true));
+    sweep_entry[4] = 6;
+    const auto sweep_container = decode_graphics_bytes(graphics({sweep_entry}, true, mat));
+    const auto &sweep_packet = sweep_container.at("geometry_packets").at(0);
+    check(sweep_packet.at("geometry_status") == "decoded" &&
+              sweep_packet.at("geometry_type") == 6 &&
+              sweep_packet.at("inline_material") == j.at("geometry_packets").at(0).at("inline_material") &&
+              sweep_packet.at("layer_id") == 0xfffffff1u,
+          "binary sweep geometry leaves material and layer footer independently intact");
+    const auto sweep_mesh = mesh_bgfb_swept_body(sweep_packet.at("geometry").at("geometry"));
+    check(sweep_mesh.status == "meshed" && sweep_mesh.point_indices.size() == 48 &&
+              sweep_container.at("transform_3x4_rows") == j.at("transform_3x4_rows") &&
+              sweep_container.at("owning_element_part_mapping_status") == "not_established",
+          "binary graphics sweep exposes local mesh without guessing container placement or material parts");
+    check(sweep_mesh.report.at("material_part_mapping_status") == "not_evaluated" &&
+              sweep_mesh.points.front()[0] < 10,
+          "serialized graphics placement is not silently applied to standalone source geometry");
+    return checks + graphics_native_tests() + text_bytes_tests() + swept_binary_tests();
 }

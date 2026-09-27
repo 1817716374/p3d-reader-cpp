@@ -290,13 +290,67 @@ struct GeometryConstruction {
             out["geometry_pointer"] = "non_null";
             return out;
         }
-        require(tag == 1 || tag == 2 || tag == 4 || tag == 5 || tag == 10 || tag == 11 ||
+        require(tag == 1 || tag == 2 || tag == 3 || tag == 4 || tag == 5 || tag == 10 || tag == 11 ||
                     tag == 12 || tag == 18 || tag == 20 || tag == 21,
                 "native_geometry_construction_not_supported");
         const auto table = child(root, 1);
         if (tag == 5)
             return curve_vector(table, depth + 1);
         require(table.has_value(), "native_geometry_reader_requires_union_data");
+        if (tag == 3) {
+            const auto order_field = b.field(*table, 0, 4);
+            const auto order = order_field ? b.at<std::int32_t>(*order_field) : 0;
+            const bool closed = flag(*table, 1);
+            const auto poles = child(*table, 2), weights = child(*table, 3),
+                       knots = child(*table, 4);
+            require(poles.has_value(), "native_bspline_requires_pole_vector");
+            const auto scalars = b.at<std::uint32_t>(*poles);
+            const auto count = scalars / 3;
+            const auto weight_count = weights ? b.at<std::int32_t>(*weights) : 0;
+            const auto knot_count = knots ? b.at<std::int32_t>(*knots) : 0;
+            // The caller ignores populate's error code and captures its temporary.
+            // A failed guard leaves that temporary uninitialized, not a null curve.
+            require(order > 1 && std::int64_t(count) >= order,
+                    "native_bspline_populate_guard_leaves_uninitialized_temporary");
+            const auto expected_knots = std::uint64_t(count) +
+                                        (closed ? 2 * std::uint64_t(order) - 1 : order);
+            require(knot_count == 0 || std::int64_t(knot_count) == std::int64_t(expected_knots),
+                    "native_bspline_knot_count_leaves_uninitialized_temporary");
+            // The default allocator multiplies in signed 32-bit storage.
+            require(std::uint64_t(count) * 24 <= INT32_MAX && expected_knots * 8 <= INT32_MAX,
+                    "native_bspline_allocation_size_overflow");
+            b.range(*poles + 4, std::size_t(count) * 24);
+            if (weight_count > 0) {
+                // There is no weight-count argument to populate: it reads N.
+                // Do not emulate a read beyond this vector's declared storage.
+                require(std::uint32_t(weight_count) >= count,
+                        "native_bspline_weight_vector_overread");
+                b.range(*weights + 4, std::size_t(count) * 8);
+            }
+            if (knot_count > 0)
+                b.range(*knots + 4, std::size_t(knot_count) * 8);
+            auto out = object("BsplineCurve", "curve");
+            out.update({{"operation", "populate_weighted_bspline_and_capture"},
+                        {"allocator_assumption", "default_native_allocator"},
+                        {"order", order},
+                        {"closed", closed},
+                        {"source_scalar_count", scalars},
+                        {"pole_count", count},
+                        {"ignored_tail_scalars", scalars % 3},
+                        {"pole_data_offset", *poles + 4},
+                        {"copied_pole_bytes", std::uint64_t(count) * 24},
+                        {"source_weight_count_signed", weight_count},
+                        {"weight_data_offset", weight_count > 0 ? Json(*weights + 4) : Json()},
+                        {"copied_weight_count", weight_count > 0 ? count : 0},
+                        {"rational", weight_count > 0},
+                        {"input_poles_already_weighted", true},
+                        {"source_knot_count_signed", knot_count},
+                        {"knot_data_offset", knot_count > 0 ? Json(*knots + 4) : Json()},
+                        {"effective_knot_count", expected_knots},
+                        {"knots_source", knot_count ? "copied" : "generated_uniform"},
+                        {"native_populate_result", 0}});
+            return out;
+        }
         if (tag == 1 || tag == 2) {
             const auto bytes = tag == 1 ? 48u : 88u;
             const auto detail = b.field(*table, 0, bytes);
