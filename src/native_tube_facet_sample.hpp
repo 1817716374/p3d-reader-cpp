@@ -20,4 +20,17 @@ TubeFacetPlaneSample sample_tube_facet_plane(const BsplineSurface &first,
 std::optional<Point2> select_tube_facet_fallback_parameters(const std::vector<double> &first,
                                                             const std::vector<double> &second,
                                                             TubeBudget &);
+struct TubeFacetParameters {
+    std::optional<Point2> parameters;
+    Json report;
+};
+// Full f5f20 curve-pair fallback: original two-curve frame/range planarity,
+// independent transformed copies, native XY query and independent extrema.
+// Computed failure is distinct from unsupported inputs/resource exceptions.
+TubeFacetParameters sample_tube_facet_pair(const BsplineCurve &, const BsplineCurve &,
+                                           TubeBudget &);
+// Full f6360 single-U sample, including the curve-pair fallback when required.
+TubeFacetParameters sample_tube_facet_seam(const BsplineSurface &, const BsplineSurface &,
+                                           double fraction_u, const std::array<Point3, 2> &plane,
+                                           bool require_same_point, TubeBudget &);
 } // namespace p3d::swept_detail
