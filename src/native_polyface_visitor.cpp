@@ -27,6 +27,10 @@ struct Context {
             grow(n);
         for (const auto &v : m.data.indices.indices)
             grow(v.size());
+        grow(m.face_uv_points.size());
+        grow(m.face_material_ids.size());
+        grow(m.face_smooth_groups.size());
+        grow(m.illumination_name.size());
         grow(m.data.edge_chains.size());
         for (const auto &e : m.data.edge_chains) {
             grow(e.topology_ids.size());
@@ -247,6 +251,7 @@ NativePolyfaceMeshTriangulation triangulate_native_polyface_mesh(const NativePol
     out.report = {{"scope", "native_typed_polyface_triangulation"},
                   {"native_succeeded", out.native_succeeded},
                   {"complete", out.complete},
+                  {"face_extension_mapping_recomputed", false},
                   {"layout_conversion", std::move(converted.report)},
                   {"activation", std::move(activated.report)},
                   {"visitor", std::move(visited.report)},
