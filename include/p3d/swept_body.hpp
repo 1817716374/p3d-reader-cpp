@@ -72,4 +72,21 @@ struct SweptBodyBoundaryResult {
 // Unsupported/data/resource failures clear curves; allocation failure throws.
 SweptBodyBoundaryResult extract_swept_body_surface_boundary(const SweptBodySurface &,
                                                             const SweptBodyBoundaryOptions & = {});
+struct SweptBodySurfaceFaceResult {
+    std::string status = "not_extracted"; // extracted / native_empty / not_extracted
+    // Exactly one is populated on success: a native type-2 CurveVector region,
+    // or the original B-spline surface together with its runtime trim arrays.
+    Json region;
+    std::optional<SweptBodySurface> surface;
+    Json report = Json::object();
+};
+// Native side-face conversion: tests the entire deweighted control net using
+// inertia principal extents. Planar nets use the native unstructured boundary
+// curves, forced to CurveVector type 2 without inferring containment. Others
+// retain the original surface and trim arrays. The predicate is tolerance
+// based, not a certified flatness test. Domain edges are always enabled.
+// max_curves limits planar output; include_outer is ignored by this entry.
+// Unsupported/data/resource failures clear output; allocation failure throws.
+SweptBodySurfaceFaceResult extract_swept_body_surface_face(const SweptBodySurface &,
+                                                           const SweptBodyBoundaryOptions & = {});
 } // namespace p3d

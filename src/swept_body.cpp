@@ -1,4 +1,5 @@
 #include <p3d/swept_body.hpp>
+#include "native_surface_plane.hpp"
 #include "native_tube_facet_caps.hpp"
 #include "native_surface_boundary.hpp"
 #include <limits>
@@ -145,6 +146,87 @@ extract_swept_body_surface_boundary(const SweptBodySurface &source,
         throw;
     } catch (const std::exception &e) {
         out.curves.clear();
+        out.status = "not_extracted";
+        out.report["reason"] = e.what();
+    }
+    out.report["work_used"] = budget.work;
+    return out;
+}
+SweptBodySurfaceFaceResult
+extract_swept_body_surface_face(const SweptBodySurface &source,
+                                const SweptBodyBoundaryOptions &options) {
+    SweptBodySurfaceFaceResult out;
+    swept_detail::TubeBudget budget{options.max_control_points, options.max_work, 0};
+    auto charge = [&](std::size_t n) {
+        curve_detail::BezierWork{budget.work, budget.max_work}.charge(n);
+    };
+    try {
+        require(options.max_work > 0, "swept surface face work limit must be positive");
+        const auto &poles = source.geometry.at("poles");
+        require(poles.is_array() && poles.size() % 3 == 0 &&
+                    poles.size() / 3 <= options.max_control_points,
+                "swept surface face control budget");
+        charge(poles.size());
+        const auto surface = BsplineSurface::from_bgfb(source.geometry);
+        out.report["plane_query"] = swept_detail::native_surface_plane(surface, budget);
+        if (!out.report["plane_query"].at("planar").get<bool>()) {
+            charge(source.boundary_points.size());
+            charge(source.boundary_curves.size());
+            std::size_t copied = surface.poles().size();
+            auto controls = [&](std::size_t n) {
+                require(n <= options.max_control_points - copied,
+                        "swept surface face runtime trim control budget");
+                copied += n;
+                charge(n);
+            };
+            for (const auto &record : source.boundary_points)
+                controls(record.size());
+            for (const auto &record : source.boundary_curves) {
+                charge(record.size());
+                for (const auto &curve : record) {
+                    controls(curve.poles().size());
+                    charge(curve.knots().size());
+                }
+            }
+            out.surface = source;
+            out.report["native_geometry_kind"] = 4;
+            out.status = "extracted";
+        } else {
+            auto boundary = swept_detail::native_surface_boundary(surface, source.boundary_points,
+                                                                  true, budget, options.max_curves);
+            out.report["boundary_query"] = std::move(boundary.report);
+            if (boundary.curves.empty())
+                out.status = "native_empty";
+            else {
+                Json members = Json::array();
+                for (const auto &curve : boundary.curves) {
+                    charge(curve.poles().size());
+                    charge(curve.knots().size());
+                    Json flat = Json::array();
+                    for (const auto &p : curve.poles())
+                        for (double x : p)
+                            flat.push_back(x);
+                    members.push_back(
+                        {{"_type", "VariantGeometry"},
+                         {"geometry",
+                          {{"_type", "BsplineCurve"},
+                           {"order", curve.order()},
+                           {"closed", curve.closed()},
+                           {"poles", std::move(flat)},
+                           {"weights", curve.rational() ? Json(curve.weights()) : Json()},
+                           {"knots", curve.knots()}}}});
+                }
+                out.region = {
+                    {"_type", "CurveVector"}, {"type", 2}, {"curves", std::move(members)}};
+                out.report["native_geometry_kind"] = 2;
+                out.status = "extracted";
+            }
+        }
+    } catch (const std::bad_alloc &) {
+        throw;
+    } catch (const std::exception &e) {
+        out.region = nullptr;
+        out.surface.reset();
         out.status = "not_extracted";
         out.report["reason"] = e.what();
     }

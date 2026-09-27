@@ -55,6 +55,10 @@ unsigned swept_body_reconstruction_tests() {
                   "side query preserves group/member/patch association");
             const auto &s = result.surfaces.at(f.index);
             const auto geometry = BsplineSurface::from_bgfb(s.geometry);
+            const auto converted = extract_swept_body_surface_face(s);
+            check(converted.status == "extracted" && converted.region["type"] == 2 &&
+                      converted.region["curves"].size() == 4 && !converted.surface,
+                  "reconstructed prism side reaches native planar region conversion");
             check(std::abs(geometry.point_at(0, 0)[2]) < 1e-10 &&
                       std::abs(geometry.point_at(0, 1)[2] - 4) < 1e-10,
                   "public side table evaluates the original prism height");
