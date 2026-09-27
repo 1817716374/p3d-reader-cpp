@@ -102,6 +102,10 @@ BsplineCurve split_closed_span(const BsplineCurve &source, TubeBudget &b, Json &
     return result;
 }
 } // namespace
+Json native_tube_facet_knot_data(const BsplineCurve &c, TubeBudget &b) {
+    require(c.poles().size() <= b.max_control_points, "native facet knot source control budget");
+    return knot_data(c, b);
+}
 TubeFacetSeam native_tube_facet_seam(Point3 incoming, Point3 outgoing, const Point3 &point) {
     for (const auto &p : {incoming, outgoing, point})
         for (double x : p)

@@ -1,6 +1,8 @@
 #pragma once
 #include "native_tube_facet_patch.hpp"
 namespace p3d::swept_detail {
+// Shared native compressed-knot plan, including active endpoint replacement.
+Json native_tube_facet_knot_data(const BsplineCurve &, TubeBudget &);
 struct TubeFacetSeam {
     // Native classifier is initially -2; 2 means no seam plane is needed.
     int classifier = -2;

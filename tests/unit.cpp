@@ -47,6 +47,7 @@ unsigned native_tube_facet_plane_tests();
 unsigned native_tube_facet_extension_tests();
 unsigned native_tube_facet_boundaries_tests();
 unsigned native_tube_facet_sample_tests();
+unsigned native_tube_facet_uv_tests();
 unsigned native_xy_newton_tests();
 unsigned native_curve_xy_tests();
 unsigned native_bezier_tests();
@@ -2867,6 +2868,7 @@ int main() {
         checks += native_tube_facet_extension_tests();
         checks += native_tube_facet_boundaries_tests();
         checks += native_tube_facet_sample_tests();
+        checks += native_tube_facet_uv_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();
