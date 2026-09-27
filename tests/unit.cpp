@@ -70,6 +70,7 @@ unsigned native_tube_mesh_cap_input_tests();
 unsigned native_projected_polygon_tests();
 unsigned native_polygon_parameters_tests();
 unsigned native_tube_mesh_cap_tests();
+unsigned native_polyface_finalize_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2985,6 +2986,7 @@ int main() {
         checks += native_projected_polygon_tests();
         checks += native_polygon_parameters_tests();
         checks += native_tube_mesh_cap_tests();
+        checks += native_polyface_finalize_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();
