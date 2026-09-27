@@ -54,6 +54,7 @@ unsigned native_builder_coordinates_tests();
 unsigned native_builder_polyface_tests();
 unsigned native_polyface_face_data_tests();
 unsigned native_polyface_attributes_tests();
+unsigned native_polyface_connectivity_tests();
 unsigned native_tube_tests();
 unsigned native_tube_path_tests();
 unsigned native_tube_placement_tests();
@@ -2953,6 +2954,7 @@ int main() {
         checks += native_builder_polyface_tests();
         checks += native_polyface_face_data_tests();
         checks += native_polyface_attributes_tests();
+        checks += native_polyface_connectivity_tests();
         checks += native_xy_newton_tests();
         checks += native_curve_xy_tests();
         checks += native_bezier_tests();

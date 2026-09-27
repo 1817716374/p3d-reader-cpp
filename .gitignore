@@ -23,6 +23,7 @@
 !/tests/native_builder_polyface.cpp
 !/tests/native_polyface_face_data.cpp
 !/tests/native_polyface_attributes.cpp
+!/tests/native_polyface_connectivity.cpp
 !/tests/bspline_surface.cpp
 !/tests/bspline_trim.cpp
 !/tests/bspline_mesh.cpp

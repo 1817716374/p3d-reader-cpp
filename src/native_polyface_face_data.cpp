@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) Bentley Systems, Incorporated. All rights reserved.
 // Adapted from Polyface.cpp, FacetFaceData.cpp, PolyfaceVisitor.cpp and
-// polyfaceAddNormals.cpp.
+// polyfaceAddNormals.cpp, pf_halfEdgeArray.h and MTGGraph.cpp.
 // Original P3D ranges, activity flags, visitor bounds and operation order.
 // See THIRD_PARTY.md and third_party/BENTLEY_GEOMETRY_LICENSE.md.
 #include "native_polyface_face_data.hpp"
 #include "native_polyface_attributes.hpp"
+#include "native_polyface_connectivity.hpp"
+#include "native_attribute_sort.hpp"
 #include "native_polygon_projection.hpp"
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
@@ -514,5 +516,236 @@ NativePolyfaceAttributes build_native_polyface_normals(const NativePolyfaceFaceD
 NativePolyfaceAttributes build_native_polyface_parameters(const NativePolyfaceFaceDataState &input,
                                                           int selector, TubeBudget &budget) {
     return build_attributes(input, true, selector, budget);
+}
+NativePolyfaceConnectivity
+build_native_polyface_connectivity(const NativePolyfaceFaceDataState &input,
+                                   bool ignore_degeneracies, TubeBudget &budget) {
+    Context context(input, budget);
+    auto &mesh = context.state.mesh;
+    const auto &indices = mesh.indices.indices[point_channel];
+    require(mesh.coordinates.points.size() <= static_cast<std::size_t>(INT32_MAX),
+            "native connectivity vertex label overflow");
+    NativePolyfaceConnectivity out;
+    auto &edges = out.half_edges;
+    auto &nodes = out.nodes;
+    auto grow = [&](std::size_t count) {
+        require(count <= budget.max_control_points - context.storage,
+                "native connectivity storage budget");
+        context.storage += count;
+        context.work.charge(count);
+    };
+    auto vertex = [&](std::size_t read) {
+        const auto v = static_cast<std::int64_t>(indices[read]);
+        return static_cast<std::size_t>(v < 0 ? -v : v);
+    };
+    Visitor visitor(mesh, context.work, context.diagnostics);
+    Facet face;
+    std::size_t next = 0, filtered_corners = 0, skipped_faces = 0, visited_corners = 0;
+    while (visitor.read(next, face)) {
+        next = face.next;
+        visited_corners += face.count;
+        require(face.count <= budget.max_control_points - context.storage,
+                "native connectivity temporary corner budget");
+        std::vector<std::size_t> pack;
+        pack.reserve(face.count);
+        std::size_t count = face.count;
+        if (ignore_degeneracies) {
+            while (count > 1 && vertex(face.read + count - 1) == vertex(face.read)) {
+                context.work.charge(1);
+                --count;
+            }
+            pack.push_back(0);
+            for (std::size_t k = 1; k < count; ++k) {
+                context.work.charge(1);
+                if (vertex(face.read + k) != vertex(face.read + pack.back()))
+                    pack.push_back(k);
+            }
+            filtered_corners += face.count - pack.size();
+            if (pack.size() == 2) {
+                filtered_corners += 2;
+                ++skipped_faces;
+                continue;
+            }
+        } else {
+            for (std::size_t k = 0; k < count; ++k) {
+                context.work.charge(1);
+                pack.push_back(k);
+            }
+        }
+        grow(pack.size());
+        for (std::size_t k = 0; k < pack.size(); ++k) {
+            context.work.charge(1);
+            const auto a = face.read + pack[k], z = face.read + pack[(k + 1) % pack.size()];
+            edges.push_back({vertex(a), vertex(z), a, z, 0, indices[a] > 0});
+        }
+    }
+    // Sort whole half-edge identities with the original MSVC exchange order.
+    // Stable sorting equal keys would change pairing and subsequent node IDs.
+    grow(edges.size());
+    std::vector<std::size_t> order(edges.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+        order[i] = i;
+    auto key = [](const NativePolyfaceHalfEdge &e) {
+        return std::pair{std::min(e.vertex0, e.vertex1), std::max(e.vertex0, e.vertex1)};
+    };
+    auto less = [&](std::size_t a, std::size_t z) {
+        context.work.charge(1);
+        return key(edges[a]) < key(edges[z]);
+    };
+    NativeAttributeSort sorter(order, less);
+    sorter.sort(0, order.size(), order.size());
+    grow(edges.size());
+    std::vector<NativePolyfaceHalfEdge> sorted;
+    sorted.reserve(edges.size());
+    for (auto i : order)
+        sorted.push_back(edges[i]);
+    edges = std::move(sorted);
+    std::size_t boundary_edges = 0, paired_edges = 0, special_groups = 0, same_direction_pairs = 0;
+    if (!edges.empty()) {
+        std::size_t max_read = 0;
+        for (const auto &e : edges) {
+            context.work.charge(1);
+            max_read = std::max({max_read, e.read_index, e.successor_read_index});
+        }
+        require(max_read < static_cast<std::size_t>(INT32_MAX),
+                "native connectivity read label overflow");
+        grow(max_read + 1);
+        out.read_to_half_edge.assign(max_read + 1, SIZE_MAX);
+        for (std::size_t i = 0; i < edges.size(); ++i)
+            out.read_to_half_edge[edges[i].read_index] = i;
+        auto make_edge = [&](std::size_t a, std::size_t z, bool primary_a, bool primary_z,
+                             std::int32_t read_a, std::int32_t read_z, bool boundary) {
+            grow(2);
+            require(nodes.size() <= static_cast<std::size_t>(INT32_MAX) - 2,
+                    "native connectivity node label overflow");
+            const auto n = nodes.size();
+            nodes.push_back({n, n + 1, primary_a ? native_mtg_primary : 0,
+                             static_cast<std::int32_t>(a - 1), read_a});
+            nodes.push_back({n + 1, n, primary_z ? native_mtg_primary : 0,
+                             static_cast<std::int32_t>(z - 1), read_z});
+            if (boundary) {
+                nodes[n].mask |= native_mtg_boundary;
+                nodes[n + 1].mask |= native_mtg_boundary | native_mtg_exterior;
+                if (a == z)
+                    nodes[n + 1].mask |= native_mtg_polar_loop;
+                ++boundary_edges;
+            }
+            return n;
+        };
+        auto pair = [&](std::size_t a, std::size_t z) {
+            auto &x = edges[a];
+            auto &y = edges[z];
+            const auto n = make_edge(x.vertex0, y.vertex0, x.visible, y.visible,
+                                     static_cast<std::int32_t>(x.read_index),
+                                     static_cast<std::int32_t>(y.read_index), false);
+            x.node = n;
+            y.node = n + 1;
+            ++paired_edges;
+            if (x.vertex0 != y.vertex1 || x.vertex1 != y.vertex0)
+                ++same_direction_pairs;
+        };
+        auto successor = [&](std::size_t i) {
+            context.work.charge(1);
+            return out.read_to_half_edge[edges[i].successor_read_index];
+        };
+        for (std::size_t first = 0; first < edges.size();) {
+            std::size_t last = first + 1;
+            while (last < edges.size() && key(edges[last]) == key(edges[first])) {
+                context.work.charge(1);
+                ++last;
+            }
+            bool coupled = false;
+            if (last - first == 2) {
+                pair(first, first + 1);
+                coupled = true;
+            } else if (last - first == 4) {
+                auto partner = [&](std::size_t a, std::size_t excluded) {
+                    for (std::size_t i = first; i < last; ++i) {
+                        context.work.charge(1);
+                        if (i != a && i != excluded && edges[i].vertex0 == edges[a].vertex1 &&
+                            edges[i].vertex1 == edges[a].vertex0)
+                            return i;
+                    }
+                    return SIZE_MAX;
+                };
+                for (std::size_t a = first; a < last && !coupled; ++a) {
+                    const auto z = successor(a);
+                    if (z == SIZE_MAX)
+                        continue;
+                    const auto c = successor(z);
+                    if (c == SIZE_MAX)
+                        continue;
+                    const auto d = successor(c);
+                    if (edges[z].vertex0 == edges[z].vertex1 && c >= first && c < last && d == a) {
+                        const auto pa = partner(a, c), pc = partner(c, a);
+                        if (pa != SIZE_MAX && pc != SIZE_MAX && pa != pc) {
+                            pair(a, pa);
+                            pair(c, pc);
+                            coupled = true;
+                            ++special_groups;
+                        }
+                    }
+                }
+            }
+            if (!coupled)
+                for (std::size_t i = first; i < last; ++i) {
+                    auto &e = edges[i];
+                    e.node = make_edge(e.vertex0, e.vertex1, true, true,
+                                       static_cast<std::int32_t>(e.read_index), -1, true);
+                }
+            first = last;
+        }
+        auto twist = [&](std::size_t a, std::size_t z) {
+            context.work.charge(8);
+            // V-F-V reaches the face predecessor in the original MTG node chain.
+            const auto pa = nodes[nodes[nodes[a].vertex_successor].face_successor].vertex_successor;
+            const auto pz = nodes[nodes[nodes[z].vertex_successor].face_successor].vertex_successor;
+            std::swap(nodes[a].vertex_successor, nodes[z].vertex_successor);
+            std::swap(nodes[pa].face_successor, nodes[pz].face_successor);
+        };
+        for (std::size_t i = 0; i < edges.size(); ++i) {
+            const auto j = successor(i);
+            require(j < edges.size(), "native connectivity missing face successor");
+            twist(nodes[edges[i].node].face_successor, edges[j].node);
+        }
+        out.native_succeeded = true;
+    }
+    std::size_t label_mismatches = 0, nonzero = 0;
+    for (auto i : indices) {
+        context.work.charge(1);
+        if (i)
+            ++nonzero;
+    }
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        context.work.charge(1);
+        const auto &n = nodes[i];
+        require(n.face_successor < nodes.size() && n.vertex_successor < nodes.size(),
+                "native connectivity broken successor");
+        require(nodes[n.face_successor].vertex_successor == (i ^ 1),
+                "native connectivity broken edge mate");
+        if (n.vertex_index != nodes[n.vertex_successor].vertex_index)
+            ++label_mismatches;
+    }
+    out.complete = out.native_succeeded && visited_corners == nonzero && label_mismatches == 0 &&
+                   context.diagnostics.invalid_points == 0 &&
+                   context.diagnostics.truncated_attributes == 0;
+    out.report = {{"operation", "native_polyface_to_mtg_connectivity"},
+                  {"native_succeeded", out.native_succeeded},
+                  {"complete", out.complete},
+                  {"ignore_degeneracies", ignore_degeneracies},
+                  {"filtered_corners", filtered_corners},
+                  {"skipped_degenerate_faces", skipped_faces},
+                  {"paired_edges", paired_edges},
+                  {"boundary_edges", boundary_edges},
+                  {"four_edge_degenerate_couplings", special_groups},
+                  {"same_direction_pairs", same_direction_pairs},
+                  {"vertex_label_mismatches", label_mismatches},
+                  {"unvisited_nonzero_indices", nonzero - visited_corners},
+                  {"invalid_point_facets", context.diagnostics.invalid_points},
+                  {"truncated_attribute_visits", context.diagnostics.truncated_attributes},
+                  {"vertex_label_tag", -1},
+                  {"read_index_label_tag", -10004}};
+    out.points = std::move(mesh.coordinates.points);
+    return out;
 }
 } // namespace p3d::swept_detail
