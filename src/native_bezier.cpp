@@ -49,8 +49,8 @@ unsigned candidate(double count, unsigned multiplier) {
 }
 } // namespace
 
-BezierPointTangent native_bezier_point_tangent(const std::vector<BezierPole> &poles,
-                                               double fraction, BezierWork work) {
+BezierHomogeneousTangent native_bezier_homogeneous_tangent(const std::vector<BezierPole> &poles,
+                                                           double fraction, BezierWork work) {
     validate(poles, true);
     finite(fraction);
     const auto degree = poles.size() - 1;
@@ -69,6 +69,12 @@ BezierPointTangent native_bezier_point_tangent(const std::vector<BezierPole> &po
         }
         value[axis] = values[degree];
     }
+    return {value, derivative};
+}
+BezierPointTangent native_bezier_point_tangent(const std::vector<BezierPole> &poles,
+                                               double fraction, BezierWork work) {
+    const auto h = native_bezier_homogeneous_tangent(poles, fraction, work);
+    const auto &value = h.point, &derivative = h.tangent;
     BezierPointTangent result;
     result.weight_fallback = !(std::abs(value[3]) > 1e-12);
     const double reciprocal = result.weight_fallback ? 0. : finite(1 / value[3]);

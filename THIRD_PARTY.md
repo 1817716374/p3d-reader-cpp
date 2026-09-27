@@ -31,6 +31,10 @@
 
 `src/native_bezier.cpp` 参考上述 Bentley 固定提交中的 `bezeval.cpp`、`bezierDPoint4d.cpp`、`cv_properties.cpp` 和 `BSIQuadrature.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现包含齐次 Bézier 求值、边数估计和面积矩积分，并按 P3D 的权重阈值、退化向量、细分及积分算序改写；使用有界工作计数和独立存储，不依赖 Bentley 运行库。
 
+`src/native_xy_newton.cpp` 参考同一固定提交中的 `newton.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的独立对角项回退、原始参数重新起算、返回值与写回判定、固定迭代设置及有理 XY 求值规则改写，使用有界工作计数和独立迭代状态。
+
+`src/native_curve_xy.cpp` 参考同一固定提交中的 `bezierDPoint4d.cpp`、`polyline3d.cpp` 和 `MSBsplineCurve_ByBezier.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的固定采样、折线候选顺序与数量上限、参数接受范围及原始曲线节点换算改写；不引入较新参考实现中的重合区间处理。
+
 `src/native_bezier_support.hpp` 与 `src/native_bspline_area.cpp` 参考同一固定提交中的 `MSBsplineCurve_ByBezier.cpp`、`bezierDPoint4d.cpp` 和 `cv_properties.cpp`，保留上述版权及许可标记。实现共享局部支撑提取和节点插入，以独立段流式计算完整 B 样条的面积矢量与形心矩；按 P3D 的节点容差、源端点求值和累加顺序改写，源数据保持只读。
 
 `src/native_pcurve_points.cpp` 中的 `native_iso_v_curve` 参考同一固定提交的 `bspconv.cpp` 中 `MSBsplineSurface::GetIsoVCurve`，并在函数处保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的完整节点域求值、原始权重返回及重新加权规则改写；共享固定参数的只读基函数，直接读取带步长的控制点，避免为每列复制临时曲线。

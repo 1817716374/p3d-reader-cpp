@@ -12,6 +12,12 @@ struct BezierPointTangent {
     Point3 point{}, tangent{};
     bool weight_fallback = false;
 };
+struct BezierHomogeneousTangent {
+    BezierPole point{}, tangent{};
+};
+// Raw homogeneous de Casteljau value and first derivative; no projection.
+BezierHomogeneousTangent native_bezier_homogeneous_tangent(const std::vector<BezierPole> &, double,
+                                                           BezierWork);
 // Native homogeneous de Casteljau and Cartesian quotient. Fractions are not
 // clamped. |evaluated W| <= 1e-12 uses reciprocal zero, not a singularity repair.
 BezierPointTangent native_bezier_point_tangent(const std::vector<BezierPole> &, double, BezierWork);

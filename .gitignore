@@ -168,3 +168,5 @@
 !/tests/native_tube_facet_extension.cpp
 !/tests/native_tube_facet_boundaries.cpp
 !/tests/native_tube_facet_sample.cpp
+!/tests/native_xy_newton.cpp
+!/tests/native_curve_xy.cpp
