@@ -1,6 +1,7 @@
 #include "graphics_native.hpp"
 #include "akima_internal.hpp"
 #include "interpolation_internal.hpp"
+#include "spiral_internal.hpp"
 #include "p3d/pcurve.hpp"
 
 namespace p3d {
@@ -278,6 +279,8 @@ struct GeometryConstruction {
                                           source.at("point_count").get<std::size_t>() * 3);
         } else if (name == "InterpolationCurve") {
             table = interpolation_table(source);
+        } else if (name == "TransitionSpiral") {
+            table = spiral_table(source);
         } else if (name == "BsplineCurve") {
             table["order"] = source.at("order");
             table["closed"] = source.at("closed");
@@ -342,6 +345,79 @@ struct GeometryConstruction {
                         {{"parameter", point.parameter}, {"position", point.position}});
                 out["loops"].push_back(std::move(samples));
             }
+        return out;
+    }
+    Json spiral_table(const Json &source) {
+        const auto values = trim_values(source.at("detail_offset"), 18);
+        Json table = {{"_type", "TransitionSpiral"}};
+        auto &detail = table["detail"];
+        const char *matrix[] = {"axx", "axy", "axz", "axw", "ayx", "ayy",
+                                "ayz", "ayw", "azx", "azy", "azz", "azw"};
+        const char *parameters[] = {"fractionA",       "fractionB",  "bearing0Radians",
+                                    "bearing1Radians", "curvature0", "curvature1"};
+        for (unsigned i = 0; i < 12; ++i)
+            detail["transform"][matrix[i]] = values[i];
+        for (unsigned i = 0; i < 6; ++i)
+            detail[parameters[i]] = values[i + 12];
+        detail["spiralType"] = source.at("source_spiral_type");
+        return table;
+    }
+    Json spiral(std::size_t table) {
+        const auto detail = b.field(table, 0, 148);
+        require(detail.has_value(), "native_spiral_requires_detail_pointer");
+        const auto kind = b.at<std::int32_t>(*detail + 144);
+        auto out = object("TransitionSpiral", "curve");
+        out.update({{"operation", "clone_spiral_detail_and_try_fit"},
+                    {"source_spiral_type", kind},
+                    {"detail_offset", *detail},
+                    {"detail_bytes_read", 148},
+                    {"base_factory_pointer", "non_null"},
+                    {"underlying_spiral_pointer", "unknown"},
+                    {"fitted_bspline_pointer", "unknown"},
+                    {"unread_fields", {"detail/constructionHint", "extraData", "directDetail"}}});
+        if (kind < 10 || kind > 14) {
+            out.update({{"geometry_pointer", "null"},
+                        {"base_factory_pointer", "null"},
+                        {"underlying_spiral_pointer", "null"},
+                        {"fitted_bspline_pointer", "null"},
+                        {"fit_called", false},
+                        {"reason", "native_spiral_type_not_selected"}});
+            return out;
+        }
+        try {
+            const auto source = spiral_table(out);
+            const auto &d = source.at("detail");
+            const double a = d.at("bearing0Radians"), z = d.at("bearing1Radians"),
+                         c0 = d.at("curvature0"), c1 = d.at("curvature1");
+            const auto delta = z - a, mean = (std::abs(c0) + std::abs(c1)) * .5;
+            require(std::isfinite(a) && std::isfinite(z) && std::isfinite(c0) &&
+                        std::isfinite(c1) && std::isfinite(delta) && std::isfinite(mean),
+                    "native_spiral_parameter_arithmetic_unavailable");
+            out["parameter_setter_succeeded"] = mean >= std::abs(delta) * 1e-20;
+            // The caller ignores a false setter result and keeps the base
+            // object (whose length was set to zero). Do not call that null.
+            const auto curve = TransitionSpiral::from_bgfb(source);
+            out["effective_parameters"] = curve.report();
+            out["effective_parameters"].erase("native_bspline_conversion");
+            out["fit_called"] = true;
+            const auto fitted = curve.native_fit();
+            out["fit"] = fitted.report;
+            out["native_fit_result"] = 0;
+            out["underlying_spiral_pointer"] = "non_null";
+            out["fitted_bspline_pointer"] = "non_null";
+            out["fitted_bspline"] = {{"order", fitted.curve.order()},
+                                     {"closed", fitted.curve.closed()},
+                                     {"pole_count", fitted.curve.poles().size()},
+                                     {"knot_count", fitted.curve.knots().size()},
+                                     {"weight_count", 0}};
+        } catch (const spiral_detail::FitRejected &e) {
+            out["fit"] = {{"status", "rejected"}, {"reason", e.reason}};
+            out["native_fit_result"] = 1;
+            out["underlying_spiral_pointer"] = "null";
+            out["fitted_bspline_pointer"] = "null";
+        } catch (const std::exception &e) {
+            out.update({{"geometry_pointer", "unknown"}, {"reason", e.what()}});
+        }
         return out;
     }
     Json interpolation_table(const Json &source) {
@@ -619,8 +695,8 @@ struct GeometryConstruction {
             return out;
         }
         require(tag == 1 || tag == 2 || tag == 3 || tag == 4 || tag == 5 || tag == 10 ||
-                    tag == 11 || tag == 12 || tag == 14 || tag == 16 || tag == 18 || tag == 19 ||
-                    tag == 20 || tag == 21,
+                    tag == 11 || tag == 12 || tag == 14 || tag == 16 || tag == 17 || tag == 18 ||
+                    tag == 19 || tag == 20 || tag == 21,
                 "native_geometry_construction_not_supported");
         const auto table = child(root, 1);
         if (tag == 5)
@@ -632,6 +708,8 @@ struct GeometryConstruction {
             return akima(*table);
         if (tag == 16)
             return interpolation(*table);
+        if (tag == 17)
+            return spiral(*table);
         if (tag == 3) {
             const auto order_field = b.field(*table, 0, 4);
             const auto order = order_field ? b.at<std::int32_t>(*order_field) : 0;
@@ -803,6 +881,12 @@ struct GeometryConstruction {
         return out;
     }
 };
+void spiral_copy_input(const Json &source) {
+    // The wrapper's clone passes its base pointer into a constructor that
+    // immediately dereferences it. A cleared base is not an empty clone.
+    require(source.at("underlying_spiral_pointer") == "non_null",
+            "native_spiral_clone_requires_underlying_curve");
+}
 void interpolation_copy_input(const Json &source) {
     // Unlike the initial 64-bit array allocation, clone helpers multiply sizes
     // in int32 storage. Do not interpret wrapped sizes as successful copies.
@@ -825,6 +909,10 @@ void copy_curve_vector_input(const Json &source, bool nullable = false) {
             const auto type = member.at("geometry_type");
             if (type == "InterpolationCurve") {
                 interpolation_copy_input(member);
+                continue;
+            }
+            if (type == "TransitionSpiral") {
+                spiral_copy_input(member);
                 continue;
             }
             require(type == "LineSegment" || type == "EllipticArc" || type == "LineString" ||
@@ -863,7 +951,15 @@ Json parametric_append_input(const Json &input) {
             operation = "copy_fixed_detail";
         else if (name == "LineString" || name == "PointString")
             operation = "copy_point_storage";
-        else if (name == "InterpolationCurve") {
+        else if (name == "TransitionSpiral") {
+            spiral_copy_input(source);
+            operation = "clone_spiral_detail_and_try_fit";
+            out["spiral_copy"] = {{"source_spiral_type", source.at("source_spiral_type")},
+                                  {"underlying_spiral_reused", false},
+                                  {"fitted_bspline_reused", false},
+                                  {"fitted_bspline_regenerated", true},
+                                  {"transform_and_fractions_copied", true}};
+        } else if (name == "InterpolationCurve") {
             interpolation_copy_input(source);
             operation = "copy_interpolation_parameters_and_try_fit";
             out["interpolation_copy"] = {
@@ -1112,6 +1208,11 @@ Json native_input(const Bytes &entry, bool model_has_project) {
         if (tag == 19 && out.at("construction").at("geometry_pointer") == "null") {
             out["material_footer"] = "not_read";
             reject("native_akima_construction_rejected");
+            return out;
+        }
+        if (tag == 17 && out.at("construction").at("geometry_pointer") == "null") {
+            out["material_footer"] = "not_read";
+            reject("native_spiral_type_not_selected");
             return out;
         }
         if (type == 4) {

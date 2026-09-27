@@ -1,4 +1,5 @@
-#include "internal.hpp"
+#include "spiral_internal.hpp"
+#include "native_curve_affine.hpp"
 namespace p3d {
 namespace {
 double finite(double v) {
@@ -142,7 +143,9 @@ double update_parameters(const ScalarSpline &axis, std::vector<double> &s) {
 SpiralFit TransitionSpiral::native_fit(unsigned budget) const {
     const auto input = native_fit_input(budget);
     const auto points = input.at("local_points").get<std::vector<Point3>>();
-    require(points.size() <= 998, "native spiral fit exceeds 998 source points");
+    if (points.size() > 998)
+        throw spiral_detail::FitRejected("native spiral fit exceeds 998 source points",
+                                         "native_spiral_fit_point_count_guard");
     std::vector<double> s(points.size(), 0);
     for (std::size_t i = 1; i < s.size(); ++i) {
         const double x = points[i][0] - points[i - 1][0], y = points[i][1] - points[i - 1][1];
@@ -195,11 +198,20 @@ SpiralFit TransitionSpiral::native_fit(unsigned budget) const {
     auto poles = solve(a, std::move(b), c, std::move(rhs));
     poles.insert(poles.begin(), axis.y.front());
     poles.push_back(axis.y.back());
+    Matrix4 transform{};
+    for (unsigned r = 0; r < 3; ++r)
+        for (unsigned c = 0; c < 4; ++c)
+            transform[r][c] = transform_[4 * r + c];
+    transform[3][3] = 1;
+    const bool identity = curve_detail::bspline_identity(transform);
     Json flat = Json::array();
-    for (const auto &p : poles)
-        for (unsigned k = 0; k < 3; ++k)
-            flat.push_back(finite(transform_[4 * k] * p[0] + transform_[4 * k + 1] * p[1] +
-                                  transform_[4 * k + 3]));
+    for (const auto &p : poles) {
+        const Point3 local{p[0], p[1], 0};
+        const auto placed =
+            identity ? local : curve_detail::affine_polynomial_point(transform, local);
+        for (double x : placed)
+            flat.push_back(finite(x));
+    }
     return {BsplineCurve::from_bgfb({{"_type", "BsplineCurve"},
                                      {"order", 4},
                                      {"closed", false},
@@ -219,6 +231,8 @@ SpiralFit TransitionSpiral::native_fit(unsigned budget) const {
              {"max_interval_length_change", change},
              {"convergence_threshold", threshold},
              {"convergence_is_geometric_error_bound", false},
+             {"transform_applied", !identity},
+             {"transform_branch", "native_polynomial_array"},
              {"derived_pole_count", poles.size()}}};
 }
 } // namespace p3d

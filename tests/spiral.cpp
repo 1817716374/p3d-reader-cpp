@@ -332,7 +332,13 @@ unsigned spiral_tests() {
     v["detail"]["transform"]["ayy"] = -3.;
     v["detail"]["transform"]["azx"] = 5.;
     const auto transformed = TransitionSpiral::from_bgfb(v).native_fit();
-    check(transformed.report == untransformed.report &&
+    auto transformed_local_report = transformed.report,
+         untransformed_local_report = untransformed.report;
+    transformed_local_report.erase("transform_applied");
+    untransformed_local_report.erase("transform_applied");
+    check(transformed_local_report == untransformed_local_report &&
+              transformed.report.at("transform_applied") == true &&
+              untransformed.report.at("transform_applied") == false &&
               transformed.curve.knots() == untransformed.curve.knots(),
           "affine transform does not alter local arc length fit or convergence");
     // High precision dense collocation references. In particular the native
@@ -383,6 +389,25 @@ unsigned spiral_tests() {
     v = source();
     v["detail"]["bearing1Radians"] = .3;
     fit_rejects(v, "zero length underlying spiral does not imply a valid fitted B-spline");
+    const auto identity_fit = TransitionSpiral::from_bgfb(source()).native_fit();
+    for (const auto field : {"axw", "ayw", "azw", "axy", "ayx", "azx"}) {
+        const bool translation = field[2] == 'w';
+        const double edge = translation ? 1e-10 : 1e-12;
+        for (double factor : {-1., 1.})
+            for (unsigned side = 0; side < 3; ++side) {
+                const double magnitude = side == 0   ? std::nextafter(edge, 0.)
+                                         : side == 1 ? edge
+                                                     : std::nextafter(edge, INFINITY);
+                auto input = source();
+                input["detail"]["transform"][field] = factor * magnitude;
+                const auto fit = TransitionSpiral::from_bgfb(input).native_fit();
+                const bool skipped = translation ? side == 0 : side <= 1;
+                check(fit.report.at("transform_applied") == !skipped &&
+                          (fit.curve.poles() == identity_fit.curve.poles()) == skipped,
+                      "spiral fitted cache follows strict translation and inclusive linear "
+                      "identity bounds");
+            }
+    }
     v = source();
     v["detail"]["bearing1Radians"] = 40.;
     v["detail"]["bearing0Radians"] = 0.;

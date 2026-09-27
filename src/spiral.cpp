@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "spiral_internal.hpp"
 namespace p3d {
 namespace {
 constexpr double pi = 3.1415926535897932384626433832795;
@@ -244,8 +244,11 @@ Json TransitionSpiral::native_fit_input(unsigned budget) const {
         }
         return sum;
     };
-    const unsigned intervals = count(start_, end_), offset_intervals = count(0, start_);
-    require(intervals < 2000, "native spiral stroke exceeds its 2000 point buffer");
+    const unsigned intervals = count(start_, end_);
+    if (intervals >= 2000)
+        throw spiral_detail::FitRejected("native spiral stroke exceeds its 2000 point buffer",
+                                         "native_spiral_stroke_buffer_guard");
+    const unsigned offset_intervals = count(0, start_);
     require(std::uint64_t(intervals) + offset_intervals <= budget,
             "native spiral integration interval budget exceeded");
     auto stroke = [&](double a, double b, unsigned n, bool save, std::vector<Point3> &points,

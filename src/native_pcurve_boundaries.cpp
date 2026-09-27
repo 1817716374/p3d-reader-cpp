@@ -3,6 +3,7 @@
 #include "native_pcurve_points.hpp"
 #include "native_curve_conversion.hpp"
 #include "interpolation_internal.hpp"
+#include "spiral_internal.hpp"
 
 namespace p3d {
 namespace {
@@ -75,9 +76,16 @@ struct Boundaries {
                 // The wrapper survives fitting failure. Its trim conversion
                 // returns false because the saved fitted B-spline is absent.
             }
-        } else if (type == "TransitionSpiral")
-            c = TransitionSpiral::from_bgfb(v).native_fit(options.max_integration_intervals).curve;
-        else if (type == "EllipticArc")
+        } else if (type == "TransitionSpiral") {
+            try {
+                c = TransitionSpiral::from_bgfb(v)
+                        .native_fit(options.max_integration_intervals)
+                        .curve;
+            } catch (const spiral_detail::FitRejected &) {
+                // Native construction retains the wrapper, clears the base
+                // spiral and leaves no fitted B-spline for trim conversion.
+            }
+        } else if (type == "EllipticArc")
             c = curve_detail::ellipse_to_bspline(v);
         else if (type == "LineSegment") {
             const auto &s = v.at("segment");

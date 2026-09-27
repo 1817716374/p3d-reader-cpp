@@ -433,6 +433,103 @@ unsigned swept_binary_tests() {
     write(changed_interpolation, ivector + 4, std::numeric_limits<double>::infinity());
     check(native_curve(changed_interpolation).at("status") == "not_evaluated",
           "unconfirmed nonfinite fitting is not silently classified as absent cache");
+    auto spiral = [](int kind = 10, double end_bearing = 1.32, bool reverse = false,
+                     bool transform = false) {
+        Packet p;
+        const auto root = p.table({4, 8}, 12);
+        p.reference(8, root);
+        write(p.b, root + 4, std::uint8_t(17));
+        const auto table = p.table({8, 160, 164}, 168);
+        p.reference(root + 8, table);
+        for (unsigned i = 0; i < 12; ++i)
+            write(p.b, table + 8 + i * 8, double(i == 0 || i == 5 || i == 10));
+        if (transform) {
+            write(p.b, table + 8, 2.);
+            write(p.b, table + 8 + 24, 10.);
+            write(p.b, table + 8 + 40, -3.);
+            write(p.b, table + 8 + 88, 7.);
+        }
+        const double values[] = {reverse ? 1. : 0., reverse ? 0. : 1., .3, end_bearing, -.2, -1.};
+        for (unsigned i = 0; i < 6; ++i)
+            write(p.b, table + 8 + 96 + i * 8, values[i]);
+        write(p.b, table + 8 + 144, std::int32_t(kind));
+        // These three source fields are deliberately unsuitable for consumption.
+        write(p.b, table + 8 + 148, std::int32_t(-1));
+        write(p.b, table + 160, UINT32_MAX);
+        write(p.b, table + 164, UINT32_MAX);
+        return p.b;
+    };
+    for (int kind = 10; kind <= 14; ++kind)
+        for (bool reverse : {false, true})
+            for (bool project : {false, true}) {
+                const auto binary = spiral(kind, 1.32, reverse, true);
+                const auto result = native_curve(binary, 1, project);
+                const auto &c = result.at("construction");
+                check(
+                    result.at("status") == "geometry_constructed" &&
+                        c.at("native_fit_result") == 0 &&
+                        c.at("underlying_spiral_pointer") == "non_null" &&
+                        c.at("fitted_bspline_pointer") == "non_null" &&
+                        c.at("effective_parameters").at("effective_curvature0") == .2 &&
+                        c.at("fit").at("transform_applied") == true,
+                    "all five native spiral profiles construct a fitted forward or reverse curve");
+                const auto &copy = result.at("parametric_append_input");
+                check(copy.at("status") == "appended" &&
+                          copy.at("spiral_copy").at("underlying_spiral_reused") == false &&
+                          copy.at("spiral_copy").at("fitted_bspline_regenerated") == true,
+                      "spiral clone copies the base state, transform and range before refitting");
+                check(native_curve(binary, 4, project).at("status") == "rejected",
+                      "raw B-spline entry cannot extract a spiral's fitted cache");
+            }
+    for (auto kind : {INT32_MIN, -1, 0, 9, 15, 55, INT32_MAX}) {
+        const auto result = native_curve(spiral(kind));
+        check(result.at("status") == "rejected" &&
+                  result.at("construction").at("base_factory_pointer") == "null" &&
+                  result.at("material_footer") == "not_read",
+              "unselected spiral type returns null and rejects a basic-curve entry");
+    }
+    for (double angle : {40.3, 81.3})
+        for (bool transform : {false, true}) {
+            const auto binary = spiral(10, angle, false, transform);
+            const auto result = native_curve(binary);
+            const auto &c = result.at("construction");
+            check(result.at("status") == "geometry_constructed" &&
+                      c.at("geometry_pointer") == "non_null" &&
+                      c.at("base_factory_pointer") == "non_null" &&
+                      c.at("underlying_spiral_pointer") == "null" &&
+                      c.at("fitted_bspline_pointer") == "null" && c.at("native_fit_result") == 1,
+                  "native stroke/fit count guards retain wrapper but clear the underlying spiral");
+            check(result.at("entry_restore").at("status") == "retained" &&
+                      result.at("parametric_append_input").at("status") == "not_evaluated" &&
+                      result.at("parametric_append_input").at("reason") ==
+                          "native_spiral_clone_requires_underlying_curve",
+                  "cleared-base wrapper is readable but cannot safely pass the clone dereference");
+            check(native_curve(binary, 4).at("status") == "rejected",
+                  "raw B-spline extraction rejects a surviving empty spiral wrapper");
+        }
+    auto spiral_bad = spiral();
+    const auto st = interpolation_table(spiral_bad), sd = st + 8;
+    write(spiral_bad, sd + 128, 0.);
+    write(spiral_bad, sd + 136, 0.);
+    const auto bad_setter = native_curve(spiral_bad);
+    check(bad_setter.at("status") == "not_evaluated" &&
+              bad_setter.at("construction").at("base_factory_pointer") == "non_null" &&
+              bad_setter.at("construction").at("parameter_setter_succeeded") == false,
+          "failed spiral parameter setter does not imply that the base factory returned null");
+    spiral_bad = spiral();
+    const auto svt = st - Reader(spiral_bad, st).i32();
+    write(spiral_bad, svt + 4, std::uint16_t(0));
+    check(native_curve(spiral_bad).at("status") == "not_evaluated",
+          "missing spiral detail is an unsafe source read, not a factory rejection");
+    spiral_bad = spiral();
+    write(spiral_bad, sd, std::numeric_limits<double>::infinity());
+    check(native_curve(spiral_bad).at("status") == "not_evaluated",
+          "nonfinite transform is not treated as a confirmed native fitting failure");
+    spiral_bad = spiral();
+    write(spiral_bad, svt + 2, std::uint16_t(156));
+    spiral_bad.resize(st + 156);
+    check(native_curve(spiral_bad).at("status") == "geometry_constructed",
+          "native detail requires 148 consumed bytes, not the trailing inactive construction hint");
     auto surface = [](bool closed_u, bool closed_v, std::optional<int> weights,
                       std::optional<int> knots_u, std::optional<int> knots_v, int boundary = 0) {
         Packet p;
@@ -820,6 +917,29 @@ unsigned swept_binary_tests() {
               periodic_member.at("prepared_closed") == false &&
               periodic_interpolation.at("parametric_append_input").at("status") == "appended",
           "periodic interpolation cache is opened before boundary storage is copied");
+    for (const auto kind : {9, 10}) {
+        const auto group = native_curve(collection(spiral(kind), 2), 2);
+        check(group.at("construction").at("output_member_count") == (kind == 10 ? 2 : 0) &&
+                  group.at("parametric_append_input").at("status") == "appended",
+              "curve groups distinguish selected spiral wrappers from unselected null factories");
+    }
+    for (double angle : {1.32, 40.3, 81.3}) {
+        const auto member = spiral(10, angle);
+        const auto group = native_curve(collection(member, 2), 2);
+        check(group.at("construction").at("output_member_count") == 2 &&
+                  group.at("parametric_append_input").at("status") ==
+                      (angle == 1.32 ? "appended" : "not_evaluated"),
+              "failed-fit spiral wrappers remain group members and block their unsafe clone");
+        const auto result = native_curve(attach_boundary(plane, collection(member, 1)), 5);
+        check(result.at("status") == "geometry_constructed" &&
+                  result.at("construction").at("initial_boundary_cache").at("status") ==
+                      "complete" &&
+                  result.at("parametric_append_input").at("status") == "appended" &&
+                  result.at("parametric_append_input")
+                          .at("boundary_storage_copy")
+                          .at("curve_count") == (angle == 1.32 ? 1 : 0),
+              "surface trim skips confirmed absent spiral caches and copies only prepared curves");
+    }
     auto primitive = [](unsigned tag) {
         Packet p;
         const auto root = p.table({4, 8}, 12);
