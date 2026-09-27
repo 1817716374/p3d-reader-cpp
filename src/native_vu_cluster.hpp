@@ -9,7 +9,7 @@ Json consolidate_native_vu_coordinates(NativeVuGraph &, double tolerance, std::u
 double native_vu_merge_tolerance(const NativeVuGraph &, double absolute_tolerance,
                                  double relative_tolerance, TubeBudget &);
 // Fresh indexed triangulation graph: original absolute/relative defaults and
-// first consolidation, near-vertex edge splits and second consolidation.
-// Intersection splitting and later merge operations stay pending.
+// first consolidation, near-vertex splits, second consolidation, intersections.
+// Vertex connection and later merge operations stay pending.
 void prepare_native_vu_merge(NativeVuInput &, TubeBudget &);
 } // namespace p3d::swept_detail

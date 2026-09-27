@@ -8,6 +8,7 @@
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
 #include "native_vu_near_vertices.hpp"
+#include "native_vu_intersections.hpp"
 #include <numeric>
 namespace p3d::swept_detail {
 namespace {
@@ -170,11 +171,14 @@ void prepare_native_vu_merge(NativeVuInput &input, TubeBudget &budget) {
     auto splits = split_native_vu_edges_near_vertices(input.graph, tolerance, tolerance, tolerance,
                                                       0x40000000u, budget);
     auto second = consolidate_native_vu_coordinates(input.graph, tolerance, 0x40000000u, budget);
+    auto intersections =
+        split_native_vu_edges_at_intersections(input.graph, tolerance, tolerance, budget);
     input.report["merge_preparation"] = {{"tolerance", tolerance},
                                          {"initial_consolidation", std::move(report)},
                                          {"near_vertex_splitting", std::move(splits)},
                                          {"second_consolidation", std::move(second)},
-                                         {"edge_splitting_completed", false},
+                                         {"intersection_splitting", std::move(intersections)},
+                                         {"edge_splitting_completed", true},
                                          {"merge_completed", false}};
 }
 } // namespace p3d::swept_detail

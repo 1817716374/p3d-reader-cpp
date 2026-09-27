@@ -7,6 +7,7 @@
 #include "native_bezier.hpp"
 #include "native_bezier_support.hpp"
 #include "native_vu_qsort.hpp"
+#include "native_vu_split_support.hpp"
 namespace p3d::swept_detail {
 namespace {
 using curve_detail::bezier_support::finite;
@@ -18,7 +19,9 @@ double distance_squared(const Point3 &a, const Point3 &b) {
     const auto dx = finite(a[0] - b[0]), dy = finite(a[1] - b[1]);
     return finite(finite(dy * dy) + finite(dx * dx));
 }
-std::vector<std::size_t> validate(const NativeVuGraph &g, TubeBudget &budget) {
+} // namespace
+std::vector<std::size_t> validate_native_vu_split_graph(const NativeVuGraph &g,
+                                                        TubeBudget &budget) {
     require(g.nodes.size() <= budget.max_control_points && g.nodes.size() <= INT32_MAX,
             "native VU split graph size");
     const Work work{budget.work, budget.max_work};
@@ -55,7 +58,33 @@ std::vector<std::size_t> validate(const NativeVuGraph &g, TubeBudget &budget) {
     }
     return all;
 }
-} // namespace
+std::vector<std::size_t> collect_native_vu_up_edges(const NativeVuGraph &g,
+                                                    const std::vector<std::size_t> &all,
+                                                    TubeBudget &budget) {
+    const Work work{budget.work, budget.max_work};
+    std::vector<std::size_t> edges;
+    for (auto n : all) {
+        work.charge(1);
+        const auto &a = g.nodes[n].point, &b = g.nodes[g.nodes[n].face_next].point;
+        if (a[1] < b[1] || (a[1] == b[1] && a[0] < b[0]))
+            edges.push_back(n);
+    }
+    return edges;
+}
+void sort_native_vu_nodes(const NativeVuGraph &g, std::vector<std::size_t> &nodes,
+                          TubeBudget &budget) {
+    const Work work{budget.work, budget.max_work};
+    native_vu_qsort(nodes, [&](std::size_t a, std::size_t b) {
+        work.charge(1);
+        for (auto axis : {1, 0}) {
+            if (g.nodes[a].point[axis] < g.nodes[b].point[axis])
+                return -1;
+            if (g.nodes[a].point[axis] > g.nodes[b].point[axis])
+                return 1;
+        }
+        return 0;
+    });
+}
 std::vector<double> collapse_native_vu_fractions(std::vector<double> values, double tol,
                                                  double minimum, double maximum,
                                                  TubeBudget &budget) {
@@ -107,6 +136,36 @@ std::vector<double> collapse_native_vu_fractions(std::vector<double> values, dou
     }
     return result;
 }
+std::size_t split_native_vu_at_fractions(NativeVuGraph &g, std::size_t edge,
+                                         std::vector<double> fractions, double vertex, double along,
+                                         TubeBudget &budget) {
+    tolerance(vertex);
+    tolerance(along);
+    require(edge < g.nodes.size() && g.nodes[edge].face_next < g.nodes.size(),
+            "native VU fraction split edge");
+    const Work work{budget.work, budget.max_work};
+    const auto a = g.nodes[edge].point, b = g.nodes[g.nodes[edge].face_next].point;
+    const auto length = std::sqrt(distance_squared(a, b));
+    if (fractions.empty() || !(length > along))
+        return 0;
+    const auto vertex_fraction = finite(vertex / length);
+    fractions = collapse_native_vu_fractions(std::move(fractions), finite(along / length),
+                                             vertex_fraction, finite(1 - vertex_fraction), budget);
+    auto base = edge;
+    for (auto f : fractions) {
+        work.charge(10);
+        Point3 point;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const auto delta = finite(b[k] - a[k]);
+            point[k] = f <= .5 ? finite(a[k] + finite(delta * f))
+                               : finite(b[k] + finite(delta * finite(f - 1)));
+        }
+        const auto pair = split_native_vu_edge(g, base, budget);
+        g.nodes[pair.first].point = g.nodes[pair.second].point = point;
+        base = pair.first;
+    }
+    return fractions.size();
+}
 Json split_native_vu_edges_near_vertices(NativeVuGraph &graph, double perp, double vertex,
                                          double along, std::uint32_t visit_mask,
                                          TubeBudget &budget) {
@@ -116,11 +175,11 @@ Json split_native_vu_edges_near_vertices(NativeVuGraph &graph, double perp, doub
     require(visit_mask && !(visit_mask & (visit_mask - 1)) &&
                 !(visit_mask & (native_vu_numbered_mask | 3u)),
             "native VU split scratch mask");
-    const auto all = validate(graph, budget);
+    const auto all = validate_native_vu_split_graph(graph, budget);
     const Work work{budget.work, budget.max_work};
     work.charge(graph.nodes.size());
     auto g = graph; // One transaction for the entire pass, not one copy per edge.
-    std::vector<std::size_t> vertices, edges;
+    std::vector<std::size_t> vertices;
     for (auto n : all)
         g.nodes[n].mask &= ~visit_mask;
     for (auto n : all) {
@@ -134,22 +193,10 @@ Json split_native_vu_edges_near_vertices(NativeVuGraph &graph, double perp, doub
                 p = g.nodes[p].vertex_next;
             } while (p != n);
         }
-        const auto &a = g.nodes[n].point, &b = g.nodes[g.nodes[n].face_next].point;
-        if (a[1] < b[1] || (a[1] == b[1] && a[0] < b[0]))
-            edges.push_back(n);
     }
-    auto compare = [&](std::size_t a, std::size_t b) {
-        work.charge(1);
-        for (auto axis : {1, 0}) {
-            if (g.nodes[a].point[axis] < g.nodes[b].point[axis])
-                return -1;
-            if (g.nodes[a].point[axis] > g.nodes[b].point[axis])
-                return 1;
-        }
-        return 0;
-    };
-    native_vu_qsort(vertices, compare);
-    native_vu_qsort(edges, compare);
+    auto edges = collect_native_vu_up_edges(g, all, budget);
+    sort_native_vu_nodes(g, vertices, budget);
+    sort_native_vu_nodes(g, edges, budget);
     const auto perp2 = finite(perp * perp), vertex2 = finite(vertex * vertex);
     // Native range expansion omits perpendicular tolerance from the maximum.
     const auto max_tol = std::max(along, vertex);
@@ -199,29 +246,11 @@ Json split_native_vu_edges_near_vertices(NativeVuGraph &graph, double perp, doub
                 fractions.push_back(f);
         }
         projections += fractions.size();
-        const auto length = std::sqrt(uu);
-        if (fractions.empty() || !(length > along))
-            continue;
-        const auto vertex_fraction = finite(vertex / length);
-        fractions =
-            collapse_native_vu_fractions(std::move(fractions), finite(along / length),
-                                         vertex_fraction, finite(1 - vertex_fraction), budget);
-        if (!fractions.empty())
+        const auto count =
+            split_native_vu_at_fractions(g, edge, std::move(fractions), vertex, along, budget);
+        if (count)
             ++split_edges;
-        auto base = edge;
-        for (auto f : fractions) {
-            work.charge(10);
-            Point3 point;
-            for (std::size_t k = 0; k < 3; ++k) {
-                const auto delta = finite(b[k] - a[k]);
-                point[k] = f <= 0.5 ? finite(a[k] + finite(delta * f))
-                                    : finite(b[k] + finite(delta * finite(f - 1)));
-            }
-            const auto pair = split_native_vu_edge(g, base, budget);
-            g.nodes[pair.first].point = g.nodes[pair.second].point = point;
-            base = pair.first;
-            ++splits;
-        }
+        splits += count;
     }
     Json report = {{"scope", "native_vu_near_vertex_edge_splits"},
                    {"vertex_count", vertices.size()},
