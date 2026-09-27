@@ -18,6 +18,10 @@ struct TubeFacetComposition {
     // reference can invalidate another: alive=false is retained, never dereferenced.
     std::vector<TubeFacetSeamReferences> seams;
     std::optional<BsplineCurve> working_prefix_path, working_suffix_path;
+    // Updated source objects after ordered branch generation: prefix path,
+    // prefix section, suffix path, suffix section. Original pointer identity
+    // is preserved between entries; equal independent inputs remain separate.
+    std::array<std::shared_ptr<const BsplineCurve>, 4> working_sources{};
     // Only the pre-seam composition has completed, not the entire native caller.
     bool prepared = false;
     Json report;

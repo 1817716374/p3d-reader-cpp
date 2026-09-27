@@ -216,6 +216,12 @@ unsigned native_tube_facet_composition_tests() {
               shared.working_prefix_path->poles() == f2.working_poles &&
               shared.working_suffix_path->poles() == f2.working_poles,
           "shared source path sees sequential frame round trips on both branches");
+    check(shared.working_sources[0] == shared.working_sources[2] &&
+              shared.working_sources[1] == shared.working_sources[3] &&
+              shared.working_sources[0] != shared.working_sources[1] &&
+              shared.working_sources[0]->poles() == f2.working_poles &&
+              shared.report["source_reference_indices"] == Json({0, 1, 0, 1}),
+          "returned source state preserves native aliases and final sequential updates");
     const auto equal_copy = weighted;
     TubeBudget copy_budget;
     auto separate = prepare_tube_facet_composition(&weighted, &section, &equal_copy, &section,
@@ -224,6 +230,10 @@ unsigned native_tube_facet_composition_tests() {
               separate.working_prefix_path->poles() == f1.working_poles &&
               separate.working_suffix_path->poles() == f1.working_poles,
           "equal curves at distinct source addresses are never deduplicated");
+    check(separate.working_sources[0] != separate.working_sources[2] &&
+              separate.working_sources[0]->poles() == separate.working_sources[2]->poles() &&
+              separate.report["source_reference_indices"] == Json({0, 1, 2, 1}),
+          "equal final working state does not merge independent native source identities");
     check(weighted.poles().front() == Point3{.3, .7, .2}, "source objects remain read-only");
     TubeBudget alias_budget;
     auto alias = build_tube_facet_chain(weighted, weighted, false, alias_budget);

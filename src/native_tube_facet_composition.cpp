@@ -304,6 +304,37 @@ TubeFacetComposition prepare_tube_facet_composition(const BsplineCurve *prefix_p
     };
     TubeFacetChain prefix, suffix;
     Json branches = Json::object();
+    auto capture = [&](TubeFacetComposition &result) {
+        const std::array<const BsplineCurve *, 4> sources{prefix_path, prefix_section, suffix_path,
+                                                          suffix_section};
+        std::map<const BsplineCurve *, std::pair<std::size_t, std::shared_ptr<const BsplineCurve>>>
+            copies;
+        Json references = Json::array();
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            if (!sources[i]) {
+                references.push_back(nullptr);
+                continue;
+            }
+            auto found = copies.find(sources[i]);
+            if (found == copies.end()) {
+                const auto updated = working.find(sources[i]);
+                const auto &value = updated == working.end() ? *sources[i] : updated->second;
+                require(value.poles().size() <= b.max_control_points,
+                        "native facet source state control budget");
+                charge(b, value.knots().size());
+                for (unsigned pass = 0; pass < 8; ++pass)
+                    charge(b, value.poles().size());
+                found = copies
+                            .emplace(sources[i],
+                                     std::make_pair(i, std::make_shared<const BsplineCurve>(value)))
+                            .first;
+            }
+            result.working_sources[i] = found->second.second;
+            references.push_back(found->second.first);
+        }
+        result.report["source_reference_indices"] = std::move(references);
+        result.report["work_used"] = b.work;
+    };
     auto build = [&](const BsplineCurve *path, const BsplineCurve *section, TubeFacetChain &chain,
                      const char *name) {
         if (!path)
@@ -320,7 +351,7 @@ TubeFacetComposition prepare_tube_facet_composition(const BsplineCurve *prefix_p
         !build(suffix_path, suffix_section, suffix, "suffix")) {
         failed.report["reason"] = "branch_generation_failed";
         failed.report["branches"] = std::move(branches);
-        failed.report["work_used"] = b.work;
+        capture(failed);
         return failed;
     }
     auto out = compose_tube_facet_nodes(prefix.nodes, suffix.nodes,
@@ -328,6 +359,7 @@ TubeFacetComposition prepare_tube_facet_composition(const BsplineCurve *prefix_p
                                         suffix_path ? &get(suffix_path) : nullptr, b);
     out.report["branches"] = std::move(branches);
     out.report["shared_path"] = prefix_path && prefix_path == suffix_path;
+    capture(out);
     return out;
 }
 } // namespace p3d::swept_detail
