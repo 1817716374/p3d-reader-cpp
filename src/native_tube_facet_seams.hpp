@@ -12,7 +12,7 @@ struct TubeFacetSeamResult {
 TubeFacetSeamResult apply_tube_ruled_facet_seam(Json &first, Json &second,
                                                 TubeFacetSeamReferences &, TubeBudget &);
 // f8130 visits current/next in order and wraps the final node to the head.
-// Includes the native plane fallback; higher-order surface extension is pending.
+// Includes the native plane fallback and supported higher-order surface extension.
 // On pending, prior mutations persist; next_seam in the report identifies the
 // unprocessed node. A native failure clears the entire chain as f95b0 does.
 // Completion here still does not perform the subsequent f81c0 finalization.
