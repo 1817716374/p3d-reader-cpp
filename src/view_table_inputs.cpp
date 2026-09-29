@@ -1,4 +1,5 @@
 #include "display_style_xml.hpp"
+#include <p3d/view_model.hpp>
 
 namespace p3d {
 Json initial_native_view_table_inputs(const Json &list, const Json &records, const Json &ids, const Json &file_header) {
@@ -89,6 +90,16 @@ Json initial_native_view_table_inputs(const Json &list, const Json &records, con
                                         {"constructor_rgb", background.at("constructor_rgb")},
                                         {"constructor_words", Json::array({normalized, Reader(data, 0x100).u32()})},
                                         {"auxiliary_bytes", rawbytes(slice(data, 0x74, 32))}});
+                                    const auto model_id = Reader(data, 0x110).i32();
+                                    const auto model = project_native_view_model_id(model_id, NativeViewModelContext{});
+                                    Json model_input = {{"source_data_offset", 0x110}, {"source_model_id", model_id},
+                                        {"status", model.model_id ? "conditional" : "unresolved"},
+                                        {"model_object", "not_evaluated"}, {"runtime_application", "not_evaluated"}};
+                                    if (model.model_id) {
+                                        model_input["constructor_model_id"] = *model.model_id;
+                                        model_input["decision"] = "system_context";
+                                    } else model_input["reason"] = model.reason;
+                                    selected["model_id_input"] = std::move(model_input);
                                     scan["outcome"] = "selected";
                                 }
                             }

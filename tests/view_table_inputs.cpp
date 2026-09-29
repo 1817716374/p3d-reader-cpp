@@ -97,6 +97,15 @@ unsigned view_table_inputs_tests() {
     out = initial_native_view_table_inputs(l, records, ids);
     check(out.at("status") == "unresolved" || out.at("status") == "partial",
           "assignment mismatch cannot hide a direct child by changing its parent");
+    records = Json::array({record(14, 1, 0, 0), record(11, 1, 4, 1)});
+    auto model_data = bytesof(records[1].at("data")); put(model_data, 0x110, 0xffffffffu);
+    records[1]["data"] = rawbytes(model_data);
+    l = list(Json::array({header(0, nullptr), header(1, 0)})); ids = assignments(l, records);
+    out = initial_native_view_table_inputs(l, records, ids);
+    for (const auto &slot : out.at("tables")[0].at("slots"))
+        check(slot.at("model_id_input").at("constructor_model_id") == -1 &&
+                  slot.at("model_id_input").at("model_object") == "not_evaluated",
+              "direct and copied slots preserve the proven system ID without claiming a resolved model object");
     l["status"] = "partial";
     check(initial_native_view_table_inputs(l, records, ids).at("status") == "unresolved",
           "incomplete prepared input cannot establish which table children survived loading");

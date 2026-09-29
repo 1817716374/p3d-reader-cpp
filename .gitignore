@@ -253,3 +253,6 @@
 
 !/tests/view_table_fallback.cpp
 !/tests/view_fallback_oracle.hpp
+
+!/tests/view_model.cpp
+!/tests/view_model_oracle.hpp
