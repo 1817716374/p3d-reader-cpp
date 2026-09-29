@@ -269,3 +269,5 @@
 !/tests/default_view_oracle.hpp
 !/tests/default_view_table.cpp
 !/tests/default_view_table_oracle.hpp
+!/tests/reference_bounds.cpp
+!/tests/reference_bounds_oracle.hpp
