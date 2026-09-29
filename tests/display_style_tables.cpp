@@ -52,10 +52,11 @@ Json input(const Json &attributes) {
                 {"attributes", attributes[i]}, {"lookup", native_attribute_lookup(attributes[i])}});
     return out;
 }
-Json run(const Json &l, const Json &records, const Json &in) {
+Json run(const Json &l, const Json &records, const Json &in,
+         DisplayStyleHandlerProfile profile = DisplayStyleHandlerProfile::UnspecifiedHost) {
     const auto ids = native_system_id_assignments(l, records,
         {{"status", "resolved"}, {"initial_probe", {{"action", "read_header_payload"}, {"id_counter", 100}}}});
-    return initial_native_display_style_tables(l, records, ids, in);
+    return initial_native_display_style_tables(l, records, ids, in, profile);
 }
 } // namespace
 
@@ -130,6 +131,22 @@ unsigned display_style_tables_tests() {
     result = run(l, records, input(attrs));
     check(result["common"]["status"] == "unresolved" && result["common"]["selected_table"].is_null(),
           "unmodeled registration cannot be skipped to claim a later table");
+    const auto default_service = DisplayStyleHandlerProfile::BuiltinDefaultService;
+    check(run(l, records, input(attrs), default_service)["common"]["status"] == "unresolved",
+          "default-service profile does not guess an unprobed registry key");
+    for (auto registration : {0x58740000u, 0x58740001u}) {
+        attrs[0] = Json::array({marker(registration)});
+        check(run(l, records, input(attrs))["common"]["status"] == "unresolved",
+              "unspecified host must not borrow default-service observations");
+        result = run(l, records, input(attrs), default_service);
+        check(result["host_service"] == "original_default_service" &&
+                  result["common"]["selected_table"]["native_record_index"] == 1 &&
+                  result["lite"]["selected_table"]["native_record_index"] == 2,
+              "confirmed unregistered keys fall back before scanning later common and Lite tables");
+        check(result["common"]["scan"][0]["handler_vtable_rva"] == 0x54f230 &&
+                  result["common"]["scan"][0]["registration_lookup"] == "absent_after_default_service",
+              "fallback retains the actual missing key and native handler identity");
+    }
     auto bad_input = input(attrs);
     bad_input["status"] = "partial";
     check(run(l, records, bad_input)["common"]["status"] == "unresolved",

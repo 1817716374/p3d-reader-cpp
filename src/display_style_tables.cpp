@@ -83,7 +83,7 @@ Json slots(const Json &record, const Json &attachment) {
 }
 
 Json select_table(const Json &list, const Json &records, const Json &ids,
-                  const Json &input, std::uint32_t wanted) {
+                  const Json &input, std::uint32_t wanted, DisplayStyleHandlerProfile profile) {
     Json out = {{"kind", wanted == 0x006f0000u ? "common" : "lite"},
                 {"registration_key", wanted}, {"status", "unresolved"},
                 {"selected_table", nullptr}, {"scan", Json::array()}};
@@ -168,6 +168,21 @@ Json select_table(const Json &list, const Json &records, const Json &ids,
                 }
                 const auto registration = Reader(payload).u32();
                 step["registration_key"] = registration;
+                if (profile == DisplayStyleHandlerProfile::BuiltinDefaultService &&
+                    (registration == 0x58740000u || registration == 0x58740001u)) {
+                    // Original 0x394620/0x3946e0 observations after core init:
+                    // neither key is registered. The default service at
+                    // vtable 0x544390 does not add it. Resolver 0x39fe20,
+                    // with caller mask zero, then uses the type fallback.
+                    step["registration_lookup"] = "absent_after_default_service";
+                    step["action"] = type == 92 ? "missing_registration_default_handler" :
+                                                  "unresolved_handler";
+                    if (type == 92)
+                        step["handler_vtable_rva"] = 0x54f230;
+                    out["scan"].push_back(std::move(step));
+                    require(type == 92, "descendant_handler_fallback_unmodeled");
+                    continue;
+                }
                 if (registration != 0x006f0000u && registration != 0x597e0000u) {
                     step["action"] = "unresolved_handler";
                     out["scan"].push_back(std::move(step));
@@ -208,16 +223,21 @@ Json select_table(const Json &list, const Json &records, const Json &ids,
 } // namespace
 
 Json initial_native_display_style_tables(const Json &list, const Json &records,
-                                        const Json &ids, const Json &input) {
+                                        const Json &ids, const Json &input,
+                                        DisplayStyleHandlerProfile profile) {
     return {{"scope", "fresh_system_style_tables_before_runtime_callbacks"},
-            {"handler_profile", "bimbase_r1_18_builtin_style_handlers_without_replacement"},
+            {"handler_profile", profile == DisplayStyleHandlerProfile::BuiltinDefaultService
+                                    ? "bimbase_r1_18_builtin_registry_and_default_service"
+                                    : "bimbase_r1_18_builtin_style_handlers_without_replacement"},
+            {"host_service", profile == DisplayStyleHandlerProfile::BuiltinDefaultService
+                                 ? "original_default_service" : "unspecified"},
             {"runtime_resolution", "not_evaluated"},
             {"common_to_lite_conversion", "not_evaluated"},
-            {"common", select_table(list, records, ids, input, 0x006f0000u)},
-            {"lite", select_table(list, records, ids, input, 0x597e0000u)}};
+            {"common", select_table(list, records, ids, input, 0x006f0000u, profile)},
+            {"lite", select_table(list, records, ids, input, 0x597e0000u, profile)}};
 }
 
-Json Document::initial_display_style_tables() const {
+Json Document::initial_display_style_tables(DisplayStyleHandlerProfile profile) const {
     Json out = Json::array();
     for (const auto &container : native_input_containers()) {
         // The native lookup uses the file's SSYS list, not a model namespace.
@@ -225,7 +245,7 @@ Json Document::initial_display_style_tables() const {
             continue;
         auto tables = initial_native_display_style_tables(
             container.at("list_preparation"), native_records(),
-            container.at("system_id_assignments"), container.at("initial_attribute_input"));
+            container.at("system_id_assignments"), container.at("initial_attribute_input"), profile);
         tables["system_container"] = container.at("container");
         out.push_back(std::move(tables));
     }

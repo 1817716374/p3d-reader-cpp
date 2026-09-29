@@ -208,7 +208,8 @@ Json decode_native_layer_table(const Bytes &, const Json &);
 Json build_layer_tables(const Json &, const Json &, const Json &, const Json & = Json::object());
 Json build_display_style_sources(const Json &index, const Json &native, const Json &graphics);
 Json initial_native_display_style_tables(const Json &list, const Json &records,
-                                        const Json &ids, const Json &input);
+                                        const Json &ids, const Json &input,
+                                        DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost);
 Json decode_symbology_extension(const Bytes &);
 void apply_symbology_extension(Json &, const Json &);
 void apply_symbology(Json &, const Json &);

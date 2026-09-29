@@ -750,6 +750,12 @@ struct NativeTextCharacterContext {
 // Applies the installed TrueType/SHX classes' character rules, independently
 // of glyph outlines. Keeps the original native_text view unchanged.
 Json map_native_text_characters(const Json &native_text, const NativeTextCharacterContext &context);
+// File bytes do not identify the host's missing-handler service. The default
+// preserves that uncertainty. The second profile is the R1.18 core registry
+// plus the original default service used by BPPlatform's console host; it
+// excludes additional or replaced registrations and GUI/plugin services.
+enum class DisplayStyleHandlerProfile { UnspecifiedHost, BuiltinDefaultService };
+
 // Parsed once in source stream order. All IDs retain their original scopes.
 // References returned by accessors are immutable and remain valid for the document lifetime.
 class Document {
@@ -806,7 +812,8 @@ class Document {
     Json display_style_sources() const;
     // First matching common/Lite table in fresh SSYS input, using attached
     // attributes and assigned IDs. Built-in handlers only; no host callbacks.
-    Json initial_display_style_tables() const;
+    Json initial_display_style_tables(
+        DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost) const;
     Json binary_fields() const;
     Json inline_materials() const;
     // Embedded files with source attribute identity; does not read or write external files.
