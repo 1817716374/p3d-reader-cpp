@@ -272,3 +272,5 @@
 !/tests/reference_bounds.cpp
 !/tests/reference_bounds_oracle.hpp
 !/tests/reference_clipping_oracle.hpp
+!/tests/model_bounds.cpp
+!/tests/model_bounds_provider_oracle.hpp

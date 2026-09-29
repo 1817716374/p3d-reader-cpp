@@ -6,6 +6,7 @@
 #include <lz4/lz4.h>
 #include <miniz/miniz_tinfl.h>
 #include <p3d/native_metadata.hpp>
+#include <p3d/model_bounds.hpp>
 #include <p3d/material_assignment_table.hpp>
 namespace p3d {
 class Dex : public Reader {
@@ -320,6 +321,7 @@ Json parse_native(const Bytes &b) {
         modification["source_offset"] = 28;
         modification["source_offsets_include_stream_prefix"] = true;
         out.back()["modification_time"] = std::move(modification);
+        out.back()["bounds_header"] = decode_native_record_bounds_header(slice(b, pos, attr - pos));
         if (type == 47 && attr - pos >= 38 && r.at<std::uint32_t>(pos + 16) == 20 &&
             r.at<std::uint16_t>(pos + 36) == 0x56e6)
             out.back()["owner_reference_path"] =
