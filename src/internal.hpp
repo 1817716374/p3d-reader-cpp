@@ -206,6 +206,7 @@ Json decode_curve_identifier(const Bytes &);
 Json decode_native_layer(const Bytes &, const Json &);
 Json decode_native_layer_table(const Bytes &, const Json &);
 Json build_layer_tables(const Json &, const Json &, const Json &, const Json & = Json::object());
+Json build_display_style_sources(const Json &index, const Json &native, const Json &graphics);
 Json decode_symbology_extension(const Bytes &);
 void apply_symbology_extension(Json &, const Json &);
 void apply_symbology(Json &, const Json &);

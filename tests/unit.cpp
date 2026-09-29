@@ -204,6 +204,7 @@ unsigned native_model_directory_tests();
 unsigned reference_extension_tests();
 unsigned native_application_tests();
 unsigned native_handler_tests();
+unsigned display_style_sources_tests();
 unsigned mesh_normal_tests();
 unsigned mesh_tessellation_tests();
 unsigned mesh_buffer_tests();
@@ -2877,6 +2878,7 @@ int main() {
     try {
         attribute_semantics_tests();
         checks += native_handler_tests();
+        checks += display_style_sources_tests();
         layer_group_tests();
         layer_table_tests();
         layer_group_state_tests();

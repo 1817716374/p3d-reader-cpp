@@ -5,6 +5,7 @@
 /tests/*
 !/tests/unit.cpp
 !/tests/native_handler.cpp
+!/tests/display_style_sources.cpp
 !/tests/native_polygon_projection.cpp
 !/tests/native_vu_graph.cpp
 !/tests/native_vu_cluster.cpp

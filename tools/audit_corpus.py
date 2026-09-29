@@ -104,6 +104,14 @@ def main():
                 write_json(folder / "attribute-audit.json", audit)
                 result["attribute_categories"] = audit["categories"]
                 result["total_attributes"] = audit["total_attributes"]
+                if "display_style_sources" in document:
+                    styles = document["display_style_sources"]
+                    result["display_style_sources"] = {
+                        "tables": len(styles["tables"]),
+                        "references": len(styles["references"]),
+                        "reference_statuses": dict(Counter(r["status"] for r in styles["references"])),
+                        "runtime_resolution": styles["runtime_resolution"],
+                    }
                 result["execution_status"] = "completed"
                 del document
         except subprocess.TimeoutExpired:

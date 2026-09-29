@@ -849,6 +849,18 @@ Json native_material_texture_file(const Bytes &b) {
     return out;
 }
 Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index) {
+    if (group == 0 && key == 20080 && index == 0) {
+        // R1.18 P3DKJ 0x4b43c5 checks four bytes; 0x5f7ff rejects
+        // negative indices before the file's LiteShowStyleListFileData lookup.
+        Reader r(b);
+        const auto id = r.i32();
+        r.finish();
+        return {{"encoding", "native_display_style_reference"},
+                {"display_style_index", id},
+                {"native_lookup_eligible", id >= 0},
+                {"reference_scope", "file_display_style_list"},
+                {"runtime_resolution", "not_evaluated"}};
+    }
     if (group == 3 && key == 20031 && index == 0) {
         // R1.18 P3DKJ RVA 0x4ea80e requires exactly eight bytes. The map
         // comparison at 0x4ea867 uses unsigned first, signed second components.

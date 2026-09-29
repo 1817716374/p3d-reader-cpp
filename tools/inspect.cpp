@@ -73,7 +73,8 @@ int main(int argc, char **argv) {
                          {"schemas", d.schemas()},
                          {"models", d.models()},
                          {"color_tables", d.color_tables()},
-                         {"layer_tables", d.layer_tables()}});
+                         {"layer_tables", d.layer_tables()},
+                         {"display_style_sources", d.display_style_sources()}});
         if (!graph.empty())
             write(graph, d.object_graph());
         if (!streams_dir.empty()) {
