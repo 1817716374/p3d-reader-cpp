@@ -8,6 +8,7 @@
 !/tests/display_style_sources.cpp
 !/tests/display_style_object_oracle.hpp
 !/tests/display_style_view_flags_oracle.hpp
+!/tests/extended_colors_oracle.hpp
 !/tests/display_style_tables.cpp
 !/tests/display_style_xml_oracle.hpp
 !/tests/display_style_usages_oracle.hpp

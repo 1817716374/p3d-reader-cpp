@@ -180,6 +180,8 @@ static std::string qualified(const pugi::xml_node &n) {
     std::string key = prefix.empty() ? "xmlns" : "xmlns:" + prefix;
     for (auto t = n; t; t = t.parent()) {
         auto a = t.attribute(key.c_str());
+        if (a && prefix.empty() && !*a.value())
+            return local; // xmlns="" cancels an inherited default namespace.
         if (a)
             return "{" + std::string(a.value()) + "}" + local;
     }

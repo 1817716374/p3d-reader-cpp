@@ -3,6 +3,8 @@
 #include "display_style_xml_oracle.hpp"
 #include "display_style_usages_oracle.hpp"
 #include "display_style_object_oracle.hpp"
+#include "extended_colors.hpp"
+#include "extended_colors_oracle.hpp"
 using namespace p3d;
 namespace {
 Json attr(unsigned key, unsigned index, const Json &decoded) {
@@ -365,5 +367,44 @@ unsigned display_style_sources_tests() {
     check(decode_display_style_xml(minimal)["fields"]["EnvironmentName"]["read_status"] == "missing" &&
               decode_display_style_xml(minimal)["fields"]["EnvironmentName"]["value"] == "",
           "environment name defaults to an empty string rather than a guessed external resource");
+    for (const auto &oracle : Json::parse(extended_colors_oracle)) {
+        const auto source = xml_tree(oracle.at("xml"));
+        const auto copy = source;
+        const auto imported = decode_native_extended_colors(source);
+        check(imported["status"] == "resolved" && source == copy &&
+                  imported["entries"].size() == oracle["entries"].size(),
+              (std::string("extended-color import: ") + oracle.at("xml").get<std::string>() +
+               " result=" + imported.dump()).c_str());
+        check(imported["rgb_lookup"] == oracle["rgb_lookup"],
+              "extended-color reverse map retains the last duplicate one-based index");
+        for (std::size_t i = 0; i < oracle["entries"].size(); ++i) {
+            check(imported["entries"][i]["rgb"] == oracle["entries"][i]["rgb"] &&
+                      imported["entries"][i]["book_name"] == oracle["entries"][i]["book_name"] &&
+                      imported["entries"][i]["native_index"] == i + 1,
+                  "extended-color channels and optional Book/Name pair match original importer");
+        }
+    }
+    const auto skipped = decode_native_extended_colors(xml_tree(
+        "<Colors><Entry/><Entry Color=\"\"/><Entry Color=\"bad\"/><Entry Color=\"(1,2,3)\"/></Colors>"));
+    check(skipped["source_entries"].size() == 4 && skipped["entries"].size() == 2 &&
+              skipped["entries"][0]["source_ordinal"] == 2 && skipped["entries"][0]["native_index"] == 1 &&
+              skipped["entries"][0]["assigned_channels"] == 0 && skipped["entries"][0]["rgb"] == Json::array({255,255,255}),
+          "missing and empty Color do not shift native slots but malformed nonempty input does");
+    auto xml_payload = [](const std::string &s) {
+        Bytes b(8); b[0] = 1;
+        for (const auto c : s) { b.push_back(std::uint8_t(c)); b.push_back(0); }
+        b.push_back(0); b.push_back(0);
+        const auto size = std::uint32_t(b.size() - 8);
+        for (unsigned i = 0; i < 4; ++i) b[4+i] = std::uint8_t(size >> (8*i));
+        return b;
+    };
+    const auto bytes = xml_payload("<Other><Entry Color=\"(1,2,3)\"/></Other>");
+    const auto color_attribute = decode_attribute(0, 22902, bytes, 0);
+    check(color_attribute.contains("native_extended_color_import") && color_attribute["color_entries"].size() == 1 &&
+              color_attribute["color_entries"][0]["rgb"] == Json::array({1,2,3}),
+          "22902 index-zero importer dispatch does not depend on XML root name");
+    check(!decode_attribute(0, 22902, bytes, 1).contains("native_extended_color_import") &&
+              !decode_attribute(1, 22902, bytes, 0).contains("native_extended_color_import"),
+          "unconfirmed color attribute group and index do not get runtime import semantics");
     return checks;
 }

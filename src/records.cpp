@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "extended_colors.hpp"
 #include <p3d/csg.hpp>
 #include "text_bytes.hpp"
 #include "material_catalog_read.hpp"
@@ -1020,34 +1021,15 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         result.update({{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
                        {"xml", s},
                        {"tree", tree}});
-        if (tree["tag"] == "ExtendedColors") {
+        if (group == 0 && key == 22902 && index == 0) {
+            auto imported = decode_native_extended_colors(tree);
             Json colors = Json::array();
-            for (auto &c : tree["children"]) {
-                Json rgb = nullptr;
-                try {
-                    auto text = c["attributes"].value("Color", std::string());
-                    require(text.size() >= 2, "RGB");
-                    if (text.front() == '(')
-                        text = text.substr(1);
-                    if (text.back() == ')')
-                        text.pop_back();
-                    std::stringstream ss(text);
-                    std::string tok;
-                    Json arr = Json::array();
-                    while (std::getline(ss, tok, ',')) {
-                        int v = std::stoi(tok);
-                        require(v >= 0 && v <= 255, "RGB range");
-                        arr.push_back(v);
-                    }
-                    require(arr.size() == 3, "RGB channels");
-                    rgb = arr;
-                } catch (...) {
-                }
-                colors.push_back({{"ordinal", colors.size()},
-                                  {"rgb", rgb},
-                                  {"source_attributes", c["attributes"]}});
-            }
-            result["color_entries"] = colors;
+            if (imported.at("status") == "resolved")
+                for (const auto &entry : imported.at("entries"))
+                    colors.push_back({{"ordinal", entry.at("ordinal")}, {"rgb", entry.at("rgb")},
+                                      {"source_attributes", entry.at("source_attributes")}});
+            result["native_extended_color_import"] = std::move(imported);
+            result["color_entries"] = std::move(colors);
         }
     } catch (const std::exception &) {
     }
