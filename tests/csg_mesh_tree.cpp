@@ -112,7 +112,7 @@ unsigned csg_mesh_tree_tests() {
     validate(result, {a}, {8});
     check(result.meshes[0].vertices[0][0] == 1, "leaf transform applied once");
     check(result.updated_nodes[0]["is_old_value"] == 0 &&
-              result.updated_nodes[0]["cache_indices"] == Json({0}),
+              result.updated_nodes[0]["cache_indices"] == Json::array({0}),
           "leaf rebuild replaces caches and clears isOld");
     for (int op = 0; op < 3; ++op) {
         tree = archive({node(op, Json::array(), 1, 2), node(4, {0}), node(4, {1})}, 2);

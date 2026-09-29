@@ -269,7 +269,7 @@ unsigned graphics_bytes_tests() {
     check(ft["values"][6]["kind"] == "unassigned" && ft["values"][6]["key"] == 129,
           "unknown bounded value preserves key and payload");
     check(ft["unassigned_id_sets"][0] == Json({0xf123456789abcdefULL, 3}) &&
-              ft["unassigned_id_sets"][1] == Json({44}),
+              ft["unassigned_id_sets"][1] == Json::array({44}),
           "trailing sets keep full 64-bit values and source order");
     auto extended = tail;
     extended.push_back(0x9a);

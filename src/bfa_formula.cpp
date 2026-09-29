@@ -1,6 +1,24 @@
 #include "blob_internal.hpp"
 #include <regex>
 namespace p3d {
+namespace {
+// Some standard libraries forward the string replacement overload through
+// c_str(), truncating a length-delimited formula at an embedded NUL. Format
+// each match with an explicit range, retaining native $ substitution rules.
+std::string replace_formula_bytes(const std::string &input, const std::regex &pattern,
+                                  const std::string &replacement) {
+    std::string output;
+    auto tail = input.begin();
+    for (std::sregex_iterator it(input.begin(), input.end(), pattern), end; it != end; ++it) {
+        output.append(tail, (*it)[0].first);
+        it->format(std::back_inserter(output), replacement.data(),
+                   replacement.data() + replacement.size());
+        tail = (*it)[0].second;
+    }
+    output.append(tail, input.end());
+    return output;
+}
+} // namespace
 Json decode_bfa_formula_expression(const Bytes &encoded) {
     Json out = {{"status", "not_converted"}, {"evaluation_status", "not_performed"}};
     if (encoded.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -72,7 +90,7 @@ Json decode_bfa_formula_expression(const Bytes &encoded) {
                     {"replacement_bytes", rawbytes(Bytes(replacement.begin(), replacement.end()))}};
                 // Native only escapes braces in the source and uses default
                 // regex replacement formatting, including '$' substitutions.
-                result = std::regex_replace(result, std::regex(pattern), replacement);
+                result = replace_formula_bytes(result, std::regex(pattern), replacement);
                 conversions.push_back(std::move(step));
             }
         }

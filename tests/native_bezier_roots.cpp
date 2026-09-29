@@ -205,12 +205,16 @@ unsigned native_bezier_roots_tests() {
             },
             "plane curve separate order limit");
     }
+    // Compare the root solver on identical inputs. Constructing the long-double
+    // reference polynomial in each worker can differ with the platform's
+    // per-thread x87 precision mode before the solver is even called.
+    const auto parallel_coefficients = polynomial({.125L, .375L, .625L, .875L});
     std::vector<std::future<BezierRoots>> jobs;
     for (unsigned i = 0; i < 8; ++i)
         jobs.push_back(std::async(std::launch::async, [&] {
-            return solve(polynomial({.125L, .375L, .625L, .875L}), true);
+            return solve(parallel_coefficients, true);
         }));
-    const auto expected = solve(polynomial({.125L, .375L, .625L, .875L}), true);
+    const auto expected = solve(parallel_coefficients, true);
     for (auto &job : jobs) {
         const auto r = job.get();
         check(r.success == expected.success && r.parameters == expected.parameters &&

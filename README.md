@@ -96,6 +96,7 @@ p3d-inspect example.p3d --dump document.json --graph graph.json --scene scene.js
 - [接入指南](docs/接入指南.md)：构建、几何、属性、结构树、材质和命令行用法。
 - [格式说明](docs/格式说明.md)：文件结构与数据接口的对应关系。
 - [已知限制](docs/已知限制.md)：尚未支持的结构及数据使用注意事项。
+- [验证与逆向进度](docs/验证与逆向进度.md)：官方样例来源、DLL 证据与可复现语料审计。
 - [贡献指南](CONTRIBUTING.md)：问题反馈、代码和文档贡献方式。
 - [第三方依赖](THIRD_PARTY.md)：依赖来源与许可证。
 

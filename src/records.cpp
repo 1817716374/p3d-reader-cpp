@@ -849,6 +849,34 @@ Json native_material_texture_file(const Bytes &b) {
     return out;
 }
 Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index) {
+    if (group == 3 && key == 20031 && index == 0) {
+        // R1.18 P3DKJ RVA 0x4ea80e requires exactly eight bytes. The map
+        // comparison at 0x4ea867 uses unsigned first, signed second components.
+        require(b.size() == 8, "native geometry grouping key size");
+        Reader r(b);
+        const auto first = r.u32();
+        const auto second = r.i32();
+        return {{"encoding", "native_geometry_grouping_key"},
+                {"status", "partial"},
+                {"first_unsigned", first},
+                {"second_signed", second},
+                {"component_semantics", "unresolved"}};
+    }
+    if (group == 0 && key == 22900 && index == 1) {
+        // BIMBase Lite R1.18 P3DKJ: RVA 0x394230 selects index 1,
+        // copies an eight-byte prefix, then resolves it through 0x394620.
+        // The registry first searches the high WORD and then the low WORD.
+        Reader r(b);
+        const auto low = r.u16(), high = r.u16();
+        const auto unassigned = r.u32();
+        return {{"encoding", "native_handler_reference"},
+                {"status", "partial"},
+                {"registration_key", (std::uint32_t(high) << 16) | low},
+                {"registration_lookup_keys", Json::array({high, low})},
+                {"unassigned_word_at_4", unassigned},
+                {"trailing_bytes", rawbytes(r.take(r.left()))},
+                {"runtime_resolution", "not_evaluated"}};
+    }
     auto reference_extension = decode_reference_extension(group, key, b, index);
     if (!reference_extension.is_null())
         return reference_extension;

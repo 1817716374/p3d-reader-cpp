@@ -1,5 +1,6 @@
 #include "blob_internal.hpp"
 #include <future>
+#include <cfenv>
 using namespace p3d;
 namespace {
 const std::array<const char *, 12> matrix_names{"axx", "axy", "axz", "axw", "ayx", "ayy",
@@ -507,8 +508,19 @@ unsigned spiral_tests() {
                           duplicates.report()["curve_conversions"].size() == 2 &&
                           duplicates.classify({.45, .35}) == TrimLocation::Outside,
                       "equal but independent spiral boundary records retain native parity");
-                auto first = std::async(std::launch::async, [&surf] { return surf.trim(1e-5); });
-                auto second = std::async(std::launch::async, [&surf] { return surf.trim(1e-5); });
+                // MinGW's main thread and Windows-created workers can start
+                // with different x87 precision. Compare independent caches
+                // under the same floating-point environment, without relaxing
+                // exact equality of the geometry or its error-bound report.
+                std::fenv_t environment;
+                check(std::fegetenv(&environment) == 0, "capture trim floating-point environment");
+                auto parallel_trim = [&surf, environment] {
+                    require(std::fesetenv(&environment) == 0,
+                            "restore trim floating-point environment");
+                    return surf.trim(1e-5);
+                };
+                auto first = std::async(std::launch::async, parallel_trim);
+                auto second = std::async(std::launch::async, parallel_trim);
                 const auto r1 = first.get(), r2 = second.get();
                 check(r1.loops() == trim.loops() && r2.loops() == trim.loops() &&
                           r1.report() == trim.report() && r2.report() == trim.report(),

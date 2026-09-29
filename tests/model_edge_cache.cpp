@@ -138,7 +138,7 @@ unsigned model_edge_cache_tests() {
     check(slice(root, state_hash.at("model_source_offset").get<std::size_t>(), 32) ==
               bytesof(models[0].at("source_block_32")),
           "reference hash source offset resolves to preserved model bytes");
-    check(models[0].at("children") == Json({1, 3}) && models[1].at("children") == Json({2}),
+    check(models[0].at("children") == Json({1, 3}) && models[1].at("children") == Json::array({2}),
           "child counts reconstruct hierarchy, not numeric ID sorting");
     check(models[0].at("parent_model_index").is_null() && models[2].at("parent_model_index") == 1,
           "parent model index retained");
@@ -165,7 +165,7 @@ unsigned model_edge_cache_tests() {
                   .at("decoded")
                   .at("points")[0] == Json({10., 20., 30.}),
           "outer attribute connects to proxy geometry");
-    check(decoded.at("unconsumed_cache_source_ordinals") == Json({7}) &&
+    check(decoded.at("unconsumed_cache_source_ordinals") == Json::array({7}) &&
               decoded.at("association_cache").at("status") == "not_evaluated" &&
               bytesof(decoded.at("association_cache").at("source_storage")) == Bytes({1, 2}),
           "bad optional associations retain their source without discarding models");
@@ -455,7 +455,7 @@ unsigned model_edge_cache_tests() {
     const auto &refs = assoc.at("reference_directory");
     check(refs[0].at("reference_link_path").empty() &&
               refs[1].at("reference_link_path") == Json({std::uint64_t(11), UINT64_MAX}) &&
-              refs[2].at("reference_link_path") == Json({11}),
+              refs[2].at("reference_link_path") == Json::array({11}),
           "root and descendant paths retain order and model-local IDs");
     check(refs[0].at("reference_state_hash").at("source_offset") == 42 &&
               assoc.at("reference_directory_end_offset") == association_section,

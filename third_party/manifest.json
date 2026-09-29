@@ -384,8 +384,9 @@
   {
     "file": "manifold/include/manifold/mesh.h",
     "url": "https://raw.githubusercontent.com/elalish/manifold/213b6557f28fd66f0e7fd44deb8531589fd288af/include/manifold/mesh.h",
-    "sha256": "b729d5033ef5492fb990b95596b46a785f9a56f0da9e167dbf7e748eccf5302b",
-    "bytes": 12883
+    "sha256": "14dbce9ace677a7aea19539e21f1c0e4e9887a9531d427e8eefc657ec1953899",
+    "bytes": 12902,
+    "local_modifications": "Include <iosfwd> explicitly for std::istream declarations with libc++."
   },
   {
     "file": "manifold/include/manifold/optional_assert.h",

@@ -126,7 +126,7 @@ unsigned native_curve_frame_tests() {
           "nested array supplies no endpoint callback to its parent");
     f = native_curve_frame(nested, 2);
     check(f["method"] == "primitive_segment_frame" && near(column(f, 3), {9, 8, 7}) &&
-              f["source_paths"] == Json({"/curves/0/geometry/curves/0/geometry"}),
+              f["source_paths"] == Json::array({"/curves/0/geometry/curves/0/geometry"}),
           "nested arrays run local preference zero in original order");
     f = native_curve_frame(array({x, array({line({2, 5, 4}, {5, 5, 4})})}));
     check(f["method"] == "primitive_segment_frame" && near(column(f, 3), {2, 5, 4}),

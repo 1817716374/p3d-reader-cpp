@@ -4,6 +4,7 @@
 /build-local.ps1
 /tests/*
 !/tests/unit.cpp
+!/tests/native_handler.cpp
 !/tests/native_polygon_projection.cpp
 !/tests/native_vu_graph.cpp
 !/tests/native_vu_cluster.cpp

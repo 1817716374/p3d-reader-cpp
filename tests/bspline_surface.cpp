@@ -332,7 +332,7 @@ unsigned bspline_surface_tests() {
                                                    {"numPolesV", -3},
                                                    {"orderU", 1},
                                                    {"orderV", 4},
-                                                   {"weights", Json({1})},
+                                                   {"weights", Json::array({1})},
                                                    {"knotsU", Json({0, 1, 0, 1})},
                                                    {"knotsV", Json({0, 0, 1, 1})},
                                                    {"closedU", 1},
@@ -364,7 +364,7 @@ unsigned bspline_surface_tests() {
     auto invalid = grid;
     invalid["weights"] = {1};
     auto bad_decoded = decode_bgfb(FlatSurface(invalid).bytes)["geometry"];
-    check(bad_decoded["_spline"]["status"] == "invalid" && bad_decoded["weights"] == Json({1}),
+    check(bad_decoded["_spline"]["status"] == "invalid" && bad_decoded["weights"] == Json::array({1}),
           "invalid surface semantics retain the original decoded arrays");
     Bytes packet(28);
     packet[4] = 5;

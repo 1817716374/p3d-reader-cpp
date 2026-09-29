@@ -95,13 +95,13 @@ unsigned cache_association_tests() {
               result.at("cache_validity_status") == "not_evaluated" && chain == original,
           "forward references and cycles are allowed without mutating source or claiming validity");
     result = select_native_edge_cache_associations(input({{1}, {1}}), contexts(2));
-    check(result.at("selected_source_indices") == Json({0}) &&
+    check(result.at("selected_source_indices") == Json::array({0}) &&
               result.at("retained_source_indices") == Json({0, 1}) &&
               result.at("entries")[1].at("reason") == "link_count_mismatch" &&
               result.at("entries")[1].at("effective_link_indices").empty(),
           "failed group can remain retained as another group's target with its own links cleared");
     result = select_native_edge_cache_associations(input({{1, 1}, {}}), contexts(2));
-    check(result.at("selected_source_indices") == Json({1}) &&
+    check(result.at("selected_source_indices") == Json::array({1}) &&
               result.at("entries")[0].at("unique_nonself_targets") == 1 &&
               result.at("entries")[0].at("effective_link_indices").empty(),
           "duplicate target cardinality rejects the whole source group");
@@ -124,12 +124,12 @@ unsigned cache_association_tests() {
     check(result.at("selected_source_indices") == Json({0, 2}) &&
               result.at("retained_source_indices") == Json({0, 1, 2}) &&
               result.at("entries")[1].at("selected_source_index") == 0 &&
-              result.at("entries")[1].at("effective_link_indices") == Json({2}) &&
+              result.at("entries")[1].at("effective_link_indices") == Json::array({2}) &&
               result.at("entries")[0].at("effective_link_indices").empty(),
           "equivalent group keeps the first representative without merging different link sets");
     result = select_native_edge_cache_associations(input({{1}, {}, {}}), target);
     check(result.at("selected_source_indices") == Json({0, 2}) &&
-              result.at("entries")[0].at("effective_link_indices") == Json({1}),
+              result.at("entries")[0].at("effective_link_indices") == Json::array({1}),
           "distinct created objects with equivalent group keys are not treated as self references");
     target[1].reference_identity = 2;
     check(select_native_edge_cache_associations(input({{}, {}, {}}), target)

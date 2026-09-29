@@ -98,7 +98,7 @@ unsigned mesh_channel_tests() {
     auto partial_normal = reconstruct(Json::array({bad_normal}), {});
     check(!bad_normal["decoded"].contains("field_decode_error") &&
               bad_normal["decoded"]["index_bindings"]["normal_indices"]
-                        ["unavailable_read_positions"] == Json({0}) &&
+                        ["unavailable_read_positions"] == Json::array({0}) &&
               bad_normal["decoded"]["polygons"][0]["normal_indices"][0] == 9,
           "invalid optional normal index retains its exact source position and value");
     check(partial_normal.faces.size() == 2 && partial_normal.unknown.size() == 1 &&
@@ -115,7 +115,7 @@ unsigned mesh_channel_tests() {
               partial_uv.face_normal_indices[0] && partial_uv.face_normal_indices[1] &&
               partial_uv.uvs == uvs &&
               bad_uv["decoded"]["index_bindings"]["uv_indices"]["unavailable_read_positions"] ==
-                  Json({4}),
+                  Json::array({4}),
           "bad UV reference disables only affected triangle UV and preserves normals");
     auto absent_normal_pool = mesh(two_faces, {2, 2, 1, 0, 3, 1, 3, 0}, {}, points, {}, {});
     auto absent_normal_geo = reconstruct(Json::array({absent_normal_pool}), {});

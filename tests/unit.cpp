@@ -203,6 +203,7 @@ unsigned reference_file_tests();
 unsigned native_model_directory_tests();
 unsigned reference_extension_tests();
 unsigned native_application_tests();
+unsigned native_handler_tests();
 unsigned mesh_normal_tests();
 unsigned mesh_tessellation_tests();
 unsigned mesh_buffer_tests();
@@ -387,7 +388,7 @@ static void bspline_tests() {
     auto invalid = quarter_source;
     invalid["weights"] = {1};
     auto invalid_decoded = decode_bgfb(encode(invalid))["geometry"];
-    check(invalid_decoded["weights"] == Json({1}) &&
+    check(invalid_decoded["weights"] == Json::array({1}) &&
               invalid_decoded["_spline"]["status"] == "invalid",
           "malformed semantic arrays remain decoded with an explicit diagnostic");
     Bytes packet(28);
@@ -649,7 +650,7 @@ static void view_link_sequence_tests() {
     bad.insert(bad.end(), good.begin(), good.end());
     auto records = parse_native(bad);
     check(records.size() == 2 && records[0]["view_link_sequence"].contains("decode_error") &&
-              records[1]["view_link_sequence"]["entry_ids"] == Json({9}),
+              records[1]["view_link_sequence"]["entry_ids"] == Json::array({9}),
           "semantic sequence error preserves following records");
 }
 static void native_layer_tests() {
@@ -833,7 +834,7 @@ static void layer_group_tests() {
           "layer overrides retain unsigned IDs, duplicate entries and exact offsets");
     check(e[0]["set_property_bits"] == Json({11, 12, 14, 25, 26, 32}) &&
               e[0]["unassigned_property_bits"].empty() &&
-              e[1]["unassigned_property_bits"] == Json({0}),
+              e[1]["unassigned_property_bits"] == Json::array({0}),
           "layer bitmap ignores out of range packed bits and retains unknown property bits");
     for (auto name : {"color", "line_style", "line_weight", "display", "print", "frozen"})
         check(e[0]["overrides"][name] == true && e[2]["overrides"][name] == false,
@@ -907,11 +908,11 @@ static void layer_table_tests() {
     check(records[0]["layer_table"]["kind"] == "layer_group" &&
               records[0]["layer_table"]["selector"] == UINT64_MAX - 3 &&
               t["member_record_indices"] == Json({1, 2}) &&
-              t["attribute_record_indices"] == Json({0}) &&
+              t["attribute_record_indices"] == Json::array({0}) &&
               built["unassigned_layer_record_indices"].empty(),
           "layer table keeps native membership and scoped attribute identity");
-    check(t["override_bindings"][0]["member_record_indices"] == Json({2}) &&
-              t["override_bindings"][1]["member_record_indices"] == Json({1}) &&
+    check(t["override_bindings"][0]["member_record_indices"] == Json::array({2}) &&
+              t["override_bindings"][1]["member_record_indices"] == Json::array({1}) &&
               t["override_bindings"][2]["status"] == "missing_layer" &&
               t["inheritance_status"] == "not_evaluated",
           "override entries bind by table-local ID instead of array position");
@@ -938,7 +939,7 @@ static void layer_table_tests() {
     auto mapped = build_layer_tables(index, records, graphics, models)["model_references"];
     check(
         mapped[0]["model_id"] == "18446744073709551615" &&
-            mapped[0]["table_indices"] == Json({0}) && mapped[0]["status"] == "resolved" &&
+            mapped[0]["table_indices"] == Json::array({0}) && mapped[0]["status"] == "resolved" &&
             mapped[1]["status"] == "none" && mapped[2]["status"] == "missing" &&
             mapped[3]["status"] == "unsupported_header",
         "model references resolve by native table ID with explicit missing and unsupported cases");
@@ -946,7 +947,7 @@ static void layer_table_tests() {
     foreign["stream"] = {"OTHER", "SYSA", "attributes"};
     graphics.push_back(foreign);
     check(build_layer_tables(index, records, graphics)["tables"][0]["attribute_record_indices"] ==
-              Json({0}),
+              Json::array({0}),
           "same attribute ID in another container is not a table match");
     graphics.push_back(graphics[0]);
     check(build_layer_tables(index, records,
@@ -1113,7 +1114,7 @@ static void layer_group_state_tests() {
             const auto state = build_layer_tables(index, records, source_attrs)["group_states"][0];
             check(state["status"] == "evaluated_supported_properties" &&
                       state["layers"].size() == 3 &&
-                      state["excluded_group_record_indices"] == Json({6}),
+                      state["excluded_group_record_indices"] == Json::array({6}),
                   "all sync modes reconcile group membership against the file layer table");
             for (unsigned i = 0; i < bits.size(); ++i) {
                 bool file = mode == 2 || (mode == 0 && !(mask & (1u << i)));
@@ -1159,7 +1160,7 @@ static void layer_group_state_tests() {
     foreign["stream"] = {"OTHER", "SYS", "items"};
     duplicate.push_back(foreign);
     check(build_layer_tables(index, duplicate,
-                             graphics(2, 0))["group_states"][0]["file_table_indices"] == Json({0}),
+                             graphics(2, 0))["group_states"][0]["file_table_indices"] == Json::array({0}),
           "file table candidates remain within the group container scope");
     duplicate.push_back(records[0]);
     check(build_layer_tables(index, duplicate, graphics(2, 0))["group_states"][0]["status"] ==
@@ -1628,7 +1629,7 @@ static void embedded_texture_tests() {
           "failed image parsing preserves the entire original attribute");
     Json materials = {{"definitions", Json::array({{{"stream", g["stream"]}, {"id", 42}}})}};
     auto files = embedded_texture_records(Json::array({g, damaged}), materials);
-    check(files.size() == 2 && files[0]["material_candidates"] == Json({0}) &&
+    check(files.size() == 2 && files[0]["material_candidates"] == Json::array({0}) &&
               files[0]["material_status"] == "resolved" &&
               files[1]["material_status"] == "missing" && files[0]["attribute_index"] == 7 &&
               files[0]["attribute_ordinal"] == 0,
@@ -2466,7 +2467,7 @@ static void command_metadata_tests() {
               d["curve_identifier"]["compound_draw_state_status"] == "decoded_layout" &&
               d["curve_identifier"]["compound_draw_state_decoded"]["function_code"] == 3 &&
               d["curve_identifier"]["compound_draw_state_decoded"]["unassigned_words"] ==
-                  Json({4}) &&
+                  Json::array({4}) &&
               bytesof(d["curve_identifier"]["compound_draw_state"]) == wire_bytes("03000400"),
           "compound drawing state is split at the declared ID boundary and decodes native words");
     auto odd_state = id;
@@ -2875,6 +2876,7 @@ static Bytes electrical_fixture(unsigned data_version) {
 int main() {
     try {
         attribute_semantics_tests();
+        checks += native_handler_tests();
         layer_group_tests();
         layer_table_tests();
         layer_group_state_tests();
@@ -3682,8 +3684,8 @@ int main() {
              object(1, 2, "BPModelTreeSet", {{"Name", "Archi"}}),
              object(2, 3, "BPModelTreeItem", {{"Name", "Archi"}, {"ModelId", 4}})});
         auto mg = build_graph_records(model_nodes, Json::array(), Json::array(), {4}, {});
-        check(mg["hierarchy"]["model_edges"][0]["candidates"] == Json({"1:2"}) &&
-                  mg["hierarchy"]["model_edges"][1]["candidates"] == Json({"2:3"}),
+        check(mg["hierarchy"]["model_edges"][0]["candidates"] == Json::array({"1:2"}) &&
+                  mg["hierarchy"]["model_edges"][1]["candidates"] == Json::array({"2:3"}),
               "model set/item namespaces remain separate");
         auto cycle = build_graph_records(
             Json::array({object(1, 20, "BimBaseTreeNodeData",
@@ -3852,7 +3854,7 @@ int main() {
                   "cap enum tables preserve negative and out-of-range codes");
         }
         check(decode_cap(cap_fixture(0, 0, 0, 0, 1, {800}))["decoded"]["step_heights"] ==
-                  Json({800}),
+                  Json::array({800}),
               "single cap step retains its height");
         for (auto steps : {0, 1, 3}) {
             auto d = decode_cap(cap_fixture(0, 0, 0, 0, steps, {400, 600})).at("decoded");
@@ -3960,7 +3962,7 @@ int main() {
                   unknown_profile["cap_profiles"]["profiles"][0]["source_values"] ==
                       future_circle[0],
               "unrecognized circular tuple keeps every value without guessing its layout");
-        auto mismatch = cap_geometry(3, -1, 4, positions, Json({contours[0]}))["decoded"];
+        auto mismatch = cap_geometry(3, -1, 4, positions, Json::array({contours[0]}))["decoded"];
         check(mismatch["pile_layout"]["count_status"] == "mismatch" &&
                   mismatch["cap_profiles"]["step_count_status"] == "mismatch" &&
                   mismatch["cap_profiles"]["profiles"][0]["edge_count_status"] == "mismatch" &&
@@ -4032,7 +4034,7 @@ int main() {
         check(second_first["link_merge_set"]["collections"][1]["entries"][0]["cereal_version"] ==
                       0 &&
                   second_first["link_merge_set"]["collections"][1]["entries"][1]["values"] ==
-                      Json({9}) &&
+                      Json::array({9}) &&
                   !second_first.contains("load_g_para_id"),
               "first nonempty merge collection carries the shared cereal type version");
         auto unknown_link =

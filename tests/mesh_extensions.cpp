@@ -383,7 +383,7 @@ unsigned mesh_extension_tests() {
     auto bad_geo = reconstruct(Json::array({mis}), {});
     check(bad_geo.faces.size() == 2 && bad_geo.unknown.size() == 3 &&
               channels(bad_geo)["triangles"][0]["material_id"].is_null() &&
-              channels(bad_geo)["source"]["face_material_ids"] == Json({42}),
+              channels(bad_geo)["source"]["face_material_ids"] == Json::array({42}),
           "count mismatch preserves raw arrays without inventing face bindings");
     auto empty = command(Bytes(24));
     auto plain = reconstruct(Json::array({empty}), {});

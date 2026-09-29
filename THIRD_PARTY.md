@@ -1,5 +1,7 @@
 # 第三方依赖说明
 
+本地修补 `manifold/include/manifold/mesh.h`：显式包含 `<iosfwd>`，为 OBJ 接口使用的 `std::istream` 提供声明，修复 LLVM libc++ 下依赖间接包含造成的编译失败；不改变几何算法。
+
 `src/native_projected_polygon.cpp` 与 `src/native_vu_indices.cpp` 的坐标输出通路参考下表固定 Bentley 提交的 `vupoly.cpp`。保留 Bentley 版权及 Apache-2.0 标记，按 P3D 的两分量断开判断、独立合并容差、编号传播、交点追加及矩阵乘加顺序实现。仅源编号拆面和带坐标的多边形通路分别保持原生规则，不将一种调用的行为替换到另一种。
 
 `src/native_tube_mesh_cap_input.cpp` 的折线端盖输入准备参考下表固定 Bentley 提交中的 `CurveVector.cpp`、`IPolyfaceConstruction_Add.cpp` 和 `PolyfaceAddTriangulation.cpp`，保留 Bentley 版权及 Apache-2.0 标记。实现按 P3D 的环次序、闭合点替换、细分计数及插值顺序改写，保留末尾断开标记和原生点数检查位置，不采用较新参考实现的断开标记清理与压缩后数量筛选。

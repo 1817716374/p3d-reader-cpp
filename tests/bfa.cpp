@@ -135,7 +135,7 @@ unsigned bfa_tests() {
           "BFA type definition retains its graph identity");
     check(type["placed_instance_ids"] == Json({placed_id, 31, placed_id}),
           "type instance list preserves full IDs, duplicates and native order");
-    check(type["children"] == Json({23}) && j["external_child_ids"] == Json({999}),
+    check(type["children"] == Json::array({23}) && j["external_child_ids"] == Json::array({999}),
           "placed instances do not become definition-tree children");
     check(type["placed_instance_reference_scope"] == "component_project" &&
               type["placed_instance_resolution_status"] == "not_performed",
@@ -160,7 +160,7 @@ unsigned bfa_tests() {
     auto bj = complex_blob("BfaTree", bad);
     check(bj["records"][0].contains("placed_instance_decode_error") &&
               !bj["records"][0].contains("placed_instance_ids") &&
-              bj["records"][1]["placed_instance_ids"] == Json({31}),
+              bj["records"][1]["placed_instance_ids"] == Json::array({31}),
           "truncated bounded reference list is isolated from next graph record");
     malformed = body;
     malformed[19 + 4 + 3] = 0;
@@ -177,7 +177,7 @@ unsigned bfa_tests() {
     bad.clear();
     record(bad, "@#$", 17, type_body(17, Bytes{0x81}, {31}));
     const auto unknown_encoding = complex_blob("BfaTree", bad)["records"][0];
-    check(unknown_encoding["placed_instance_ids"] == Json({31}) &&
+    check(unknown_encoding["placed_instance_ids"] == Json::array({31}) &&
               unknown_encoding["type_name"]["source_bytes"] == rawbytes(Bytes{0x81}) &&
               unknown_encoding.contains("names_decode_error"),
           "legacy name conversion failure does not hide a valid instance relation");
@@ -347,7 +347,7 @@ unsigned bfa_tests() {
     for (std::size_t cut = 19; cut < db.size(); ++cut) {
         auto truncated = decode_drive(Bytes(db.begin(), db.begin() + cut));
         bounded = bounded && truncated["records"].size() == 2 &&
-                  truncated["records"][1]["placed_instance_ids"] == Json({31}) &&
+                  truncated["records"][1]["placed_instance_ids"] == Json::array({31}) &&
                   (cut == db.size() - 4 || truncated["records"][0].contains("decode_error"));
     }
     check(bounded, "all driven-payload truncations remain inside their BFA record");
@@ -356,7 +356,7 @@ unsigned bfa_tests() {
         corrupt[at] = 0xff;
         const auto isolated = decode_drive(corrupt);
         check(isolated["records"][0].contains("decode_error") &&
-                  isolated["records"][1]["placed_instance_ids"] == Json({31}),
+                  isolated["records"][1]["placed_instance_ids"] == Json::array({31}),
               "unknown target kind or malformed target/input marker cannot hide the next node");
     }
     auto g = std::async(std::launch::async, [&] { return decode_drive(db); });
@@ -524,12 +524,12 @@ unsigned bfa_tests() {
     const auto fail = decode_property(broken);
     check(fail["records"][0].contains("decode_error") &&
               fail["records"][0]["body_base64"] == base64(broken) &&
-              fail["records"][1]["placed_instance_ids"] == Json({31}),
+              fail["records"][1]["placed_instance_ids"] == Json::array({31}),
           "malformed property table marker remains bounded to its source node");
     for (std::size_t cut = 19; cut < derived.size(); ++cut) {
         const auto cut_result = decode_property(Bytes(derived.begin(), derived.begin() + cut));
         check(cut_result["records"].size() == 2 &&
-                  cut_result["records"][1]["placed_instance_ids"] == Json({31}),
+                  cut_result["records"][1]["placed_instance_ids"] == Json::array({31}),
               "every property body truncation preserves the following graph record");
     }
     auto pjob = std::async(std::launch::async, [&] { return decode_property(derived); });
@@ -540,7 +540,7 @@ unsigned bfa_tests() {
               semantics[1]["kind"] == "component_type_values" &&
               semantics[1]["key_kind"] == "imported_bfa_type",
           "property value maps retain distinct placed-instance and component-type key scopes");
-    check(semantics[0]["selected_entry_indices"] == Json({0}) &&
+    check(semantics[0]["selected_entry_indices"] == Json::array({0}) &&
               semantics[1]["selected_entry_indices"] == Json({1, 2, 0}) &&
               semantics[0]["duplicate_key_rule"] == "first_entry_wins",
           "native map lookup retains first duplicate and sorts unsigned 64-bit keys");
@@ -631,7 +631,7 @@ unsigned bfa_tests() {
               "SDK IDs bind through each distinct source map without conflating graph node IDs");
         check(cpb[0]["target_status"] == "unexpected_node_kind" &&
                   cpb[2]["target_status"] == "not_in_this_tree" &&
-                  component["records"][0]["children"] == Json({23}) &&
+                  component["records"][0]["children"] == Json::array({23}) &&
                   component["external_child_ids"].empty(),
               "ID mapping does not invent tree edges or match a type node as an attribute");
         const auto duplicate_component = decode_component(cb, true);
@@ -667,13 +667,13 @@ unsigned bfa_tests() {
         check(invalid_component["records"][0]["component_definition"]["mapping_layout_status"] ==
                       "malformed_or_unsupported" &&
                   invalid_component["component_property_bindings"].empty() &&
-                  invalid_component["records"][2]["placed_instance_ids"] == Json({31}),
+                  invalid_component["records"][2]["placed_instance_ids"] == Json::array({31}),
               "invalid component maps do not affect the following graph records");
         for (std::size_t cut = 19; cut < cb.size(); ++cut) {
             const auto cut_result = decode_component(Bytes(cb.begin(), cb.begin() + cut));
             check(cut_result["records"][0]["body_base64"] ==
                           base64(Bytes(cb.begin(), cb.begin() + cut)) &&
-                      cut_result["records"][2]["placed_instance_ids"] == Json({31}),
+                      cut_result["records"][2]["placed_instance_ids"] == Json::array({31}),
                   "truncated component definitions preserve source bytes and subsequent nodes");
         }
         auto cjob = std::async(std::launch::async, [&] { return decode_component(cb); });
@@ -806,14 +806,14 @@ unsigned bfa_tests() {
         malformed.pop_back();
         const auto bad = decode_extension(malformed);
         check(extension_of(bad)["layout_status"] == "malformed_or_unsupported" &&
-                  bad["records"][2]["placed_instance_ids"] == Json({31}) &&
+                  bad["records"][2]["placed_instance_ids"] == Json::array({31}) &&
                   bad["records"][0]["component_definition"]["mapping_layout_candidates"][0]
                      ["unassigned_suffix_hex"] == hex(malformed),
               "truncated formula retains the complete undecoded extension and following records");
         for (std::size_t cut = names.size() + 1; cut < points.size(); ++cut) {
             const auto truncated = decode_extension(Bytes(points.begin(), points.begin() + cut));
             check(truncated["records"].size() == 3 &&
-                      truncated["records"][2]["placed_instance_ids"] == Json({31}),
+                      truncated["records"][2]["placed_instance_ids"] == Json::array({31}),
                   "every driven-point truncation remains inside its bounded definition");
         }
         auto job = std::async(std::launch::async, [&] { return decode_extension(points); });
@@ -900,7 +900,7 @@ unsigned bfa_tests() {
                   graph["node_parent_bindings"][1]["parent_id"] == 40 &&
                   graph["node_parent_bindings"][1]["native_identity_status"] == "preserved" &&
                   bindings[0]["parent_binding_index"] == 1 &&
-                  bindings[0]["parent_component_mapping_binding_indices"] == Json({0}) &&
+                  bindings[0]["parent_component_mapping_binding_indices"] == Json::array({0}) &&
                   bindings[0]["component_mapping_binding_indices"] == Json({0, 2}) &&
                   graph["component_property_bindings"][0]["parent_binding_index"] == 1,
               "serialized parent identifies the owning component map without losing other sources");
@@ -919,7 +919,7 @@ unsigned bfa_tests() {
               "driven references do not invent hierarchy edges or resolve missing and wrong-kind "
               "targets");
         check(bindings[6]["storage_kind"] == 2 && bindings[6]["property_record_index"] == 2 &&
-                  bindings[6]["component_mapping_binding_indices"] == Json({1}),
+                  bindings[6]["component_mapping_binding_indices"] == Json::array({1}),
               "the second driven storage family uses only the matching component property map");
         check(bindings[7]["target_status"] == "matched_object_record" &&
                   bindings[7]["object_record_index"] == 3 && bindings[7]["property_id"] == -17 &&
@@ -1026,7 +1026,7 @@ unsigned bfa_tests() {
               "forward key");
         auto wrong_owner = selected;
         wrong_owner["records"][0]["children"] = Json({90, 42, 31, 18});
-        wrong_owner["records"][3]["children"] = Json({41});
+        wrong_owner["records"][3]["children"] = Json::array({41});
         const auto redirected = resolve_bfa_driven_references(wrong_owner, 90, {40, true});
         check(redirected["target"]["lookup_environment_id"] == 31 &&
                   redirected["target"]["object_id"] == 40 &&
@@ -1130,7 +1130,7 @@ unsigned bfa_tests() {
         check(maps[0]["entries"].size() == 8 && maps[0]["entries"][0]["property_id"] == 17 &&
                   maps[0]["selected_entry_indices"] == Json({5, 6, 7, 1, 3, 2, 4}) &&
                   inverse["missing_key_value"] == 0 &&
-                  maps[1]["inverse_lookup"]["selected_entry_indices"] == Json({0}),
+                  maps[1]["inverse_lookup"]["selected_entry_indices"] == Json::array({0}),
               "inverse lookup excludes overwritten node values, keeps both families independent "
               "and preserves the zero miss sentinel");
     }
@@ -1158,7 +1158,7 @@ unsigned bfa_tests() {
                   parents[2]["parent_id"] == 30 &&
                   parents[2]["parent_sources"] ==
                       Json::array({{{"parent_record_index", 0}, {"child_index", 0}}}) &&
-                  ordinary["external_child_ids"] == Json({999}) &&
+                  ordinary["external_child_ids"] == Json::array({999}) &&
                   ordinary["records"][2]["unassigned_header_uint64"] == 987654321,
               "parent provenance comes from child lists without consuming the unassigned body "
               "header or missing children");
@@ -1320,7 +1320,7 @@ unsigned bfa_tests() {
         check(links.size() == 3 && links[0]["entry_index"] == 0 &&
                   links[0]["target_status"] == "matched_bfa_field" &&
                   links[0]["target_field_index"] == 1 && links[0]["target_object_index"] == 1 &&
-                  links[0]["handle_record_indices"] == Json({0}) &&
+                  links[0]["handle_record_indices"] == Json::array({0}) &&
                   links[0]["handle_node_status"] == "unique_node_in_payload",
               "BPDataKey resolves the source object and BFA field before matching a handle within "
               "that payload");
