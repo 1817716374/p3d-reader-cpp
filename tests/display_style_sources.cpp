@@ -2,6 +2,7 @@
 #include "display_style_xml.hpp"
 #include "display_style_xml_oracle.hpp"
 #include "display_style_usages_oracle.hpp"
+#include "display_style_object_oracle.hpp"
 using namespace p3d;
 namespace {
 Json attr(unsigned key, unsigned index, const Json &decoded) {
@@ -143,8 +144,10 @@ unsigned display_style_sources_tests() {
     common["attributes"][0] = marker(0x006f0000);
     tree["children"].push_back(tree["children"][0]);
     out = build_display_style_sources(index, headers, Json::array({common}));
-    check(out["tables"][0]["entries"][0]["lite_copy_projection"]["status"] == "unresolved",
-          "duplicate XML sections do not receive a guessed projection");
+    check(out["tables"][0]["entries"][0]["lite_copy_projection"]["status"] == "conditional" &&
+              out["tables"][0]["entries"][0]["lite_copy_projection"]["xml_tree"]["children"].back() ==
+                  tree["children"].back(),
+          "copy projection updates the selected first section and preserves later duplicates");
     tree["children"] = Json::array();
     out = build_display_style_sources(index, headers, Json::array({common}));
     check(out["tables"][0]["entries"][0]["lite_copy_projection"]["status"] == "unresolved",
@@ -155,6 +158,33 @@ unsigned display_style_sources_tests() {
                       {{"tag", "Overrides"}, {"attributes", {{"DisplayMode", "6"}}}}
                   })}};
     const auto minimal = input;
+    // Whole-object observations test the importer caller's root/child rules,
+    // constructor fallbacks and stored values, beyond individual XML getters.
+    for (const auto &sample : Json::parse(style_object_oracle_json)) {
+        const auto actual = decode_display_style_xml(xml_tree(sample.at("xml")));
+        check((actual.at("status") == "partial") == sample.at("constructed"),
+              "whole native object import acceptance matches the original DLL");
+        if (!sample.at("constructed").get<bool>()) {
+            check(actual.at("status") == "rejected", "native null import is explicitly rejected");
+            continue;
+        }
+        check(actual.at("packed_flags_at_48") == sample.at("packed_flags_at_48") &&
+                  actual.at("packed_flags_at_50") == sample.at("packed_flags_at_50"),
+              "whole-object packed flags match native import");
+        for (const auto &[name, value] : sample.at("fields").items())
+            check(actual.at("fields").at(name).at("value") == value,
+                  "whole-object scalar and name storage match native import");
+        for (const auto &[name, bits] : sample.at("double_bits").items())
+            check(actual.at("fields").at(name).at("ieee754_hex") == bits,
+                  "whole-object floating storage matches native import bit for bit");
+        Json bits = Json::array();
+        for (const auto &range : actual.at("usages").at("ranges"))
+            for (unsigned i = range.at("first"); i <= range.at("last").get<unsigned>(); ++i)
+                bits.push_back(i);
+        check(bits == sample.at("usages").at("bits") &&
+                  actual.at("usages").at("bit_length") == sample.at("usages").at("bit_length"),
+              "whole-object initial usage bitmap matches native import");
+    }
     auto decoded = decode_display_style_xml(input);
     check(decoded["status"] == "partial" && decoded["runtime_resolution"] == "not_evaluated" &&
               decoded["packed_flags_at_48"] == 6 && decoded["packed_flags_at_50"] == 0x582,
@@ -278,7 +308,7 @@ unsigned display_style_sources_tests() {
     check(decode_display_style_xml(input)["status"] == "rejected", "absent Flags is not an empty Flags node");
     input = minimal;
     input["children"].push_back(input["children"][0]);
-    check(decode_display_style_xml(input)["status"] == "unresolved", "ambiguous XML layout remains unresolved");
+    check(decode_display_style_xml(input)["status"] == "partial", "native XML lookup uses the first matching child");
     tree = minimal;
     const auto before_import = common;
     out = build_display_style_sources(index, headers, Json::array({common}));

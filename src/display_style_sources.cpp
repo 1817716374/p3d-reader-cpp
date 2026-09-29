@@ -17,17 +17,14 @@ Json lite_copy_projection(const Json &tree) {
                 {"scope", "confirmed_native_copy_writes"},
                 {"runtime_application", "not_evaluated"}};
     try {
-        const auto tag = tree.at("tag").get<std::string>();
-        require(tag == "ShowStyle" || tag == "DisplayStyle", "unsupported style XML root");
+        require(tree.at("tag").is_string(), "style XML root tag must be a string");
         auto derived = tree;
         Json *flags = nullptr, *overrides = nullptr;
         for (auto &child : derived.at("children")) {
             const auto name = child.at("tag").get<std::string>();
-            if (name == "Flags") {
-                require(!flags, "ambiguous Flags nodes");
+            if (name == "Flags" && !flags) {
                 flags = &child.at("attributes");
-            } else if (name == "Overrides") {
-                require(!overrides, "ambiguous Overrides nodes");
+            } else if (name == "Overrides" && !overrides) {
                 overrides = &child.at("attributes");
             }
         }
@@ -119,10 +116,8 @@ Json build_display_style_sources(const Json &index, const Json &native, const Js
                 }
                 if (decoded.contains("tree")) {
                     const auto &tree = decoded.at("tree");
-                    const auto tag = tree.value("tag", "");
                     row["xml_tree"] = tree;
-                    row["status"] = tag == "DisplayStyle" || tag == "ShowStyle"
-                                        ? "source_xml" : "unrecognized_xml_root";
+                    row["status"] = "source_xml";
                     if (tree.contains("attributes") && tree["attributes"].contains("Name"))
                         row["name"] = tree["attributes"]["Name"];
                     row["native_xml_import"] = decode_display_style_xml(tree);

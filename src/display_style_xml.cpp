@@ -128,8 +128,9 @@ Json decode_display_style_xml(const Json &tree) {
     Json out = {{"status", "unresolved"}, {"scope", "native_xml_field_writes"},
                 {"runtime_resolution", "not_evaluated"}};
     try {
-        const auto tag = tree.at("tag").get<std::string>();
-        require(tag == "ShowStyle" || tag == "DisplayStyle", "unsupported style XML root");
+        // 0xd9131 uses the document root without testing its name. The
+        // attribute handler, not the root tag, selects this importer.
+        require(tree.at("tag").is_string(), "style XML root tag must be a string");
         const auto &root = tree.at("attributes");
         require(root.is_object(), "style XML attributes must be an object");
         if (!root.contains("Name") || !root.at("Name").is_string()) {
@@ -140,11 +141,11 @@ Json decode_display_style_xml(const Json &tree) {
         const Json *flag_attrs = nullptr, *overrides = nullptr;
         for (const auto &child : tree.at("children")) {
             const auto name = child.at("tag").get<std::string>();
-            if (name == "Flags") {
-                require(!flag_attrs, "ambiguous Flags nodes");
+            // selectSingleNode("Flags"/"Overrides") returns the first direct
+            // unqualified child, including when that child's data is invalid.
+            if (name == "Flags" && !flag_attrs) {
                 flag_attrs = &child.at("attributes");
-            } else if (name == "Overrides") {
-                require(!overrides, "ambiguous Overrides nodes");
+            } else if (name == "Overrides" && !overrides) {
                 overrides = &child.at("attributes");
             }
         }
