@@ -265,3 +265,5 @@
 
 !/tests/view_frame.cpp
 !/tests/view_frame_oracle.hpp
+!/tests/default_view.cpp
+!/tests/default_view_oracle.hpp
