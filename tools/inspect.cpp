@@ -79,6 +79,7 @@ int main(int argc, char **argv) {
                          {"color_tables", d.color_tables()},
                          {"layer_tables", d.layer_tables()},
                          {"display_style_sources", d.display_style_sources()},
+                         {"initial_extended_color_tables", d.initial_extended_color_tables()},
                          {"initial_display_style_tables", d.initial_display_style_tables(style_profile)}});
         if (!graph.empty())
             write(graph, d.object_graph());

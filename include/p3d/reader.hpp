@@ -810,6 +810,9 @@ class Document {
     // File-scoped display-style XML declarations and indexed source candidates.
     // Does not run registry callbacks, common-to-lite conversion or rendering.
     Json display_style_sources() const;
+    // Initial file-system slot zero and its selected 22902/index-zero attribute.
+    // Conditional on fresh loading before host callbacks or cache mutation.
+    Json initial_extended_color_tables() const;
     // First matching common/Lite table in fresh SSYS input, using attached
     // attributes and assigned IDs. Built-in handlers only; no host callbacks.
     Json initial_display_style_tables(

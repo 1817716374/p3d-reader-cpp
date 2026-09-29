@@ -28,6 +28,97 @@ Json scan_color(const std::string &text) {
     }
     return {{"rgb", Json::array({rgb[0], rgb[1], rgb[2]})}, {"assigned_channels", assigned}};
 }
+} // namespace
+
+Json initial_native_extended_color_table(const Json &list, const Json &records,
+                                         const Json &ids, const Json &input) {
+    Json out = {{"status", "unresolved"}, {"scope", "fresh_file_extended_color_cache_input"},
+                {"runtime_cache", "not_evaluated"}, {"system_slot", 0},
+                {"skip_deleted", false}, {"selected_record", nullptr}, {"selected_attribute", nullptr},
+                {"conditions", {"fresh_system_list_loaded_in_prepared_order",
+                                "initial_attributes_attached_before_color_cache_construction",
+                                "no_intervening_host_or_cache_mutation"}}};
+    try {
+        require(list.at("scope") == "empty_list_before_runtime_registration" &&
+                    list.at("status") == "resolved" && list.at("system_bootstrap_required") == true &&
+                    list.at("system_bootstrap_found") == true, "complete_fresh_system_list_required");
+        require(ids.at("scope") == "first_system_input_with_empty_id_registry" &&
+                    ids.at("status") == "resolved", "complete_system_id_assignments_required");
+        require(!list.at("roots").empty() && list.at("roots").size() == ids.at("roots").size(),
+                "system_input_order_mismatch");
+        const auto &root = list.at("roots")[0];
+        const auto &assigned = ids.at("roots")[0];
+        require(!root.at("headers").empty() && !assigned.at("records").empty(), "missing_system_slot_zero");
+        const auto &header = root.at("headers")[0];
+        const auto &item = assigned.at("records")[0];
+        const auto ni = root.at("native_record_index").get<std::size_t>();
+        require(list.at("bootstrap_root_record_index") == ni && assigned.at("native_record_index") == ni &&
+                    header.at("native_record_index") == ni && header.at("status") == "resolved" &&
+                    header.at("parent_record_index").is_null() && item.at("native_record_index") == ni &&
+                    item.at("input_occurrence_index") == 0, "system_slot_zero_identity_mismatch");
+        const auto &record = records.at(ni);
+        const auto bytes = bytesof(record.at("data"));
+        require(record.at("element_type") == 46 && Reader(bytes, 16).u32() == 8 &&
+                    !(record.at("element_flags").get<unsigned>() & 8), "system_bootstrap_record_required");
+        out["selected_record"] = {{"native_record_index", ni}, {"input_occurrence_index", 0},
+                                  {"source_id", item.at("source_id")}, {"assigned_id", item.at("assigned_id")}};
+        const auto status = input.at("status");
+        require(status == "resolved" || status == "absent" || status == "not_loaded",
+                "complete_initial_attribute_input_required");
+        const Json *attachment = nullptr;
+        std::size_t attachment_index = 0;
+        for (std::size_t i = 0; i < input.at("attachments").size(); ++i) {
+            const auto &candidate = input.at("attachments")[i];
+            if (candidate.at("target").at("input_occurrence_index") != 0) continue;
+            require(!attachment, "ambiguous_initial_attribute_attachment");
+            attachment = &candidate;
+            attachment_index = i;
+        }
+        const Json *selected = nullptr;
+        if (attachment) {
+            const auto &lookup = attachment->at("lookup");
+            require(lookup.at("status") == "resolved", "initial_attribute_lookup_required");
+            for (const auto &key : lookup.at("keys")) {
+                if (key.at("group") != 0 || key.at("key") != 22902 || key.at("index") != 0) continue;
+                require(!selected, "ambiguous_extended_color_lookup_key");
+                selected = &key;
+            }
+        }
+        if (!selected) {
+            out["outcome"] = "empty_cache_missing_attribute";
+            out["cache_input"] = {{"entries", Json::array()}, {"rgb_lookup", Json::array()}, {"slot_count", 0}};
+        } else {
+            const auto ordinal = selected->at("selected_source_ordinal").get<std::size_t>();
+            const auto &attribute = attachment->at("attributes").at(ordinal);
+            require(attribute.at("group") == 0 && attribute.at("key") == 22902 && attribute.at("index") == 0,
+                    "selected_color_attribute_key_mismatch");
+            out["selected_attribute"] = {{"attachment_index", attachment_index}, {"source_ordinal", ordinal},
+                {"attribute_offset", attribute.at("offset")}, {"stream", attachment->at("stream")},
+                {"matching_source_ordinals", selected->at("matching_source_ordinals")}};
+            const auto &decoded = attribute.at("decoded");
+            require(decoded.contains("native_extended_color_import") &&
+                        decoded.at("native_extended_color_import").at("status") == "resolved",
+                    "selected_color_payload_import_unresolved");
+            out["cache_input"] = decoded.at("native_extended_color_import");
+            out["outcome"] = "selected_xml_input";
+        }
+        out["status"] = "resolved";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json Document::initial_extended_color_tables() const {
+    Json out = Json::array();
+    for (const auto &container : native_input_containers()) {
+        if (container.at("kind") != "P3D-SSYS" || container.at("container").size() != 2) continue;
+        auto table = initial_native_extended_color_table(container.at("list_preparation"), native_records(),
+            container.at("system_id_assignments"), container.at("initial_attribute_input"));
+        table["system_container"] = container.at("container");
+        out.push_back(std::move(table));
+    }
+    return out;
 }
 Json decode_native_extended_colors(const Json &tree) {
     Json out = {{"status", "unresolved"}, {"scope", "R1.18_extended_color_XML_input"},
