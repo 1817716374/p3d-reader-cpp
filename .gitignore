@@ -262,3 +262,6 @@
 
 !/tests/view_model_access.cpp
 !/tests/view_model_access_oracle.hpp
+
+!/tests/view_frame.cpp
+!/tests/view_frame_oracle.hpp

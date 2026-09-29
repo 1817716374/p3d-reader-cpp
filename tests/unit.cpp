@@ -214,6 +214,7 @@ unsigned view_table_collection_tests();
 unsigned view_table_selection_tests();
 unsigned view_table_fallback_tests();
 unsigned view_model_tests();
+unsigned view_frame_tests();
 unsigned view_model_access_tests();
 unsigned view_model_query_tests();
 unsigned mesh_normal_tests();
@@ -2899,6 +2900,7 @@ int main() {
         checks += view_table_selection_tests();
         checks += view_table_fallback_tests();
         checks += view_model_tests();
+        checks += view_frame_tests();
         checks += view_model_access_tests();
         checks += view_model_query_tests();
         layer_group_tests();
