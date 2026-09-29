@@ -98,5 +98,53 @@ unsigned display_style_sources_tests() {
     out = build_display_style_sources(index, headers, graphics);
     check(out["references"][0]["candidates"].empty() && out["tables"].size() == 2,
           "model-local marker does not establish the file style namespace");
+    auto common = graphic(Json::array({marker(0x006f0000), style(9, "Original")}));
+    auto &tree = common["attributes"][1]["decoded"]["tree"];
+    tree["children"] = Json::array({
+        {{"tag", "Flags"}, {"attributes", {{"DisplayVisibleEdges", "true"},
+            {"VisibleEdgeColor", "true"}, {"VisibleEdgeWeight", "true"},
+            {"Transparency", "true"}, {"Material", "true"},
+            {"DisplayHiddenEdges", "true"}, {"DisplayShadows", "true"},
+            {"LineStyle", "true"}, {"FutureFlag", "retain"}}}},
+        {{"tag", "Overrides"}, {"attributes", {{"DisplayMode", "3"},
+            {"VisibleEdgeColor", "65535"}, {"VisibleEdgeWeight", "23"},
+            {"Transparency", "0.75"}, {"Material", "18446744073709551615"},
+            {"HiddenEdgeWeight", "17"}, {"LineStyle", "8"}}}},
+        {{"tag", "Extension"}, {"attributes", {{"value", "unchanged"}}}}
+    });
+    const auto original = common;
+    out = build_display_style_sources(index, headers, Json::array({common}));
+    const auto &entry = out["tables"][0]["entries"][0];
+    const auto &projection = entry["lite_copy_projection"];
+    const auto &derived = projection["xml_tree"];
+    const auto &f = derived["children"][0]["attributes"];
+    const auto &o = derived["children"][1]["attributes"];
+    check(projection["status"] == "conditional" &&
+              projection["runtime_application"] == "not_evaluated" &&
+              common == original && entry["xml_tree"] == tree,
+          "conditional native copy projection preserves source XML and does not apply runtime selection");
+    check(o["DisplayMode"] == "6" && f["DisplayVisibleEdges"] == "false" &&
+              f["VisibleEdgeColor"] == "false" && f["VisibleEdgeWeight"] == "false" &&
+              f["Transparency"] == "false" && f["Material"] == "false" &&
+              o["VisibleEdgeColor"] == "0" && o["VisibleEdgeWeight"] == "0" && o["Transparency"] == "0",
+          "native Lite copy clears the confirmed enable bits and corresponding stored edge/transparency values");
+    check(o["Material"] == "18446744073709551615" && o["HiddenEdgeWeight"] == "17" &&
+              o["LineStyle"] == "8" && f["LineStyle"] == "true" &&
+              f["DisplayHiddenEdges"] == "true" && f["DisplayShadows"] == "true" &&
+              f["FutureFlag"] == "retain" && derived["children"][2] == tree["children"][2],
+          "disabling material must not erase its ID or other unaffected style fields");
+    common["attributes"][0] = marker(0x597e0000);
+    out = build_display_style_sources(index, headers, Json::array({common}));
+    check(!out["tables"][0]["entries"][0].contains("lite_copy_projection"),
+          "an existing Lite style must not be converted again");
+    common["attributes"][0] = marker(0x006f0000);
+    tree["children"].push_back(tree["children"][0]);
+    out = build_display_style_sources(index, headers, Json::array({common}));
+    check(out["tables"][0]["entries"][0]["lite_copy_projection"]["status"] == "unresolved",
+          "duplicate XML sections do not receive a guessed projection");
+    tree["children"] = Json::array();
+    out = build_display_style_sources(index, headers, Json::array({common}));
+    check(out["tables"][0]["entries"][0]["lite_copy_projection"]["status"] == "unresolved",
+          "missing XML sections do not receive fabricated native defaults");
     return checks;
 }

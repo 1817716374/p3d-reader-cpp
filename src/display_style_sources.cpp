@@ -9,6 +9,48 @@ Json identity(const Json &r, std::size_t record, std::size_t attribute) {
             {"attribute_ordinal", attribute}, {"attribute_offset", a.at("offset")},
             {"attribute_index", a.at("index")}};
 }
+
+Json lite_copy_projection(const Json &tree) {
+    Json out = {{"status", "unresolved"},
+                {"condition", "imported_common_style_in_selected_table_with_empty_lite_list"},
+                {"scope", "confirmed_native_copy_writes"},
+                {"runtime_application", "not_evaluated"}};
+    try {
+        const auto tag = tree.at("tag").get<std::string>();
+        require(tag == "ShowStyle" || tag == "DisplayStyle", "unsupported style XML root");
+        auto derived = tree;
+        Json *flags = nullptr, *overrides = nullptr;
+        for (auto &child : derived.at("children")) {
+            const auto name = child.at("tag").get<std::string>();
+            if (name == "Flags") {
+                require(!flags, "ambiguous Flags nodes");
+                flags = &child.at("attributes");
+            } else if (name == "Overrides") {
+                require(!overrides, "ambiguous Overrides nodes");
+                overrides = &child.at("attributes");
+            }
+        }
+        require(flags && overrides && flags->is_object() && overrides->is_object(),
+                "style copy projection requires Flags and Overrides objects");
+        // P3DKJ 0xdbb2e..0xdbb46: flags48=(flags48 & ~0x79)|6,
+        // flags50 &= ~0x47, zero DWORDs54/58 and DOUBLE60. Material's
+        // enable bit is cleared, but its stored 64-bit identifier is retained.
+        (*overrides)["DisplayMode"] = "6";
+        for (const auto *name : {"DisplayVisibleEdges", "VisibleEdgeColor", "VisibleEdgeWeight",
+                                 "Transparency", "Material"})
+            (*flags)[name] = "false";
+        for (const auto *name : {"VisibleEdgeColor", "VisibleEdgeWeight", "Transparency"})
+            (*overrides)[name] = "0";
+        out["status"] = "conditional";
+        out["xml_tree"] = std::move(derived);
+        out["unmodeled_steps"] = Json::array({"source_xml_runtime_import",
+                                               "table_registration_and_selection",
+                                               "resource_remapping"});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace
 
 Json build_display_style_sources(const Json &index, const Json &native, const Json &graphics) {
@@ -82,6 +124,8 @@ Json build_display_style_sources(const Json &index, const Json &native, const Js
                                         ? "source_xml" : "unrecognized_xml_root";
                     if (tree.contains("attributes") && tree["attributes"].contains("Name"))
                         row["name"] = tree["attributes"]["Name"];
+                    if (registration == 0x006f0000u)
+                        row["lite_copy_projection"] = lite_copy_projection(tree);
                 }
                 table["entries"].push_back(std::move(row));
             }
