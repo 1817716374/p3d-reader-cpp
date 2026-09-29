@@ -1,6 +1,7 @@
 #include "internal.hpp"
 #include "display_style_xml.hpp"
 #include "display_style_view_flags_oracle.hpp"
+#include "view_constructor_oracle.hpp"
 using namespace p3d;
 namespace {
 void put(Bytes &b, unsigned at, std::uint32_t x) {
@@ -404,5 +405,64 @@ unsigned display_style_tables_tests() {
               ref["view_flag_projection"]["conditions"].size() == 7 &&
               ref["view_flag_projection"]["runtime_application"] == "not_evaluated",
           "view flags use the modified Lite copy fields and retain copy and application conditions");
+    const auto constructor_oracle = Json::parse(view_constructor_oracle);
+    for (const auto &row : constructor_oracle.at("cases")) {
+        Bytes source(0x124, 0xa5);
+        put(source, 16, 1);
+        put(source, 0xfc, row.at("source_words")[0].get<std::uint32_t>());
+        put(source, 0x100, row.at("source_words")[1].get<std::uint32_t>());
+        for (unsigned c = 0; c < 3; ++c)
+            source[0x114 + c] = row.at("source_rgb")[c].get<std::uint8_t>();
+        auto view = record(11, 8);
+        view["data"] = rawbytes(source);
+        const auto background = project_initial_view_background(view);
+        check(background.at("constructor_rgb") == row.at("constructor_rgb") &&
+                  background.at("source_offsets") == Json::array({0x114, 0x115, 0x116}) &&
+                  background.at("style_application") == "not_evaluated",
+              "initial background matches complete original constructor without reading adjacent RGB or stream prefix");
+        check(project_display_style_view_flags(view, imported).at("constructor_words") == row.at("constructor_words"),
+              "constructor flag normalization matches full original reader across all 64 source modes");
+        if (!row.at("attributes").empty()) {
+            Json attached = Json::array();
+            for (const auto &a : row.at("attributes")) {
+                const auto hex = a.at("hex").get<std::string>();
+                Bytes payload;
+                for (std::size_t i = 0; i < hex.size(); i += 2)
+                    payload.push_back(static_cast<std::uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+                attached.push_back(attribute(a.at("key").get<unsigned>() >> 16,
+                    a.at("index").get<unsigned>(), payload));
+            }
+            const auto test_list = list(Json::array({Json::array({header(0)})}));
+            const auto integrated = run(test_list, Json::array({view}),
+                input(Json::array({attached}))).at("reference_inputs").at("references").at(0);
+            check(integrated.at("reader_projection").at("display_style_index") == row.at("display_style_index") &&
+                      integrated.at("initial_background_projection").at("constructor_rgb") == row.at("constructor_rgb"),
+                  "full constructor confirms attribute length and duplicate selection while preserving source background");
+        }
+    }
+    auto background = ref.at("initial_background_projection");
+    check(background.at("status") == "conditional" &&
+              background.at("constructor_rgb") == Json::array({0, 0, 0}) &&
+              background.at("conditions").size() == 1,
+          "source background does not depend on style-copy conditions or select a final viewport");
+    bad_view = native_view;
+    bad_view["element_type"] = 12;
+    check(project_initial_view_background(bad_view).at("reason") == "type11_view_input_required",
+          "other element types cannot borrow the type11 background layout");
+    bad_bytes = view_bytes;
+    put(bad_bytes, 16, 2);
+    bad_view = native_view;
+    bad_view["data"] = rawbytes(bad_bytes);
+    check(project_initial_view_background(bad_view).at("reason") == "type11_subtype1_input_required",
+          "unconfirmed subtypes do not expose constructor RGB");
+    bad_view["data"] = rawbytes(Bytes(0x122));
+    background = project_initial_view_background(bad_view);
+    check(background.at("reason") == "truncated_type11_constructor_input" && !background.contains("constructor_rgb"),
+          "a readable RGB alone does not establish the full constructor prefix");
+    bad_bytes = view_bytes;
+    bad_bytes.resize(0x123);
+    bad_view["data"] = rawbytes(bad_bytes);
+    check(project_initial_view_background(bad_view).at("status") == "conditional",
+          "exact constructor prefix boundary is accepted");
     return checks;
 }

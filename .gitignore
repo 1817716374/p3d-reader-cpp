@@ -242,3 +242,4 @@
 !/tests/palette_selection.cpp
 !/tests/color_remap.cpp
 !/tests/color_remap_oracle.hpp
+!/tests/view_constructor_oracle.hpp

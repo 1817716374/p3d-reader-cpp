@@ -1,6 +1,32 @@
 #include "display_style_xml.hpp"
 
 namespace p3d {
+Json project_initial_view_background(const Json &record) {
+    Json out = {{"status", "unresolved"}, {"scope", "R1.18_type11_initial_view_background"},
+                {"runtime_application", "not_evaluated"}};
+    try {
+        require(record.at("element_type") == 11, "type11_view_input_required");
+        const auto bytes = bytesof(record.at("data"));
+        require(bytes.size() >= 0x123, "truncated_type11_constructor_input");
+        require(Reader(bytes, 16).u32() == 1, "type11_subtype1_input_required");
+        // 4b496c..4b4981 copies native body+110..112 to object+ec..ee.
+        // The subsequent 4b4220 attribute reader does not write this RGB.
+        // Record data includes the four-byte stream prefix, hence +114.
+        const auto rgb = Json::array({bytes[0x114], bytes[0x115], bytes[0x116]});
+        out.update({{"status", "conditional"},
+                    {"conditions", Json::array({"fresh_type11_object_uses_R1.18_4b46b0_reader"})},
+                    {"source_offsets_include_stream_prefix", true},
+                    {"source_offsets", Json::array({0x114, 0x115, 0x116})},
+                    {"source_rgb", rgb}, {"constructor_rgb", rgb},
+                    {"style_application", "not_evaluated"},
+                    {"unmodeled_steps", Json::array({"view_table_selection_and_object_dispatch",
+                        "subsequent_background_override_application", "viewport_refresh"})}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
 std::array<std::uint32_t, 2> apply_display_style_flag_words(
     std::uint32_t first, std::uint32_t second, std::uint32_t flags48,
     std::uint32_t flags50, std::uint64_t material) {

@@ -303,6 +303,7 @@ Json reference_inputs(const Json &records, const Json &ids, const Json &input,
                             {"source_id", item.at("source_id")}, {"assigned_id", item.at("assigned_id")},
                             {"attachment_index", ai}, {"attribute_stream", a->at("stream")},
                             {"status", "unresolved"}};
+                ref["initial_background_projection"] = project_initial_view_background(records.at(ni));
                 try {
                     const auto *key = lookup_key(*a, 20080, 0);
                     std::int32_t value = -1;
