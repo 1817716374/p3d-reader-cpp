@@ -171,6 +171,8 @@ unsigned display_style_sources_tests() {
             fa["Material"] = fa["VisibleEdgeStyle"] = sample.source;
             oa["VisibleEdgeColor"] = oa["Material"] = sample.source;
             input["attributes"]["ShowGroundFromBelow"] = sample.source;
+            oa["Transparency"] = oa["HLineTransparencyThreshold"] = sample.source;
+            input["attributes"]["GroundPlaneHeight"] = sample.source;
         }
         decoded = decode_display_style_xml(input);
         const auto &fields = decoded.at("fields");
@@ -186,7 +188,43 @@ unsigned display_style_sources_tests() {
                   fields["Overrides.Material"]["value"] == sample.u64 &&
                   fields["Overrides.Material"]["read_status"] == status(sample.u64_status),
               "unsigned numeric prefixes, negative values and saturation match the official DLL");
+        const auto &floating = fields["Overrides.Transparency"];
+        check(floating["read_status"] == status(sample.double_status) &&
+                  floating["ieee754_hex"] == sample.double_bits &&
+                  floating["default_applied"] == (sample.double_status != 0) &&
+                  fields["GroundPlaneHeight"] == floating,
+              "style float parsing and zero fallback match the official getter bit for bit");
+        const auto &threshold = fields["Overrides.HLineTransparencyThreshold"];
+        check(threshold["ieee754_hex"] == (sample.double_status ? "3fd3333333333333" : sample.double_bits) &&
+                  threshold["read_status"] == status(sample.double_status) &&
+                  threshold["default_applied"] == (sample.double_status != 0),
+              "threshold fallback applies on failed reads, never on valid nonfinite or zero values");
+        check(Json::parse(floating.dump()) == floating && Json::parse(threshold.dump()) == threshold,
+              "style float evidence including nonfinite payloads survives JSON export");
     }
+    decoded = decode_display_style_xml(minimal);
+    check(decoded["fields"].size() == 45 &&
+              decoded["fields"]["GroundPlaneColor.R"]["value"] == 0 &&
+              decoded["fields"]["GroundPlaneColor.G"]["value"] == 0 &&
+              decoded["fields"]["GroundPlaneColor.B"]["value"] == 0 &&
+              decoded["fields"]["GroundPlaneTransparency"]["value"] == 0 &&
+              decoded["fields"]["Overrides.HLineTransparencyThreshold"]["value"] == 0.3,
+          "absent ground-plane doubles overwrite constructor defaults but threshold restores 0.3");
+    input = minimal;
+    input["attributes"].update({{"GroundPlaneColor.R", "0.125"}, {"GroundPlaneColor.G", "0.25"},
+                                 {"GroundPlaneColor.B", "0.5"}, {"GroundPlaneTransparency", "0.75"}});
+    decoded = decode_display_style_xml(input);
+    check(decoded["fields"]["GroundPlaneColor.R"]["value"] == 0.125 &&
+              decoded["fields"]["GroundPlaneColor.G"]["value"] == 0.25 &&
+              decoded["fields"]["GroundPlaneColor.B"]["value"] == 0.5 &&
+              decoded["fields"]["GroundPlaneTransparency"]["value"] == 0.75,
+          "dotted RGB attributes remain independent floating fields, without byte-color conversion");
+    input["attributes"]["GroundPlaneHeight"] = 1.0;
+    decoded = decode_display_style_xml(input);
+    check(decoded["fields"]["GroundPlaneHeight"]["read_status"] == "unresolved" &&
+              decoded["fields"]["GroundPlaneHeight"]["value"].is_null() &&
+              decoded["fields"]["GroundPlaneHeight"]["default_applied"] == false,
+          "unsupported non-text JSON input is not reported as an observed native failure or default");
     input = minimal;
     input["children"][1]["attributes"]["DisplayMode"] = "-1";
     input["children"][1]["attributes"]["HiddenEdgeLineStyle"] = "10suffix";

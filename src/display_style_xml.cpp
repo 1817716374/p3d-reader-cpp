@@ -66,6 +66,30 @@ Json scalar_field(const Json &attrs, const char *name, bool boolean,
             {"read_status", scalar.status}, {"default_applied", !parsed}};
 }
 
+Json floating_field(const Json &attrs, const char *name, double fallback = 0) {
+    // Both XML readers use the same UCRT floating scanner. Keep its exact
+    // nonfinite representation and failed-assignment distinction, then apply
+    // this style reader's per-field fallback (not the material caller's).
+    auto read = material_xml_float(attrs, name);
+    const auto status = read.at("status").get<std::string>();
+    const bool parsed = status == "decoded";
+    const bool failed = material_xml_numeric_failed(read);
+    Json out = {{"value", parsed ? read.at("value") : failed ? Json(fallback) : Json()},
+                {"read_status", parsed ? "parsed" : status}, {"default_applied", failed},
+                {"conversion", read.at("conversion")}};
+    if (parsed) {
+        out["ieee754_hex"] = read.at("conversion").at("destination_bits_hex");
+    } else if (failed) {
+        std::uint64_t bits;
+        std::memcpy(&bits, &fallback, sizeof bits);
+        std::string text(16, '0');
+        for (std::size_t i = text.size(); i; bits >>= 4)
+            text[--i] = "0123456789abcdef"[bits & 15];
+        out["ieee754_hex"] = std::move(text);
+    }
+    return out;
+}
+
 struct Flag {
     const char *name;
     unsigned offset;
@@ -92,7 +116,7 @@ constexpr Flag flags[] = {
 } // namespace
 
 Json decode_display_style_xml(const Json &tree) {
-    Json out = {{"status", "unresolved"}, {"scope", "native_xml_boolean_and_integer_writes"},
+    Json out = {{"status", "unresolved"}, {"scope", "native_xml_scalar_writes"},
                 {"runtime_resolution", "not_evaluated"}};
     try {
         const auto tag = tree.at("tag").get<std::string>();
@@ -151,11 +175,20 @@ Json decode_display_style_xml(const Json &tree) {
         fields["Overrides.Material"] = scalar_field(*overrides, "Material", false, 0, true);
         fields["EnvironmentTypeDisplayed"] = scalar_field(root, "EnvironmentTypeDisplayed", false);
         fields["ShowGroundFromBelow"] = scalar_field(root, "ShowGroundFromBelow", true);
+        // 0xd9276..0xd92bc: getters clear their destination even when absent,
+        // so the constructor's ground color/height defaults do not survive.
+        for (const auto *name : {"GroundPlaneColor.R", "GroundPlaneColor.G", "GroundPlaneColor.B",
+                                 "GroundPlaneHeight", "GroundPlaneTransparency"})
+            fields[name] = floating_field(root, name);
+        fields["Overrides.Transparency"] = floating_field(*overrides, "Transparency");
+        // 0xd99fe: unlike the other doubles, failed threshold reads use 0.3.
+        fields["Overrides.HLineTransparencyThreshold"] =
+            floating_field(*overrides, "HLineTransparencyThreshold", 0.3);
         out["status"] = "partial";
         out["fields"] = std::move(fields);
         out["packed_flags_at_48"] = word48;
         out["packed_flags_at_50"] = word50;
-        out["unmodeled_steps"] = Json::array({"floating_point_fields", "environment_name_and_usages",
+        out["unmodeled_steps"] = Json::array({"environment_name_and_usages",
                                                "display_handler_registry", "table_selection_and_resource_binding"});
     } catch (const std::exception &e) {
         out["reason"] = e.what();

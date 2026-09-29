@@ -20,7 +20,15 @@ CASES = [None, "", "true", "false", "True", "TRUE", "False", "1", "0", " true",
          "18446744073709551615", "18446744073709551616", "18446744073709551617",
          "-18446744073709551616", "9999999999999999999999999999999999999",
          "1e", "1e+", "0x", "0x1p", "0x1p+", "+", "-", "--1", "1e999", "1e-999",
-         "nan(foo)", "infinity", "infinite", "FALSE", "TrUe", "\ttrue", "true\n"]
+         "nan(foo)", "infinity", "infinite", "FALSE", "TrUe", "\ttrue", "true\n",
+         "-0", "-0.0", ".5", "1.", "0XAp1", "0x1.8", "0x1p-2tail", "0x1e+2",
+         "1.#INF", "-inf", "-nan", "nan(snan)", "-nan(snan)", "nan(ind)", "NAN(IND)",
+         "-nan(ind)", "nan(0x123)", "nan()", "nan(a", "nan(!)", "nan(a b)",
+         "infi", "infix", ".", "0x.p1", "1e-x", "\v\f +1.25tail", "-1e-99999",
+         "2.4703282292062327e-324", "2.4703282292062328e-324", "4.9406564584124654e-324",
+         "2.2250738585072014e-308", "1.7976931348623157e308", "1.7976931348623159e308",
+         "0x1p-1074", "0x1p-1075", "0x1.8p-1075", "0x1p1024", "0e99999",
+         "-0x0p-99999", "0.3", "-18446744073709551615"]
 
 
 def probe(path, dependencies):
@@ -55,10 +63,14 @@ def probe(path, dependencies):
                 for name, getter, ctype in getters:
                     output = ctype(123)
                     status = getter(node, C.byref(output), b"value")
+                    bits = (int.from_bytes(C.string_at(C.byref(output), 8), "little")
+                            if name == "double" else None)
                     result = output.value
                     if isinstance(result, float) and not math.isfinite(result):
                         result = str(result)
                     row[name] = {"status": status, "value": result}
+                    if bits is not None:
+                        row[name]["ieee754_hex"] = f"{bits:016x}"
                 rows.append(row)
             finally:
                 free(node)
