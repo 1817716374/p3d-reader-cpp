@@ -1,4 +1,6 @@
 #include "internal.hpp"
+#include "display_style_xml.hpp"
+#include "display_style_xml_oracle.hpp"
 using namespace p3d;
 namespace {
 Json attr(unsigned key, unsigned index, const Json &decoded) {
@@ -146,5 +148,103 @@ unsigned display_style_sources_tests() {
     out = build_display_style_sources(index, headers, Json::array({common}));
     check(out["tables"][0]["entries"][0]["lite_copy_projection"]["status"] == "unresolved",
           "missing XML sections do not receive fabricated native defaults");
+    Json input = {{"tag", "ShowStyle"}, {"attributes", {{"Name", ""}}},
+                  {"children", Json::array({
+                      {{"tag", "Flags"}, {"attributes", Json::object()}},
+                      {{"tag", "Overrides"}, {"attributes", {{"DisplayMode", "6"}}}}
+                  })}};
+    const auto minimal = input;
+    auto decoded = decode_display_style_xml(input);
+    check(decoded["status"] == "partial" && decoded["runtime_resolution"] == "not_evaluated" &&
+              decoded["packed_flags_at_48"] == 6 && decoded["packed_flags_at_50"] == 0x582,
+          "minimal source style preserves native true defaults without claiming complete import");
+    check(decoded["fields"]["Overrides.HiddenEdgeWeight"]["value"] == 65535 &&
+              decoded["fields"]["Overrides.Material"]["value"] == 0 &&
+              decoded["fields"]["Flags.VisibleEdgeStyle"]["default_applied"] == true,
+          "missing override fields preserve documented constructor and reader defaults");
+    auto status = [](unsigned code) { return code == 0 ? "parsed" : code == 4100 ? "missing" : "invalid"; };
+    for (const auto &sample : style_xml_oracle) {
+        input = minimal;
+        auto &fa = input["children"][0]["attributes"];
+        auto &oa = input["children"][1]["attributes"];
+        if (sample.source) {
+            fa["Material"] = fa["VisibleEdgeStyle"] = sample.source;
+            oa["VisibleEdgeColor"] = oa["Material"] = sample.source;
+            input["attributes"]["ShowGroundFromBelow"] = sample.source;
+        }
+        decoded = decode_display_style_xml(input);
+        const auto &fields = decoded.at("fields");
+        check(fields["Flags.Material"]["value"] == sample.boolean &&
+                  fields["Flags.Material"]["read_status"] == status(sample.bool_status) &&
+                  fields["Flags.Material"]["default_applied"] == (sample.bool_status != 0),
+              "boolean false-default behavior matches the actual official XML DLL");
+        check(fields["Flags.VisibleEdgeStyle"]["value"] == (sample.bool_status ? true : sample.boolean) &&
+                  fields["ShowGroundFromBelow"]["value"] == sample.boolean,
+              "invalid booleans apply per-field defaults, not numeric truthiness");
+        check(fields["Overrides.VisibleEdgeColor"]["value"] == sample.u32 &&
+                  fields["Overrides.VisibleEdgeColor"]["read_status"] == status(sample.u32_status) &&
+                  fields["Overrides.Material"]["value"] == sample.u64 &&
+                  fields["Overrides.Material"]["read_status"] == status(sample.u64_status),
+              "unsigned numeric prefixes, negative values and saturation match the official DLL");
+    }
+    input = minimal;
+    input["children"][1]["attributes"]["DisplayMode"] = "-1";
+    input["children"][1]["attributes"]["HiddenEdgeLineStyle"] = "10suffix";
+    decoded = decode_display_style_xml(input);
+    check(decoded["packed_flags_at_48"] == 0x23f &&
+              decoded["fields"]["Overrides.DisplayMode"]["value"] == 4294967295u &&
+              decoded["fields"]["Overrides.DisplayMode"]["stored_value"] == 63 &&
+              decoded["fields"]["Overrides.HiddenEdgeLineStyle"]["stored_value"] == 2,
+          "bitfield truncation retains both parsed scalar and stored subfield values");
+    // Expected masks come from the DLL read/write instructions, independently
+    // exercising each switch to catch accidental shifts and word crossover.
+    const std::pair<const char *, unsigned> first_word[] = {
+        {"DisplayVisibleEdges", 0x40}, {"DisplayHiddenEdges", 0x80}, {"DisplayShadows", 0x800},
+        {"LegacyDrawOrder", 0x1000}, {"BackgroundColor", 0x2000}, {"ApplyEdgeStyleToLines", 0x4000},
+        {"IgnoreGeometryMaps", 0x8000}, {"IgnoreImageMaps", 0x10000}, {"HideInPickers", 0x20000},
+        {"InvisibleToCamera", 0x40000}, {"DisplayGroundPlane", 0x80000}};
+    for (const auto &[name, mask] : first_word) {
+        input = minimal;
+        input["children"][0]["attributes"][name] = "TrUe";
+        decoded = decode_display_style_xml(input);
+        check(decoded["packed_flags_at_48"] == (6 | mask) && decoded["packed_flags_at_50"] == 0x582,
+              "main style switch changes exactly the confirmed bit");
+    }
+    const char *second_word[] = {"VisibleEdgeColor", "VisibleEdgeWeight", "Transparency", "FillColor",
+        "LineStyle", "LineWeight", "Material", "VisibleEdgeStyle", "HiddenEdgeLineStyle", "HiddenEdgeWeight",
+        "HLineTransparency", "HLineMaterialColors", "SmoothIgnoreLights", "UseDisplayHandler"};
+    for (unsigned bit = 0; bit < 14; ++bit) {
+        input = minimal;
+        for (const auto *name : second_word) input["children"][0]["attributes"][name] = "false";
+        input["children"][0]["attributes"][second_word[bit]] = "true";
+        decoded = decode_display_style_xml(input);
+        check(decoded["packed_flags_at_48"] == 6 && decoded["packed_flags_at_50"] == (1u << bit),
+              "override switch changes exactly the confirmed bit, including true-default switches");
+    }
+    for (const auto *bad_mode : {"", "true", "+", "--1"}) {
+        input = minimal;
+        input["children"][1]["attributes"]["DisplayMode"] = bad_mode;
+        decoded = decode_display_style_xml(input);
+        check(decoded["status"] == "rejected" && !decoded.contains("fields"),
+              "required display mode must parse before publishing an imported state");
+    }
+    input = minimal;
+    input["children"][1]["attributes"].erase("DisplayMode");
+    check(decode_display_style_xml(input)["status"] == "rejected", "missing required mode rejects import");
+    input = minimal;
+    input["attributes"].erase("Name");
+    check(decode_display_style_xml(input)["status"] == "rejected", "missing Name differs from present empty Name");
+    input = minimal;
+    input["children"].erase(0);
+    check(decode_display_style_xml(input)["status"] == "rejected", "absent Flags is not an empty Flags node");
+    input = minimal;
+    input["children"].push_back(input["children"][0]);
+    check(decode_display_style_xml(input)["status"] == "unresolved", "ambiguous XML layout remains unresolved");
+    tree = minimal;
+    const auto before_import = common;
+    out = build_display_style_sources(index, headers, Json::array({common}));
+    check(out["tables"][0]["entries"][0]["native_xml_import"]["packed_flags_at_50"] == 0x582 &&
+              common == before_import && out["tables"][0]["entries"][0]["xml_tree"] == minimal,
+          "source catalog exposes typed import evidence while preserving the original XML");
     return checks;
 }

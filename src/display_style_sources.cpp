@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "display_style_xml.hpp"
 
 namespace p3d {
 namespace {
@@ -124,6 +125,7 @@ Json build_display_style_sources(const Json &index, const Json &native, const Js
                                         ? "source_xml" : "unrecognized_xml_root";
                     if (tree.contains("attributes") && tree["attributes"].contains("Name"))
                         row["name"] = tree["attributes"]["Name"];
+                    row["native_xml_import"] = decode_display_style_xml(tree);
                     if (registration == 0x006f0000u)
                         row["lite_copy_projection"] = lite_copy_projection(tree);
                 }
