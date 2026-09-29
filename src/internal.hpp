@@ -216,6 +216,7 @@ Json project_file_view_table_selection(const Json &list, const Json &records,
                                        const Json &ids, const Json &collection,
                                        const Json &file_header = Json::object());
 Json project_file_view_table_fallback(const Json &records, const Json &collection, const Json &header);
+Json project_file_view_model_query(const Json &tables, const Json &selection);
 Json initial_native_display_style_tables(const Json &list, const Json &records,
                                         const Json &ids, const Json &input,
                                         DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost);

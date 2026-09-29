@@ -256,3 +256,6 @@
 
 !/tests/view_model.cpp
 !/tests/view_model_oracle.hpp
+
+!/tests/view_model_query.cpp
+!/tests/view_model_query_oracle.hpp

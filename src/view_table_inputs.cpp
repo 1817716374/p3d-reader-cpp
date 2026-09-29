@@ -139,6 +139,7 @@ Json initial_native_view_table_inputs(const Json &list, const Json &records, con
             if (table.at("status") == "unresolved") out["status"] = "partial";
         out["collection_projection"] = project_view_table_collection(out.at("tables"));
         out["file_table_selection"] = project_file_view_table_selection(list, records, ids, out.at("collection_projection"), file_header);
+        out["file_model_query"] = project_file_view_model_query(out.at("tables"), out.at("file_table_selection"));
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }
