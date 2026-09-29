@@ -28,12 +28,13 @@ def cases():
                                      extended_flags=flags,spatial=spatial))
     return rows
 
-def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False):
+def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False, dependency_retry=False):
     if os.name!='nt' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('Requires Windows x64')
     for name,h in HASHES.items():
         if hashlib.sha256((root/name).read_bytes()).hexdigest()!=h:raise ValueError(name)
     dirs=[os.add_dll_directory(str(root/d)) for d in ['ROOT','SHARE','SHARE/vcredist/X64','PLATFORM']]
     try:
+        assert not dependency_retry or dependencies
         dll=C.WinDLL(str(root/'ROOT/P3DKJ.dll'));base=dll._handle
         if dependencies:
             assert file_entry
@@ -163,7 +164,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                     if parent>=0:C.c_void_p.from_address(nodes[i]+0x10).value=nodes[parent]
             roots=[i for i,parent in enumerate(case['parents']) if parent<0]
             calls=[]
-            with input_context(base) if file_entry else nullcontext() as snapshot:
+            with input_context(base,dependency_retry) if file_entry else nullcontext() as snapshot:
                 for index in roots:
                     if file_entry:
                         result=load(model,nodes[index],listing,0.,False)
@@ -187,6 +188,18 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                         calls.append(dict(root=index,register_return=result,update_return=update(model,entity,False)))
                         if prepare_ids:
                             calls[-1].update(prepared_ids=prepared_ids,prepared_counter=prepared_counter)
+                if dependency_retry:
+                    pointers=[C.c_void_p.from_address(n+0x28).value for n in nodes]
+                    for i,flags in case.get('pre_retry_flags',{}).items():
+                        C.c_uint32.from_address(pointers[int(i)]+0x10).value=flags
+                    assert all(not(C.c_uint32.from_address(p+0x10).value&0x100000) for p in pointers)
+                    notice=buf(0x18)
+                    C.c_uint8.from_buffer(notice,0x14).value=case['notice_list_flag']
+                    ptr(model,0x138,C.addressof(notice))
+                    C.c_uint8.from_buffer(model,0x154).value=case['notice_model_flag']
+                    before_retry=dict(context=snapshot(pointers),dependents=dependent_indices(pointers))
+                    snapshot.retry(model)
+                    after_retry=dict(context=snapshot(pointers),dependents=dependent_indices(pointers))
             entities=[C.c_void_p.from_address(n+0x28).value for n in nodes];observed=[]
             observed_dependencies=dependent_indices(entities) if dependencies else None
             for i,entity in enumerate(entities):
@@ -211,10 +224,12 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
             output=(C.c_double*6)(11,22,33,44,55,66);code=getbounds(model,output)
             rows.append(dict(case,calls=calls,source_ranges=source_ranges,entities=observed,root_indices=actual_roots,
                              bounds_result=code,bounds=list(output),counter=C.c_uint64.from_buffer(file,0x190).value))
+            if dependency_retry:rows[-1].update(before_retry=before_retry,after_retry=after_retry)
         scope=('R1.18_file_service_id_preparation_and_registration_without_file_callbacks' if prepare_ids
                else 'R1.18_prepared_tree_registration_and_cache_update_without_file_callbacks')
         if file_entry:scope='R1.18_file_entry_header_preparation_registration_and_original_callbacks_bounded_context'
         if dependencies:scope='R1.18_file_entry_direct_ID_dependencies_in_bounded_single_model_context'
+        if dependency_retry:scope='R1.18_direct_ID_pending_retry_core_after_model_notice_not_full_service_flush'
         return dict(scope=scope,dll_sha256=HASHES,cases=rows)
     finally:
         for d in dirs:d.close()

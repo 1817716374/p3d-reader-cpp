@@ -51,4 +51,40 @@ struct NativeDependencyLoadResult {
 // typed-handler work queues or geometry regeneration. Failure publishes no
 // partial graph. A resolved result may still contain pending entities.
 NativeDependencyLoadResult project_native_dependency_load(const NativeDependencyLoadInput &input);
+
+struct NativeDependencyRetryInput {
+    std::vector<NativeDependencyLoadEntity> entities;
+    // Complete existing reverse lists, in native head-to-tail order.
+    std::vector<std::vector<std::size_t>> dependents;
+    // Complete pending set, in the order used by this retry. Native uses entity
+    // pointer order, which cannot be inferred from persisted IDs or indices.
+    std::vector<std::size_t> pending_iteration_order;
+    // Whether this model enters the notification set (model138->byte14 != 0
+    // or model byte154 != 0). Unknown must not be treated as false.
+    std::optional<bool> model_notified;
+    bool input_complete = false;
+    bool system_registry_known_empty = false;
+    bool file_fallback_disabled = false;
+    bool monitored_entity_set_known_empty = false;
+    std::size_t max_work_items = 1000000;
+};
+struct NativeDependencyRetryResult {
+    bool resolved = false;
+    std::string reason;
+    std::optional<std::size_t> failed_entity;
+    std::vector<std::vector<std::size_t>> dependents;
+    std::vector<std::size_t> pending_entities;
+    std::vector<std::size_t> monitored_entities;
+    std::vector<NativeDependencyEdge> added_edges;
+    // Distinct target/dependent pairs queued for subsequent processing, sorted
+    // by indices; added_edges retains every insertion including duplicates.
+    std::vector<NativeDependencyEdge> scheduled_pairs;
+};
+// R1.18 complete 1e9640 pending retry core after model notification, mode 2,
+// fresh auxiliary queues, registry byte c = 0, single model. This does not run
+// the enclosing 1eb240/1f1a90 service flush or geometry updates. Deleted pending
+// entities are discarded; excluded targets now requeue the dependent. Missing
+// IDs remain pending and become monitored. Hits only register when notified.
+// Active pending entities with attribute-provider flag 0x100000 are unsupported.
+NativeDependencyRetryResult project_native_dependency_retry(const NativeDependencyRetryInput &input);
 } // namespace p3d

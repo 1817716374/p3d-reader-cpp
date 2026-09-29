@@ -10,9 +10,9 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def input_context(base):
+def input_context(base, dependency_retry=False):
     host=C.create_string_buffer(0x110)
-    config=C.create_string_buffer(0x150)
+    config=C.create_string_buffer(0x2a0 if dependency_retry else 0x150)
     service=C.create_string_buffer(0x68)
     get=C.CFUNCTYPE(C.c_void_p,C.c_void_p)(C.c_void_p.from_address(base+0x51e788).value)
     set_=C.CFUNCTYPE(None,C.c_void_p,C.c_void_p)(C.c_void_p.from_address(base+0x51e5b0).value)
@@ -20,7 +20,11 @@ def input_context(base):
     malloc=C.CFUNCTYPE(C.c_void_p,C.c_size_t)(C.c_void_p.from_address(base+0x51eb80).value)
     key=base+0x643db8
     previous=get(key)
+    lock=None
     try:
+        if dependency_retry:
+            lock=C.addressof(config)+0x278
+            C.CFUNCTYPE(None,C.c_void_p)(C.c_void_p.from_address(base+0x51e170).value)(lock)
         C.c_void_p.from_buffer(host,0xc8).value=C.addressof(config)
         C.c_uint32.from_buffer(config,0x148).value=1000
         set_(key,C.addressof(host))
@@ -41,6 +45,16 @@ def input_context(base):
         registry=C.c_void_p.from_buffer(service,0x10).value
         assert registry and C.c_uint32.from_address(registry+0x150).value==25
         assert all(C.c_void_p.from_buffer(service,o).value for o in (0x18,0x38))
+        def members(address):
+            sentinel=C.c_void_p.from_address(address).value
+            values=[]
+            def visit(node):
+                if node==sentinel:return
+                visit(C.c_void_p.from_address(node).value)
+                values.append(node)
+                visit(C.c_void_p.from_address(node+0x10).value)
+            visit(C.c_void_p.from_address(sentinel+8).value)
+            return values
         def snapshot(entities=None):
             transaction=C.CFUNCTYPE(C.c_void_p)(base+0x199d90)()
             result=dict(callback_depth=C.c_uint32.from_buffer(service,0x24).value,
@@ -49,17 +63,32 @@ def input_context(base):
                         registry_set_counts=[C.c_uint64.from_address(registry+o+8).value
                                              for o in range(0x10,0x130,0x10)])
             if entities is not None:
-                sentinel=C.c_void_p.from_address(registry+0x30).value
-                pending=[]
-                def visit(node):
-                    if node==sentinel:return
-                    visit(C.c_void_p.from_address(node).value)
-                    pending.append(entities.index(C.c_void_p.from_address(node+0x20).value))
-                    visit(C.c_void_p.from_address(node+0x10).value)
-                visit(C.c_void_p.from_address(sentinel+8).value)
+                pending=[entities.index(C.c_void_p.from_address(node+0x20).value)
+                         for node in members(registry+0x30)]
                 result['pending_entities']=sorted(pending)
+                if dependency_retry:
+                    result['pending_iteration_order']=pending
+                    result['monitored_entities']=sorted(entities.index(C.c_void_p.from_address(n+0x20).value)
+                                                         for n in members(C.addressof(service)+0x40))
+                    pairs=[]
+                    for n in members(registry+0x90):
+                        target=entities.index(C.c_void_p.from_address(n+0x20).value)
+                        pairs.extend([target,entities.index(C.c_void_p.from_address(x+0x20).value)]
+                                     for x in members(n+0x28))
+                    result['scheduled_pairs']=sorted(pairs)
+                    result['registry_work_count']=C.c_uint32.from_address(registry).value
             return result
+        if dependency_retry:
+            def retry(model):
+                assert C.c_uint64.from_buffer(service,0x48).value==0
+                assert C.c_void_p.from_buffer(config,0x250).value is None
+                C.CFUNCTYPE(None,C.c_void_p)(base+0x1efe40)(model)
+                C.CFUNCTYPE(None,C.c_void_p)(base+0x1e9640)(registry)
+                assert C.c_void_p.from_buffer(config,0x250).value is None
+            snapshot.retry=retry
         yield snapshot
     finally:
         set_(key,previous)
         assert get(key)==previous
+        if lock:
+            C.CFUNCTYPE(None,C.c_void_p)(C.c_void_p.from_address(base+0x51e1d0).value)(lock)
