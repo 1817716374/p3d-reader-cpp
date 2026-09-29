@@ -59,7 +59,7 @@ static unsigned minimum_list_base_bytes(unsigned type, std::uint32_t subtype, bo
     case 55:
         return 0x28;
     case 49: {
-        static constexpr unsigned sizes[] = {0,     0x2e, 0xea, 0,    0x310,
+        static constexpr unsigned sizes[] = {0,     0x2e, 0xea, 0,    0x2f8,
                                              0x140, 0x60, 0xcc, 0x28, 0x68};
         return subtype >= 1 && subtype <= 10 ? sizes[subtype - 1] : 0x10;
     }
@@ -120,7 +120,7 @@ Json native_list_record_header(const Json &record, const Json &conversion, bool 
                 validation["return_code"] = 0x11016;
             else if (words < base_words)
                 validation["return_code"] = 0x11017;
-            else if (extended && !system && type != 54) {
+            else if (extended && !system) {
                 validation["return_code"] = nullptr;
                 validation["dimension_match"] = "requires_model_context";
             }

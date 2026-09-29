@@ -23,7 +23,7 @@ def cases():
                                      extended_flags=flags,spatial=spatial))
     return rows
 
-def probe(root):
+def probe(root, input_cases=None, prepare_ids=False):
     if os.name!='nt' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('Requires Windows x64')
     for name,h in HASHES.items():
         if hashlib.sha256((root/name).read_bytes()).hexdigest()!=h:raise ValueError(name)
@@ -31,10 +31,11 @@ def probe(root):
     try:
         dll=C.WinDLL(str(root/'ROOT/P3DKJ.dll'));base=dll._handle
         register=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p,C.c_void_p,C.c_bool,C.c_bool,C.c_bool,C.c_double,C.c_bool)(base+0x1a5da0)
+        prepare=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p,C.c_bool,C.c_bool,C.c_bool)(base+0x1a5cc0)
         update=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p,C.c_bool)(base+0x199fa0)
         getbounds=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p)(base+0x19c6a0)
         rows=[]
-        for case in cases():
+        for case in cases() if input_cases is None else input_cases:
             keep=[]
             def buf(n):
                 v=C.create_string_buffer(n);keep.append(v);return v
@@ -46,6 +47,11 @@ def probe(root):
             ptr(vt,0x68,base+(0x6570 if case['spatial'] else 0x8a80))
             ptr(model,0xa0,C.addressof(file));C.c_uint8.from_buffer(model,0x78).value=case['spatial']
             q(file,0x190,case['initial_counter'])
+            if prepare_ids:
+                # File-input service: original vtable +50 -> 192210, whose
+                # constructor stores its file at +30. No host callback stub.
+                service=buf(0xa0);ptr(service,0,base+0x534708)
+                ptr(service,0x30,C.addressof(file));ptr(file,0xee0,C.addressof(service))
             # Exact pool configuration from 198300; allocation code is original.
             q(model,0xc8,0x60);q(model,0xd0,32);q(model,0xd8,32)
             ptr(model,0x610,base+0x533798)
@@ -81,10 +87,16 @@ def probe(root):
             roots=[i for i,parent in enumerate(case['parents']) if parent<0]
             calls=[]
             for index in roots:
+                if prepare_ids:
+                    assert prepare(listing,nodes[index],True,False,False)==0
+                    prepared_ids=[C.c_uint64.from_address(n+0x58).value for n in nodes]
+                    prepared_counter=C.c_uint64.from_buffer(file,0x190).value
                 result=register(listing,nodes[index],None,False,True,False,0.,False)
                 assert result==0
                 entity=C.c_void_p.from_address(nodes[index]+0x28).value;assert entity
                 calls.append(dict(root=index,register_return=result,update_return=update(model,entity,False)))
+                if prepare_ids:
+                    calls[-1].update(prepared_ids=prepared_ids,prepared_counter=prepared_counter)
             entities=[C.c_void_p.from_address(n+0x28).value for n in nodes];observed=[]
             for i,entity in enumerate(entities):
                 header=C.c_void_p.from_address(entity+0x40).value
@@ -105,7 +117,9 @@ def probe(root):
             output=(C.c_double*6)(11,22,33,44,55,66);code=getbounds(model,output)
             rows.append(dict(case,calls=calls,source_ranges=source_ranges,entities=observed,root_indices=actual_roots,
                              bounds_result=code,bounds=list(output),counter=C.c_uint64.from_buffer(file,0x190).value))
-        return dict(scope='R1.18_prepared_tree_registration_and_cache_update_without_file_callbacks',dll_sha256=HASHES,cases=rows)
+        scope=('R1.18_file_service_id_preparation_and_registration_without_file_callbacks' if prepare_ids
+               else 'R1.18_prepared_tree_registration_and_cache_update_without_file_callbacks')
+        return dict(scope=scope,dll_sha256=HASHES,cases=rows)
     finally:
         for d in dirs:d.close()
 

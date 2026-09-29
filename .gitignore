@@ -276,3 +276,5 @@
 !/tests/model_bounds_provider_oracle.hpp
 !/tests/entity_registration.cpp
 !/tests/entity_registration_oracle.hpp
+!/tests/entity_input_ids_oracle.hpp
+!/tests/list_header_oracle.hpp

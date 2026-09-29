@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "list_header_oracle.hpp"
 
 unsigned native_list_input_tests() {
     using namespace p3d;
@@ -44,7 +45,7 @@ unsigned native_list_input_tests() {
               "extended dimensional and default branches use the native minima");
     }
     const unsigned table_minima[] = {64, 40, 40, 40, 64, 48, 40, 40, 48, 40};
-    const unsigned entry_minima[] = {0, 46, 234, 0, 784, 320, 96, 204, 40, 104};
+    const unsigned entry_minima[] = {0, 46, 234, 0, 760, 320, 96, 204, 40, 104};
     for (unsigned subtype = 1; subtype <= 10; ++subtype) {
         check(native_list_record_header(make(10, 0, 1000, 16, subtype), Json(), false, true, 0,
                                         true)["validation"]["minimum_base_bytes"] ==
@@ -93,7 +94,27 @@ unsigned native_list_input_tests() {
               h["validation"]["dimension_match"] == "requires_model_context",
           "model dimensional validation is not guessed without its model state");
     h = native_list_record_header(make(54, 0x20, 1000, 100), Json(), false, false, 0, false);
-    check(h["validation"]["return_code"] == 0,
-          "type-54 dimensional exemption applies outside system containers too");
+    check(h["validation"]["return_code"].is_null() &&
+              h["validation"]["dimension_match"]=="requires_model_context",
+          "type 54 also requires the model dimension in the original list validator");
+    const auto oracle=Json::parse(list_header_oracle);
+    check(oracle.at("cases").size()==738,"all original header validator observations are tested");
+    for (const auto &row:oracle.at("cases")) {
+        const unsigned type=row.at("type"),subtype=row.at("subtype");
+        const bool extended=row.at("extended"),dimension=row.at("dimension");
+        const auto actual=native_list_record_header(make(type,extended?0x20:0,2048,0,subtype,dimension),
+                                                    Json(),false,false,0,false);
+        check(actual.at("output_base_word_count")==row.at("base_word_count"),
+              "original validator sets the same base word count for every type and subtype branch");
+        const auto &code=actual.at("validation").at("return_code");
+        if (!code.is_null())
+            check(code==row.at("return_code"),"known original validator return codes agree");
+        else
+            check(row.at("return_code")==((dimension==row.at("model_dimension").get<bool>())?0:0x11013),
+                  "unavailable model state remains explicit while the native dimension guard is verified");
+    }
+    h=native_list_record_header(make(49,0,380,0,5),Json(),false,false,0,false);
+    check(h.at("output_base_word_count")==380 && h.at("validation").at("return_code")==0,
+          "type 49 subtype 5 accepts the exact 760-byte base without consuming another 24 bytes");
     return checks;
 }
