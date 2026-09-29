@@ -29,6 +29,103 @@ Point3 transform(const Matrix4 &matrix,const Point3 &point) {
     return out;
 }
 bool finite(const Point3 &point) { return std::all_of(point.begin(),point.end(),[](double v){return std::isfinite(v);}); }
+void intersect(Range &range,const Range &clip) {
+    for (unsigned i=0;i<3;++i) {
+        range[i]=std::max(range[i],clip[i]);range[i+3]=std::min(range[i+3],clip[i+3]);
+    }
+    for (unsigned i=0;i<3;++i) if (range[i]>=range[i+3]) {range=empty_range();return;}
+}
+// Returns no clip range when no non-inverted polygon supplies a range.
+std::string inline_clip_range(const NativeReferenceBoundsNode &node,const Json &affine,std::optional<Range> &out) {
+    const auto &clip=*node.inline_clip;
+    if (clip.points.size()!=*node.clip_count_2d8) return "reference_clip_point_count_mismatch";
+    if (clip.points.size()>2500) return "reference_clip_point_limit";
+    if (!clip.selected_matrix) return "reference_clip_matrix_unknown";
+    if (!clip.depths_allowed) return "reference_clip_depth_gate_unknown";
+    Matrix4 matrix{};matrix[3][3]=1;
+    const auto translation=node.reference_input.at("affine_inputs").at("translation_point").at("value").get<Point3>();
+    Point3 correction{};
+    if (affine.at("origin_correction").at("native_return_code")==0)
+        correction=affine.at("origin_correction").at("offset").get<Point3>();
+    for (unsigned i=0;i<3;++i) {
+        for (unsigned j=0;j<3;++j) {
+            matrix[i][j]=(*clip.selected_matrix)[i][j];
+            if (!std::isfinite(matrix[i][j])) return "nonfinite_reference_clip_matrix";
+        }
+        matrix[i][3]=translation[i]-correction[i];
+        if (!std::isfinite(matrix[i][3])) return "nonfinite_reference_clip_translation";
+    }
+    const bool lower_enabled=*clip.depths_allowed && (*node.runtime_flags_9c&0x400u);
+    const bool upper_enabled=*clip.depths_allowed && (*node.runtime_flags_9c&0x800u);
+    if ((lower_enabled&&!clip.lower_288)||(upper_enabled&&!clip.upper_280)) return "reference_clip_depth_unknown";
+    double lower=lower_enabled?*clip.lower_288:-4503599627370496.;
+    double upper=upper_enabled?*clip.upper_280:4503599627370495.;
+    if (!std::isfinite(lower)||!std::isfinite(upper)) return "nonfinite_reference_clip_depth";
+    if (lower==upper) {lower-=1e-6;upper+=1e-6;}
+    std::vector<std::vector<std::array<double,2>>> loops(1);
+    const auto marker=std::numeric_limits<double>::max();
+    for (std::size_t i=0;i<clip.points.size();++i) {
+        const auto &p=clip.points[i];
+        if (p[0]==marker&&p[1]==marker) {
+            if (loops.back().size()>=3 || i==0) loops.emplace_back();
+            else loops.back().clear();
+        } else {
+            if (!std::isfinite(p[0])||!std::isfinite(p[1])||p[0]==marker||p[1]==marker)
+                return "reference_clip_invalid_point";
+            loops.back().push_back(p);
+        }
+    }
+    if (loops.back().size()<3) loops.pop_back();
+    if (!loops.empty()&&loops.front().empty()&&(lower_enabled||upper_enabled)) {
+        // Native plane transformation solves M^T*n=eZ, normalizes, and
+        // computes distance at the transformed point. Singular M leaves eZ.
+        const auto &m=*clip.selected_matrix;
+        const auto determinant=(m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])+
+                                m[0][1]*(m[1][2]*m[2][0]-m[1][0]*m[2][2]))+
+                                m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+        if (!std::isfinite(determinant)) return "nonfinite_reference_clip_plane_transform";
+        Point3 normal{0,0,1};
+        if (determinant!=0) {
+            normal={(m[1][0]*m[2][1]-m[1][1]*m[2][0])/determinant,
+                    (m[0][1]*m[2][0]-m[0][0]*m[2][1])/determinant,
+                    (m[0][0]*m[1][1]-m[0][1]*m[1][0])/determinant};
+            const auto length=std::sqrt((normal[0]*normal[0]+normal[1]*normal[1])+normal[2]*normal[2]);
+            if (!(length>0)||!std::isfinite(length)) return "nonfinite_reference_clip_plane_normal";
+            for (auto &v:normal) v/=length;
+        }
+        Range range{-1e20,-1e20,-1e20,1e20,1e20,1e20};const auto initial=range;
+        for (unsigned end=0;end<2;++end) {
+            if (!(end?upper_enabled:lower_enabled)) continue;
+            auto n=normal; if (end) for (auto &v:n) v=-v;
+            const auto point=transform(matrix,{0,0,end?upper:lower});
+            const auto distance=(point[1]*n[1]+point[0]*n[0])+point[2]*n[2];
+            if (!finite(point)||!std::isfinite(distance)) return "nonfinite_reference_clip_plane_distance";
+            const auto squared=(n[1]*n[1]+n[0]*n[0])+n[2]*n[2];
+            for (unsigned axis=0;axis<3;++axis) {
+                double cross_squared=0;
+                for (unsigned k=0;k<3;++k) if (k!=axis) cross_squared+=n[k]*n[k];
+                if (cross_squared<=squared*1e-24) {
+                    if (n[axis]>0) range[axis]=std::max(range[axis],distance);
+                    else range[axis+3]=std::min(range[axis+3],-distance);
+                }
+            }
+        }
+        if (range==initial) return {}; // Plane range helper reports no bounded axis.
+        if (invalid(range)) return {}; // 3530 rejects out-of-range plane bounds.
+        // 3530 extends both endpoints into an empty range, normalizing even
+        // reversed depth planes before the collection tests range ordering.
+        for (unsigned i=0;i<3;++i) if (range[i]>range[i+3]) std::swap(range[i],range[i+3]);
+        out=range;return {};
+    }
+    if (loops.empty()||loops.front().empty()) return {};
+    Range range=empty_range();
+    for (const auto &p:loops.front()) for (double z:{lower,upper}) {
+        const auto q=transform(matrix,{p[0],p[1],z});
+        if (!finite(q)) return "nonfinite_reference_clip_bounds";
+        extend(range,q);
+    }
+    out=range;return {};
+}
 }
 NativeModelReferenceBoundsResult project_native_model_reference_bounds(const NativeModelReferenceBoundsInput &in) {
     NativeModelReferenceBoundsResult out;
@@ -99,9 +196,15 @@ NativeModelReferenceBoundsResult project_native_model_reference_bounds(const Nat
         }
         // Default-view traversal has no filter, so 1dc570 returns code 1.
         if (!node.clip_count_2d8) return fail("reference_bounds_clip_count_unknown",index);
-        if (*node.clip_count_2d8) return fail("reference_bounds_active_clip_required",index);
         if (!node.clip_pointer_278_present) return fail("reference_bounds_clip_pointer_unknown",index);
         if (*node.clip_pointer_278_present) return fail("reference_bounds_active_clip_required",index);
+        if (*node.clip_count_2d8) {
+            if (!node.inline_clip) return fail("reference_bounds_active_clip_required",index);
+            std::optional<Range> clip;
+            const auto reason=inline_clip_range(node,affine,clip);
+            if (!reason.empty()) return fail(reason,index);
+            if (clip) intersect(range,*clip);
+        }
         unite(parent,range);return true;
     };
     for (auto index:in.root_references) if (!visit(index,1,combined)) return out;

@@ -271,3 +271,4 @@
 !/tests/default_view_table_oracle.hpp
 !/tests/reference_bounds.cpp
 !/tests/reference_bounds_oracle.hpp
+!/tests/reference_clipping_oracle.hpp

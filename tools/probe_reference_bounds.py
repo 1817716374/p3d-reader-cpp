@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Original R1.18 cached model bounds + full recursive 1dd110/1dc9f0 +
-default table fill. Explicit reference graphs have no filter, active clip,
-scale service or provider callbacks. Only original leaf getters are used.
+default table fill. Default graphs have no filter, active clip, scale service
+or provider callbacks. Optional graphs exercise reviewed inline clipping.
+Only original leaf getters are used for synthetic reference/model contexts.
 Native allocations remain until exit; no patched code or Python callbacks.
 """
 import argparse,copy,ctypes as C,hashlib,json,os,struct,sys
@@ -9,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from probe_view_frame import HASHES
 
-def probe(root):
+def probe(root,graphs=None):
     if os.name!='nt' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('Requires Windows x64')
     for name,h in HASHES.items():
         if hashlib.sha256((root/name).read_bytes()).hexdigest()!=h:raise ValueError(name)
@@ -39,8 +40,9 @@ def probe(root):
                 return m
             root_model=model(root_bounds);refs=[buf(0x500) for _ in nodes]
             for index,node in enumerate(nodes):
-                ref=refs[index];vt=buf(0x30);ptr(ref,0,C.addressof(vt))
+                ref=refs[index];vt=buf(0x70);ptr(ref,0,C.addressof(vt))
                 ptr(vt,0x28,base+0x8560);ptr(vt,0x18,base+0x4d850)
+                ptr(vt,0x68,base+0x6570)
                 target=model(node['bounds'],node['spatial']) if node['target_present'] else None
                 ptr(ref,0x18,C.addressof(target) if target else 0)
                 if target is None:
@@ -56,6 +58,21 @@ def probe(root):
                 C.c_uint32.from_buffer(ref,0x9c).value=0x1000 if node['perspective'] else 0
                 struct.pack_into('<3d',ref,0x1b0,*node['eye'])
                 C.c_double.from_buffer(ref,0x1c8).value=node['distance']
+                if 'clip' in node:
+                    clip=node['clip'];points=clip['points']
+                    assert len(points)<=2500 and target is not None
+                    # Force the reviewed direct-matrix path; dimensional gate
+                    # false uses a separate owner with an original false getter.
+                    owner=buf(0x98);ovt=buf(0x70);ptr(owner,0,C.addressof(ovt))
+                    ptr(ovt,0x68,base+0x8a80);ptr(ref,0x90,C.addressof(owner))
+                    C.c_int32.from_buffer(target,0xcc).value=2 if clip['depths_allowed'] else 1
+                    C.c_uint32.from_buffer(ref,0x9c).value|=0x80|clip['depth_flags']
+                    struct.pack_into('<9d',ref,0x290,*clip['matrix'])
+                    struct.pack_into('<2d',ref,0x280,clip['upper'],clip['lower'])
+                    C.c_uint32.from_buffer(ref,0x2d8).value=len(points)
+                    if points:
+                        pp=buf(16*len(points));struct.pack_into('<'+'d'*(2*len(points)),pp,0,*[v for p in points for v in p])
+                        ptr(ref,0x2e0,C.addressof(pp))
             def children(owner,indices):
                 if not indices:return
                 listing=buf(0x18);values=buf(8*len(indices))
@@ -78,6 +95,10 @@ def probe(root):
                              'origin':list(struct.unpack_from('<3d',v,0x20)),
                              'delta':list(struct.unpack_from('<3d',v,0x38)),
                              'flags':list(struct.unpack_from('<3I',v,0x10))}})
+        if graphs is not None:
+            for graph in graphs:run(graph['nodes'],graph['roots'],graph['root_bounds'])
+            return {'scope':'R1.18_default_filter_null_recursive_reference_bounds_inline_clipping',
+                    'dll_sha256':HASHES,'native_allocations':'retained_until_process_exit','cases':rows}
         identity=[1,0,0,0,1,0,0,0,1]
         def node(**changes):
             n={'bounds':[-10,-20,-30,10,20,30],'spatial':True,'target_present':True,
