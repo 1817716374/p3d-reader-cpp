@@ -84,6 +84,7 @@ int main(int argc, char **argv) {
                          {"display_style_sources", d.display_style_sources()},
                          {"initial_extended_color_tables", d.initial_extended_color_tables()},
                          {"initial_color_palette", d.initial_color_palette(palette_profile)},
+                         {"initial_view_table_inputs", d.initial_view_table_inputs()},
                          {"initial_display_style_tables", d.initial_display_style_tables(style_profile)}});
         if (!graph.empty())
             write(graph, d.object_graph());

@@ -243,3 +243,5 @@
 !/tests/color_remap.cpp
 !/tests/color_remap_oracle.hpp
 !/tests/view_constructor_oracle.hpp
+!/tests/view_table_inputs.cpp
+!/tests/view_tables_oracle.hpp

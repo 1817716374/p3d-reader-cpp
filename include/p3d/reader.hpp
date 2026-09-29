@@ -822,6 +822,9 @@ class Document {
     // attributes and assigned IDs. Built-in handlers only; no host callbacks.
     Json initial_display_style_tables(
         DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost) const;
+    // Fresh SSYS type14 inputs and conditional eight-slot construction.
+    // Preserves source/copy identity; does not choose the active view table.
+    Json initial_view_table_inputs() const;
     Json binary_fields() const;
     Json inline_materials() const;
     // Embedded files with source attribute identity; does not read or write external files.
