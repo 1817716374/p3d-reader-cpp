@@ -1,7 +1,7 @@
 #include "display_style_xml.hpp"
 
 namespace p3d {
-Json initial_native_view_table_inputs(const Json &list, const Json &records, const Json &ids) {
+Json initial_native_view_table_inputs(const Json &list, const Json &records, const Json &ids, const Json &file_header) {
     Json out = {{"scope", "fresh_system_view_table_inputs"}, {"status", "unresolved"},
                 {"collection_selection", "not_evaluated"}, {"runtime_application", "not_evaluated"},
                 {"tables", Json::array()}};
@@ -127,7 +127,7 @@ Json initial_native_view_table_inputs(const Json &list, const Json &records, con
         for (const auto &table : out.at("tables"))
             if (table.at("status") == "unresolved") out["status"] = "partial";
         out["collection_projection"] = project_view_table_collection(out.at("tables"));
-        out["file_table_selection"] = project_file_view_table_selection(list, records, ids, out.at("collection_projection"));
+        out["file_table_selection"] = project_file_view_table_selection(list, records, ids, out.at("collection_projection"), file_header);
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }
@@ -139,7 +139,7 @@ Json Document::initial_view_table_inputs() const {
     for (const auto &container : native_input_containers()) {
         if (container.at("kind") != "P3D-SSYS" || container.at("container").size() != 2) continue;
         auto tables = initial_native_view_table_inputs(container.at("list_preparation"), native_records(),
-                                                       container.at("system_id_assignments"));
+                                                       container.at("system_id_assignments"), file_header());
         tables["system_container"] = container.at("container");
         out.push_back(std::move(tables));
     }

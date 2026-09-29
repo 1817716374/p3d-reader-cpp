@@ -207,12 +207,15 @@ Json decode_native_layer(const Bytes &, const Json &);
 Json decode_native_layer_table(const Bytes &, const Json &);
 Json build_layer_tables(const Json &, const Json &, const Json &, const Json & = Json::object());
 Json build_display_style_sources(const Json &index, const Json &native, const Json &graphics);
-Json initial_native_view_table_inputs(const Json &list, const Json &records, const Json &ids);
+Json initial_native_view_table_inputs(const Json &list, const Json &records, const Json &ids,
+                                     const Json &file_header = Json::object());
 Json native_512_string_reader(const Json &field, const Json &strings, const char *profile);
 Json project_view_table_text_fields(const Json &record);
 Json project_view_table_collection(const Json &tables);
 Json project_file_view_table_selection(const Json &list, const Json &records,
-                                       const Json &ids, const Json &collection);
+                                       const Json &ids, const Json &collection,
+                                       const Json &file_header = Json::object());
+Json project_file_view_table_fallback(const Json &records, const Json &collection, const Json &header);
 Json initial_native_display_style_tables(const Json &list, const Json &records,
                                         const Json &ids, const Json &input,
                                         DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost);

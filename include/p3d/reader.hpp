@@ -824,7 +824,8 @@ class Document {
         DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost) const;
     // Fresh SSYS type14 inputs and conditional eight-slot construction.
     // Preserves source/copy identity and conditional file-table ID lookup.
-    // Does not evaluate default-table fallback, model selection or GUI activity.
+    // Projects resident fallback; default-table creation, model selection and
+    // GUI activity remain unevaluated.
     Json initial_view_table_inputs() const;
     Json binary_fields() const;
     Json inline_materials() const;

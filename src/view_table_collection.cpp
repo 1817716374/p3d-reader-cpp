@@ -108,7 +108,7 @@ Json project_view_table_collection(const Json &tables) {
     return out;
 }
 Json project_file_view_table_selection(const Json &list, const Json &records,
-                                       const Json &ids, const Json &collection) {
+                                       const Json &ids, const Json &collection, const Json &file_header) {
     Json out = {{"status", "unresolved"}, {"scope", "R1.18_initial_file_table_query"},
                 {"runtime_application", "not_evaluated"},
                 {"model_selection", "not_evaluated"}, {"fallback", "not_evaluated"}};
@@ -158,7 +158,15 @@ Json project_file_view_table_selection(const Json &list, const Json &records,
         }
         out["lookup"] = "no_assigned_id_match";
         out["fallback"] = "required";
-        out["reason"] = "default_table_and_model_fallback_not_established";
+        auto fallback = project_file_view_table_fallback(records, collection, file_header);
+        if (fallback.at("status") == "conditional") {
+            out["status"] = "conditional";
+            out["fallback"] = "evaluated";
+            out["native_return_code"] = fallback.at("native_return_code");
+            if (fallback.contains("selected_entry")) out["selected_entry"] = fallback.at("selected_entry");
+            out["conditions"] = fallback.at("conditions");
+        } else out["reason"] = "default_table_and_model_fallback_not_established";
+        out["fallback_projection"] = std::move(fallback);
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }
