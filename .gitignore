@@ -240,3 +240,5 @@
 !/tests/native_palette_oracle.hpp
 !/tests/palette_selection_oracle.hpp
 !/tests/palette_selection.cpp
+!/tests/color_remap.cpp
+!/tests/color_remap_oracle.hpp
