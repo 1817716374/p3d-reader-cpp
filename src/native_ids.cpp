@@ -129,6 +129,7 @@ static Json initial_id_assignments(const Json &list, const Json &records, std::u
     std::size_t occurrence = 0;
     try {
         for (const auto &root : list.at("roots")) {
+            const auto root_occurrence = occurrence;
             Json result = {{"native_record_index", root.at("native_record_index")},
                            {"block_number", root.at("block_number")},
                            {"counter_before", counter},
@@ -160,6 +161,10 @@ static Json initial_id_assignments(const Json &list, const Json &records, std::u
                      {"input_occurrence_index", occurrence++},
                      {"parent_record_index", header.at("parent_record_index")},
                      {"parent_input_occurrence_index", parent_occurrence},
+                     // Children are registered by ID, but are allocated in the
+                     // root's child vectors rather than the model list block.
+                     {"entity_list_root_input_occurrence_index", root_occurrence},
+                     {"entity_is_top_level", parent_occurrence.is_null()},
                      {"prepared_element_flags", header.value("output_element_flags", Json())},
                      {"source_id", source},
                      {"prepared_id", prepared}});

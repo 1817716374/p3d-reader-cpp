@@ -219,6 +219,7 @@ unsigned default_view_tests();
 unsigned default_view_table_tests();
 unsigned reference_bounds_tests();
 unsigned model_bounds_tests();
+unsigned entity_registration_tests();
 unsigned view_model_access_tests();
 unsigned view_model_query_tests();
 unsigned mesh_normal_tests();
@@ -2909,6 +2910,7 @@ int main() {
         checks += default_view_table_tests();
         checks += reference_bounds_tests();
         checks += model_bounds_tests();
+        checks += entity_registration_tests();
         checks += view_model_access_tests();
         checks += view_model_query_tests();
         layer_group_tests();

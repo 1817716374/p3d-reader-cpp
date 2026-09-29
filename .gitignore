@@ -274,3 +274,5 @@
 !/tests/reference_clipping_oracle.hpp
 !/tests/model_bounds.cpp
 !/tests/model_bounds_provider_oracle.hpp
+!/tests/entity_registration.cpp
+!/tests/entity_registration_oracle.hpp

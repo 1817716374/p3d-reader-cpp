@@ -775,7 +775,9 @@ class Document {
     Json native_input_containers() const;
     // Fresh model, loading control then graphics into a shared empty ID index.
     // Supply the actual counter at this load point, not the original file value
-    // after intervening loads. Does not execute host callbacks or attach attributes.
+      // after intervening loads. Does not execute host callbacks or attach attributes.
+      // Records retain their top-level entity-list root occurrence separately
+      // from parent occurrence; descendants do not occupy top-level list slots.
     Json native_model_id_assignments(const StreamPath &model_storage,
                                      std::uint64_t initial_id_counter) const;
     // Lookup in the initial model registry, then the system registry on miss.
