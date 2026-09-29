@@ -235,3 +235,5 @@
 !/tests/native_tube_mesh_trim_facets.cpp
 !/tests/native_tube_mesh_trim_edges.cpp
 !/tests/native_tube_mesh_index_rules.cpp
+!/tests/color_registration.cpp
+!/tests/color_registration_oracle.hpp
