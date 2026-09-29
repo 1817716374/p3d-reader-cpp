@@ -850,8 +850,9 @@ Json native_material_texture_file(const Bytes &b) {
 }
 Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index) {
     if (group == 0 && key == 20080 && index == 0) {
-        // R1.18 P3DKJ 0x4b43c5 checks four bytes; 0x5f7ff rejects
-        // negative indices before the file's LiteShowStyleListFileData lookup.
+        // R1.18 P3DKJ 0x4b43c5 checks four bytes after exact key/index
+        // selection. 5fac0 sign-extends +148; 60000's unsigned bounds
+        // check prevents negative indices from selecting a Lite list slot.
         Reader r(b);
         const auto id = r.i32();
         r.finish();

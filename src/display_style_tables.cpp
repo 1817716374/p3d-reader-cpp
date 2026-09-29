@@ -220,6 +220,128 @@ Json select_table(const Json &list, const Json &records, const Json &ids,
     }
     return out;
 }
+Json slot_query(std::int32_t index, const Json &lite, const Json &plan) {
+    Json out = {{"status", "unresolved"}, {"runtime_application", "not_evaluated"}};
+    try {
+        // 5fac0 sign-extends object+148; 60000 compares the resulting uint64
+        // with the vector length. A negative value cannot select a slot.
+        if (index < 0) {
+            out.update({{"status", "resolved"}, {"outcome", "negative_index"}});
+            return out;
+        }
+        require(plan.at("status") == "conditional" || plan.at("status") == "layout_resolved",
+                "lite_initialization_unresolved");
+        const auto count = plan.at("slot_count").get<std::uint64_t>();
+        out["slot_count"] = count;
+        out["status"] = plan.at("status") == "conditional" ? "conditional" : "resolved";
+        if (plan.contains("conditions")) out["conditions"] = plan.at("conditions");
+        if (std::uint64_t(index) >= count) {
+            out["outcome"] = "out_of_range";
+            return out;
+        }
+        const bool copied = plan.at("decision") == "copy_common";
+        const auto &entries = copied ? plan.at("entries") : lite.at("table_load").at("entries");
+        out["list_source"] = copied ? "common_copy_plan" : "lite_table_load";
+        const Json *selected = nullptr;
+        for (const auto &entry : entries)
+            if (entry.at("slot_index") == index) {
+                require(!selected, "ambiguous_lite_slot");
+                selected = &entry;
+            }
+        if (!selected) {
+            out["outcome"] = "null_slot";
+            return out;
+        }
+        out["entry"] = *selected;
+        if (copied) {
+            out["outcome"] = "projected_style_input";
+        } else {
+            require(selected->contains("native_xml_import"), "style_xml_input_unresolved");
+            const auto &imported = selected->at("native_xml_import");
+            out["status"] = "conditional";
+            out["conditions"] = Json::array({"native_xml_import_matches_retained_tree"});
+            out["outcome"] = imported.at("status") == "rejected" ? "null_slot" : "selected_style_input";
+            require(imported.at("status") == "rejected" || imported.at("status") == "partial",
+                    "style_xml_input_unresolved");
+            // Retain the import's unresolved handler/usage state. Selecting
+            // an input is not evidence that its native object was constructed.
+            out["object_construction"] = "not_evaluated";
+        }
+    } catch (const std::exception &e) {
+        out["status"] = "unresolved";
+        out.erase("outcome");
+        out["reason"] = e.what();
+    }
+    return out;
+}
+
+Json reference_inputs(const Json &records, const Json &ids, const Json &input,
+                      const Json &lite, const Json &plan) {
+    Json out = {{"status", "unresolved"}, {"scope", "attached_20080_input_queries"},
+                {"native_reader_dispatch", "not_evaluated"}, {"references", Json::array()}};
+    try {
+        require(ids.at("status") == "resolved" &&
+                    ids.at("scope") == "first_system_input_with_empty_id_registry",
+                "complete_system_id_assignments_required");
+        require(input.at("status") == "resolved" || input.at("status") == "absent" ||
+                    input.at("status") == "not_loaded", "complete_initial_attribute_input_required");
+        for (const auto &root : ids.at("roots")) {
+            for (const auto &item : root.at("records")) {
+                std::size_t ai = 0;
+                const auto *a = attachment_for(input, item.at("input_occurrence_index"), ai);
+                if (!a) continue;
+                // Inventory attached collections containing this key, even
+                // when only a nonzero index exists. Do not imply that an
+                // arbitrary native record dispatches through 4b46b0/4b4220.
+                bool relevant = false;
+                for (const auto &attribute : a->at("attributes"))
+                    relevant |= attribute.at("group") == 0 && attribute.at("key") == 20080;
+                if (!relevant) continue;
+                const auto ni = item.at("native_record_index").get<std::size_t>();
+                Json ref = {{"native_record_index", ni}, {"element_type", records.at(ni).at("element_type")},
+                            {"input_occurrence_index", item.at("input_occurrence_index")},
+                            {"source_id", item.at("source_id")}, {"assigned_id", item.at("assigned_id")},
+                            {"attachment_index", ai}, {"attribute_stream", a->at("stream")},
+                            {"status", "unresolved"}};
+                try {
+                    const auto *key = lookup_key(*a, 20080, 0);
+                    std::int32_t value = -1;
+                    std::string action = "keep_default_missing_attribute";
+                    if (key) {
+                        const auto ordinal = key->at("selected_source_ordinal").get<std::size_t>();
+                        const auto &attribute = a->at("attributes").at(ordinal);
+                        ref["source_ordinal"] = ordinal;
+                        ref["attribute_offset"] = attribute.at("offset");
+                        ref["matching_source_ordinals"] = key->at("matching_source_ordinals");
+                        const auto payload = bytesof(attribute.at("payload"));
+                        ref["payload_size"] = payload.size();
+                        action = "keep_default_invalid_length";
+                        // 4b4737 initializes +148 to -1. 4b4342 queries exact
+                        // key/index first; 4b43c5 only writes on length == 4.
+                        if (payload.size() == 4) {
+                            value = Reader(payload).i32();
+                            action = "read_selected_int32";
+                        }
+                    }
+                    ref["reader_projection"] = {{"status", "conditional"},
+                        {"condition", "fresh_object_uses_R1.18_4b46b0_and_4b4220_reader"},
+                        {"initial_value", -1}, {"display_style_index", value}, {"action", action}};
+                    ref["lite_slot_query"] = slot_query(value, lite, plan);
+                    ref["status"] = "resolved";
+                } catch (const std::exception &e) {
+                    ref["reason"] = e.what();
+                }
+                out["references"].push_back(std::move(ref));
+            }
+        }
+        out["status"] = "resolved";
+        for (const auto &ref : out.at("references"))
+            if (ref.at("status") != "resolved") out["status"] = "partial";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace
 
 Json initial_native_display_style_tables(const Json &list, const Json &records,
@@ -236,6 +358,8 @@ Json initial_native_display_style_tables(const Json &list, const Json &records,
             {"common", select_table(list, records, ids, input, 0x006f0000u, profile)},
             {"lite", select_table(list, records, ids, input, 0x597e0000u, profile)}};
     out["lite_initialization"] = plan_initial_lite_style_list(out.at("common"), out.at("lite"));
+    out["reference_inputs"] = reference_inputs(records, ids, input, out.at("lite"),
+                                               out.at("lite_initialization"));
     return out;
 }
 

@@ -266,5 +266,89 @@ unsigned display_style_tables_tests() {
     entries[1]["attribute_index"] = 5;
     check(plan_initial_lite_style_list(table(6, entries), absent)["reason"] == "style_slot_attribute_index_mismatch",
           "initial input index invariant is checked before native stored-index replacement is modeled");
+    // Match the original 3fe9f0 query probe: selection precedes the
+    // reader's length check, including duplicates on both lookup paths.
+    auto reference = [](std::int32_t value, unsigned index = 0) {
+        Bytes b(4); put(b, 0, std::uint32_t(value));
+        return attribute(20080, index, b);
+    };
+    l = list(Json::array({Json::array({header(0)}), Json::array({header(1)}),
+                         Json::array({header(2)})}));
+    records = Json::array({record(92, 8), record(11, 8), record(11, 10)});
+    attrs = Json::array({Json::array({marker(0x597e0000), xml(1, "Lite one")}),
+                        Json::array({reference(1)}), Json::array({reference(3)})});
+    result = run(l, records, input(attrs));
+    auto refs = result["reference_inputs"]["references"];
+    check(result["reference_inputs"]["status"] == "resolved" && refs.size() == 2 &&
+              result["reference_inputs"]["native_reader_dispatch"] == "not_evaluated",
+          "attached reference selection does not assert record constructor dispatch");
+    check(refs[0]["source_id"] == 8 && refs[0]["assigned_id"] == 101 &&
+              refs[0]["input_occurrence_index"] == 1 && refs[0]["source_ordinal"] == 0 &&
+              refs[0]["lite_slot_query"]["entry"]["native_xml_import"]["fields"]["Name"]["value"] == "Lite one",
+          "reference input joins the assigned occurrence and selected Lite input without source-ID aliasing");
+    check(refs[0]["reader_projection"]["status"] == "conditional" &&
+              refs[0]["lite_slot_query"]["outcome"] == "selected_style_input" &&
+              refs[0]["lite_slot_query"]["object_construction"] == "not_evaluated" &&
+              refs[1]["lite_slot_query"]["outcome"] == "null_slot",
+          "selected input and missing Lite slot remain distinct from native object construction");
+    attrs[1] = Json::array({reference(1), attribute(20080, 0, Bytes{1, 2, 3})});
+    result = run(l, records, input(attrs));
+    auto ref = result["reference_inputs"]["references"][0];
+    check(ref["source_ordinal"] == 1 && ref["payload_size"] == 3 &&
+              ref["reader_projection"]["action"] == "keep_default_invalid_length" &&
+              ref["reader_projection"]["display_style_index"] == -1 &&
+              ref["lite_slot_query"]["outcome"] == "negative_index",
+          "malformed last duplicate keeps default instead of falling back to valid earlier payload");
+    attrs[1] = Json::array({attribute(20080, 0, Bytes{1, 2, 3}), reference(1)});
+    for (unsigned i = 0; i < 4; ++i) attrs[1].push_back(attribute(20082, i, Bytes{1}));
+    ref = run(l, records, input(attrs))["reference_inputs"]["references"][0];
+    check(ref["source_ordinal"] == 0 && ref["matching_source_ordinals"].size() == 2 &&
+              ref["reader_projection"]["action"] == "keep_default_invalid_length",
+          "six-attribute lower_bound can select malformed first duplicate without fallback");
+    attrs[1] = Json::array({reference(1, 1)});
+    ref = run(l, records, input(attrs))["reference_inputs"]["references"][0];
+    check(!ref.contains("source_ordinal") && ref["reader_projection"]["display_style_index"] == -1 &&
+              ref["reader_projection"]["action"] == "keep_default_missing_attribute",
+          "nonzero attribute index cannot satisfy exact index-zero read");
+    attrs[1] = Json::array({reference(1), reference(2, 1)});
+    ref = run(l, records, input(attrs))["reference_inputs"]["references"][0];
+    check(ref["source_ordinal"] == 0 && ref["reader_projection"]["display_style_index"] == 1,
+          "later same-key different-index attribute cannot shadow index zero");
+    attrs[1] = Json::array({reference(INT32_MIN)});
+    attrs[2] = Json::array({reference(4)});
+    refs = run(l, records, input(attrs))["reference_inputs"]["references"];
+    check(refs[0]["reader_projection"]["display_style_index"] == INT32_MIN &&
+              refs[0]["lite_slot_query"]["outcome"] == "negative_index" &&
+              refs[1]["lite_slot_query"]["outcome"] == "out_of_range",
+          "signed negative and exact count boundary cannot select a slot");
+    attrs[0][1]["decoded"]["tree"]["attributes"].erase("Name");
+    attrs[1] = Json::array({reference(1)});
+    ref = run(l, records, input(attrs))["reference_inputs"]["references"][0];
+    check(ref["lite_slot_query"]["outcome"] == "null_slot" &&
+              ref["lite_slot_query"]["status"] == "conditional" &&
+              ref["lite_slot_query"]["entry"]["native_xml_import"]["status"] == "rejected",
+          "rejected retained XML gives a conditional null while preserving selected input evidence");
+    attrs[0] = Json::array({marker(0x006f0000), xml(1, "Alpha"), xml(2, "alpha")});
+    ref = run(l, records, input(attrs))["reference_inputs"]["references"][0];
+    check(ref["lite_slot_query"]["status"] == "conditional" &&
+              ref["lite_slot_query"]["outcome"] == "projected_style_input" &&
+              ref["lite_slot_query"]["entry"]["slot_index"] == 1 &&
+              ref["lite_slot_query"]["entry"]["source_common_slot"] == 2 &&
+              ref["lite_slot_query"]["conditions"].size() == 4,
+          "reference follows the completed copy plan including earlier-name replacement and its conditions");
+    attrs[0] = Json::array({marker(0x12340000)});
+    ref = run(l, records, input(attrs))["reference_inputs"]["references"][0];
+    check(ref["status"] == "resolved" && ref["reader_projection"]["display_style_index"] == 1 &&
+              ref["lite_slot_query"]["reason"] == "lite_initialization_unresolved",
+          "valid reference input remains readable when table resolution is blocked");
+    auto incomplete = input(attrs);
+    incomplete["attachments"][1]["lookup"]["status"] = "unresolved";
+    result = run(l, records, incomplete);
+    check(result["reference_inputs"]["status"] == "partial" &&
+              !result["reference_inputs"]["references"][0].contains("reader_projection"),
+          "unknown attribute selection cannot publish a guessed default reference");
+    incomplete["status"] = "partial";
+    check(run(l, records, incomplete)["reference_inputs"]["status"] == "unresolved",
+          "partial initial attachment input blocks a complete reference inventory");
     return checks;
 }
