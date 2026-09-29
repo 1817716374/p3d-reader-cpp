@@ -259,3 +259,6 @@
 
 !/tests/view_model_query.cpp
 !/tests/view_model_query_oracle.hpp
+
+!/tests/view_model_access.cpp
+!/tests/view_model_access_oracle.hpp
