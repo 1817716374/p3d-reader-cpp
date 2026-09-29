@@ -211,6 +211,8 @@ Json initial_native_view_table_inputs(const Json &list, const Json &records, con
 Json native_512_string_reader(const Json &field, const Json &strings, const char *profile);
 Json project_view_table_text_fields(const Json &record);
 Json project_view_table_collection(const Json &tables);
+Json project_file_view_table_selection(const Json &list, const Json &records,
+                                       const Json &ids, const Json &collection);
 Json initial_native_display_style_tables(const Json &list, const Json &records,
                                         const Json &ids, const Json &input,
                                         DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost);

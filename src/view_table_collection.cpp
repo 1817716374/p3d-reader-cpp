@@ -107,4 +107,61 @@ Json project_view_table_collection(const Json &tables) {
     }
     return out;
 }
+Json project_file_view_table_selection(const Json &list, const Json &records,
+                                       const Json &ids, const Json &collection) {
+    Json out = {{"status", "unresolved"}, {"scope", "R1.18_initial_file_table_query"},
+                {"runtime_application", "not_evaluated"},
+                {"model_selection", "not_evaluated"}, {"fallback", "not_evaluated"}};
+    try {
+        require(list.at("status") == "resolved" &&
+                    list.at("scope") == "empty_list_before_runtime_registration" &&
+                    list.at("system_bootstrap_required") == true &&
+                    ids.at("status") == "resolved" &&
+                    ids.at("scope") == "first_system_input_with_empty_id_registry",
+                "complete_fresh_system_input_and_id_assignments_required");
+        require(!list.at("roots").empty(), "file_table_query_requires_first_system_root");
+        const auto &root = list.at("roots").front();
+        const auto ni = root.at("native_record_index").get<std::size_t>();
+        const auto &record = records.at(ni);
+        const auto data = bytesof(record.at("data"));
+        require(record.at("element_type") == 46 && data.size() >= 20 &&
+                    Reader(data, 16).u32() == 8,
+                "file_table_query_requires_first_type46_subtype8_root");
+        require(!ids.at("roots").empty() && ids.at("roots").front().at("native_record_index") == ni &&
+                    ids.at("roots").front().at("block_number") == root.at("block_number"),
+                "file_table_query_root_assignment_mismatch");
+        const auto &source = ids.at("roots").front().at("records").at(0);
+        require(source.at("native_record_index") == ni && source.at("parent_record_index").is_null(),
+                "file_table_query_root_identity_mismatch");
+        out["query_source"] = {{"native_record_index", ni},
+            {"input_occurrence_index", source.at("input_occurrence_index")},
+            {"source_id", source.at("source_id")}, {"assigned_id", source.at("assigned_id")}};
+        // 12b570 accepts the first resident root only. 4b2350 then reads
+        // body+248 (stream data includes a four-byte prefix).
+        out["requested_id_data_offset"] = 0x24c;
+        require(data.size() >= 0x254, "truncated_file_view_table_query_id");
+        const auto requested = Reader(data, 0x24c).u64();
+        out["requested_id"] = requested;
+        require(collection.at("status") == "conditional" &&
+                    collection.at("scope") == "R1.18_initial_common_then_lite_view_collection",
+                "complete_initial_view_collection_required");
+        for (const auto &entry : collection.at("entries")) {
+            // 4af930 compares the post-registration ID in the table's record,
+            // not its source ID and not its name. It returns the first match.
+            if (entry.at("source").at("assigned_id").get<std::uint64_t>() != requested) continue;
+            out.update({{"status", "conditional"}, {"lookup", "first_assigned_id_match"},
+                {"selected_entry", entry}, {"fallback", "not_needed"},
+                {"conditions", Json::array({"fresh_resident_collection_and_system_roots",
+                    "R1.18_4b2350_file_table_query_path",
+                    "no_intervening_record_id_or_collection_mutation"})}});
+            return out;
+        }
+        out["lookup"] = "no_assigned_id_match";
+        out["fallback"] = "required";
+        out["reason"] = "default_table_and_model_fallback_not_established";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace p3d

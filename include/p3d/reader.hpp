@@ -823,7 +823,8 @@ class Document {
     Json initial_display_style_tables(
         DisplayStyleHandlerProfile = DisplayStyleHandlerProfile::UnspecifiedHost) const;
     // Fresh SSYS type14 inputs and conditional eight-slot construction.
-    // Preserves source/copy identity; does not choose the active view table.
+    // Preserves source/copy identity and conditional file-table ID lookup.
+    // Does not evaluate default-table fallback, model selection or GUI activity.
     Json initial_view_table_inputs() const;
     Json binary_fields() const;
     Json inline_materials() const;

@@ -211,6 +211,7 @@ unsigned color_remap_tests();
 unsigned display_style_tables_tests();
 unsigned view_table_inputs_tests();
 unsigned view_table_collection_tests();
+unsigned view_table_selection_tests();
 unsigned mesh_normal_tests();
 unsigned mesh_tessellation_tests();
 unsigned mesh_buffer_tests();
@@ -2891,6 +2892,7 @@ int main() {
         checks += display_style_tables_tests();
         checks += view_table_inputs_tests();
         checks += view_table_collection_tests();
+        checks += view_table_selection_tests();
         layer_group_tests();
         layer_table_tests();
         layer_group_state_tests();

@@ -247,3 +247,6 @@
 !/tests/view_tables_oracle.hpp
 !/tests/view_table_collection.cpp
 !/tests/view_collection_oracle.hpp
+
+!/tests/view_table_selection.cpp
+!/tests/view_selection_oracle.hpp
