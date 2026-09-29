@@ -6,6 +6,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <p3d/color_registration.hpp>
 #include <string>
 #include <vector>
 namespace p3d {
@@ -813,6 +814,10 @@ class Document {
     // Initial file-system slot zero and its selected 22902/index-zero attribute.
     // Conditional on fresh loading before host callbacks or cache mutation.
     Json initial_extended_color_tables() const;
+    // Palette under initially empty file/global caches and unchanged header.
+    // General selectors need an explicitly selected original default service.
+    Json initial_color_palette(
+        NativePaletteHostProfile = NativePaletteHostProfile::UnspecifiedHost) const;
     // First matching common/Lite table in fresh SSYS input, using attached
     // attributes and assigned IDs. Built-in handlers only; no host callbacks.
     Json initial_display_style_tables(

@@ -12,6 +12,31 @@ enum class NativePaletteProfile { PreHostDefault, BuiltinSelectors3And4 };
 // Immutable R1.18 palette values. PreHostDefault is the input to the host's
 // palette callback, not evidence that the callback leaves it unchanged.
 const NativeColorPalette &native_color_palette(NativePaletteProfile profile);
+
+enum class NativePaletteHostProfile { UnspecifiedHost, BuiltinDefaultService };
+struct NativePaletteSelectionContext {
+    // known=true + nullopt means confirmed empty; known=false is unknown.
+    bool file_cache_known = false;
+    std::optional<NativeColorPalette> file_cache;
+    bool global_cache_known = false;
+    std::optional<NativeColorPalette> global_cache;
+    NativePaletteHostProfile host_profile = NativePaletteHostProfile::UnspecifiedHost;
+};
+enum class NativePaletteSource { Unresolved, FileCache, Builtin, GlobalCache, DefaultService };
+struct NativePaletteSelection {
+    std::optional<NativeColorPalette> palette;
+    std::optional<std::uint32_t> selector; // not read when file cache wins
+    NativePaletteSource source = NativePaletteSource::Unresolved;
+    std::string reason;
+    bool file_cache_created = false;
+    bool global_cache_created = false;
+};
+// Pure projection of 12e680 + 1e4dd0. Does not mutate supplied caches or invoke
+// callbacks. Returned RGB is a value copy; callers own runtime object identity.
+NativePaletteSelection select_native_color_palette(
+    std::optional<std::uint32_t> base_selector,
+    std::optional<std::uint32_t> override_selector,
+    const NativePaletteSelectionContext &context);
 // R1.18 integer H/S/V: hue 0..359, saturation/value 0..100.
 std::array<int, 3> native_color_hsv(const NativeRgb &rgb);
 // Matches 1e4500 with no external HSV cache. Index 255 is not searched.

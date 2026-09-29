@@ -143,4 +143,47 @@ const NativeColorPalette &native_color_palette(NativePaletteProfile profile) {
     }
     throw std::invalid_argument("unknown_native_palette_profile");
 }
+
+NativePaletteSelection select_native_color_palette(
+    std::optional<std::uint32_t> base_selector,
+    std::optional<std::uint32_t> override_selector,
+    const NativePaletteSelectionContext &context) {
+    NativePaletteSelection result;
+    if (!context.file_cache_known) {
+        result.reason = "file_palette_cache_unknown";
+        return result;
+    }
+    if (context.file_cache) {
+        result.palette = context.file_cache;
+        result.source = NativePaletteSource::FileCache;
+        return result;
+    }
+    if (!override_selector || (*override_selector == 0 && !base_selector)) {
+        result.reason = "palette_selector_unknown";
+        return result;
+    }
+    result.selector = *override_selector ? override_selector : base_selector;
+    if (*result.selector == 3 || *result.selector == 4) {
+        result.palette = native_color_palette(NativePaletteProfile::BuiltinSelectors3And4);
+        result.source = NativePaletteSource::Builtin;
+    } else {
+        if (!context.global_cache_known) {
+            result.reason = "global_palette_cache_unknown";
+            return result;
+        }
+        if (context.global_cache) {
+            result.palette = context.global_cache;
+            result.source = NativePaletteSource::GlobalCache;
+        } else if (context.host_profile == NativePaletteHostProfile::BuiltinDefaultService) {
+            result.palette = native_color_palette(NativePaletteProfile::PreHostDefault);
+            result.source = NativePaletteSource::DefaultService;
+            result.global_cache_created = true;
+        } else {
+            result.reason = "host_palette_callback_not_established";
+            return result;
+        }
+    }
+    result.file_cache_created = true;
+    return result;
+}
 }

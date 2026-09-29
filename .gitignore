@@ -238,3 +238,5 @@
 !/tests/color_registration.cpp
 !/tests/color_registration_oracle.hpp
 !/tests/native_palette_oracle.hpp
+!/tests/palette_selection_oracle.hpp
+!/tests/palette_selection.cpp

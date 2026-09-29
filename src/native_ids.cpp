@@ -77,6 +77,47 @@ Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
     return out;
 }
 
+Json initial_native_color_palette(const Json &header, NativePaletteHostProfile profile) {
+    Json out = {{"scope", "initial_file_palette_with_empty_caches"}, {"status", "unresolved"},
+                {"host_profile", profile == NativePaletteHostProfile::BuiltinDefaultService
+                                     ? "R1.18_builtin_default_service" : "unspecified"},
+                {"runtime_cache", "not_evaluated"},
+                {"conditions", {"file_palette_cache_initially_empty", "global_palette_cache_initially_empty",
+                                "no_intervening_header_or_palette_mutation"}}};
+    if (header.value("status", Json()) != "resolved" || !header.contains("initial_probe") ||
+        header.at("initial_probe").value("action", Json()) != "read_header_payload") {
+        out["reason"] = "ordinary_initial_file_header_required";
+        return out;
+    }
+    NativePaletteSelectionContext context;
+    context.file_cache_known = context.global_cache_known = true;
+    context.host_profile = profile;
+    std::optional<std::uint32_t> base, override_value;
+    if (header.contains("source_palette_base_selector"))
+        base = header.at("source_palette_base_selector").get<std::uint32_t>();
+    if (header.contains("source_palette_override_selector"))
+        override_value = header.at("source_palette_override_selector").get<std::uint32_t>();
+    auto selected = select_native_color_palette(base, override_value, context);
+    if (selected.selector) out["selector"] = *selected.selector;
+    if (base) out["source_base_selector"] = *base;
+    if (override_value) out["source_override_selector"] = *override_value;
+    if (!selected.palette) {
+        out["reason"] = selected.reason;
+        return out;
+    }
+    out["status"] = "resolved";
+    out["source"] = selected.source == NativePaletteSource::Builtin ? "builtin_selectors_3_4"
+                                                                    : "default_service_initialization";
+    out["rgb"] = *selected.palette;
+    out["file_cache_created"] = selected.file_cache_created;
+    out["global_cache_created"] = selected.global_cache_created;
+    return out;
+}
+
+Json Document::initial_color_palette(NativePaletteHostProfile profile) const {
+    return initial_native_color_palette(file_header(), profile);
+}
+
 static Json initial_id_assignments(const Json &list, const Json &records, std::uint64_t counter) {
     Json out = {{"status", "unresolved"}, {"roots", Json::array()}, {"registry", Json::array()}};
     out["initial_id_counter"] = counter;

@@ -232,6 +232,7 @@ Json read_materials(const Document &);
 Json native_material_references(const Json &native_records);
 Json native_block_header(const Bytes &);
 Json native_file_header(const Bytes &index_stream, const Bytes &header_payload);
+Json initial_native_color_palette(const Json &file_header, NativePaletteHostProfile profile);
 Json native_dependency_link(const Bytes &payload);
 Json native_reference_path(const Bytes &base, const Json &links);
 Json native_reference_target(const Json &reference_input, const Json &links);

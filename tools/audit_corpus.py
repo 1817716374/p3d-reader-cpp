@@ -66,6 +66,8 @@ def main():
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--style-default-service", action="store_true",
                         help="evaluate initial style tables with the R1.18 default host service")
+    parser.add_argument("--palette-default-service", action="store_true",
+                        help="evaluate palette with empty caches and the R1.18 default service")
     args = parser.parse_args()
     files = set()
     for source in args.inputs:
@@ -91,6 +93,8 @@ def main():
                    "--native-summary", "--dump", str(folder / "document.json")]
         if args.style_default_service:
             command.append("--style-default-service")
+        if args.palette_default_service:
+            command.append("--palette-default-service")
         result = {"source": str(source), "sha256": digest, "bytes": source.stat().st_size,
                   "command": command, "output": str(folder), "execution_status": "pending"}
         start = time.monotonic()

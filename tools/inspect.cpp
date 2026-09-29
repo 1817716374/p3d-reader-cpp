@@ -23,13 +23,14 @@ int main(int argc, char **argv) {
         if (args.empty()) {
             std::cout
                 << "p3d-inspect FILE [--threads N] [--dump FILE] [--scene FILE] [--graph FILE]"
-                   " [--style-default-service]\n";
+                   " [--style-default-service] [--palette-default-service]\n";
             return 0;
         }
         p3d::Options opt;
         std::filesystem::path dump, scene, graph, streams_dir;
         bool native = false, expanded = false;
         auto style_profile = p3d::DisplayStyleHandlerProfile::UnspecifiedHost;
+        auto palette_profile = p3d::NativePaletteHostProfile::UnspecifiedHost;
         for (std::size_t i = 1; i < args.size(); ++i) {
             auto k = args[i].string();
             if (k == "--threads" && i + 1 < args.size())
@@ -48,6 +49,8 @@ int main(int argc, char **argv) {
                 expanded = true;
             else if (k == "--style-default-service")
                 style_profile = p3d::DisplayStyleHandlerProfile::BuiltinDefaultService;
+            else if (k == "--palette-default-service")
+                palette_profile = p3d::NativePaletteHostProfile::BuiltinDefaultService;
             else
                 throw std::runtime_error("unknown/missing option: " + k);
         }
@@ -80,6 +83,7 @@ int main(int argc, char **argv) {
                          {"layer_tables", d.layer_tables()},
                          {"display_style_sources", d.display_style_sources()},
                          {"initial_extended_color_tables", d.initial_extended_color_tables()},
+                         {"initial_color_palette", d.initial_color_palette(palette_profile)},
                          {"initial_display_style_tables", d.initial_display_style_tables(style_profile)}});
         if (!graph.empty())
             write(graph, d.object_graph());

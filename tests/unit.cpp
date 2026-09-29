@@ -206,6 +206,7 @@ unsigned native_application_tests();
 unsigned native_handler_tests();
 unsigned display_style_sources_tests();
 unsigned color_registration_tests();
+unsigned palette_selection_tests();
 unsigned display_style_tables_tests();
 unsigned mesh_normal_tests();
 unsigned mesh_tessellation_tests();
@@ -2882,6 +2883,7 @@ int main() {
         checks += native_handler_tests();
         checks += display_style_sources_tests();
         checks += color_registration_tests();
+        checks += palette_selection_tests();
         checks += display_style_tables_tests();
         layer_group_tests();
         layer_table_tests();
