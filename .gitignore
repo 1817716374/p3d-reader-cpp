@@ -237,3 +237,4 @@
 !/tests/native_tube_mesh_index_rules.cpp
 !/tests/color_registration.cpp
 !/tests/color_registration_oracle.hpp
+!/tests/native_palette_oracle.hpp

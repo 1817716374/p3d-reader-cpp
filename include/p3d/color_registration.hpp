@@ -8,6 +8,10 @@
 namespace p3d {
 using NativeRgb = std::array<std::uint8_t, 3>;
 using NativeColorPalette = std::array<NativeRgb, 256>;
+enum class NativePaletteProfile { PreHostDefault, BuiltinSelectors3And4 };
+// Immutable R1.18 palette values. PreHostDefault is the input to the host's
+// palette callback, not evidence that the callback leaves it unchanged.
+const NativeColorPalette &native_color_palette(NativePaletteProfile profile);
 // R1.18 integer H/S/V: hue 0..359, saturation/value 0..100.
 std::array<int, 3> native_color_hsv(const NativeRgb &rgb);
 // Matches 1e4500 with no external HSV cache. Index 255 is not searched.

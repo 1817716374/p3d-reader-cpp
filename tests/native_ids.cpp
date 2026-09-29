@@ -1,4 +1,6 @@
 #include "internal.hpp"
+#include <p3d/color_registration.hpp>
+#include "native_palette_oracle.hpp"
 
 unsigned native_id_tests() {
     using namespace p3d;
@@ -41,6 +43,37 @@ unsigned native_id_tests() {
     extra.push_back(0xab);
     check(bytesof(native_file_header(control(1), extra)["header_payload_suffix"]) == Bytes{0xab},
           "extra serialized header data is retained without silently extending the reader layout");
+    std::string palette_fixture;
+    for (const auto *part : native_palette_oracle_parts) palette_fixture += part;
+    const auto palette_oracle = Json::parse(palette_fixture);
+    check(Json(native_color_palette(NativePaletteProfile::PreHostDefault)) == palette_oracle["pre_host_rgb"],
+          "all pre-host default palette values match original native constructor");
+    check(Json(native_color_palette(NativePaletteProfile::BuiltinSelectors3And4)) == palette_oracle["builtin_rgb"],
+          "all selector-3/4 builtin palette values match repeated original native construction");
+    check(default_palette()["rgb"] == palette_oracle["pre_host_rgb"] &&
+              default_palette()["rgb"][255] == Json::array({0,0,0}) &&
+              default_palette()["runtime_palette_selection"] == "not_evaluated",
+          "scene fallback uses verified pre-host palette including black slot 255, without claiming host selection");
+    for (const auto &sample : palette_oracle["selectors"]) {
+        put(payload, 0x11c, sample.at("base").get<std::uint32_t>(), 4);
+        put(payload, 0x314, sample.at("override").get<std::uint32_t>(), 4);
+        const auto result = native_file_header(control(1), payload);
+        const auto &palette = result.at("initial_probe").at("palette_input");
+        check(palette.at("selector") == sample.at("selector") &&
+                  result.at("source_palette_base_selector") == sample.at("base") &&
+                  result.at("source_palette_override_selector") == sample.at("override"),
+              "initial header selector priority matches original getter including high-bit DWORDs");
+        const bool builtin = sample.at("selector") == 3 || sample.at("selector") == 4;
+        check(builtin ? palette.at("status") == "resolved_builtin" && palette.at("rgb") == palette_oracle["builtin_rgb"]
+                      : palette.at("status") == "requires_host" && !palette.contains("rgb") &&
+                            palette.at("pre_host_rgb") == palette_oracle["pre_host_rgb"],
+              "only selectors 3/4 bypass host palette customization");
+    }
+    check(native_file_header(control(3), payload)["initial_probe"]["palette_input"]["status"] == "unresolved",
+          "blank-header input does not reuse persisted palette selectors");
+    check(!native_file_header(control(1), Bytes(0x317))["initial_probe"].is_object(),
+          "partial override field cannot become a usable initial palette selection");
+    put(payload, 0x11c, 0, 4); put(payload, 0x314, 0, 4);
     put(payload, 0x128, 10, 8);
     h = native_file_header(control(1), payload);
     Json list = {

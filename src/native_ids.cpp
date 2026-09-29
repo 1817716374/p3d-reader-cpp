@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include <p3d/color_registration.hpp>
 
 namespace p3d {
 Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
@@ -29,6 +30,12 @@ Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
         out["source_id_counter"] = Reader(payload, 0x128).u64();
     if (payload.size() >= 0x314)
         out["source_header_flags"] = Reader(payload, 0x310).u32();
+    out["palette_base_selector_header_offset"] = 0x11c;
+    out["palette_override_selector_header_offset"] = 0x314;
+    if (payload.size() >= 0x120)
+        out["source_palette_base_selector"] = Reader(payload, 0x11c).u32();
+    if (payload.size() >= 0x318)
+        out["source_palette_override_selector"] = Reader(payload, 0x314).u32();
     if (flags & 2) {
         // Initial header probing has a null auxiliary argument: the native
         // reader initializes a blank header instead of consuming its payload.
@@ -37,6 +44,8 @@ Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
                                 {"header_flags", 2},
                                 {"default_model_id", 0}};
         out["status"] = "resolved";
+        out["initial_probe"]["palette_input"] = {{"status", "unresolved"},
+            {"reason", "blank_header_palette_fields_not_established"}};
     } else if (payload.size() < 0x610) {
         out["reason"] = "incomplete_file_header_payload";
     } else {
@@ -45,6 +54,23 @@ Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
                                 {"default_model_id", out["source_default_model_id"]},
                                 {"header_flags", Reader(payload, 0x310).u32() | flags}};
         out["status"] = "resolved";
+        const auto base = Reader(payload, 0x11c).u32(), override_value = Reader(payload, 0x314).u32();
+        const auto selector = override_value ? override_value : base;
+        const bool builtin = selector == 3 || selector == 4;
+        Json palette = {{"scope", "initial_header_palette_input"}, {"selector", selector},
+            {"selected_field", override_value ? "override" : "base"},
+            {"status", builtin ? "resolved_builtin" : "requires_host"},
+            {"runtime_cache", "not_evaluated"},
+            {"conditions", {"palette_cache_initially_empty", "no_intervening_header_or_palette_mutation"}}};
+        if (builtin) {
+            palette["profile"] = "R1.18_builtin_selectors_3_4";
+            palette["rgb"] = native_color_palette(NativePaletteProfile::BuiltinSelectors3And4);
+        } else {
+            palette["pre_host_profile"] = "R1.18_pre_host_default";
+            palette["pre_host_rgb"] = native_color_palette(NativePaletteProfile::PreHostDefault);
+            palette["reason"] = "host_palette_callback_or_existing_global_palette_required";
+        }
+        out["initial_probe"]["palette_input"] = std::move(palette);
         if (payload.size() > 0x610)
             out["header_payload_suffix"] = rawbytes(slice(payload, 0x610, payload.size() - 0x610));
     }

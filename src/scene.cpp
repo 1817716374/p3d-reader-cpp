@@ -86,6 +86,8 @@ static Json color(std::uint64_t index, const Json &entries) {
             {"rgb", default_palette().at("rgb").at(index & 255)},
             {"source", "palette"},
             {"palette_index", index & 255},
+            {"palette_profile", "R1.18_pre_host_default"},
+            {"runtime_palette_selection", "not_evaluated"},
             {"unresolved_extended_ordinal", ordinal >= 0 ? Json(ordinal) : Json()}};
 }
 static Json style_color(const Json &style, const Json &entries) {
