@@ -4,7 +4,8 @@
 Executes 1a5da0, 199fa0 and 19c6a0 with real native entities and ID trees.
 The default profile starts with prepared input trees. The optional file-entry
 profile executes original preparation and callbacks, limited to inputs without
-dependency linkages. Neither profile opens a complete file. Native allocations
+dependency linkages unless the direct-ID dependency profile is explicitly
+selected. None of these profiles opens a complete file. Native allocations
 remain until process exit. A bounded
 record-storage page avoids page growth/release; no synthetic destructors,
 Python native callbacks or patched code are used.
@@ -27,13 +28,28 @@ def cases():
                                      extended_flags=flags,spatial=spatial))
     return rows
 
-def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
+def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False):
     if os.name!='nt' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('Requires Windows x64')
     for name,h in HASHES.items():
         if hashlib.sha256((root/name).read_bytes()).hexdigest()!=h:raise ValueError(name)
     dirs=[os.add_dll_directory(str(root/d)) for d in ['ROOT','SHARE','SHARE/vcredist/X64','PLATFORM']]
     try:
         dll=C.WinDLL(str(root/'ROOT/P3DKJ.dll'));base=dll._handle
+        if dependencies:
+            assert file_entry
+            C.CFUNCTYPE(None)(base+0x163a90)()
+            assert C.c_void_p.from_address(base+0x63ffe0).value==base+0x1ef320
+        def dependent_indices(entities):
+            result=[]
+            for entity in entities:
+                item=C.CFUNCTYPE(C.c_void_p,C.c_void_p)(base+0x19d5b0)(entity) if entity else None
+                items=[]
+                while item:
+                    assert len(items)<10000
+                    items.append(entities.index(C.c_void_p.from_address(item+8).value))
+                    item=C.c_void_p.from_address(item).value
+                result.append(items)
+            return result
         register=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p,C.c_void_p,C.c_bool,C.c_bool,C.c_bool,C.c_double,C.c_bool)(base+0x1a5da0)
         prepare=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p,C.c_bool,C.c_bool,C.c_bool)(base+0x1a5cc0)
         update=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p,C.c_bool)(base+0x199fa0)
@@ -66,12 +82,15 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
             def ptr(v,o,x):C.c_void_p.from_buffer(v,o).value=x
             def q(v,o,x):C.c_uint64.from_buffer(v,o).value=x
             def u(v,o,x):C.c_uint32.from_buffer(v,o).value=x
-            model=buf(0x800);file=buf(0x1000);vt=buf(0x70)
+            model=buf(0x800);file=buf(0x1000);vt=buf(0xf0 if dependencies else 0x70)
             ptr(model,0,C.addressof(vt));ptr(vt,0x28,base+0x8a80)
             ptr(vt,0x48,base+0x8a80)
             ptr(vt,0x68,base+(0x6570 if case['spatial'] else 0x8a80))
             ptr(model,0xa0,C.addressof(file));C.c_uint8.from_buffer(model,0x78).value=case['spatial']
             q(file,0x190,case['initial_counter'])
+            if dependencies:
+                ptr(vt,0xe8,base+0x8a80)
+                C.CFUNCTYPE(C.c_void_p,C.c_void_p,C.c_void_p,C.c_bool)(base+0x190250)(C.addressof(model)+0x1d0,None,False)
             if prepare_ids or file_entry:
                 # File-input service: original vtable +50 -> 192210, whose
                 # constructor stores its file at +30. No host callback stub.
@@ -97,9 +116,23 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
             for i in reversed(range(len(case['parents']))):
                 descendants[i]=sum(1+descendants[c] for c in children[i])
             nodes=[];source_ranges=[];headers=[]
+            storage_bytes=0
             for i,parent in enumerate(case['parents']):
                 source=bytes.fromhex(case['source_headers'][i]) if 'source_headers' in case else None
+                links=b''
+                if dependencies:
+                    assert source is None
+                    for payload_hex in case['dependency_payloads'][i]:
+                        payload=bytes.fromhex(payload_hex)
+                        owner,relation,flags,count=struct.unpack_from('<4H',payload)
+                        format_=(flags>>10)&15
+                        assert format_ in (0,1) and not(format_==0 and (owner,relation)==(10000,4))
+                        assert len(payload)>=8+(8 if format_==0 else 16)*count and len(payload)%2==0 and len(payload)+4<=512
+                        links+=struct.pack('<HH',0x1000+(len(payload)+4)//2-1,0x56d0)+payload
                 size=len(source) if source is not None else 128
+                size+=len(links)
+                storage_bytes+=(size+7)&~7
+                assert storage_bytes<=65536
                 allocation=buf(0x20+0x48+size);address=C.addressof(allocation)+0x20;nodes.append(address)
                 if source is not None:
                     assert file_entry and struct.unpack_from('<I',source,4)[0]*2==len(source)
@@ -115,6 +148,9 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
                     r=[-size,-size-1,-size-2,size,size+1,size+2]
                     struct.pack_into('<6q',allocation,0xa0,*r)
                     if children[i]:struct.pack_into('<I',allocation,0xd0,case.get('source_descendants',descendants[i]))
+                    if links:
+                        struct.pack_into('<I',allocation,0x6c,64+len(links)//2)
+                        C.memmove(address+0x48+128,links,len(links))
                 source_ranges.append(r)
                 headers.append(bytes(allocation)[0x68:])
             for parent,items in children.items():
@@ -132,7 +168,13 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
                     if file_entry:
                         result=load(model,nodes[index],listing,0.,False)
                         assert result==0
-                        calls.append(dict(root=index,input_return=result,context=snapshot()))
+                        pointers=[C.c_void_p.from_address(n+0x28).value for n in nodes] if dependencies else None
+                        calls.append(dict(root=index,input_return=result,context=snapshot(pointers)))
+                        if dependencies:calls[-1]['dependents']=dependent_indices(pointers)
+                        overrides=case.get('post_root_flags',{})
+                        flags=overrides.get(index,overrides.get(str(index)))
+                        if dependencies and flags is not None:
+                            C.c_uint32.from_address(pointers[index]+0x10).value=flags
                         assert calls[-1]['context']['callback_depth']==0
                     else:
                         if prepare_ids:
@@ -146,6 +188,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
                         if prepare_ids:
                             calls[-1].update(prepared_ids=prepared_ids,prepared_counter=prepared_counter)
             entities=[C.c_void_p.from_address(n+0x28).value for n in nodes];observed=[]
+            observed_dependencies=dependent_indices(entities) if dependencies else None
             for i,entity in enumerate(entities):
                 header=C.c_void_p.from_address(entity+0x40).value
                 parent=C.c_void_p.from_address(entity+0x20).value
@@ -161,6 +204,8 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
                                      parent=entities.index(parent) if parent else None,children=child_indices,
                                      ordinal=C.c_uint32.from_address(entity+0x58).value))
                 if file_entry:observed[-1].update(source_header=headers[i].hex(),loaded_header=actual.hex())
+                if dependencies:
+                    observed[-1]['dependents']=observed_dependencies[i]
             count=(C.c_void_p.from_buffer(block,0x20).value-C.addressof(slots))//8
             actual_roots=[entities.index(C.c_void_p.from_buffer(slots,8*i).value) for i in range(count)]
             output=(C.c_double*6)(11,22,33,44,55,66);code=getbounds(model,output)
@@ -169,6 +214,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False):
         scope=('R1.18_file_service_id_preparation_and_registration_without_file_callbacks' if prepare_ids
                else 'R1.18_prepared_tree_registration_and_cache_update_without_file_callbacks')
         if file_entry:scope='R1.18_file_entry_header_preparation_registration_and_original_callbacks_bounded_context'
+        if dependencies:scope='R1.18_file_entry_direct_ID_dependencies_in_bounded_single_model_context'
         return dict(scope=scope,dll_sha256=HASHES,cases=rows)
     finally:
         for d in dirs:d.close()

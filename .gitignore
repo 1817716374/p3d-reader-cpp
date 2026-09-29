@@ -279,3 +279,5 @@
 !/tests/entity_input_ids_oracle.hpp
 !/tests/list_header_oracle.hpp
 !/tests/entity_file_input_oracle.hpp
+!/tests/dependency_registration.cpp
+!/tests/dependency_registration_oracle.hpp

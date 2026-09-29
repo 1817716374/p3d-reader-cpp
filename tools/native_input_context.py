@@ -41,13 +41,24 @@ def input_context(base):
         registry=C.c_void_p.from_buffer(service,0x10).value
         assert registry and C.c_uint32.from_address(registry+0x150).value==25
         assert all(C.c_void_p.from_buffer(service,o).value for o in (0x18,0x38))
-        def snapshot():
+        def snapshot(entities=None):
             transaction=C.CFUNCTYPE(C.c_void_p)(base+0x199d90)()
-            return dict(callback_depth=C.c_uint32.from_buffer(service,0x24).value,
+            result=dict(callback_depth=C.c_uint32.from_buffer(service,0x24).value,
                         transaction_count=C.c_uint32.from_address(transaction+0xc).value,
                         transaction_status=C.c_uint32.from_address(transaction+8).value,
                         registry_set_counts=[C.c_uint64.from_address(registry+o+8).value
                                              for o in range(0x10,0x130,0x10)])
+            if entities is not None:
+                sentinel=C.c_void_p.from_address(registry+0x30).value
+                pending=[]
+                def visit(node):
+                    if node==sentinel:return
+                    visit(C.c_void_p.from_address(node).value)
+                    pending.append(entities.index(C.c_void_p.from_address(node+0x20).value))
+                    visit(C.c_void_p.from_address(node+0x10).value)
+                visit(C.c_void_p.from_address(sentinel+8).value)
+                result['pending_entities']=sorted(pending)
+            return result
         yield snapshot
     finally:
         set_(key,previous)
