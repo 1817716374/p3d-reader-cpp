@@ -6,6 +6,7 @@
 !/tests/unit.cpp
 !/tests/native_handler.cpp
 !/tests/display_style_sources.cpp
+!/tests/display_style_tables.cpp
 !/tests/display_style_xml_oracle.hpp
 !/tests/display_style_usages_oracle.hpp
 !/tests/native_polygon_projection.cpp

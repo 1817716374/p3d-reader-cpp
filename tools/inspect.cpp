@@ -74,7 +74,8 @@ int main(int argc, char **argv) {
                          {"models", d.models()},
                          {"color_tables", d.color_tables()},
                          {"layer_tables", d.layer_tables()},
-                         {"display_style_sources", d.display_style_sources()}});
+                         {"display_style_sources", d.display_style_sources()},
+                         {"initial_display_style_tables", d.initial_display_style_tables()}});
         if (!graph.empty())
             write(graph, d.object_graph());
         if (!streams_dir.empty()) {
