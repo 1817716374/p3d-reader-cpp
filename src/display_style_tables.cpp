@@ -225,7 +225,7 @@ Json select_table(const Json &list, const Json &records, const Json &ids,
 Json initial_native_display_style_tables(const Json &list, const Json &records,
                                         const Json &ids, const Json &input,
                                         DisplayStyleHandlerProfile profile) {
-    return {{"scope", "fresh_system_style_tables_before_runtime_callbacks"},
+    Json out = {{"scope", "fresh_system_style_tables_before_runtime_callbacks"},
             {"handler_profile", profile == DisplayStyleHandlerProfile::BuiltinDefaultService
                                     ? "bimbase_r1_18_builtin_registry_and_default_service"
                                     : "bimbase_r1_18_builtin_style_handlers_without_replacement"},
@@ -235,6 +235,8 @@ Json initial_native_display_style_tables(const Json &list, const Json &records,
             {"common_to_lite_conversion", "not_evaluated"},
             {"common", select_table(list, records, ids, input, 0x006f0000u, profile)},
             {"lite", select_table(list, records, ids, input, 0x597e0000u, profile)}};
+    out["lite_initialization"] = plan_initial_lite_style_list(out.at("common"), out.at("lite"));
+    return out;
 }
 
 Json Document::initial_display_style_tables(DisplayStyleHandlerProfile profile) const {

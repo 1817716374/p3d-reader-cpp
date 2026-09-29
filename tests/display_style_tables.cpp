@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "display_style_xml.hpp"
 using namespace p3d;
 namespace {
 void put(Bytes &b, unsigned at, std::uint32_t x) {
@@ -196,5 +197,74 @@ unsigned display_style_tables_tests() {
     check(result["common"]["status"] == "selected" &&
               result["common"]["table_load"]["reason"] == "selected_id_not_indexed",
           "selected zero ID empties the load instead of selecting another table");
+    const Json absent = {{"status", "absent"}};
+    auto table = [](std::uint64_t size, const Json &entries = Json::array()) {
+        return Json{{"status", "selected"}, {"table_load", {{"status", "resolved"},
+                     {"slot_count", size}, {"entries", entries}}}};
+    };
+    auto style_entry = [](unsigned index, const char *name, const char *mode) {
+        Json tree = {{"tag", "ShowStyle"}, {"attributes", {{"Name", name}}},
+                     {"children", Json::array({
+                         {{"tag", "Flags"}, {"attributes", {{"Material", "true"}, {"DisplayShadows", "true"}}}},
+                         {{"tag", "Overrides"}, {"attributes", {{"DisplayMode", mode}, {"Material", "99"},
+                                                                  {"VisibleEdgeColor", "17"}, {"Transparency", "0.5"}}}}
+                     })}};
+        return Json{{"slot_index", index}, {"attribute_index", index}, {"source_ordinal", index + 10},
+                    {"attribute_offset", index + 100}, {"xml_tree", tree},
+                    {"native_xml_import", decode_display_style_xml(tree)}};
+    };
+    auto plan = plan_initial_lite_style_list({{"status", "unresolved"}}, table(2));
+    check(plan["status"] == "layout_resolved" && plan["decision"] == "retain_nonempty_lite" &&
+              plan["slot_count"] == 2 && plan["operations"].empty(),
+          "nonempty Lite layout blocks common copy even when every object is null");
+    plan = plan_initial_lite_style_list(absent, absent);
+    check(plan["decision"] == "empty_lists" && plan["slot_count"] == 0,
+          "two absent tables produce an empty list without fabricated default styles");
+    check(plan_initial_lite_style_list(table(1), {{"status", "unresolved"}})["status"] == "unresolved",
+          "unknown Lite selection cannot justify common copying");
+    plan = plan_initial_lite_style_list(table(2147483647), absent);
+    check(plan["slot_count"] == 2147483647 && plan["entries"].empty() && plan["null_slot_ranges"].size() == 1 &&
+              plan["null_slot_ranges"][0]["last"] == 2147483646,
+          "large null lists are copied as sparse ranges without native-sized allocations");
+    Json entries = Json::array({style_entry(1, "Alpha", "2"), style_entry(2, "alpha", "4"),
+                               style_entry(3, "ALPHA", "5"), style_entry(4, "Other", "3")});
+    const auto original_entries = entries;
+    plan = plan_initial_lite_style_list(table(6, entries), absent);
+    check(plan["status"] == "conditional" && plan["slot_count"] == 6 && plan["entries"].size() == 4 &&
+              entries == original_entries && plan["file_writeback"] == "not_evaluated",
+          "copy plan preserves source entries and does not claim runtime file registration");
+    check(plan["entries"][0]["slot_index"] == 1 && plan["entries"][0]["stored_index"] == 1 &&
+              plan["entries"][0]["source_common_slot"] == 3 && plan["entries"][0]["name"] == "ALPHA" &&
+              plan["entries"][1]["source_common_slot"] == 2 && plan["entries"][2]["source_common_slot"] == 3,
+          "case-insensitive duplicate copy replaces the first slot while retaining later appended identities");
+    check(plan["null_slot_ranges"] == Json::array({{{"first", 0}, {"last", 0}}, {{"first", 5}, {"last", 5}}}),
+          "null holes before and after copied objects keep their original indices");
+    const auto &projected = plan["entries"][0]["projected_xml_import"];
+    check(projected["packed_flags_at_48"] == (2048 + 6) &&
+              projected["fields"]["Overrides.Material"]["value"] == 99 &&
+              projected["fields"]["Flags.Material"]["value"] == false &&
+              projected["fields"]["Overrides.Transparency"]["value"] == 0 &&
+              projected["fields"]["Overrides.VisibleEdgeColor"]["value"] == 0,
+          "Lite copy changes native masks and edge values but retains disabled material identity");
+    plan = plan_initial_lite_style_list(table(2, Json::array({style_entry(0, u8"Ä", "1"),
+                                                           style_entry(1, u8"ä", "2")})), absent);
+    check(plan["entries"][0]["source_common_slot"] == 0 && plan["entries"][1]["source_common_slot"] == 1,
+          "observed C-locale comparison does not fold non-ASCII names");
+    auto rejected = style_entry(1, "Rejected", "6");
+    rejected["xml_tree"]["attributes"].erase("Name");
+    rejected["native_xml_import"] = decode_display_style_xml(rejected["xml_tree"]);
+    plan = plan_initial_lite_style_list(table(3, Json::array({rejected})), absent);
+    check(plan["entries"].empty() && plan["null_slot_ranges"][0]["last"] == 2 &&
+              plan["operations"][1]["reason"] == "rejected_xml_import",
+          "failed object import remains a null slot instead of compressing the list");
+    entries[1]["native_xml_import"]["fields"]["Overrides.DisplayHandler"]["value"] = 123;
+    plan = plan_initial_lite_style_list(table(6, entries), absent);
+    check(plan["status"] == "unresolved" && !plan.contains("slot_count") && plan["entries"].empty() &&
+              plan["reason"] == "custom_display_handler_import_unmodeled",
+          "a later unresolved callback cannot publish a completed list or a guessed replacement");
+    entries[1] = original_entries[1];
+    entries[1]["attribute_index"] = 5;
+    check(plan_initial_lite_style_list(table(6, entries), absent)["reason"] == "style_slot_attribute_index_mismatch",
+          "initial input index invariant is checked before native stored-index replacement is modeled");
     return checks;
 }

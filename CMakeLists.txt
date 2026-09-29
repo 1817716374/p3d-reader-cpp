@@ -131,6 +131,7 @@ target_sources(p3d_reader PRIVATE src/text_bytes.cpp src/native_text.cpp src/nat
 target_sources(p3d_reader PRIVATE src/native_font_catalog.cpp)
 target_sources(p3d_reader PRIVATE src/display_style_sources.cpp)
 target_sources(p3d_reader PRIVATE src/display_style_tables.cpp)
+target_sources(p3d_reader PRIVATE src/display_style_copy.cpp)
 target_sources(p3d_reader PRIVATE src/display_style_xml.cpp)
 target_sources(p3d_reader PRIVATE src/display_style_usages.cpp)
 target_sources(p3d_reader PRIVATE src/native_font_selection.cpp)

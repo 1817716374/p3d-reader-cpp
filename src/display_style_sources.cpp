@@ -11,7 +11,9 @@ Json identity(const Json &r, std::size_t record, std::size_t attribute) {
             {"attribute_index", a.at("index")}};
 }
 
-Json lite_copy_projection(const Json &tree) {
+} // namespace
+
+Json project_display_style_lite_copy(const Json &tree) {
     Json out = {{"status", "unresolved"},
                 {"condition", "imported_common_style_in_selected_table_with_empty_lite_list"},
                 {"scope", "confirmed_native_copy_writes"},
@@ -49,7 +51,6 @@ Json lite_copy_projection(const Json &tree) {
     }
     return out;
 }
-} // namespace
 
 Json build_display_style_sources(const Json &index, const Json &native, const Json &graphics) {
     Json out = {{"status", "partial"}, {"scope", "file_display_style_source_candidates"},
@@ -122,7 +123,7 @@ Json build_display_style_sources(const Json &index, const Json &native, const Js
                         row["name"] = tree["attributes"]["Name"];
                     row["native_xml_import"] = decode_display_style_xml(tree);
                     if (registration == 0x006f0000u)
-                        row["lite_copy_projection"] = lite_copy_projection(tree);
+                        row["lite_copy_projection"] = project_display_style_lite_copy(tree);
                 }
                 table["entries"].push_back(std::move(row));
             }
