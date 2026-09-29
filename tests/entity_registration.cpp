@@ -3,21 +3,33 @@
 #include <p3d/default_view_table.hpp>
 #include "entity_registration_oracle.hpp"
 #include "entity_input_ids_oracle.hpp"
+#include "entity_file_input_oracle.hpp"
 
 using namespace p3d;
 unsigned entity_registration_tests() {
     unsigned checks=0;
     auto check=[&](bool value,const char *message){++checks;require(value,message);};
     auto put=[](Bytes &bytes,std::size_t at,auto value){std::memcpy(bytes.data()+at,&value,sizeof(value));};
-    for (const bool prepare_ids:{false,true}) {
-    const auto oracle=Json::parse(prepare_ids?entity_input_ids_oracle:entity_registration_oracle);
-    check(oracle.at("cases").size()==(prepare_ids?160u:128u),"all entity forest observations are tested");
+    auto from_hex=[](const std::string &text) {
+        Bytes result;
+        for(std::size_t i=0;i<text.size();i+=2)
+            result.push_back(static_cast<std::uint8_t>(std::stoul(text.substr(i,2),nullptr,16)));
+        return result;
+    };
+    for (unsigned profile=0;profile<3;++profile) {
+    const bool prepare_ids=profile==1,file_entry=profile==2;
+    const auto oracle=Json::parse(file_entry?entity_file_input_oracle:prepare_ids?entity_input_ids_oracle:entity_registration_oracle);
+    check(oracle.at("cases").size()==(file_entry?352u:prepare_ids?160u:128u),"all entity forest observations are tested");
     for (const auto &row:oracle.at("cases")) {
         Json list={{"status","resolved"},{"system_bootstrap_required",true},{"roots",Json::array()}};
         Json records=Json::array();
         const auto parents=row.at("parents").get<std::vector<int>>();
         const auto roots=row.at("root_indices").get<std::vector<std::size_t>>();
         std::vector<std::size_t> list_roots(parents.size());
+        std::vector<std::uint32_t> descendants(parents.size());
+        std::vector<Bytes> projected_headers(parents.size());
+        for(std::size_t i=parents.size();i-->0;)
+            if(parents[i]>=0)descendants.at(std::size_t(parents[i]))+=1+descendants[i];
         for (std::size_t i=0;i<parents.size();++i) {
             list_roots[i]=parents[i]<0?i:list_roots.at(std::size_t(parents[i]));
             records.push_back({{"id",row.at("ids")[i]}});
@@ -41,6 +53,14 @@ unsigned entity_registration_tests() {
         std::size_t root_index=0;
         for (const auto &root:assigned.at("roots")) {
             const auto &call=row.at("calls")[root_index++];
+            if (file_entry) {
+                const auto &context=call.at("context");
+                check(call.at("input_return")==0 && context.at("callback_depth")==0 &&
+                      context.at("transaction_count")==root_index && context.at("transaction_status")==0,
+                      "original file entry executes with balanced dependency callback and TLS transaction bookkeeping");
+                check(context.at("registry_set_counts")==std::vector<unsigned>(18,0),
+                      "no-linkage input leaves original dependency registries empty");
+            }
             if (prepare_ids)
                 check(root.at("counter_after_subtree_preparation")==call.at("prepared_counter"),
                       "complete original file-service preparation sets the same subtree counter");
@@ -59,6 +79,25 @@ unsigned entity_registration_tests() {
                 std::vector<std::size_t> children;
                 for (std::size_t i=0;i<parents.size();++i) if (parents[i]==int(index)) children.push_back(i);
                 check(actual.at("children")==children,"native allocated child-vector order matches input siblings");
+                if (file_entry) {
+                    const auto source=from_hex(actual.at("source_header"));
+                    Bytes loaded(4);loaded.insert(loaded.end(),source.begin(),source.end());
+                    const Json header_record={{"data",rawbytes(loaded)},
+                        {"element_type",Reader(loaded,4).u16()},{"element_flags",Reader(loaded,6).u16()}};
+                    const auto prepared=native_list_record_header(header_record,Json(),parents[index]>=0,
+                                                                 !children.empty(),descendants[index],false);
+                    check(prepared.at("status")=="resolved","file entry header preparation is resolved");
+                    put(loaded,6,prepared.at("output_element_flags").get<std::uint16_t>());
+                    put(loaded,8,prepared.at("output_record_word_count").get<std::uint32_t>());
+                    put(loaded,12,prepared.at("output_base_word_count").get<std::uint32_t>());
+                    put(loaded,20,record.at("assigned_id").get<std::uint64_t>());
+                    const auto &count=prepared.at("descendant_count_update");
+                    if (!count.is_null() && count.at("written")==true)
+                        put(loaded,4+count.at("header_offset").get<std::size_t>(),count.at("output_value").get<std::uint32_t>());
+                    check(Bytes(loaded.begin()+4,loaded.end())==from_hex(actual.at("loaded_header")),
+                          "library header and ID preparation reproduce every byte copied by the original file entry and callback");
+                    projected_headers[index]=std::move(loaded);
+                }
             }
         }
         check(std::all_of(seen.begin(),seen.end(),[](bool value){return value;}),"every native-created entity is checked");
@@ -72,6 +111,7 @@ unsigned entity_registration_tests() {
             for (unsigned axis=0;axis<6;++axis)
                 put(record.record_base,60+8*axis,row.at("source_ranges")[i][axis].get<std::int64_t>());
             record.runtime_flags_10=row.at("entities")[i].at("flags");
+            if(file_entry)record.record_base=projected_headers.at(i);
             bounds.records.push_back(record);
         }
         const auto provider=project_native_model_bounds_provider(bounds);

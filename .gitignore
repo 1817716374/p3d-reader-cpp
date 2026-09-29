@@ -278,3 +278,4 @@
 !/tests/entity_registration_oracle.hpp
 !/tests/entity_input_ids_oracle.hpp
 !/tests/list_header_oracle.hpp
+!/tests/entity_file_input_oracle.hpp
