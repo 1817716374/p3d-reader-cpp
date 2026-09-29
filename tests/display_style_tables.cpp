@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "display_style_xml.hpp"
+#include "display_style_view_flags_oracle.hpp"
 using namespace p3d;
 namespace {
 void put(Bytes &b, unsigned at, std::uint32_t x) {
@@ -350,5 +351,58 @@ unsigned display_style_tables_tests() {
     incomplete["status"] = "partial";
     check(run(l, records, incomplete)["reference_inputs"]["status"] == "unresolved",
           "partial initial attachment input blocks a complete reference inventory");
+    for (const auto &row : style_view_flag_oracle) {
+        const auto flags = apply_display_style_flag_words(std::uint32_t(row[0]), std::uint32_t(row[1]),
+            std::uint32_t(row[2]), std::uint32_t(row[3]), row[4]);
+        check(flags[0] == row[5] && flags[1] == row[6],
+              "view flag writes match original daa40 over individual bits, material identities and mixed inputs");
+    }
+    auto native_view = record(11, 8);
+    Bytes view_bytes(308, 0);
+    put(view_bytes, 16, 1);
+    put(view_bytes, 0xfc, 0xffffffffu);
+    put(view_bytes, 0x100, 0xffffffffu);
+    native_view["data"] = rawbytes(view_bytes);
+    auto imported = style_entry(0, "View", "63")["native_xml_import"];
+    auto projected_flags = project_display_style_view_flags(native_view, imported);
+    check(projected_flags["status"] == "conditional" &&
+              projected_flags["source_words"][0] == 0xffffffffu &&
+              projected_flags["constructor_words"][0] == 0xe07fffffu &&
+              projected_flags["style_application_words"][0] == 0xffffffffu,
+          "constructor clamps source mode above seven but later style application writes all six mode bits");
+    put(view_bytes, 0xfc, 0x03800000u);
+    native_view["data"] = rawbytes(view_bytes);
+    check(project_display_style_view_flags(native_view, imported)["constructor_words"][0] == 0x03800000u,
+          "constructor retains source mode seven at its exact upper boundary");
+    put(view_bytes, 0xfc, 0x04000000u);
+    native_view["data"] = rawbytes(view_bytes);
+    check(project_display_style_view_flags(native_view, imported)["constructor_words"][0] == 0,
+          "constructor clears source mode eight without treating all flag bits as a float");
+    auto bad_view = native_view;
+    bad_view["element_type"] = 12;
+    check(project_display_style_view_flags(bad_view, imported)["status"] == "unresolved",
+          "view flag projection cannot reinterpret a different native record type");
+    bad_view = native_view;
+    auto bad_bytes = view_bytes;
+    put(bad_bytes, 16, 2);
+    bad_view["data"] = rawbytes(bad_bytes);
+    check(project_display_style_view_flags(bad_view, imported)["reason"] == "type11_subtype1_input_required",
+          "unconfirmed type11 subtype does not inherit the view reader layout");
+    bad_view["data"] = rawbytes(Bytes(260));
+    check(project_display_style_view_flags(bad_view, imported)["reason"] == "truncated_type11_constructor_input",
+          "eight readable flag bytes alone do not establish a complete constructor input prefix");
+    auto rejected_import = imported;
+    rejected_import["status"] = "rejected";
+    check(project_display_style_view_flags(native_view, rejected_import)["status"] == "unresolved",
+          "rejected XML cannot produce a style application projection");
+    records[1] = native_view;
+    attrs[0] = Json::array({marker(0x006f0000), xml(1, "View")});
+    attrs[1] = Json::array({reference(1)});
+    ref = run(l, records, input(attrs))["reference_inputs"]["references"][0];
+    check(ref["view_flag_projection"]["status"] == "conditional" &&
+              ref["view_flag_projection"]["style_application_words"][0] == (6u << 23) &&
+              ref["view_flag_projection"]["conditions"].size() == 7 &&
+              ref["view_flag_projection"]["runtime_application"] == "not_evaluated",
+          "view flags use the modified Lite copy fields and retain copy and application conditions");
     return checks;
 }

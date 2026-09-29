@@ -327,6 +327,17 @@ Json reference_inputs(const Json &records, const Json &ids, const Json &input,
                         {"condition", "fresh_object_uses_R1.18_4b46b0_and_4b4220_reader"},
                         {"initial_value", -1}, {"display_style_index", value}, {"action", action}};
                     ref["lite_slot_query"] = slot_query(value, lite, plan);
+                    const auto &query = ref.at("lite_slot_query");
+                    const auto outcome = query.value("outcome", std::string());
+                    if (outcome == "selected_style_input" || outcome == "projected_style_input") {
+                        const auto &entry = query.at("entry");
+                        auto projection = project_display_style_view_flags(records.at(ni),
+                            entry.at(outcome == "projected_style_input" ? "projected_xml_import" : "native_xml_import"));
+                        if (projection.at("status") == "conditional" && query.contains("conditions"))
+                            for (const auto &condition : query.at("conditions"))
+                                projection["conditions"].push_back(condition);
+                        ref["view_flag_projection"] = std::move(projection);
+                    }
                     ref["status"] = "resolved";
                 } catch (const std::exception &e) {
                     ref["reason"] = e.what();
