@@ -245,3 +245,5 @@
 !/tests/view_constructor_oracle.hpp
 !/tests/view_table_inputs.cpp
 !/tests/view_tables_oracle.hpp
+!/tests/view_table_collection.cpp
+!/tests/view_collection_oracle.hpp

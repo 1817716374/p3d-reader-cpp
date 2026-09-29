@@ -3,9 +3,8 @@
 #include <locale>
 
 namespace p3d {
-namespace {
-Json catalog_string_reader(const Json &field, const Json &strings) {
-    Json out = {{"reader_profile", "bimbase_2025_catalog_string_buffer"},
+Json native_512_string_reader(const Json &field, const Json &strings, const char *profile) {
+    Json out = {{"reader_profile", profile},
                 {"buffer_utf16_units", 512},
                 {"status", "unresolved"},
                 {"value", nullptr}};
@@ -103,6 +102,7 @@ Json catalog_string_reader(const Json &field, const Json &strings) {
     }
     return out;
 }
+namespace {
 Json native_catalog_input_members(std::size_t ni, const Json &records,
                                   const std::map<std::size_t, std::size_t> &catalog_indices,
                                   std::uint32_t counter) {
@@ -398,8 +398,8 @@ Json native_material_catalog_records(const Json &native_records,
             }
             strings.push_back(std::move(item));
         }
-        name["reader"] = catalog_string_reader(name, strings);
-        resource["reader"] = catalog_string_reader(resource, strings);
+        name["reader"] = native_512_string_reader(name, strings, "bimbase_2025_catalog_string_buffer");
+        resource["reader"] = native_512_string_reader(resource, strings, "bimbase_2025_catalog_string_buffer");
         resource["interpretation"] = catalog_resource_interpretation(resource);
         out.push_back({{"stream", n.value("stream", Json())},
                        {"native_record_index", ni},

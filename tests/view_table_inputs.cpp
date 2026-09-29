@@ -15,7 +15,7 @@ Json record(unsigned type, unsigned subtype, int slot, unsigned marker) {
     data[0x115] = 17;
     data[0x116] = 43;
     for (unsigned i = 0; i < 32; ++i) data[0x74+i] = static_cast<std::uint8_t>(marker);
-    return {{"element_type", type}, {"id", 8}, {"data", rawbytes(data)}};
+    return {{"element_type", type}, {"id", 8}, {"data", rawbytes(data)}, {"links", Json::array()}};
 }
 Json header(std::size_t ni, Json parent) {
     return {{"native_record_index", ni}, {"parent_record_index", parent}, {"status", "resolved"},
@@ -53,6 +53,9 @@ unsigned view_table_inputs_tests() {
         const auto result = initial_native_view_table_inputs(l, records, ids);
         check(result.at("status") == "resolved" && result.at("collection_selection") == "not_evaluated",
               "view inputs are resolved independently of final collection and active-view selection");
+        check(result.at("collection_projection").at("status") == "conditional" &&
+                  result.at("collection_projection").at("entries").at(0).at("table_input_index") == 0,
+              "initial view input API attaches the independently scoped collection projection");
         const auto &table = result.at("tables").at(0);
         check(table.at("status") == "conditional" && table.at("slot_projection_status") == "conditional" &&
                   table.at("child_scan").size() == row.at("children").size(),

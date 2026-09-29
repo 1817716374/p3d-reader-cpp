@@ -50,6 +50,7 @@ Json initial_native_view_table_inputs(const Json &list, const Json &records, con
                     continue;
                 }
                 table["table_kind"] = subtype == 1 ? "ordinary" : "lite";
+                table["text_fields"] = project_view_table_text_fields(record);
                 table["conditions"] = Json::array({"R1.18_builtin_type14_handler_unchanged",
                     "prepared_direct_children_preserve_native_sibling_order",
                     "view_construction_succeeds_without_intervening_mutation"});
@@ -115,8 +116,7 @@ Json initial_native_view_table_inputs(const Json &list, const Json &records, con
                 }
                 table["slots"] = std::move(slots);
                 table["status"] = "conditional";
-                table["unmodeled_steps"] = Json::array({"name_based_common_and_lite_collection_merge",
-                    "active_view_selection", "model_resolution_and_remaining_view_properties",
+                table["unmodeled_steps"] = Json::array({"active_view_selection", "model_resolution_and_remaining_view_properties",
                     "display_style_application", "viewport_refresh"});
             } catch (const std::exception &e) {
                 table["reason"] = e.what();
@@ -126,6 +126,7 @@ Json initial_native_view_table_inputs(const Json &list, const Json &records, con
         out["status"] = "resolved";
         for (const auto &table : out.at("tables"))
             if (table.at("status") == "unresolved") out["status"] = "partial";
+        out["collection_projection"] = project_view_table_collection(out.at("tables"));
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }
