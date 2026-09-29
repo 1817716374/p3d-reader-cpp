@@ -90,6 +90,15 @@ Json floating_field(const Json &attrs, const char *name, double fallback = 0) {
     return out;
 }
 
+Json string_field(const Json &attrs, const char *name) {
+    if (!attrs.contains(name))
+        return {{"value", ""}, {"read_status", "missing"}, {"default_applied", true}};
+    if (!attrs.at(name).is_string())
+        return {{"value", nullptr}, {"read_status", "unresolved"}, {"default_applied", false}};
+    const auto &text = attrs.at(name).get_ref<const std::string &>();
+    return {{"value", text.substr(0, text.find('\0'))}, {"read_status", "parsed"}, {"default_applied", false}};
+}
+
 struct Flag {
     const char *name;
     unsigned offset;
@@ -116,7 +125,7 @@ constexpr Flag flags[] = {
 } // namespace
 
 Json decode_display_style_xml(const Json &tree) {
-    Json out = {{"status", "unresolved"}, {"scope", "native_xml_scalar_writes"},
+    Json out = {{"status", "unresolved"}, {"scope", "native_xml_field_writes"},
                 {"runtime_resolution", "not_evaluated"}};
     try {
         const auto tag = tree.at("tag").get<std::string>();
@@ -184,12 +193,14 @@ Json decode_display_style_xml(const Json &tree) {
         // 0xd99fe: unlike the other doubles, failed threshold reads use 0.3.
         fields["Overrides.HLineTransparencyThreshold"] =
             floating_field(*overrides, "HLineTransparencyThreshold", 0.3);
+        fields["Name"] = string_field(root, "Name");
+        fields["EnvironmentName"] = string_field(root, "EnvironmentName");
+        out["usages"] = decode_display_style_usages(root);
         out["status"] = "partial";
         out["fields"] = std::move(fields);
         out["packed_flags_at_48"] = word48;
         out["packed_flags_at_50"] = word50;
-        out["unmodeled_steps"] = Json::array({"environment_name_and_usages",
-                                               "display_handler_registry", "table_selection_and_resource_binding"});
+        out["unmodeled_steps"] = Json::array({"display_handler_registry", "table_selection_and_resource_binding"});
     } catch (const std::exception &e) {
         out["reason"] = e.what();
     }

@@ -1,6 +1,7 @@
 #include "internal.hpp"
 #include "display_style_xml.hpp"
 #include "display_style_xml_oracle.hpp"
+#include "display_style_usages_oracle.hpp"
 using namespace p3d;
 namespace {
 Json attr(unsigned key, unsigned index, const Json &decoded) {
@@ -203,7 +204,7 @@ unsigned display_style_sources_tests() {
               "style float evidence including nonfinite payloads survives JSON export");
     }
     decoded = decode_display_style_xml(minimal);
-    check(decoded["fields"].size() == 45 &&
+    check(decoded["fields"].size() == 47 &&
               decoded["fields"]["GroundPlaneColor.R"]["value"] == 0 &&
               decoded["fields"]["GroundPlaneColor.G"]["value"] == 0 &&
               decoded["fields"]["GroundPlaneColor.B"]["value"] == 0 &&
@@ -284,5 +285,55 @@ unsigned display_style_sources_tests() {
     check(out["tables"][0]["entries"][0]["native_xml_import"]["packed_flags_at_50"] == 0x582 &&
               common == before_import && out["tables"][0]["entries"][0]["xml_tree"] == minimal,
           "source catalog exposes typed import evidence while preserving the original XML");
+    for (const auto &sample : style_usages_oracle) {
+        const auto usage = decode_display_style_usages({{"Usages", sample.source}});
+        std::vector<unsigned> bits;
+        for (const auto &range : usage.at("ranges"))
+            for (unsigned i = range.at("first"); i <= range.at("last").get<unsigned>(); ++i)
+                bits.push_back(i);
+        check(usage["status"] == "decoded" && usage["bit_length"] == sample.size &&
+                  bits == sample.bits && usage["set_bit_count"] == bits.size(),
+              "usage range parsing matches actual native bitset including delimiter and trim behavior");
+    }
+    auto usage = decode_display_style_usages({{"Usages", "9-7,1-3,3-8,2,12"}});
+    check(usage["ranges"] == Json::array({{{"first", 1}, {"last", 9}}, {{"first", 12}, {"last", 12}}}) &&
+              usage["tokens"].size() == 5 && usage["set_bit_count"] == 10,
+          "overlapping and reversed ranges normalize set membership while retaining ordered source tokens");
+    usage = decode_display_style_usages({{"Usages", "0-1000000000"}});
+    check(usage["status"] == "decoded" && usage["ranges"].size() == 1 &&
+              usage["set_bit_count"] == 1000000001 && usage["native_execution"] == "not_evaluated",
+          "large bounded ranges have exact compact semantics without allocating or executing native bit loops");
+    for (const auto *text : {"0-4294967295", "4294967295", "1--1", "18446744073709551616"}) {
+        usage = decode_display_style_usages({{"Usages", text}});
+        check(usage["status"] == "unresolved" && usage["reason"] == "native_uint32_range_loop_wrap" &&
+                  !usage.contains("ranges") && !usage.contains("set_bit_count"),
+              "native nonterminating uint32 endpoint does not masquerade as a completed bitset");
+    }
+    usage = decode_display_style_usages({{"Usages", "2,4294967295,4"}});
+    check(usage["completed_prefix_ranges"] == Json::array({{{"first", 2}, {"last", 2}}}) &&
+              usage["ignored_suffix"] == "4294967295,4",
+          "failure retains only prior completed tokens and does not continue to later source values");
+    usage = decode_display_style_usages({{"Usages", "1,,3"}});
+    check(usage["ignored_suffix"] == ",3" && usage["stop_reason"] == "non_digit_prefix",
+          "native stops before attempting tokenizer on a non-digit prefix");
+    usage = decode_display_style_usages({{"Usages", std::string("1\0,3", 4)}});
+    check(usage["set_bit_count"] == 1 && usage["ignored_suffix"] == std::string("\0,3", 3),
+          "native text stops at NUL while preserving the complete source suffix");
+    usage = decode_display_style_usages(Json::object());
+    check(usage["read_status"] == "missing" && usage["bit_length"] == 0 && usage["ranges"].empty(),
+          "absent Usages leaves the constructor's empty default-false bitset");
+    check(decode_display_style_usages({{"Usages", 3}})["status"] == "unresolved",
+          "usage input requires actual XML text");
+    input = minimal;
+    input["attributes"].update({{"Name", u8"光滑"}, {"EnvironmentName", u8"夜景"}, {"Usages", "0,2-4"}});
+    const auto input_copy = input;
+    decoded = decode_display_style_xml(input);
+    check(decoded["fields"]["Name"]["value"] == u8"光滑" &&
+              decoded["fields"]["EnvironmentName"]["value"] == u8"夜景" &&
+              decoded["usages"]["set_bit_count"] == 4 && input == input_copy,
+          "style importer joins names and the initial usage set without rewriting the source tree");
+    check(decode_display_style_xml(minimal)["fields"]["EnvironmentName"]["read_status"] == "missing" &&
+              decode_display_style_xml(minimal)["fields"]["EnvironmentName"]["value"] == "",
+          "environment name defaults to an empty string rather than a guessed external resource");
     return checks;
 }
