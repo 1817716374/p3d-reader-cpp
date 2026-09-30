@@ -25,7 +25,7 @@ Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool h
 NativeDependencyLoadResult project_native_dependency_load(const NativeDependencyLoadInput &input) {
     NativeDependencyLoadResult out;
     auto fail=[&](const std::string &reason) {
-        out.reason=reason;out.dependents.clear();out.pending_entities.clear();out.batches.clear();
+        out.reason=reason;out.dependents.clear();out.pending_entities.clear();out.batches.clear();out.system_dependents.clear();
         return out;
     };
     if(!input.input_complete)return fail("incomplete_input");
@@ -34,6 +34,16 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
     std::size_t remaining=input.max_work_items;
     auto tick=[&](){require(remaining!=0,"work_limit_exceeded");--remaining;};
     try {
+        std::unordered_map<std::uint64_t,std::size_t> system_registry;
+        if(input.system_registry) {
+            require(!input.system_registry_known_empty || input.system_registry->empty(),"contradictory_system_registry");
+            require(input.system_registry->size()<=remaining,"work_limit_exceeded");
+            out.system_dependents.resize(input.system_registry->size());
+            for(std::size_t i=0;i<input.system_registry->size();++i) {
+                tick();const auto id=input.system_registry->at(i).assigned_id;
+                if(id)require(system_registry.emplace(id,i).second,"system_assigned_id_collision");
+            }
+        }
         std::unordered_map<std::uint64_t,std::size_t> registry;
         std::vector<bool> registered(input.entities.size()),pending(input.entities.size());
         out.dependents.resize(input.entities.size());
@@ -59,7 +69,17 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                         if(found==registry.end()) {
                             // 19a8f0 searches the current model first; 1f12b0
                             // reaches system/file lookup only after that miss.
-                            require(input.system_registry_known_empty,"system_registry_requires_context");
+                            require(input.system_registry.has_value() || input.system_registry_known_empty,"system_registry_requires_context");
+                            const auto system_found=system_registry.find(id);
+                            if(system_found!=system_registry.end()) {
+                                const auto target=system_found->second;
+                                const auto flags=input.system_registry->at(target).runtime_flags_10;
+                                require(flags.has_value(),"system_target_runtime_flags_require_context");
+                                if(*flags&0x20008u)continue;
+                                out.system_dependents[target].push_back(index);
+                                result.added_system_edges.push_back({target,index});
+                                continue;
+                            }
                             require(input.file_fallback_disabled,"file_fallback_requires_context");
                             if(id!=0 && !pending[index]) {
                                 pending[index]=true;result.newly_pending_entities.push_back(index);
@@ -81,6 +101,7 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
         }
         require(std::all_of(registered.begin(),registered.end(),[](bool v){return v;}),"entity_not_registered");
         for(auto &list:out.dependents)std::reverse(list.begin(),list.end());
+        for(auto &list:out.system_dependents)std::reverse(list.begin(),list.end());
         for(std::size_t i=0;i<pending.size();++i)if(pending[i])out.pending_entities.push_back(i);
         out.failed_batch.reset();out.failed_entity.reset();out.resolved=true;
         return out;

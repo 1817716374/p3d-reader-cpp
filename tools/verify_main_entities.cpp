@@ -18,6 +18,7 @@ struct Verifier {
     std::size_t bounds_models = 0, valid_bounds_models = 0, bounds_included_roots = 0;
     bool with_dependencies = false;
     Json dependency_entities = Json::array(), dependency_reverse = Json::array();
+    std::vector<NativeDependencySystemTarget> dependency_system_targets;
     std::size_t dependency_payloads = 0, dependency_edges = 0;
     void same(const std::string &field, const Json &ours, const Json &native) {
         ++checks;
@@ -61,8 +62,9 @@ struct Verifier {
         if (with_dependencies) {
             dependency_input.input_complete = true;
             dependency_input.monitored_entity_set_known_empty = true;
-            // Real system data is present. Leave both fallback guarantees false:
-            // only lookups proved to hit the already registered local model pass.
+            // The system model was parsed first. Use its independently assigned
+            // IDs and explicit runtime flags; file fallback remains unknown.
+            if (!system) dependency_input.system_registry = dependency_system_targets;
             for (const auto &root : ids.at("roots")) {
                 std::vector<std::size_t> batch;
                 for (const auto &entry : root.at("records"))
@@ -159,6 +161,16 @@ struct Verifier {
             require(projected.resolved, "full-file local dependency projection: " + projected.reason);
             require(projected.pending_entities.empty(), "unmodeled full-file retry required");
             const auto offset = dependency_entities.size();
+            if (system)
+                for (const auto &entity : dependency_input.entities)
+                    dependency_system_targets.push_back({entity.assigned_id, entity.runtime_flags_10});
+            for (std::size_t i = 0; i < projected.system_dependents.size(); ++i) {
+                Json merged = Json::array();
+                for (const auto dependent : projected.system_dependents[i]) merged.push_back(offset + dependent);
+                dependency_edges += merged.size();
+                for (const auto &prior : dependency_reverse.at(i)) merged.push_back(prior);
+                dependency_reverse[i] = std::move(merged);
+            }
             for (std::size_t i = 0; i < entries.size(); ++i) {
                 dependency_entities.push_back({{"model", native.at("model_id")}, {"occurrence", i}});
                 Json reverse = Json::array();

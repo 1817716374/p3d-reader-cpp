@@ -5,6 +5,7 @@
 #include "dependency_cycle_oracle.hpp"
 #include "dependency_held_cycle_oracle.hpp"
 #include "dependency_flush_oracle.hpp"
+#include "dependency_system_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -159,12 +160,57 @@ unsigned dependency_registration_tests() {
             check(applied==retried.dependents,"retry action order reconstructs final lists");
         }
     }
+    const auto system_oracle=Json::parse(dependency_system_oracle);
+    check(system_oracle.at("cases").size()==80,"all original populated-system experiments are tested");
+    for(const auto &row:system_oracle.at("cases")) {
+        NativeDependencyLoadInput input;
+        input.input_complete=input.file_fallback_disabled=input.monitored_entity_set_known_empty=true;
+        input.system_registry.emplace();
+        for(const auto &id:row.at("system_ids"))
+            input.system_registry->push_back({id.get<std::uint64_t>(),row.at("system_flags").get<std::uint32_t>()});
+        for(std::size_t i=0;i<row.at("ids").size();++i) {
+            NativeDependencyLoadEntity entity;
+            entity.assigned_id=row.at("ids")[i];
+            entity.runtime_flags_10=entity.assigned_id==41?row.at("local_flags").get<std::uint32_t>():0;
+            check(*entity.runtime_flags_10==row.at("runtime_flags")[i],"explicit target state agrees with native system experiment");
+            for(const auto &payload:row.at("dependency_payloads")[i])entity.dependency_payloads.push_back(unhex(payload));
+            input.entities.push_back(std::move(entity));input.batches.push_back({i});
+        }
+        const auto result=project_native_dependency_load(input);
+        require(result.resolved,"populated system projection: "+result.reason);
+        check(result.batches.size()==input.batches.size(),"all roots with populated system registry resolve");
+        std::vector<std::vector<std::size_t>> local(input.entities.size()),system(input.system_registry->size());
+        std::set<std::size_t> pending;
+        for(std::size_t i=0;i<result.batches.size();++i) {
+            for(const auto &edge:result.batches[i].added_edges)
+                local.at(edge.target_entity).insert(local.at(edge.target_entity).begin(),edge.dependent_entity);
+            for(const auto &edge:result.batches[i].added_system_edges)
+                system.at(edge.target_entity).insert(system.at(edge.target_entity).begin(),edge.dependent_entity);
+            for(auto p:result.batches[i].newly_pending_entities)pending.insert(p);
+            const auto &native=row.at("calls")[i];
+            const std::vector<std::vector<std::size_t>> loaded(local.begin(),local.begin()+i+1);
+            check(native.at("dependents")==loaded,"local targets take precedence over system targets only after registration");
+            check(native.at("system_dependents")==system,"system reverse prefixes match original callbacks after every root");
+            check(native.at("pending_entities")==std::vector<std::size_t>(pending.begin(),pending.end()),
+                  "system hits and excluded targets do not spuriously queue missing-reference work");
+        }
+        check(result.dependents==local && result.system_dependents==system,"both target namespaces preserve native duplicate and prepend order");
+        check(result.pending_entities==std::vector<std::size_t>(pending.begin(),pending.end()),"final pending membership matches native system experiment");
+        for(const auto &lookup:row.at("lookups")) {
+            Json target;
+            for(std::size_t i=0;i<input.entities.size();++i)
+                if(input.entities[i].assigned_id==lookup.at("id"))target=Json::array({"local",i});
+            if(target.is_null())for(std::size_t i=0;i<input.system_registry->size();++i)
+                if(input.system_registry->at(i).assigned_id==lookup.at("id"))target=Json::array({"system",i});
+            check(target==lookup.at("target"),"original 19a8f0 and 1f12b0 choose the expected model-qualified target");
+        }
+    }
     NativeDependencyLoadInput base;
     base.input_complete=base.system_registry_known_empty=base.file_fallback_disabled=base.monitored_entity_set_known_empty=true;
     base.entities={{1,0,{}},{2,0,{unhex("e7030100000001000100000000000000")}}};base.batches={{0},{1}};
     auto rejected=[&](const NativeDependencyLoadInput &input,const char *reason){
         auto result=project_native_dependency_load(input);
-        check(!result.resolved && result.reason==reason && result.dependents.empty() && result.pending_entities.empty() && result.batches.empty(),
+        check(!result.resolved && result.reason==reason && result.dependents.empty() && result.pending_entities.empty() && result.batches.empty() && result.system_dependents.empty(),
               "unknown or invalid dependency input never publishes a partial graph");
     };
     auto input=base;input.input_complete=false;rejected(input,"incomplete_input");
@@ -189,6 +235,31 @@ unsigned dependency_registration_tests() {
     input.entities[1].dependency_payloads.clear();
     check(project_native_dependency_load(input).resolved,"no dependency payload needs no fallback context");
     input=base;input.monitored_entity_set_known_empty=false;rejected(input,"monitored_entities_require_context");
+    auto system_input=base;
+    system_input.system_registry_known_empty=system_input.file_fallback_disabled=false;
+    system_input.system_registry=std::vector<NativeDependencySystemTarget>{{42,0}};
+    system_input.entities[1].dependency_payloads[0][8]=42;
+    auto system_result=project_native_dependency_load(system_input);
+    check(system_result.resolved && system_result.system_dependents==std::vector<std::vector<std::size_t>>{{1}} &&
+          system_result.pending_entities.empty(),"system hit requires no unused file fallback context");
+    system_input.entities[1].dependency_payloads.push_back(unhex("e7030100000001000300000000000000"));
+    rejected(system_input,"file_fallback_requires_context");
+    system_input.entities[1].dependency_payloads.pop_back();
+    input=system_input;input.system_registry->at(0).runtime_flags_10.reset();
+    rejected(input,"system_target_runtime_flags_require_context");
+    input.entities[1].dependency_payloads[0][8]=1;
+    check(project_native_dependency_load(input).resolved,"unused system target flags are not required for a local hit");
+    input=system_input;input.system_registry->push_back({42,0});rejected(input,"system_assigned_id_collision");
+    input=system_input;input.system_registry_known_empty=true;rejected(input,"contradictory_system_registry");
+    input=system_input;input.system_registry->clear();rejected(input,"file_fallback_requires_context");
+    input.file_fallback_disabled=true;
+    check(project_native_dependency_load(input).pending_entities==std::vector<std::size_t>{1},"complete empty system registry proves a genuine miss");
+    input=system_input;input.system_registry->at(0).assigned_id=0;input.entities[1].dependency_payloads[0][8]=0;
+    input.file_fallback_disabled=true;
+    system_result=project_native_dependency_load(input);
+    check(system_result.resolved && system_result.system_dependents==std::vector<std::vector<std::size_t>>{{}} && system_result.pending_entities.empty(),
+          "zero ID is not a registered system target and does not create pending work");
+    input=system_input;input.max_work_items=1;rejected(input,"work_limit_exceeded");
     input=base;input.entities[0].runtime_flags_10.reset();rejected(input,"target_runtime_flags_require_context");
     input=base;input.entities[1].assigned_id=1;rejected(input,"assigned_id_collision");
     input=base;input.batches={{0},{0,1}};rejected(input,"entity_registered_more_than_once");

@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Original local file callbacks with a populated, distinct system registry.
+
+Uses real file/model constructors. System targets are synthetic prepared
+records registered by 1a5cc0/1a6920/1a5da0, not a simulated SSYS file load.
+Local roots execute complete 199e40 callbacks. Runtime target flags are
+explicit experimental inputs. No callback replacement or binary patch.
+No retry, outer flush or final unload; native allocations live until exit.
+"""
+import argparse
+import ctypes as C
+import hashlib
+import json
+import os
+import struct
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_input_context import input_context
+from native_constructed_model import constructed_model
+from probe_dependency_registration import payload
+from probe_view_frame import HASHES
+
+
+def cases():
+    high, maximum = 1 << 63, (1 << 64) - 1
+    for format_ in (0, 1):
+        for system_flags in (0, 8, 0x20000, 0x20008, 0x100000):
+            for local_flags in (0, 8):
+                for local_first in (False, True):
+                    for disabled in (False, True):
+                        ids = [41, 77, 78] if local_first else [77, 41, 78]
+                        links = []
+                        for id_ in ids:
+                            links.append([] if id_ == 41 else [
+                                payload([41, 42, high, maximum, 0, 500, 41, 77, 78, 42], format_, int(disabled)),
+                                payload([42, 41, 42], format_, int(disabled))])
+                        yield dict(system_ids=[41, 42, high, maximum], ids=ids,
+                                   system_flags=system_flags, local_flags=local_flags,
+                                   dependency_payloads=links)
+
+
+def probe(root, inputs):
+    assert os.name == 'nt' and C.sizeof(C.c_void_p) == 8
+    for name, sha in HASHES.items():
+        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == sha, name
+    directories = [os.add_dll_directory(str(root / d))
+                   for d in ('ROOT', 'SHARE', 'SHARE/vcredist/X64', 'PLATFORM')]
+    try:
+        dll = C.WinDLL(str(root / 'ROOT/P3DKJ.dll'))
+        base = dll._handle
+        V = C.c_void_p
+        ptr = lambda a: V.from_address(a).value
+        u32 = lambda a: C.c_uint32.from_address(a).value
+        fn = lambda r, t, *args: C.CFUNCTYPE(t, *args)(base + r)
+        fn(0x163a90, None)()
+        rows = []
+        for case in inputs:
+            keep, system_entities, local_entities = [], [], []
+            with input_context(base, True) as snapshot:
+                model_buffer, file_buffer, _, metadata = constructed_model(base, 100, False)
+                model, file = C.addressof(model_buffer), C.addressof(file_buffer)
+                system = file + 0x6c8
+                assert ptr(system) == base + 0x535e10
+                assert ptr(system + 0x698) is None and ptr(model + 0x698) is None
+                # Actual original ordinary-model getter disables file fallback.
+                assert ptr(ptr(model) + 0xe8) == base + 0x8a90
+                assert not fn(0x8a90, C.c_bool, V)(model)
+
+                def insert(target_model, id_, payloads):
+                    data = bytearray(128)
+                    struct.pack_into('<HHIIIQ', data, 0, 33, 0x20, 64, 64, 0, id_)
+                    struct.pack_into('<6q', data, 56, -1, -2, -3, 1, 2, 3)
+                    for encoded in payloads:
+                        raw = bytes.fromhex(encoded)
+                        assert len(raw) + 4 <= 512
+                        data += struct.pack('<HH', 0x1000 + (len(raw) + 4) // 2 - 1, 0x56d0) + raw
+                    struct.pack_into('<I', data, 4, len(data) // 2)
+                    buffer = C.create_string_buffer(0x68 + len(data))
+                    keep.append(buffer)
+                    node = C.addressof(buffer) + 0x20
+                    C.memmove(node + 0x48, bytes(data), len(data))
+                    if target_model == system:
+                        listing = ptr(system + 0x138)
+                        assert listing and ptr(listing + 0x30) == system
+                        if not ptr(listing + 0x20):
+                            fn(0x1a6920, V, V, C.c_int, C.c_bool, C.c_int, C.c_bool)(listing, 16, True, 0, True)
+                        assert fn(0x1a5cc0, C.c_int, V, V, C.c_bool, C.c_bool, C.c_bool)(listing, node, True, False, False) == 0
+                        rc = fn(0x1a5da0, C.c_int, V, V, V, C.c_bool, C.c_bool, C.c_bool, C.c_double, C.c_bool)(listing, node, None, False, True, False, 0., False)
+                    else:
+                        rc = fn(0x199e40, C.c_int, V, V, V, C.c_double, C.c_bool)(model, node, model + 0x140, 0., False)
+                    assert rc == 0
+                    entity = ptr(node + 0x28)
+                    assert entity and C.c_uint64.from_address(ptr(entity + 0x40) + 16).value == id_
+                    assert fn(ptr(ptr(entity) + 0x20) - base, V, V)(entity) == target_model
+                    return entity, data.hex()
+
+                def reverse(entities):
+                    lists = []
+                    for entity in entities:
+                        node = fn(0x19d5b0, V, V)(entity)
+                        row, seen = [], set()
+                        while node:
+                            assert node not in seen
+                            seen.add(node)
+                            row.append(local_entities.index(ptr(node + 8)))
+                            node = ptr(node)
+                        lists.append(row)
+                    return lists
+
+                for id_ in case['system_ids']:
+                    entity, _ = insert(system, id_, [])
+                    C.c_uint32.from_address(entity + 0x10).value = case['system_flags']
+                    system_entities.append(entity)
+                calls, headers = [], []
+                for id_, links in zip(case['ids'], case['dependency_payloads']):
+                    entity, header = insert(model, id_, links)
+                    local_entities.append(entity)
+                    headers.append(header)
+                    if id_ == 41:
+                        C.c_uint32.from_address(entity + 0x10).value = case['local_flags']
+                    assert all(u32(e + 0x10) == case['system_flags'] for e in system_entities)
+                    state = snapshot(local_entities)
+                    assert state['callback_depth'] == state['transaction_status'] == 0
+                    assert state['monitored_entities'] == state['scheduled_pairs'] == []
+                    calls.append(dict(dependents=reverse(local_entities), system_dependents=reverse(system_entities),
+                                      pending_entities=state['pending_entities']))
+                lookups = []
+                for id_ in case['system_ids'] + [0, 77, 78, 500]:
+                    target = fn(0x19a8f0, V, V, C.c_uint64)(model, id_)
+                    output = (C.c_uint64 * 3)(11, 22, 33)
+                    fn(0x1f12b0, None, V, V, C.c_uint64)(output, model, id_)
+                    assert output[0] == id_ and output[1] == 0 and output[2] == (target or 0)
+                    identity = None
+                    if target in local_entities: identity = ['local', local_entities.index(target)]
+                    elif target in system_entities: identity = ['system', system_entities.index(target)]
+                    else: assert target is None
+                    lookups.append(dict(id=id_, target=identity))
+                rows.append(dict(case, source_headers=headers, calls=calls, lookups=lookups,
+                                 runtime_flags=[u32(e + 0x10) for e in local_entities], native=metadata()))
+        return dict(scope='R1.18_local_file_callbacks_with_original_prepared_system_registry',
+                    dll_sha256=HASHES, cases=rows)
+    finally:
+        for directory in directories: directory.close()
+
+
+def fixture(result):
+    return '#pragma once\n// Synthetic populated-system registry and original local callbacks.\ninline constexpr const char* dependency_system_oracle = R"oracle(' + json.dumps(result, separators=(',', ':')) + ')oracle";\n'
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dll-root', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--fixture', type=Path)
+    args = parser.parse_args()
+    result = probe(args.dll_root.resolve(), cases())
+    args.output.write_text(json.dumps(result, indent=2) + '\n', encoding='utf8')
+    if args.fixture: args.fixture.write_text(fixture(result), encoding='utf8')
+    print('Observed', len(result['cases']), 'populated-system dependency cases')
+
+
+if __name__ == '__main__':
+    main()

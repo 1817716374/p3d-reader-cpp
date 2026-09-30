@@ -11,6 +11,10 @@ struct NativeDependencyLoadEntity {
     // linkage header. Other linkage applications are not supplied here.
     std::vector<Bytes> dependency_payloads;
 };
+struct NativeDependencySystemTarget {
+    std::uint64_t assigned_id = 0;
+    std::optional<std::uint32_t> runtime_flags_10;
+};
 struct NativeDependencyLoadInput {
     std::vector<NativeDependencyLoadEntity> entities;
     // Each batch is one accepted root subtree in recursive input order. All
@@ -18,12 +22,17 @@ struct NativeDependencyLoadInput {
     // Every entity must occur exactly once; indices are occurrence identities.
     std::vector<std::vector<std::size_t>> batches;
     bool input_complete = false;
-    // Required only when an active entry misses the already registered local
-    // model. Local hits do not consult the system registry or file fallback.
+    // Used after a local miss when no complete system_registry is supplied.
     bool system_registry_known_empty = false;
+    // Required only when both current-model and system lookup miss.
     bool file_fallback_disabled = false;
     bool monitored_entity_set_known_empty = false;
     std::size_t max_work_items = 1000000;
+    // Complete, already registered targets in the distinct system model.
+    // nullopt means unknown unless system_registry_known_empty is true.
+    // Vector positions are system occurrence identities; ID 0 is unregistered.
+    // Targets/flags remain fixed throughout this model's input batches.
+    std::optional<std::vector<NativeDependencySystemTarget>> system_registry;
 };
 struct NativeDependencyEdge {
     std::size_t target_entity = 0;
@@ -34,6 +43,8 @@ struct NativeDependencyLoadBatchResult {
     // native reverse list; duplicates and self references are retained.
     std::vector<NativeDependencyEdge> added_edges;
     std::vector<std::size_t> newly_pending_entities;
+    // target_entity indexes system_registry, dependent_entity indexes entities.
+    std::vector<NativeDependencyEdge> added_system_edges;
 };
 struct NativeDependencyLoadResult {
     bool resolved = false;
@@ -44,9 +55,15 @@ struct NativeDependencyLoadResult {
     // Set membership in stable input-index order, not native pointer ordering.
     std::vector<std::size_t> pending_entities;
     std::vector<NativeDependencyLoadBatchResult> batches;
+    // New reverse-list prefixes contributed by this load to system targets.
+    // Entries are local entities indices, not system indices or persisted IDs.
+    // Qualify them with the current model identity before prepending each
+    // prefix to any pre-existing system reverse list spanning other models.
+    std::vector<std::vector<std::size_t>> system_dependents;
 };
 // R1.18 initial file callbacks (mode 1), fresh current-model ID registry, empty
-// system registry, no file fallback, empty service monitored set. Resolves
+// service monitored set. Local lookup precedes the supplied system registry;
+// file fallback context is required only if both miss. Resolves
 // direct IDs in formats 0/1; format 0 owner=10000/relation=4 is a separate path
 // program and remains unsupported. Disabled/empty/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,
