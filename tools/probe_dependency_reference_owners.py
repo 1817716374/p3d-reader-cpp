@@ -87,16 +87,21 @@ def probe(root, inputs):
                     assert fn(0x199330, C.c_int, V)(target) == 1
                     return target
 
-                def insert(owner, id_, type_=33, links=()):
-                    size = 368 if type_ == 13 else 128
+                def insert(owner, id_, type_=33, links=(), path_profile=None):
+                    size = 368 if type_ == 13 else 34 if type_ == 47 else 128
                     raw = bytearray(size)
-                    struct.pack_into('<HHIIIQ', raw, 0, type_, 0x20, size // 2, size // 2, 0, id_)
+                    struct.pack_into('<HHIIIQ', raw, 0, type_, 4 if type_ == 47 else 0x20,
+                                     size // 2, size // 2, 20 if type_ == 47 else 0, id_)
                     if type_ == 13:
                         transform = case.get('source_transforms', {}).get(str(id_), {})
                         struct.pack_into('<3d', raw, 168, *transform.get('reference_point', [0, 0, 0]))
                         struct.pack_into('<3d', raw, 192, *transform.get('translation', [0, 0, 0]))
                         struct.pack_into('<9d', raw, 216, *transform.get('matrix', [1, 0, 0, 0, 1, 0, 0, 0, 1]))
                         struct.pack_into('<d', raw, 288, transform.get('scale', 1))
+                    elif type_ == 47:
+                        profile = path_profile or {}
+                        struct.pack_into('<I', raw, 12, profile.get('subtype', 20))
+                        struct.pack_into('<H', raw, 32, profile.get('signature', 0x56e6))
                     else: struct.pack_into('<6q', raw, 56, -1, -2, -3, 1, 2, 3)
                     for link in links:
                         data = bytes.fromhex(link)
@@ -172,6 +177,10 @@ def probe(root, inputs):
                 C.c_uint32.from_address(source + 0x10).value = case['owner_flags']
                 calls.append(observe())
                 local.append(insert(model, 41)); calls.append(observe())
+                for path_source in case.get('path_owners', []):
+                    local.append(insert(model, path_source['id'], 47, path_source['links'], path_source))
+                    C.c_uint32.from_address(local[-1] + 0x10).value = path_source.get('runtime_flags', 0)
+                    calls.append(observe())
                 local.append(insert(model, 78, links=[case['payload_hex']])); calls.append(observe())
                 transitions = []
                 for context, id_, expected in ((model, 42, root_ref), (root_ref, 43, nested_ref),
@@ -184,6 +193,33 @@ def probe(root, inputs):
                     transitions.append(dict(owner_id=id_, accepted=got is not None,
                                             result='null' if got is None else 'same_reference' if got == context else 'child_reference'))
                 assert observe() == calls[-1]
+                path_queries = []
+                if 'path_owners' in case:
+                    # Exact inline empty collector initialization observed in
+                    # 1023e0/1f14a0; the real vtable and vector initializer are
+                    # used, with no replacement virtual functions.
+                    identities = {entity: dict(model_id=7, id=C.c_uint64.from_address(ptr(entity + 0x40)+16).value)
+                                  for entity in local}
+                    identities.update({entity: dict(model_id=id_, id=C.c_uint64.from_address(ptr(entity + 0x40)+16).value)
+                                       for id_, entities in zip((9,10), file_entities) for entity in entities})
+                    contexts = {None: 'null', model: 'current', root_ref: 'reference_42',
+                                nested_ref: 'nested_reference_43', nested_model_ref: 'model9_reference_43'}
+                    for offset, source_spec in enumerate(case['path_owners']):
+                        collector = C.create_string_buffer(0x38); keep.append(collector)
+                        address = C.addressof(collector)
+                        V.from_address(address).value = base + 0x52a1c0
+                        fn(0x18de60, None, V, C.c_size_t)(address + 0x10, 0)
+                        C.c_int64.from_address(address + 0x30).value = -1
+                        code = fn(0x1017b0, C.c_int, V, V, V, V, B)(address, None, local[3+offset], model, False)
+                        begin, end = ptr(address+0x10), ptr(address+0x18)
+                        collected = [] if not begin else [identities[ptr(p)] for p in range(begin,end,8)]
+                        out = (C.c_double * 12)()
+                        transform_code = fn(0x101dc0, C.c_int, V, V, V)(out, address, model) if code == 0 else None
+                        path_queries.append(dict(id=source_spec['id'], native_code=code,
+                            owner_context=contexts[ptr(address+0x28)], collected=collected,
+                            terminal_index=C.c_int32.from_address(address+0x30).value,
+                            transform_code=transform_code, native_matrix=list(out) if transform_code == 0 else None))
+                    assert observe() == calls[-1]
                 affine_queries = []
                 if 'source_transforms' in case:
                     for ref_index, ref, stop_index, stop in ((0, root_ref, None, None),
@@ -199,6 +235,7 @@ def probe(root, inputs):
                                  reference_ids=[42, 43, 43], reference_parent_contexts=['current', 'model_9', 'reference_42'],
                                  target_model_ids=[9, 7, 10])
                 if affine_queries: row['affine_queries'] = affine_queries
+                if path_queries: row['path_queries'] = path_queries
                 rows.append(row)
         return dict(scope='R1.18_original_bound_type13_reference_owner_callbacks', dll_sha256=HASHES, cases=rows)
     finally:
