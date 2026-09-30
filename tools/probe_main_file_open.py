@@ -26,7 +26,7 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def observe(base, path):
+def observe(base, path, model_observer=None):
     V, I, B, W = C.c_void_p, C.c_int, C.c_bool, C.c_wchar_p
     ptr = lambda a: V.from_address(a).value
     u32 = lambda a: C.c_uint32.from_address(a).value
@@ -114,12 +114,17 @@ def observe(base, path):
                 unassigned_u16=u32(address + 0x68), bitmap=mask,
                 extension_count=u64(address + 0x80)))
         assert u64(file + 0x6b0) == 0 and u32(file + 0x684) == 0
-        return dict(return_code=rc, low_level_status=status.value, readonly=True,
+        result = dict(return_code=rc, low_level_status=status.value, readonly=True,
             registered_factory_count=factory_count, provider_vtable='0x534a40',
             file_vtable='0x52eef8', name_spec_vtable='0x531338', name_wrapper_vtable='0x531248',
             provider_storage_present=bool(ptr(provider + 0x40)), header_hex=header.hex(),
             name_map=mapping, directory_version=u32(directory + 0x30), models=models,
             loaded_model_count=0, file_reference_count=u32(file + 0x680))
+        # Optional follow-on experiment runs while the original TLS context lives.
+        # The fields above retain the snapshot before any model acquisition.
+        if model_observer is not None:
+            result['model_loading'] = model_observer(base, file, models)
+        return result
 
 
 def main():

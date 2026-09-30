@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include <p3d/model_header_input.hpp>
 
 unsigned model_units_tests() {
     using namespace p3d;
@@ -186,5 +187,70 @@ unsigned model_units_tests() {
     check(state["factors"]["material_mapping_units_before_reference"][5]["status"] ==
               "not_evaluated",
           "named-unit intermediate overflow is not hidden by reordered arithmetic");
+    // Persisted values and initial loaded values are separate. Version 8 must
+    // not receive the version-7 repair, even for unusual or nonfinite fields.
+    Bytes header(508, 0x5a);
+    auto field = [&](std::size_t offset, auto value) {
+        std::memcpy(header.data() + offset, &value, sizeof value);
+    };
+    field(4, std::uint16_t(47));
+    field(8, std::uint32_t(252));
+    field(12, std::uint32_t(248));
+    field(16, std::uint32_t(32));
+    field(36, std::uint16_t(8));
+    field(72, std::uint32_t(1));
+    auto observed = initial_native_model_header_input(header);
+    check(observed.at("status") == "resolved" &&
+              bytesof(observed.at("loaded_header")) == slice(header, 4, header.size() - 4),
+          "current model-header input preserves every payload byte and unknown suffix");
+    field(36, std::uint16_t(7));
+    for (auto off : {228u, 364u, 372u}) field(off, 2.);
+    for (unsigned i = 0; i < 9; ++i) field(292 + i * 8, i % 4 == 0 ? 1. : 0.);
+    const auto legacy = header;
+    observed = initial_native_model_header_input(header);
+    auto expected = slice(header, 4, header.size() - 4);
+    expected[32] = 8;
+    const float one = 1;
+    std::memcpy(expected.data() + 48, &one, 4);
+    check(observed.at("status") == "resolved" && observed.at("source_version") == 7 &&
+              observed.at("loaded_version") == 8 && observed.at("spatial") == true &&
+              header == legacy && bytesof(observed.at("source_record")) == legacy &&
+              bytesof(observed.at("loaded_header")) == expected,
+          "legacy input upgrades a copy while preserving source and all unrelated fields");
+    auto rejected = [&](const char *reason) {
+        const auto value = initial_native_model_header_input(header);
+        check(value.at("status") == "not_evaluated" && value.at("reason") == reason &&
+                  value.at("loaded_header").is_null() && bytesof(value.at("source_record")) == header,
+              "unsupported model-header input retains source and exposes no partial output");
+    };
+    for (auto off : {228u, 364u, 372u}) {
+        for (auto value : {0., -1., std::numeric_limits<double>::infinity(),
+                           std::numeric_limits<double>::quiet_NaN()}) {
+            header = legacy;
+            field(off, value);
+            rejected("legacy_scale_repair_requires_context");
+            field(36, std::uint16_t(8));
+            check(bytesof(initial_native_model_header_input(header).at("loaded_header")) ==
+                      slice(header, 4, header.size() - 4),
+                  "current headers are not subjected to legacy scale repair");
+        }
+    }
+    header = legacy;
+    field(292 + 8, .5);
+    rejected("legacy_orientation_repair_not_evaluated");
+    header = legacy;
+    field(36, std::uint16_t(6));
+    rejected("unsupported_legacy_model_header_conversion");
+    header = legacy;
+    field(4, std::uint16_t(33));
+    rejected("unsupported_model_header_record_type");
+    header = legacy;
+    field(12, std::uint32_t(253));
+    rejected("invalid_model_header_record_length");
+    header = legacy;
+    header.pop_back();
+    rejected("invalid_model_header_record_length");
+    header.resize(499);
+    rejected("truncated_model_header_record");
     return checks;
 }

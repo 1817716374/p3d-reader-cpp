@@ -7,6 +7,7 @@
 #include <miniz/miniz_tinfl.h>
 #include <p3d/native_metadata.hpp>
 #include <p3d/model_bounds.hpp>
+#include <p3d/model_header_input.hpp>
 #include <p3d/material_assignment_table.hpp>
 namespace p3d {
 class Dex : public Reader {
@@ -1213,6 +1214,13 @@ Json read_models(const Document &doc) {
                                       {"georeferencing_status", "unresolved"}};
         try {
             auto records = parse_native(slice(b, 4096, b.size() - 4096));
+            if (!records.empty()) {
+                // Record data contains only the fixed body; native acquisition
+                // also copies every linkage. Read the full first source record.
+                const auto words = Reader(b, 4104).u32();
+                info["initial_header_input"] = initial_native_model_header_input(
+                    slice(b, 4096, 4 + std::size_t(words) * 2));
+            }
             info["layer_group_references"] = Json::array();
             info["unit_records"] = Json::array();
             info["coordinate_records"] = Json::array();
