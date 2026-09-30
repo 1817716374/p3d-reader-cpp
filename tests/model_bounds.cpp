@@ -2,6 +2,7 @@
 #include <p3d/model_bounds.hpp>
 #include <p3d/default_view_table.hpp>
 #include "model_bounds_provider_oracle.hpp"
+#include "record_bounds_input_oracle.hpp"
 
 using namespace p3d;
 unsigned model_bounds_tests() {
@@ -85,7 +86,9 @@ unsigned model_bounds_tests() {
     const std::array<std::int64_t,6> persisted{-11,-22,33,44,55,-66};
     for (unsigned i=0;i<6;++i) put(raw,60+8*i,persisted[i]);
     const auto header=decode_native_record_bounds_header(raw);
-    check(header.at("integer_range")==persisted && header.at("valid_xy")==true && header.at("valid_xyz")==false &&
+    check(header.at("source_integer_values")==persisted &&
+          header.at("integer_range")==std::array<std::int64_t,6>{-11,-22,33,33,33,-33} &&
+          header.at("valid_xy")==true && header.at("valid_xyz")==false &&
           header.at("runtime_inclusion")=="not_evaluated","persisted range preserves invalid Z and does not assert runtime inclusion");
     const auto records=parse_native(raw);
     check(records.at(0).at("bounds_header")==header && bytesof(records.at(0).at("data"))==raw,
@@ -95,5 +98,21 @@ unsigned model_bounds_tests() {
               "truncated extended source header never consumes following linkages");
     put(raw,6,std::uint16_t{0});
     check(decode_native_record_bounds_header(raw).at("status")=="not_present","nonextended record payload is not misidentified as a range");
+    const auto physical=Json::parse(record_bounds_input_oracle);
+    check(physical.at("cases").size()==162,"physical-reader range corpus covers signed boundaries and nonextended records");
+    for (const auto &row:physical.at("cases")) {
+        put(raw,6,std::uint16_t(row.at("extended").get<bool>()?0x20:0));
+        for (unsigned axis=0;axis<6;++axis)
+            put(raw,60+axis*8,row.at("source_values")[axis].get<std::int64_t>());
+        const auto original=raw;
+        const auto decoded=decode_native_record_bounds_header(raw);
+        if (row.at("extended")==true) {
+            check(decoded.at("integer_range")==row.at("reader_values"),
+                  "physical-reader expansion matches signed, negative-delta and wrapping additions");
+            check(decoded.at("source_integer_values")==row.at("source_values"),
+                  "persisted lower/delta values remain separately available");
+        } else check(decoded.at("status")=="not_present","nonextended reader bytes are not expanded");
+        check(raw==original,"bounds decoding never mutates source bytes");
+    }
     return checks;
 }

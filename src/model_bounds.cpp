@@ -29,8 +29,18 @@ Json decode_native_record_bounds_header(const Bytes &data) {
     out.update({{"extended_flags",flags},{"extended_flags_offset",36},
                 {"provider_header_excluded",bool(flags&0xc00)}, {"integer_range_offset",60}});
     if (data.size()<108) { out["status"]="invalid"; out["reason"]="integer_range_truncated"; return out; }
-    const auto range=range_at(data,60);
+    const auto source=range_at(data,60);
+    auto range=source;
+    // 107060 expands persisted upper deltas in place before entity input.
+    // x64 ADD wraps modulo 2^64; avoid C++ signed-overflow undefined behavior.
+    for (unsigned axis=0;axis<3;++axis) {
+        const auto upper=static_cast<std::uint64_t>(source[axis])+
+                         static_cast<std::uint64_t>(source[axis+3]);
+        std::memcpy(&range[axis+3],&upper,sizeof(upper));
+    }
     out.update({{"status","decoded"},{"integer_range",range},
+                {"source_encoding","lower_and_upper_delta_modulo_2_64"},
+                {"source_integer_values",source},
                 {"valid_xy",valid_range(range,false)}, {"valid_xyz",valid_range(range,true)}});
     return out;
 }

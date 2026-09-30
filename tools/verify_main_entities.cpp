@@ -1,5 +1,6 @@
 // Differential corpus verifier. Links only the independent parser library.
 #include "internal.hpp"
+#include <p3d/model_bounds.hpp>
 #include <fstream>
 #include <iostream>
 
@@ -9,6 +10,9 @@ struct Verifier {
     Json differences = Json::array();
     std::size_t checks = 0, entities = 0, attributes = 0, models = 0;
     std::string context;
+    const Document *document = nullptr;
+    std::map<std::size_t, Json> prepared_headers;
+    std::size_t complete_headers = 0, expanded_ranges = 0;
     void same(const std::string &field, const Json &ours, const Json &native) {
         ++checks;
         if (ours != native)
@@ -56,6 +60,44 @@ struct Verifier {
             same(field + "id", entry.at("assigned_id"), observed.at("id"));
             same(field + "parent", entry.at("parent_input_occurrence_index"), observed.at("parent"));
             same(field + "children", children[i], observed.at("children"));
+            // Corpus hypothesis: apart from physical range expansion and the
+            // independently prepared common header, these payloads are unchanged.
+            // Compare every byte; never accept unsupported size conversions.
+            const auto ni = entry.at("native_record_index").get<std::size_t>();
+            const auto &record = document->native_records().at(ni);
+            const auto &prepared = prepared_headers.at(ni);
+            const auto path = record.at("stream").get<StreamPath>();
+            Bytes input;
+            for (const auto &stream : document->streams()) {
+                if (stream.path != path) continue;
+                const auto offset = record.at("offset").get<std::size_t>();
+                const auto size = record.at("length").get<std::size_t>();
+                require(offset <= stream.decoded->size() && size <= stream.decoded->size() - offset,
+                        "complete source record required");
+                input = slice(*stream.decoded, offset, size);
+                break;
+            }
+            require(input.size() >= 36 && input.size() == 4 + 2 * prepared.at("output_record_word_count").get<std::size_t>(),
+                    "unsupported record size conversion in full-header comparison");
+            auto write = [&](std::size_t offset, auto value) {
+                require(offset + sizeof(value) <= input.size(), "header write bounds");
+                std::memcpy(input.data() + offset, &value, sizeof(value));
+            };
+            const auto bounds = decode_native_record_bounds_header(bytesof(record.at("data")));
+            if (bounds.at("status") == "decoded") {
+                for (unsigned axis = 0; axis < 6; ++axis)
+                    write(60 + 8 * axis, bounds.at("integer_range")[axis].get<std::int64_t>());
+                ++expanded_ranges;
+            } else require(bounds.at("status") == "not_present", "invalid source bounds header");
+            write(6, prepared.at("output_element_flags").get<std::uint16_t>());
+            write(8, prepared.at("output_record_word_count").get<std::uint32_t>());
+            write(12, prepared.at("output_base_word_count").get<std::uint32_t>());
+            write(20, entry.at("assigned_id").get<std::uint64_t>());
+            const auto &count = prepared.at("descendant_count_update");
+            if (!count.is_null() && count.at("written") == true)
+                write(4 + count.at("header_offset").get<std::size_t>(), count.at("output_value").get<std::uint32_t>());
+            same(field + "complete_header", hex(slice(input, 4, input.size() - 4)), observed.at("loaded_header"));
+            ++complete_headers;
             Json values = Json::array(), flags;
             const auto attachment = attached.find(i);
             if (attachment != attached.end()) {
@@ -85,6 +127,11 @@ int main(int argc, char **argv) {
         Document document(std::filesystem::u8path(native.at("source").at("path").get<std::string>()));
         const auto containers = native_input_containers(document.streams(), document.index(), document.native_records());
         Verifier verifier;
+        verifier.document = &document;
+        for (const auto &container : containers)
+            for (const auto &root : container.at("list_preparation").at("roots"))
+                for (const auto &header : root.at("headers"))
+                    verifier.prepared_headers[header.at("native_record_index").get<std::size_t>()] = header;
         verifier.context = "file";
         const auto &loading = native.at("model_loading");
         verifier.same("unchanged", native.at("source_and_copy_unchanged"), true);
@@ -140,6 +187,7 @@ int main(int argc, char **argv) {
         verifier.same("final_counter", counter, loading.at("final_counter"));
         verifier.same("system_preserved_across_models", loading.at("system_initial"), loading.at("system"));
         Json result = {{"checks", verifier.checks}, {"models", verifier.models},
+            {"complete_headers", verifier.complete_headers}, {"expanded_ranges", verifier.expanded_ranges},
             {"entities", verifier.entities}, {"attributes", verifier.attributes}, {"differences", verifier.differences}};
         std::ofstream(std::filesystem::u8path(argv[2])) << result.dump(2) << '\n';
         std::cout << verifier.checks << " checks, " << verifier.differences.size() << " differences\n";

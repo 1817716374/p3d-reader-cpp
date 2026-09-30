@@ -6,6 +6,9 @@
 namespace p3d {
 // Persisted extended-header fields only. Input includes the four-byte stream
 // prefix and ends at the base boundary; linkage bytes cannot supply the range.
+// source_integer_values preserves the three lower coordinates and three upper
+// deltas. integer_range expands each upper = lower + delta modulo 2^64, as the
+// original physical reader does. Do not call this on already expanded bytes.
 // These fields alone do not establish runtime inclusion or a model range.
 Json decode_native_record_bounds_header(const Bytes &record_base);
 
