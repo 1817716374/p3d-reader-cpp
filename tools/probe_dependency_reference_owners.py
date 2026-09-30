@@ -136,7 +136,7 @@ def probe(root, inputs):
                 for entity in (ae, be): C.c_uint32.from_address(entity + 0x10).value = case['target_flags']
                 # First construct the nested reference under model 9. Its list
                 # will be used only when the caller context is that model.
-                nested_model_ref = reference(a, nested_source, b)
+                nested_model_ref = reference(a, nested_source, model)
                 file_entities = [[ae, nested_source], [be]]
 
                 def reverse(entities):
@@ -183,19 +183,25 @@ def probe(root, inputs):
                 assert observe() == calls[-1]
                 rows.append(dict(case, source_headers=sources, calls=calls, transitions=transitions,
                                  reference_ids=[42, 43, 43], reference_parent_contexts=['current', 'model_9', 'reference_42'],
-                                 target_model_ids=[9, 10, 10]))
+                                 target_model_ids=[9, 7, 10]))
         return dict(scope='R1.18_original_bound_type13_reference_owner_callbacks', dll_sha256=HASHES, cases=rows)
     finally:
         for directory in directories: directory.close()
+
+
+def fixture(result):
+    return '#pragma once\n// Synthetic original bound type-13 owner callbacks; no vendor or corpus payloads.\ninline constexpr const char* dependency_reference_owners_oracle = R"oracle(' + json.dumps(result, separators=(',', ':')) + ')oracle";\n'
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dll-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--fixture', type=Path)
     args = parser.parse_args()
     result = probe(args.dll_root.resolve(), cases())
     args.output.write_text(json.dumps(result, indent=2) + '\n', encoding='utf8')
+    if args.fixture: args.fixture.write_text(fixture(result), encoding='utf8')
     print('Observed', len(result['cases']), 'bound reference owner cases')
 
 

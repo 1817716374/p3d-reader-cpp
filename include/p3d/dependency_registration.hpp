@@ -13,11 +13,31 @@ struct NativeDependencyLoadEntity {
     // Audited owner-path profile: type-33/subtype-0 root, no parent/attributes
     // and no custom geometry/transform handler. Not a generic owner override.
     bool standard_type33_root_owner = false;
+    // Audited type-13 root from the standard identity input profile: no parent,
+    // clipping, attributes or custom owner handler. Its bound reference object
+    // is selected from the caller context's list, not from this entity alone.
+    bool standard_type13_identity_root_owner = false;
 };
 struct NativeDependencySystemTarget {
     std::uint64_t assigned_id = 0;
     std::optional<std::uint32_t> runtime_flags_10;
     bool standard_type33_root_owner = false;
+    bool standard_type13_identity_root_owner = false;
+};
+struct NativeDependencyOwnerContext {
+    // Neither field: current input model. Exactly one: another model in the
+    // same file (-1 is system), or an owner_references occurrence index.
+    std::optional<std::int32_t> model_id;
+    std::optional<std::size_t> reference_index;
+};
+struct NativeDependencyOwnerReference {
+    NativeDependencyOwnerContext parent;
+    std::uint64_t source_id = 0;
+    // nullopt requires loading, which this projection cannot perform.
+    std::optional<std::int32_t> bound_model_id;
+    // Original identity reference input, with no active transform/clip/provider
+    // extension. Required for each reference ancestor of a paired selector.
+    bool standard_identity_input = false;
 };
 struct NativeDependencyFileModel {
     std::int32_t model_id = 0;
@@ -61,6 +81,12 @@ struct NativeDependencyLoadInput {
     // Audited R1.18 current model: virtual +28 returns itself and +58 returns
     // null. Required when a plain root reaches 1023e0's model transition.
     bool standard_model_owner_transition_known_null = false;
+    // Fixed, complete snapshots of each context's original ordered child list.
+    // Vector order determines the first match within a context; equal source
+    // IDs in different contexts are distinct reference objects. Binding a
+    // reference to a model does not copy that model's child-reference list.
+    std::optional<std::vector<NativeDependencyOwnerReference>> owner_references;
+    bool owner_reference_lists_complete = false;
 };
 struct NativeDependencyEdge {
     std::size_t target_entity = 0;
@@ -101,9 +127,9 @@ struct NativeDependencyLoadResult {
 // service monitored set. Local lookup precedes the supplied system registry;
 // file fallback context is required only if both miss. Resolves
 // direct IDs in formats 0/1, selector references in 2/3/4/5/7 and model IDs in 8.
-// Nonzero owner paths require the explicit standard type-33 root profile.
-// Format 6 and special format 0 owner paths support direct, empty and proven
-// failed transitions only; reference-model transitions remain undetermined.
+// Owner paths require audited standard type-33 or type-13 root profiles.
+// Format 6 and special format 0 traverse explicitly bound reference contexts;
+// missing/unbound reference objects require creation/loading and are unknown.
 // Disabled/zero-entry/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,
 // typed-handler work queues or geometry regeneration. Failure publishes no

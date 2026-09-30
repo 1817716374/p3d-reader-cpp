@@ -135,27 +135,83 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
             if(target.scope==1)return input.system_registry->at(target.index).runtime_flags_10;
             return input.file_context->models.at(target.model).entities.at(target.index).runtime_flags_10;
         };
-        auto accepted_plain_owner=[&](std::uint64_t id) {
-            const auto owner=model_lookup(id,0,0);
-            if(!owner)return false;
+        struct OwnerContext {unsigned scope=0;std::size_t model=0;std::optional<std::size_t> reference;};
+        auto model_context=[&](std::int32_t id) {
+            if(id==-1)return OwnerContext{1,0,{}};
+            require(input.file_context.has_value(),"file_model_registry_requires_context");
+            if(id==input.file_context->current_model_id)return OwnerContext{};
+            const auto found=file_models.find(id);
+            require(found!=file_models.end(),"owner_bound_model_requires_context");
+            return OwnerContext{2,found->second,{}};
+        };
+        using ContextKey=std::pair<unsigned,std::size_t>;
+        auto context_key=[](const OwnerContext &context)->ContextKey {
+            return context.reference?ContextKey{3,*context.reference}:ContextKey{context.scope,context.model};
+        };
+        std::map<ContextKey,std::vector<std::size_t>> reference_children;
+        if(input.owner_references) {
+            const auto &refs=*input.owner_references;
+            require(refs.size()<=remaining,"work_limit_exceeded");
+            for(std::size_t i=0;i<refs.size();++i) {
+                tick();const auto &parent=refs[i].parent;
+                require(!(parent.model_id && parent.reference_index),"ambiguous_owner_reference_parent");
+                ContextKey key{0,0};
+                if(parent.reference_index) {
+                    require(*parent.reference_index<refs.size(),"owner_reference_parent_out_of_range");
+                    key={3,*parent.reference_index};
+                } else if(parent.model_id)key=context_key(model_context(*parent.model_id));
+                reference_children[key].push_back(i);
+            }
+            // Parent links describe object ownership, not model bindings.
+            // Validate in linear time, including forward references.
+            std::vector<unsigned char> state(refs.size());
+            for(std::size_t i=0;i<refs.size();++i) {
+                std::vector<std::size_t> chain;std::optional<std::size_t> p=i;
+                while(p && state[*p]!=2) {
+                    tick();require(state[*p]!=1,"owner_reference_parent_cycle");
+                    state[*p]=1;chain.push_back(*p);p=refs[*p].parent.reference_index;
+                }
+                for(auto index:chain)state[index]=2;
+            }
+        }
+        auto owner_path_context=[&](std::uint64_t id,const OwnerContext &context)->std::optional<OwnerContext> {
+            const auto owner=model_lookup(id,context.scope,context.model);
+            if(!owner)return {};
             const auto flags=target_flags(*owner);
             require(flags.has_value(),"owner_runtime_flags_require_context");
             if(*flags&8) {
                 require(input.owner_lookup_includes_deleted.has_value(),"owner_lookup_mode_requires_context");
-                if(!*input.owner_lookup_includes_deleted)return false;
+                if(!*input.owner_lookup_includes_deleted)return {};
             }
-            const bool plain=owner->scope==0?input.entities[owner->index].standard_type33_root_owner:
-                input.system_registry->at(owner->index).standard_type33_root_owner;
-            require(plain,"dependency_owner_path_requires_context");
-            return true;
+            bool plain=false,reference=false;
+            if(owner->scope==0) {
+                const auto &entity=input.entities[owner->index];
+                plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
+            } else {
+                const auto &entity=owner->scope==1?input.system_registry->at(owner->index):
+                    input.file_context->models[owner->model].entities[owner->index];
+                plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
+            }
+            require(!(plain && reference),"contradictory_owner_profile");
+            if(plain)return context;
+            require(reference,"dependency_owner_path_requires_context");
+            require(input.owner_references.has_value() && input.owner_reference_lists_complete,"owner_reference_list_requires_context");
+            const auto found=reference_children.find(context_key(context));
+            if(found!=reference_children.end())for(auto index:found->second) {
+                tick();const auto &ref=input.owner_references->at(index);
+                if(ref.source_id!=id)continue;
+                require(ref.bound_model_id.has_value(),"owner_reference_loading_requires_context");
+                auto next=model_context(*ref.bound_model_id);next.reference=index;return next;
+            }
+            // A missing child can trigger original creation/loading. An empty
+            // supplied list is not evidence that this operation will fail.
+            throw std::runtime_error("owner_reference_creation_requires_context");
         };
-        auto require_null_owner_transition=[&](std::uint64_t id) {
-            tick();
-            if(accepted_plain_owner(id))
-                require(input.standard_model_owner_transition_known_null,"model_owner_transition_requires_context");
-            // 1023e0 returns null for a missing/rejected owner, or for an
-            // ordinary root whose caller model virtual +58 returns null.
-            // A reference object must not be silently treated as this case.
+        auto owner_transition=[&](std::uint64_t id,const OwnerContext &context)->std::optional<OwnerContext> {
+            tick();auto next=owner_path_context(id,context);
+            if(!next || next->reference)return next;
+            require(input.standard_model_owner_transition_known_null,"model_owner_transition_requires_context");
+            return {}; // Original ordinary model virtual +58 returns null.
         };
         auto lookup=[&](std::uint64_t id,unsigned scope,std::size_t model)->std::optional<Target> {
             if(auto target=model_lookup(id,scope,model))return target;
@@ -203,11 +259,21 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                         if(entries.path_format!=9) {
                             const auto &path=entries.path;
                             const auto slot=entry.at("path_slot").get<std::size_t>();
-                            if(entries.path_format==0)require_null_owner_transition(path.back());
-                            else if(!path.empty() && slot<2) {
-                                if(slot==1 || path.size()==1) {
-                                    id=slot==1?path.back():path.front();target=model_lookup(id,0,0);
-                                } else require_null_owner_transition(path.back());
+                            if(entries.path_format==0 || (!path.empty() && slot==0)) {
+                                const std::size_t terminal=entries.path_format==0?slot:1;
+                                std::optional<OwnerContext> context=OwnerContext{};
+                                OwnerContext previous;
+                                for(std::size_t i=path.size();i>terminal;--i) {
+                                    previous=*context;context=owner_transition(path[i-1],*context);
+                                    if(!context)break;
+                                }
+                                if(context) {
+                                    id=entries.path_format==0?path[slot]:path.front();
+                                    const auto &selected=entries.path_format==0?previous:*context;
+                                    target=model_lookup(id,selected.scope,selected.model);
+                                }
+                            } else if(!path.empty() && slot==1) {
+                                id=path.back();target=model_lookup(id,0,0);
                             }
                             // Later format-6 iterations retain MAX/null slots,
                             // even after the first iteration found a target.
@@ -215,10 +281,18 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                             // 1f14a0 returns a null target but preserves the ID;
                             // a nonzero missing ID still queues this dependent.
                         } else if(entry.contains("owner_reference_id") && entry.at("owner_reference_id")!=0) {
-                            if(accepted_plain_owner(entry.at("owner_reference_id").get<std::uint64_t>()))
-                                // 1017b0 retains the caller model here; unlike
-                                // 1023e0, this path does not call model +58.
-                                target=model_lookup(id,0,0);
+                            if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{})) {
+                                // 1f14a0 additionally evaluates transforms. Only
+                                // audited standard identity reference chains
+                                // may use the bound model without that service.
+                                auto ancestor=context->reference;
+                                while(ancestor) {
+                                    tick();const auto &ref=input.owner_references->at(*ancestor);
+                                    require(ref.standard_identity_input,"owner_reference_transform_requires_context");
+                                    ancestor=ref.parent.reference_index;
+                                }
+                                target=model_lookup(id,context->scope,context->model);
+                            }
                         } else if(entry.value("lookup_profile",std::string())=="owner_system")target=model_lookup(id,0,0);
                         else if(!entry.contains("model_id"))target=lookup(id,0,0);
                         else {

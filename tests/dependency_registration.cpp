@@ -9,6 +9,7 @@
 #include "dependency_models_oracle.hpp"
 #include "dependency_selectors_oracle.hpp"
 #include "dependency_paths_oracle.hpp"
+#include "dependency_reference_owners_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -242,6 +243,59 @@ unsigned dependency_registration_tests() {
             check(target==lookup.at("target"),"original 19a8f0 and 1f12b0 choose the expected model-qualified target");
         }
     }
+    const auto bound_oracle=Json::parse(dependency_reference_owners_oracle);
+    check(bound_oracle.at("cases").size()==408,"all original bound-reference callback experiments are tested");
+    NativeDependencyLoadInput bound_sample;
+    for(const auto &row:bound_oracle.at("cases")) {
+        NativeDependencyLoadInput input;
+        input.input_complete=input.system_registry_known_empty=input.monitored_entity_set_known_empty=true;
+        input.standard_model_owner_transition_known_null=true;
+        input.owner_lookup_includes_deleted=row.at("owner_lookup_includes_deleted").get<bool>();
+        input.file_context.emplace();auto &file=*input.file_context;
+        file.complete=true;file.current_model_id=7;file.current_file_fallback_enabled=false;
+        for(int id:{9,10}) {NativeDependencyFileModel m;m.model_id=id;m.file_fallback_enabled=false;file.models.push_back(m);}
+        for(const auto &source:row.at("source_headers")) {
+            const auto id=source.at("id").get<std::uint64_t>();
+            const auto type=source.at("type").get<unsigned>();
+            const auto model=source.at("model_id").get<int>();
+            const auto flags=model==7?(id==42?row.at("owner_flags").get<unsigned>():0):
+                (id==41?row.at("target_flags").get<unsigned>():0);
+            if(model!=7)file.models.at(model==9?0:1).entities.push_back({id,flags,type==33,type==13});
+            else {
+                NativeDependencyLoadEntity entity{id,flags,{},type==33,type==13};
+                if(id==77 || id==78)entity.dependency_payloads.push_back(unhex(row.at("payload_hex")));
+                input.batches.push_back({input.entities.size()});input.entities.push_back(std::move(entity));
+            }
+        }
+        input.owner_reference_lists_complete=true;
+        input.owner_references=std::vector<NativeDependencyOwnerReference>{
+            {{},42,9,true},{{9,{}},43,7,true},{{{},0},43,10,true}};
+        const auto result=project_native_dependency_load(input);
+        require(result.resolved,"bound reference projection: "+result.reason);
+        check(result.batches.size()==4,"all roots with bound references complete");
+        std::vector<std::vector<std::size_t>> local(4);
+        std::vector<std::vector<std::vector<std::size_t>>> others{{{},{}},{{}}};
+        std::set<std::size_t> pending;
+        for(std::size_t i=0;i<result.batches.size();++i) {
+            const auto &batch=result.batches[i];
+            for(const auto &edge:batch.added_edges)local.at(edge.target_entity).insert(local.at(edge.target_entity).begin(),edge.dependent_entity);
+            for(const auto &edge:batch.added_file_edges) {
+                auto &list=others.at(edge.model_index).at(edge.target_entity);list.insert(list.begin(),edge.dependent_entity);
+            }
+            for(auto p:batch.newly_pending_entities)pending.insert(p);
+            const auto &native=row.at("calls")[i];
+            check(native.at("local_dependents")==std::vector<std::vector<std::size_t>>(local.begin(),local.begin()+i+1),
+                  "bound owner lookup preserves local registration timing and duplicate order");
+            check(native.at("file_dependents")==others,"reference context selects its own child list and bound model");
+            check(native.at("pending_entities")==std::vector<std::size_t>(pending.begin(),pending.end()),
+                  "bound owner paths preserve original pending members after every root");
+            check(batch.added_system_edges.empty(),"bound reference cases have no system targets");
+        }
+        check(result.dependents==local && result.file_dependents==others && result.system_dependents.empty(),
+              "bound-reference final graph matches every original target identity");
+        check(result.pending_entities==std::vector<std::size_t>(pending.begin(),pending.end()),"bound-reference final pending set agrees");
+        if(bound_sample.entities.empty())bound_sample=input;
+    }
     NativeDependencyLoadInput base;
     base.input_complete=base.system_registry_known_empty=base.file_fallback_disabled=base.monitored_entity_set_known_empty=true;
     base.entities={{1,0,{}},{2,0,{unhex("e7030100000001000100000000000000")}}};base.batches={{0},{1}};
@@ -251,6 +305,39 @@ unsigned dependency_registration_tests() {
               "unknown or invalid dependency input never publishes a partial graph");
     };
     auto input=base;input.input_complete=false;rejected(input,"incomplete_input");
+    input=bound_sample;input.owner_references.reset();rejected(input,"owner_reference_list_requires_context");
+    input=bound_sample;input.owner_reference_lists_complete=false;rejected(input,"owner_reference_list_requires_context");
+    input=bound_sample;input.owner_references->clear();rejected(input,"owner_reference_creation_requires_context");
+    input=bound_sample;input.owner_references->at(0).bound_model_id.reset();rejected(input,"owner_reference_loading_requires_context");
+    input=bound_sample;input.owner_references->at(0).bound_model_id=99;rejected(input,"owner_bound_model_requires_context");
+    input=bound_sample;input.owner_references->at(0).parent.reference_index=99;rejected(input,"owner_reference_parent_out_of_range");
+    input=bound_sample;input.owner_references->at(0).parent.reference_index=0;rejected(input,"owner_reference_parent_cycle");
+    input=bound_sample;input.owner_references->at(0).parent.reference_index=2;rejected(input,"owner_reference_parent_cycle");
+    input=bound_sample;input.owner_references->at(1).parent.reference_index=0;rejected(input,"ambiguous_owner_reference_parent");
+    input=bound_sample;input.entities[1].standard_type33_root_owner=true;rejected(input,"contradictory_owner_profile");
+    input=bound_sample;input.owner_references->at(0).standard_identity_input=false;
+    check(project_native_dependency_load(input).resolved,"path-only transitions do not invoke the paired transform service");
+    const auto paired=unhex("e70301000010010029000000000000002a00000000000000");
+    input.entities[3].dependency_payloads={paired};rejected(input,"owner_reference_transform_requires_context");
+    input=bound_sample;
+    input.entities[3].dependency_payloads={unhex("10270400001801000300000000000000000000000000000029000000000000002b000000000000002a00000000000000")};
+    auto nested=project_native_dependency_load(input);
+    check(nested.resolved && nested.file_dependents[1][0]==std::vector<std::size_t>{3} && nested.dependents[2].empty(),
+          "same source ID in model and reference contexts does not redirect a nested target to current model");
+    input.owner_references->at(2).bound_model_id=7;
+    nested=project_native_dependency_load(input);
+    check(nested.resolved && nested.file_dependents[1][0].empty() && nested.dependents[2]==std::vector<std::size_t>{3},
+          "changing the actual nested binding changes target identity even when the source ID is equal");
+    input=bound_sample;input.owner_references->insert(input.owner_references->begin()+1,{{},42,10,true});
+    input.owner_references->at(3).parent.reference_index=0;
+    nested=project_native_dependency_load(input);
+    check(nested.resolved && nested.file_dependents[0][0]==std::vector<std::size_t>{3} && nested.file_dependents[1][0].empty(),
+          "first matching reference in the caller's ordered list wins");
+    input=bound_sample;input.max_work_items=20;rejected(input,"work_limit_exceeded");
+    input=bound_sample;input.owner_references->at(1).parent.model_id=99;rejected(input,"owner_bound_model_requires_context");
+    input=bound_sample;input.file_context->complete=false;rejected(input,"file_model_registry_requires_context");
+    input=bound_sample;input.owner_references->at(0).parent.model_id=7;
+    check(project_native_dependency_load(input).resolved,"explicit current-model parent and implicit current parent share context identity");
     input=base;input.system_registry_known_empty=false;input.entities[1].dependency_payloads[0][8]=3;
     rejected(input,"system_registry_requires_context");
     input=base;input.file_fallback_disabled=false;input.entities[1].dependency_payloads[0][8]=3;

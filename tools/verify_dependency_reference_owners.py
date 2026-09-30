@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Validate bound-reference native observations with an independent graph replay.
 
-This is a research verifier, not support in project_native_dependency_load.
-The C++ API still rejects general type-13 owner transitions.
+The C++ replay uses the same native observations. General type-13 loading,
+arbitrary transforms and external-file contexts remain outside this profile.
 """
 import argparse
 import copy
@@ -23,7 +23,7 @@ def verify(result):
         assert all(row[k] == value for k, value in supplied.items())
         assert row['reference_ids'] == [42, 43, 43]
         assert row['reference_parent_contexts'] == ['current', 'model_9', 'reference_42']
-        assert row['target_model_ids'] == [9, 10, 10]
+        assert row['target_model_ids'] == [9, 7, 10]
         assert [(s['model_id'], s['id'], s['type']) for s in row['source_headers']] == [
             (9, 41, 33), (10, 41, 33), (9, 43, 13), (7, 77, 33), (7, 42, 13), (7, 41, 33), (7, 78, 33)]
         for source in row['source_headers']:
