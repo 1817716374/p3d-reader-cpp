@@ -88,7 +88,7 @@ def probe(root, inputs):
                     return target
 
                 def insert(owner, id_, type_=33, links=(), path_profile=None):
-                    size = 368 if type_ == 13 else 34 if type_ == 47 else 128
+                    size = 368 if type_ == 13 else 34 if type_ == 47 else 256 if type_ == 62 else 128
                     raw = bytearray(size)
                     struct.pack_into('<HHIIIQ', raw, 0, type_, 4 if type_ == 47 else 0x20,
                                      size // 2, size // 2, 20 if type_ == 47 else 0, id_)
@@ -98,6 +98,10 @@ def probe(root, inputs):
                         struct.pack_into('<3d', raw, 192, *transform.get('translation', [0, 0, 0]))
                         struct.pack_into('<9d', raw, 216, *transform.get('matrix', [1, 0, 0, 0, 1, 0, 0, 0, 1]))
                         struct.pack_into('<d', raw, 288, transform.get('scale', 1))
+                    elif type_ == 62:
+                        profile = path_profile or {}
+                        struct.pack_into('<9d', raw, 160, *profile.get('matrix',[1,0,0,0,1,0,0,0,1]))
+                        struct.pack_into('<3d', raw, 232, *profile.get('translation',[0,0,0]))
                     elif type_ == 47:
                         profile = path_profile or {}
                         struct.pack_into('<I', raw, 12, profile.get('subtype', 20))
@@ -110,6 +114,11 @@ def probe(root, inputs):
                     buffer = C.create_string_buffer(0x68 + len(raw)); keep.append(buffer)
                     node = C.addressof(buffer) + 0x20
                     C.memmove(node + 0x48, bytes(raw), len(raw))
+                    if type_ == 62:
+                        # Same source preparation called by physical reader
+                        # 107830 before its node enters the model input path.
+                        fn(0x1076b0, None, V)(node + 0x48)
+                        prepared = C.string_at(node + 0x48, len(raw)).hex()
                     assert fn(0x199e40, C.c_int, V, V, V, C.c_double, B)(owner, node, owner + 0x140, 0., False) == 0
                     entity = ptr(node + 0x28)
                     assert entity and ptr(entity + 0x20) is None
@@ -118,6 +127,7 @@ def probe(root, inputs):
                     assert u32(loaded + 4) * 2 == len(raw)
                     sources.append(dict(model_id=u32(owner + 0x1b8), id=id_, type=type_, header_hex=raw.hex(),
                                         loaded_header_hex=C.string_at(loaded, len(raw)).hex()))
+                    if type_ == 62:sources[-1]['prepared_header_hex'] = prepared
                     return entity
 
                 def reference(owner, source, target):
@@ -177,8 +187,16 @@ def probe(root, inputs):
                 C.c_uint32.from_address(source + 0x10).value = case['owner_flags']
                 calls.append(observe())
                 local.append(insert(model, 41)); calls.append(observe())
+                block_nodes = []
+                for block_source in case.get('block_sources', []):
+                    local.append(insert(model, block_source['id'], 62, (), block_source))
+                    block_nodes.append(local[-1])
+                    C.c_uint32.from_address(local[-1] + 0x10).value = block_source.get('runtime_flags', 0)
+                    calls.append(observe())
+                path_nodes = []
                 for path_source in case.get('path_owners', []):
                     local.append(insert(model, path_source['id'], 47, path_source['links'], path_source))
+                    path_nodes.append(local[-1])
                     C.c_uint32.from_address(local[-1] + 0x10).value = path_source.get('runtime_flags', 0)
                     calls.append(observe())
                 local.append(insert(model, 78, links=[case['payload_hex']])); calls.append(observe())
@@ -204,13 +222,14 @@ def probe(root, inputs):
                                        for id_, entities in zip((9,10), file_entities) for entity in entities})
                     contexts = {None: 'null', model: 'current', root_ref: 'reference_42',
                                 nested_ref: 'nested_reference_43', nested_model_ref: 'model9_reference_43'}
-                    for offset, source_spec in enumerate(case['path_owners']):
+                    query_sources = case.get('block_sources', []) + case['path_owners']
+                    for node, source_spec in zip(block_nodes + path_nodes, query_sources, strict=True):
                         collector = C.create_string_buffer(0x38); keep.append(collector)
                         address = C.addressof(collector)
                         V.from_address(address).value = base + 0x52a1c0
                         fn(0x18de60, None, V, C.c_size_t)(address + 0x10, 0)
                         C.c_int64.from_address(address + 0x30).value = -1
-                        code = fn(0x1017b0, C.c_int, V, V, V, V, B)(address, None, local[3+offset], model, False)
+                        code = fn(0x1017b0, C.c_int, V, V, V, V, B)(address, None, node, model, False)
                         begin, end = ptr(address+0x10), ptr(address+0x18)
                         collected = [] if not begin else [identities[ptr(p)] for p in range(begin,end,8)]
                         out = (C.c_double * 12)()
@@ -219,6 +238,24 @@ def probe(root, inputs):
                             owner_context=contexts[ptr(address+0x28)], collected=collected,
                             terminal_index=C.c_int32.from_address(address+0x30).value,
                             transform_code=transform_code, native_matrix=list(out) if transform_code == 0 else None))
+                        if 'block_sources' in case:
+                            owner = ptr(address+0x28)
+                            path_queries[-1]['owner_kind'] = (C.CFUNCTYPE(C.c_int,V)(ptr(ptr(owner)+0x48))(owner)
+                                                                    if owner else None)
+                        if code == 0 and 'terminal_positions' in case:
+                            terminal = C.c_int32.from_address(address+0x30).value
+                            queries = []
+                            for position in case['terminal_positions']:
+                                # Use the original setter, including its -1 =
+                                # last-object convention; do not patch fields.
+                                fn(0x231ca0, None, V, C.c_int)(address, position)
+                                matrix = (C.c_double * 12)()
+                                status = fn(0x101dc0, C.c_int, V, V, V)(matrix, address, model)
+                                queries.append(dict(requested_position=position,
+                                    terminal_index=C.c_int32.from_address(address+0x30).value,
+                                    transform_code=status,native_matrix=list(matrix) if status == 0 else None))
+                            path_queries[-1]['terminal_queries'] = queries
+                            fn(0x231ca0, None, V, C.c_int)(address, terminal)
                     assert observe() == calls[-1]
                 affine_queries = []
                 if 'source_transforms' in case:

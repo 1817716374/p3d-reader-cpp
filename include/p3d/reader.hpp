@@ -134,9 +134,11 @@ Json compose_owner_reference_chain_transforms(const std::vector<Json> &transform
 struct OwnerReferencePathTransformContext {
     // Runtime owner category, not the saved model_coordinates.kind field.
     std::optional<std::uint32_t> owner_kind;
-    // Native collector's terminal position; preceding entries supply blocks.
-    std::optional<std::uint32_t> terminal_index;
-    // Required only at terminal_index == 0: status absent/computed/native_failure.
+    // Native signed terminal position, including -1 for an empty collector.
+    // The final entry is included; an earlier terminal starts at its predecessor.
+    std::optional<std::int64_t> terminal_index;
+    // Required only when the computed local start is negative (empty collector,
+    // or terminal 0 with later entries): status absent/computed/native_failure.
     // computed carries the affine matrix returned by the selected handler.
     Json single_object_transform;
 };

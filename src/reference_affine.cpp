@@ -189,15 +189,21 @@ Json owner_reference_path_transform(const Json &collected_records,
         require(context.terminal_index.has_value(), "collector_terminal_index_required");
         // The native loop uses signed 32-bit index arithmetic. Do not interpret
         // high-bit values as a huge portable array index or guess wrapped state.
-        require(*context.terminal_index <= INT32_MAX, "invalid_collector_terminal_index");
+        require(*context.terminal_index >= -1 && *context.terminal_index <= INT32_MAX,
+                "invalid_collector_terminal_index");
         require(collected_records.is_array(), "collected_records_array_required");
+        require(collected_records.size() <= INT32_MAX, "collector_size_exceeds_native_range");
         out["terminal_index"] = *context.terminal_index;
         auto accumulated = identity();
-        if (*context.terminal_index > 0) {
-            out["local_mode"] = "preceding_block_instances";
+        const auto last = static_cast<std::int64_t>(collected_records.size()) - 1;
+        const auto start = *context.terminal_index < last ? *context.terminal_index - 1
+                                                        : *context.terminal_index;
+        out["local_start_index"] = start;
+        if (start >= 0) {
+            out["local_mode"] = "block_instances";
             out["local_stop"] = "beginning";
-            for (std::size_t i = *context.terminal_index; i > 0;) {
-                --i;
+            for (auto index = start; index >= 0; --index) {
+                const auto i = static_cast<std::size_t>(index);
                 if (i >= collected_records.size() || collected_records[i].is_null()) {
                     out["local_stop"] =
                         i >= collected_records.size() ? "outside_collection" : "null_object";

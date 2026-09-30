@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "dependency_reference_affines_oracle.hpp"
+#include "dependency_blocks_oracle.hpp"
 
 unsigned reference_affine_tests() {
     using namespace p3d;
@@ -200,7 +201,7 @@ unsigned reference_affine_tests() {
     translation[0][3] = 10;
     scale[0][0] = 2;
     const auto bt = block_record(translation), bs = block_record(scale);
-    auto records = Json::array({bt, bs, {{"element_type", 62}}});
+    auto records = Json::array({bt, bs, {{"element_type", 62}}, {{"element_type",33}}});
     OwnerReferencePathTransformContext pc;
     pc.owner_kind = 0;
     pc.terminal_index = 2;
@@ -211,7 +212,7 @@ unsigned reference_affine_tests() {
           "owner chain acts after reverse-collected block transformations");
     check(path["applied_blocks"] == Json::array({1, 0}) &&
               path["geometry_transformation"] == "not_evaluated",
-          "terminal object is excluded even when its block matrix is unavailable");
+          "terminal with later collected entries is excluded even when its block matrix is unavailable");
     auto repaired = records;
     repaired[0]["block_transform"]["source_matrix"] = scale;
     check(owner_reference_path_transform(repaired, {a, b}, pc)["matrix"] == path["matrix"],
@@ -232,18 +233,20 @@ unsigned reference_affine_tests() {
               stopped["local_stop"] == "outside_collection",
           "out-of-range local index stops local traversal but still applies owner chain");
     pc.terminal_index = 0;
-    check(owner_reference_path_transform(Json::array({bt}), {}, pc)["reason"] ==
+    check(owner_reference_path_transform(Json::array({bt}), {}, pc)["matrix"] == translation,
+          "a single final block uses its accepted local matrix without a handler query");
+    check(owner_reference_path_transform(Json::array({bt, {}}), {}, pc)["reason"] ==
               "single_object_handler_result_required",
           "single block cannot stand in for unknown handler query result");
     pc.single_object_transform = {{"status", "absent"}};
-    check(owner_reference_path_transform(Json::array({bt}), {}, pc)["matrix"] == id,
+    check(owner_reference_path_transform(Json::array({bt, {}}), {}, pc)["matrix"] == id,
           "proven absent single-object handler contributes identity");
     pc.single_object_transform = {{"status", "computed"}, {"matrix", translation}};
-    check(owner_reference_path_transform(Json::array({bt}), {a, b}, pc)["matrix"] ==
+    check(owner_reference_path_transform(Json::array({bt, {}}), {a, b}, pc)["matrix"] ==
               Matrix4{{{-6, 0, 0, -107}, {0, -6, 0, 53}, {0, 0, 6, 85}, {0, 0, 0, 1}}},
           "single-object handler matrix precedes owner-chain transformation");
     pc.single_object_transform = {{"status", "native_failure"}};
-    auto failure = owner_reference_path_transform(Json::array({bt}), {broken}, pc);
+    auto failure = owner_reference_path_transform(Json::array({bt, {}}), {broken}, pc);
     check(failure["status"] == "native_failure" && failure["native_status"] == 1 &&
               !failure.contains("owner_chain") && !failure.contains("matrix"),
           "failed single-object handler stops before inspecting owner chain");
@@ -262,21 +265,28 @@ unsigned reference_affine_tests() {
     pc.terminal_index = UINT32_MAX;
     check(owner_reference_path_transform(records, {}, pc)["status"] == "not_evaluated",
           "high-bit collector index is not treated as portable array size");
+    pc.terminal_index = -2;
+    check(owner_reference_path_transform(records, {}, pc)["reason"] == "invalid_collector_terminal_index",
+          "unsupported negative collector indices are rejected without signed wrapping");
+    pc.terminal_index = -1;
+    pc.single_object_transform = {{"status", "absent"}};
+    check(owner_reference_path_transform(Json::array(), {}, pc)["matrix"] == id,
+          "native empty collector sentinel can be supplied without unsigned conversion");
     pc.terminal_index = 1;
     failure =
-        owner_reference_path_transform(Json::array({{{"element_type", "unknown"}}, {}}), {}, pc);
+        owner_reference_path_transform(Json::array({{{"element_type", "unknown"}}, {{"element_type",33}}}), {}, pc);
     check(failure["status"] == "not_evaluated" && !failure.contains("matrix"),
           "unknown collected record type is not treated as a known non-block");
     auto invalid_block = bt;
     invalid_block["block_transform"]["status"] = "invalid";
-    failure = owner_reference_path_transform(Json::array({invalid_block, {}}), {}, pc);
+    failure = owner_reference_path_transform(Json::array({invalid_block, {{"element_type",33}}}), {}, pc);
     check(failure["status"] == "not_evaluated" && !failure.contains("matrix"),
           "unknown effective block matrix is not silently skipped");
     invalid_block = bt;
     invalid_block["block_transform"]["matrix"][0][3] = maximum;
     auto over = a;
     over["matrix"] = scale;
-    failure = owner_reference_path_transform(Json::array({invalid_block, {}}), {over}, pc);
+    failure = owner_reference_path_transform(Json::array({invalid_block, {{"element_type",33}}}), {over}, pc);
     check(failure["status"] == "not_evaluated" && !failure.contains("matrix"),
           "path composition overflow cannot publish an effective matrix");
     check(Json::parse(path.dump()) == path,
@@ -292,7 +302,7 @@ unsigned reference_affine_tests() {
     }
     const auto parsed = parse_native(native_block);
     pc.terminal_index = 1;
-    check(owner_reference_path_transform(Json::array({parsed.at(0), {}}), {}, pc)["matrix"] ==
+    check(owner_reference_path_transform(Json::array({parsed.at(0), {{"element_type",33}}}), {}, pc)["matrix"] ==
               translation,
           "actual parsed native block record is consumed without a private field adapter");
     // Complete original source input -> bound reference -> owner-chain query,
@@ -336,6 +346,71 @@ unsigned reference_affine_tests() {
                     check(std::abs(matrix[r][col] - value) <= 2e-13 + 2e-14 * std::abs(value),
                           "C++ source preparation and owner composition match original constructed references");
                 }
+        }
+    }
+    const auto blocks = Json::parse(dependency_blocks_oracle);
+    check(blocks.at("native_case_count") == 720 && blocks.at("cases").size() == 440 &&
+          blocks.at("source_catalog").size() == 33, "all original block collector cases are represented");
+    auto physical = [](const Json &source, const char *field) {
+        Bytes data(4, 0);
+        const auto hex = source.at(field).get<std::string>();
+        for (std::size_t at = 0; at < hex.size(); at += 2)
+            data.push_back(std::uint8_t(std::stoul(hex.substr(at, 2), nullptr, 16)));
+        return data;
+    };
+    for (const auto &row : blocks.at("cases")) {
+        std::map<std::pair<int,std::uint64_t>,Json> objects;
+        std::map<std::uint64_t,Json> references;
+        for (const auto &index : row.at("source_indices")) {
+            const auto &source = blocks.at("source_catalog").at(index.get<std::size_t>());
+            const auto source_id = source.at("id").get<std::uint64_t>();
+            const auto type = source.at("type").get<unsigned>();
+            const auto data = physical(source,"header_hex");
+            Json object = {{"element_type",type}};
+            if (type == 62) {
+                const auto parsed_blocks = parse_native(data);
+                check(parsed_blocks.size() == 1, "native block source parses to one record");
+                object = parsed_blocks.at(0);
+                const auto matrix = object.at("block_transform").at("matrix").get<Matrix4>();
+                const auto prepared=physical(source,"prepared_header_hex");
+                Reader loaded(prepared,164);
+                for (unsigned r=0;r<3;++r)for(unsigned c=0;c<3;++c)
+                    check(matrix[r][c] == loaded.f64(), "parsed block repair agrees with original 1076b0 preparation");
+            } else if (type == 13) {
+                ReferenceAffineContext context;
+                context.provider_id=0;
+                context.origin.model_coordinates=Json{{"status","decoded"},
+                    {"reference_origin",{{"value",Point3{0,0,0}}}}};
+                references[source_id]=reference_affine_transform(native_reference_input(data),context);
+            }
+            objects[{source.at("model_id").get<int>(),source_id}]=std::move(object);
+        }
+        for (const auto &query : row.at("path_queries")) {
+            if (query.at("native_code") != 0 || query.at("owner_context") == "null") continue;
+            Json records=Json::array();
+            for(const auto &item:query.at("collected"))
+                records.push_back(objects.at({item.at("model_id").get<int>(),item.at("id").get<std::uint64_t>()}));
+            std::vector<Json> chain;
+            if(query.at("owner_context")=="nested_reference_43")chain.push_back(references.at(43));
+            if(query.at("owner_context")!="current")chain.push_back(references.at(42));
+            OwnerReferencePathTransformContext context;
+            context.owner_kind=query.at("owner_kind").get<unsigned>();
+            context.single_object_transform={{"status","absent"}};
+            auto compare=[&](const Json &observation) {
+                context.terminal_index=observation.at("terminal_index").get<std::int64_t>();
+                const auto result=owner_reference_path_transform(records,chain,context);
+                require(result.at("status")=="computed", "original block collector transform: "+result.dump());
+                check(observation.at("transform_code")==0,"original queried collector succeeds");
+                const auto matrix=result.at("matrix").get<Matrix4>();
+                const auto expected=observation.at("native_matrix").get<std::vector<double>>();
+                for(unsigned r=0;r<3;++r)for(unsigned c=0;c<4;++c) {
+                    const auto value=expected.at(4*r+c);
+                    check(std::abs(matrix[r][c]-value)<=2e-13+2e-14*std::abs(value),
+                          "prepared block matrices, terminal boundaries and owner order agree with original DLL");
+                }
+            };
+            compare(query);
+            for(const auto &position:query.at("terminal_queries"))compare(position);
         }
     }
     return checks;
