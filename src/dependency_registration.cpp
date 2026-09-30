@@ -4,6 +4,25 @@
 
 namespace p3d {
 namespace {
+Json dependency_owner_source(const Bytes &source,std::uint64_t id) {
+    require(source.size()==372,"owner_reference_source_profile_required");
+    require(Reader(source,4).u16()==13 &&
+            (Reader(source,6).u16()==0x20 || Reader(source,6).u16()==0x60) &&
+            Reader(source,8).u32()==184 && Reader(source,12).u32()==184 &&
+            Reader(source,16).u32()==0,"owner_reference_source_profile_required");
+    require(Reader(source,20).u64()==id,"owner_reference_source_id_mismatch");
+    for(std::size_t at=28;at<source.size();++at)
+        if(at<172 || at>=300)require(source[at]==0,"owner_reference_source_profile_required");
+    // The profile excludes nonfinite inputs; retaining their bytes in the
+    // source decoder does not prove that this runtime branch is evaluable.
+    for(std::size_t at=172;at<300;at+=8)
+        require(std::isfinite(Reader(source,at).f64()),"owner_reference_source_nonfinite");
+    auto decoded=native_reference_input(source);
+    require(decoded.value("status","")=="decoded" &&
+            decoded.at("transform").value("status","")=="computed",
+            "owner_reference_source_transform_unresolved");
+    return decoded;
+}
 Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool honor_disabled=true,bool model_indices=false) {
     require(payload.size()>=8,"truncated_dependency_header");
     Reader header(payload);
@@ -184,15 +203,19 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 if(!*input.owner_lookup_includes_deleted)return {};
             }
             bool plain=false,reference=false;
+            const std::optional<Bytes> *source=nullptr;
             if(owner->scope==0) {
                 const auto &entity=input.entities[owner->index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
+                source=&entity.standard_type13_root_source;
             } else {
                 const auto &entity=owner->scope==1?input.system_registry->at(owner->index):
                     input.file_context->models[owner->model].entities[owner->index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
+                source=&entity.standard_type13_root_source;
             }
-            require(!(plain && reference),"contradictory_owner_profile");
+            require(unsigned(plain)+unsigned(reference)+unsigned(source->has_value())<=1,"contradictory_owner_profile");
+            if(*source) {tick();dependency_owner_source(**source,id);reference=true;}
             if(plain)return context;
             require(reference,"dependency_owner_path_requires_context");
             require(input.owner_references.has_value() && input.owner_reference_lists_complete,"owner_reference_list_requires_context");
@@ -282,15 +305,33 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                             // a nonzero missing ID still queues this dependent.
                         } else if(entry.contains("owner_reference_id") && entry.at("owner_reference_id")!=0) {
                             if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{})) {
-                                // 1f14a0 additionally evaluates transforms. Only
-                                // audited standard identity reference chains
-                                // may use the bound model without that service.
+                                // 1f14a0 also evaluates the selected reference
+                                // and its ancestors before looking up the ID.
                                 auto ancestor=context->reference;
+                                std::vector<Json> transforms;
                                 while(ancestor) {
                                     tick();const auto &ref=input.owner_references->at(*ancestor);
-                                    require(ref.standard_identity_input,"owner_reference_transform_requires_context");
+                                    require(!(ref.standard_identity_input && ref.affine_input),"contradictory_owner_reference_transform");
+                                    require(ref.standard_identity_input || ref.affine_input,"owner_reference_transform_requires_context");
+                                    if(ref.affine_input) {
+                                        const auto &affine=*ref.affine_input;
+                                        require(affine.context.force_z_scale,"owner_reference_chain_requires_forced_z_scale");
+                                        require(affine.context.origin.model_attached!=std::optional<bool>(false),
+                                                "owner_reference_affine_attachment_mismatch");
+                                        auto result=reference_affine_transform(dependency_owner_source(affine.source_record,ref.source_id),affine.context);
+                                        require(result.value("status","")=="computed",
+                                                "owner_reference_affine_unresolved: "+result.value("reason",std::string()));
+                                        transforms.push_back(std::move(result));
+                                    } else {
+                                        transforms.push_back({{"profile","bimbase_2025_reference_affine_query"},
+                                            {"status","computed"},{"force_z_scale",true},
+                                            {"matrix",Matrix4{{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}}}});
+                                    }
                                     ancestor=ref.parent.reference_index;
                                 }
+                                const auto chain=compose_owner_reference_chain_transforms(transforms);
+                                require(chain.value("status","")=="computed",
+                                        "owner_reference_chain_unresolved: "+chain.value("reason",std::string()));
                                 target=model_lookup(id,context->scope,context->model);
                             }
                         } else if(entry.value("lookup_profile",std::string())=="owner_system")target=model_lookup(id,0,0);

@@ -56,6 +56,11 @@ def main():
             profiles[row['transform_case']] = item
         compact = dict(scope=result['scope'], dll_sha256=result['dll_sha256'],
                        native_case_count=len(result['cases']), cases=list(profiles.values()))
+        compact['dependency_cases'] = []
+        for row in result['cases']:
+            graph = {k: v for k, v in row.items() if k not in ('source_headers', 'source_transforms', 'affine_queries')}
+            graph['source_headers'] = [{k: s[k] for k in ('id', 'type', 'model_id')} for s in row['source_headers']]
+            compact['dependency_cases'].append(graph)
         args.fixture.write_text('#pragma once\n// Synthetic original constructed-reference observations.\n'
             'inline constexpr const char* dependency_reference_affines_oracle = R"oracle('
             + json.dumps(compact, separators=(',', ':')) + ')oracle";\n', encoding='utf8')

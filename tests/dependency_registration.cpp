@@ -10,6 +10,7 @@
 #include "dependency_selectors_oracle.hpp"
 #include "dependency_paths_oracle.hpp"
 #include "dependency_reference_owners_oracle.hpp"
+#include "dependency_reference_affines_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -245,8 +246,20 @@ unsigned dependency_registration_tests() {
     }
     const auto bound_oracle=Json::parse(dependency_reference_owners_oracle);
     check(bound_oracle.at("cases").size()==408,"all original bound-reference callback experiments are tested");
-    NativeDependencyLoadInput bound_sample;
-    for(const auto &row:bound_oracle.at("cases")) {
+    const auto affine_oracle=Json::parse(dependency_reference_affines_oracle);
+    auto bound_cases=bound_oracle.at("cases");
+    check(affine_oracle.at("dependency_cases").size()==288,"all nonidentity original graph callbacks are tested");
+    for(const auto &row:affine_oracle.at("dependency_cases"))bound_cases.push_back(row);
+    NativeDependencyLoadInput bound_sample,affine_sample;
+    for(const auto &row:bound_cases) {
+        const bool affine=row.contains("transform_case");
+        std::map<std::uint64_t,Bytes> affine_sources;
+        if(affine)for(const auto &profile:affine_oracle.at("cases"))
+            if(profile.at("transform_case")==row.at("transform_case"))
+                for(const auto &source:profile.at("source_headers")) {
+                    auto data=unhex(source.at("header_hex"));data.insert(data.begin(),4,0);
+                    affine_sources[source.at("id").get<std::uint64_t>()]=std::move(data);
+                }
         NativeDependencyLoadInput input;
         input.input_complete=input.system_registry_known_empty=input.monitored_entity_set_known_empty=true;
         input.standard_model_owner_transition_known_null=true;
@@ -260,9 +273,14 @@ unsigned dependency_registration_tests() {
             const auto model=source.at("model_id").get<int>();
             const auto flags=model==7?(id==42?row.at("owner_flags").get<unsigned>():0):
                 (id==41?row.at("target_flags").get<unsigned>():0);
-            if(model!=7)file.models.at(model==9?0:1).entities.push_back({id,flags,type==33,type==13});
+            if(model!=7) {
+                NativeDependencySystemTarget entity{id,flags,type==33,type==13 && !affine};
+                if(type==13 && affine)entity.standard_type13_root_source=affine_sources.at(id);
+                file.models.at(model==9?0:1).entities.push_back(std::move(entity));
+            }
             else {
-                NativeDependencyLoadEntity entity{id,flags,{},type==33,type==13};
+                NativeDependencyLoadEntity entity{id,flags,{},type==33,type==13 && !affine};
+                if(type==13 && affine)entity.standard_type13_root_source=affine_sources.at(id);
                 if(id==77 || id==78)entity.dependency_payloads.push_back(unhex(row.at("payload_hex")));
                 input.batches.push_back({input.entities.size()});input.entities.push_back(std::move(entity));
             }
@@ -270,6 +288,13 @@ unsigned dependency_registration_tests() {
         input.owner_reference_lists_complete=true;
         input.owner_references=std::vector<NativeDependencyOwnerReference>{
             {{},42,9,true},{{9,{}},43,7,true},{{{},0},43,10,true}};
+        if(affine)for(auto &ref:*input.owner_references) {
+            ref.standard_identity_input=false;
+            ref.affine_input.emplace();ref.affine_input->source_record=affine_sources.at(ref.source_id);
+            ref.affine_input->context.provider_id=0;
+            ref.affine_input->context.origin.model_coordinates=Json{{"status","decoded"},
+                {"reference_origin",{{"value",Point3{0,0,0}}}}};
+        }
         const auto result=project_native_dependency_load(input);
         require(result.resolved,"bound reference projection: "+result.reason);
         check(result.batches.size()==4,"all roots with bound references complete");
@@ -295,6 +320,7 @@ unsigned dependency_registration_tests() {
               "bound-reference final graph matches every original target identity");
         check(result.pending_entities==std::vector<std::size_t>(pending.begin(),pending.end()),"bound-reference final pending set agrees");
         if(bound_sample.entities.empty())bound_sample=input;
+        if(affine && row.at("format")==4 && !row.at("disabled").get<bool>() && affine_sample.entities.empty())affine_sample=input;
     }
     NativeDependencyLoadInput base;
     base.input_complete=base.system_registry_known_empty=base.file_fallback_disabled=base.monitored_entity_set_known_empty=true;
@@ -305,6 +331,43 @@ unsigned dependency_registration_tests() {
               "unknown or invalid dependency input never publishes a partial graph");
     };
     auto input=base;input.input_complete=false;rejected(input,"incomplete_input");
+    check(!affine_sample.entities.empty(),"a native nonidentity paired selector supplies guard tests");
+    input=affine_sample;input.entities[1].standard_type13_identity_root_owner=true;rejected(input,"contradictory_owner_profile");
+    input=affine_sample;input.entities[1].standard_type13_root_source->pop_back();rejected(input,"owner_reference_source_profile_required");
+    input=affine_sample;input.entities[1].standard_type13_root_source->at(28)=1;rejected(input,"owner_reference_source_profile_required");
+    input=affine_sample;input.entities[1].standard_type13_root_source->at(20)=99;rejected(input,"owner_reference_source_id_mismatch");
+    input=affine_sample;input.owner_references->at(0).standard_identity_input=true;rejected(input,"contradictory_owner_reference_transform");
+    input=affine_sample;input.owner_references->at(0).affine_input.reset();rejected(input,"owner_reference_transform_requires_context");
+    input=affine_sample;input.owner_references->at(0).affine_input->source_record.at(20)=99;rejected(input,"owner_reference_source_id_mismatch");
+    input=affine_sample;input.owner_references->at(0).affine_input->source_record.at(370)=4;rejected(input,"owner_reference_source_profile_required");
+    input=affine_sample;input.owner_references->at(0).affine_input->context.force_z_scale=false;rejected(input,"owner_reference_chain_requires_forced_z_scale");
+    input=affine_sample;input.owner_references->at(0).affine_input->context.origin.model_attached=false;rejected(input,"owner_reference_affine_attachment_mismatch");
+    input=affine_sample;input.owner_references->at(0).affine_input->context.provider_id.reset();
+    rejected(input,"owner_reference_affine_unresolved: reference_scale_provider_identity_unknown");
+    input=affine_sample;input.owner_references->at(0).affine_input->context.origin={};
+    rejected(input,"owner_reference_affine_unresolved: reference_origin_correction_unresolved");
+    input=affine_sample;input.owner_references->at(0).affine_input->context.provider_id=0x10000;
+    rejected(input,"owner_reference_affine_unresolved: reference_scale_provider_result_unknown");
+    input=affine_sample;
+    const double infinity=std::numeric_limits<double>::infinity();
+    std::memcpy(input.entities[1].standard_type13_root_source->data()+292,&infinity,8);
+    rejected(input,"owner_reference_source_nonfinite");
+    input=affine_sample;
+    std::memcpy(input.owner_references->at(0).affine_input->source_record.data()+196,&infinity,8);
+    rejected(input,"owner_reference_source_nonfinite");
+    input=affine_sample;
+    const double maximum=std::numeric_limits<double>::max();
+    std::memcpy(input.owner_references->at(0).affine_input->source_record.data()+292,&maximum,8);
+    rejected(input,"owner_reference_affine_unresolved: reference affine point translation overflow");
+    input=affine_sample;input.entities[1].standard_type13_root_source->at(6)=0x60;
+    input.owner_references->at(0).affine_input->source_record.at(6)=0x60;
+    check(project_native_dependency_load(input).resolved,"prepared loaded type13 flag is accepted without changing transform provenance");
+    input=affine_sample;input.owner_references->at(0).affine_input->context={};
+    for(auto i:{0u,3u})input.entities[i].dependency_payloads={unhex("10270400001801000200000000000000000000000000000029000000000000002a00000000000000")};
+    check(project_native_dependency_load(input).resolved,"format6 source transitions do not demand an unused affine service context");
+    input=affine_sample;input.entities[1].runtime_flags_10=8;input.owner_lookup_includes_deleted=false;
+    input.entities[1].standard_type13_root_source->at(28)=1;
+    check(project_native_dependency_load(input).resolved,"deleted owner rejection precedes source profile validation");
     input=bound_sample;input.owner_references.reset();rejected(input,"owner_reference_list_requires_context");
     input=bound_sample;input.owner_reference_lists_complete=false;rejected(input,"owner_reference_list_requires_context");
     input=bound_sample;input.owner_references->clear();rejected(input,"owner_reference_creation_requires_context");

@@ -17,12 +17,19 @@ struct NativeDependencyLoadEntity {
     // clipping, attributes or custom owner handler. Its bound reference object
     // is selected from the caller context's list, not from this entity alone.
     bool standard_type13_identity_root_owner = false;
+    // Prepared modern type-13 root record, including its four-byte physical
+    // prefix. This audited profile has only ID and finite affine source fields
+    // populated; no parent, attributes, clipping or custom owner handler.
+    // The record ID must equal assigned_id. Mutually exclusive with both
+    // legacy owner profile flags above. Unknown source fields are rejected.
+    std::optional<Bytes> standard_type13_root_source;
 };
 struct NativeDependencySystemTarget {
     std::uint64_t assigned_id = 0;
     std::optional<std::uint32_t> runtime_flags_10;
     bool standard_type33_root_owner = false;
     bool standard_type13_identity_root_owner = false;
+    std::optional<Bytes> standard_type13_root_source;
 };
 struct NativeDependencyOwnerContext {
     // Neither field: current input model. Exactly one: another model in the
@@ -30,14 +37,25 @@ struct NativeDependencyOwnerContext {
     std::optional<std::int32_t> model_id;
     std::optional<std::size_t> reference_index;
 };
+struct NativeDependencyReferenceAffineInput {
+    // Actual prepared source last read by this reference object. This is a
+    // separate snapshot from the current owner entity, not an inferred copy.
+    // Same modern, attribute-free source profile as standard_type13_root_source.
+    Bytes source_record;
+    ReferenceAffineContext context;
+};
 struct NativeDependencyOwnerReference {
     NativeDependencyOwnerContext parent;
     std::uint64_t source_id = 0;
     // nullopt requires loading, which this projection cannot perform.
     std::optional<std::int32_t> bound_model_id;
     // Original identity reference input, with no active transform/clip/provider
-    // extension. Required for each reference ancestor of a paired selector.
+    // extension. Legacy alternative to the explicit affine input below.
     bool standard_identity_input = false;
+    // Alternative to standard_identity_input for paired selectors. Query and
+    // compose the actual source using the explicit bound-model/provider state.
+    // Context must describe an attached model and a forced-Z chain query.
+    std::optional<NativeDependencyReferenceAffineInput> affine_input;
 };
 struct NativeDependencyFileModel {
     std::int32_t model_id = 0;
@@ -128,6 +146,8 @@ struct NativeDependencyLoadResult {
 // file fallback context is required only if both miss. Resolves
 // direct IDs in formats 0/1, selector references in 2/3/4/5/7 and model IDs in 8.
 // Owner paths require audited standard type-33 or type-13 root profiles.
+// Nonidentity type-13 roots supply prepared source records; paired selectors
+// also require each selected reference's actual affine source and context.
 // Format 6 and special format 0 traverse explicitly bound reference contexts;
 // missing/unbound reference objects require creation/loading and are unknown.
 // Disabled/zero-entry/out-of-range formats skip.
