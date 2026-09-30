@@ -4,6 +4,45 @@
 
 namespace p3d {
 namespace {
+struct TreeOwnerProfile {unsigned type;std::optional<Matrix4> block;};
+TreeOwnerProfile dependency_tree_source(const NativeDependencyTreeOwnerInput &tree,
+                                       std::uint64_t id,std::size_t &remaining) {
+    const auto &source=tree.prepared_source;
+    require(source.size()>=132,"owner_tree_source_profile_required");
+    const auto type=Reader(source,4).u16();
+    require(type==14 || type==33 || type==62,"owner_tree_source_profile_required");
+    const std::size_t base=type==62?260:132;
+    require(source.size()>=base && source.size()<=131074 &&
+            Reader(source,6).u16()==(0x20u|(type==14?0x40u:0u)|(tree.parent_entity?0x80u:0u)) &&
+            Reader(source,12).u32()==(base-4)/2 &&
+            std::uint64_t(Reader(source,8).u32())*2+4==source.size() && Reader(source,16).u32()==0,
+            "owner_tree_source_profile_required");
+    require(Reader(source,20).u64()==id,"owner_tree_source_id_mismatch");
+    for(std::size_t at=28;at<base;++at) {
+        const bool field=type==62?at>=164:(at>=60 && at<108) || (type==14 && at>=108 && at<112);
+        if(!field)require(source[at]==0,"owner_tree_source_profile_required");
+    }
+    TreeOwnerProfile profile{type,{}};
+    if(type==62) {
+        Matrix4 matrix{{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}};
+        Reader values(source,164);
+        for(unsigned r=0;r<3;++r)for(unsigned c=0;c<3;++c)matrix[r][c]=values.f64();
+        for(unsigned r=0;r<3;++r)matrix[r][3]=values.f64();
+        for(const auto &row:matrix)for(auto value:row)
+            require(std::isfinite(value),"owner_tree_source_nonfinite");
+        profile.block=matrix;
+    }
+    for(std::size_t at=base;at<source.size();) {
+        require(remaining!=0,"work_limit_exceeded");--remaining;
+        require(source.size()-at>=4,"truncated_owner_tree_linkage");
+        const auto h=Reader(source,at).u16();
+        require((h&0x1000) && Reader(source,at+2).u16()==0x56d0,"owner_tree_linkage_profile_required");
+        const auto words=(h&0x4000)?std::size_t(h&255)<<((h>>8)&15):std::size_t(h&255)+1;
+        require(words>=2 && words<=65535 && words*2<=source.size()-at,"truncated_owner_tree_linkage");
+        at+=words*2;
+    }
+    return profile;
+}
 Matrix4 dependency_block_source(const Bytes &source,std::uint64_t id) {
     require(source.size()==260 && Reader(source,4).u16()==62 && Reader(source,6).u16()==0x20 &&
             Reader(source,8).u32()==128 && Reader(source,12).u32()==128 && Reader(source,16).u32()==0,
@@ -253,26 +292,37 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 for(auto index:chain)state[index]=2;
             }
         }
-        struct OwnerProfile {unsigned type;const Bytes *source=nullptr;std::optional<Matrix4> block=std::nullopt;};
+        std::vector<bool> registered(input.entities.size()),pending(input.entities.size());
+        struct OwnerProfile {
+            unsigned type;const Bytes *source=nullptr;std::optional<Matrix4> block=std::nullopt;
+            const NativeDependencyTreeOwnerInput *tree=nullptr;
+        };
         auto owner_profile=[&](const Target &owner) {
             bool plain=false,reference=false;
             const std::optional<Bytes> *source=nullptr,*path=nullptr,*block=nullptr;
+            const std::optional<NativeDependencyTreeOwnerInput> *tree=nullptr;
             std::uint64_t id=0;
             if(owner.scope==0) {
                 const auto &entity=input.entities[owner.index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
                 source=&entity.standard_type13_root_source;path=&entity.standard_type47_root_source;id=entity.assigned_id;
                 block=&entity.standard_type62_root_source;
+                tree=&entity.standard_tree_owner;
             } else {
                 const auto &entity=owner.scope==1?input.system_registry->at(owner.index):
                     input.file_context->models[owner.model].entities[owner.index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
                 source=&entity.standard_type13_root_source;path=&entity.standard_type47_root_source;id=entity.assigned_id;
                 block=&entity.standard_type62_root_source;
+                tree=&entity.standard_tree_owner;
             }
             require(unsigned(plain)+unsigned(reference)+unsigned(source->has_value())+unsigned(path->has_value())+
-                    unsigned(block->has_value())<=1,
+                    unsigned(block->has_value())+unsigned(tree->has_value())<=1,
                     "contradictory_owner_profile");
+            if(*tree) {
+                tick();const auto profile=dependency_tree_source(**tree,id,remaining);
+                return OwnerProfile{profile.type,&(**tree).prepared_source,profile.block,&**tree};
+            }
             if(*block) {tick();return OwnerProfile{62,&**block,dependency_block_source(**block,id)};}
             if(*path) {tick();dependency_path_header(**path,id);return OwnerProfile{47,&**path};}
             if(*source) {tick();dependency_owner_source(**source,id);reference=true;}
@@ -285,6 +335,24 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 if(blocks && profile.block)blocks->push_back({{"element_type",62},{"block_transform",
                     {{"reader_profile","bimbase_2025_block_transform_input"},{"status","resolved"},
                      {"matrix",*profile.block}}}});
+            };
+            auto append_target=[&](Target target,const OwnerProfile &profile) {
+                auto ancestor=profile;
+                std::set<std::size_t> visited{target.index};
+                bool parent_seen=false;
+                while(ancestor.tree && ancestor.tree->parent_entity) {
+                    tick();const auto parent=*ancestor.tree->parent_entity;
+                    const auto size=target.scope==0?input.entities.size():target.scope==1?
+                        input.system_registry->size():input.file_context->models[target.model].entities.size();
+                    require(parent<size,"owner_entity_parent_out_of_range");
+                    require(visited.insert(parent).second,"owner_entity_parent_cycle");
+                    require(target.scope!=0 || registered[parent],"owner_entity_parent_not_registered");
+                    target.index=parent;ancestor=owner_profile(target);
+                    require(ancestor.tree && ancestor.type==14,"owner_entity_parent_profile_required");
+                    parent_seen=true;
+                }
+                if(parent_seen)append(ancestor);
+                append(profile);
             };
             auto find_owner=[&](std::uint64_t target_id,const std::optional<OwnerContext> &context,bool outer)->std::optional<Target> {
                 if(!context)return {};
@@ -321,8 +389,8 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 initial_step=false;auto &frame=stack.back();
                 if(!frame.entered) {
                     const auto profile=owner_profile(frame.target);
-                    if(profile.type==33 || profile.type==62) {
-                        append(profile);
+                    if(profile.type==14 || profile.type==33 || profile.type==62) {
+                        append_target(frame.target,profile);
                         if(frame.caller)collected_owner=frame.caller;
                         stack.pop_back();continue;
                     }
@@ -366,13 +434,13 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                     const auto terminal=find_owner(frame.program.ids.front(),frame.caller,false);
                     if(!terminal)return {};
                     // Audit the appended terminal; type-13/47 is not expanded.
-                    append(owner_profile(*terminal));
+                    append_target(*terminal,owner_profile(*terminal));
                 }
                 active.erase(frame.key);stack.pop_back();
             }
-            // Parent-free append leaves the native terminal at the last entry,
+            // Every append leaves the native terminal at the last entry,
             // so 101dc0 includes every collected block, even the final one.
-            // Non-block roots contribute no local matrix; retaining only block
+            // Audited non-block nodes contribute no local matrix; retaining only block
             // occurrences preserves their order and avoids copying whole records.
             return collected_owner;
         };
@@ -403,7 +471,6 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
             }
             return {};
         };
-        std::vector<bool> registered(input.entities.size()),pending(input.entities.size());
         out.dependents.resize(input.entities.size());
         for(std::size_t batch_index=0;batch_index<input.batches.size();++batch_index) {
             out.failed_batch=batch_index;tick();

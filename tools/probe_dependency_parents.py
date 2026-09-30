@@ -70,6 +70,14 @@ def fixture(result):
         rows.append(row)
     compact=dict(scope=result['scope'],dll_sha256=result['dll_sha256'],
                  native_case_count=len(rows),source_catalog=catalog,cases=rows)
+    compact['dependency_cases']=[]
+    for original,row in zip(result['cases'],rows,strict=True):
+        graph={k:original[k] for k in ('format','disabled','payload_hex','target_flags','owner_flags',
+            'owner_lookup_includes_deleted','tree_layout','tree_state','tree_sources',
+            'input_batches','path_program','path_owners','calls')}
+        if 'transform_case' in original:graph['transform_case']=original['transform_case']
+        graph['source_indices']=row['source_indices']
+        compact['dependency_cases'].append(graph)
     return ('#pragma once\n// Synthetic original input trees and collected transforms.\n'
         'inline constexpr const char* dependency_parents_oracle = R"oracle('
         +json.dumps(compact,separators=(',',':'))+')oracle";\n')

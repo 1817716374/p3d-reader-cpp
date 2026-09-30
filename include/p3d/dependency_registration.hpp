@@ -3,6 +3,16 @@
 #include <optional>
 
 namespace p3d {
+struct NativeDependencyTreeOwnerInput {
+    // Actual loaded physical source (including prefix), after child-flag and
+    // block-matrix preparation. Audited types 14/33/62, subtype 0, standard
+    // header and optional 56d0 user linkages; no custom transform handler.
+    Bytes prepared_source;
+    // Actual parent occurrence in the SAME model's entity vector, not an ID.
+    // nullopt explicitly means a root. Parents must use type-14 tree profiles.
+    // Current-model parents must already belong to an accepted input batch.
+    std::optional<std::size_t> parent_entity;
+};
 struct NativeDependencyLoadEntity {
     // Final ID after input preparation and collision handling, not the source ID.
     std::uint64_t assigned_id = 0;
@@ -34,6 +44,8 @@ struct NativeDependencyLoadEntity {
     // parent, attributes or custom handler; mutually exclusive with profiles
     // above. Matrix values are already prepared, so they are not repaired again.
     std::optional<Bytes> standard_type62_root_source;
+    // Mutually exclusive with all root profiles above.
+    std::optional<NativeDependencyTreeOwnerInput> standard_tree_owner;
 };
 struct NativeDependencySystemTarget {
     std::uint64_t assigned_id = 0;
@@ -43,6 +55,7 @@ struct NativeDependencySystemTarget {
     std::optional<Bytes> standard_type13_root_source;
     std::optional<Bytes> standard_type47_root_source;
     std::optional<Bytes> standard_type62_root_source;
+    std::optional<NativeDependencyTreeOwnerInput> standard_tree_owner;
 };
 struct NativeDependencyOwnerContext {
     // Neither field: current input model. Exactly one: another model in the
@@ -158,7 +171,7 @@ struct NativeDependencyLoadResult {
 // service monitored set. Local lookup precedes the supplied system registry;
 // file fallback context is required only if both miss. Resolves
 // direct IDs in formats 0/1, selector references in 2/3/4/5/7 and model IDs in 8.
-// Owner paths require audited standard type-33, type-13, type-47 or type-62 roots.
+// Owner paths require audited standard root profiles or standard_tree_owner.
 // Nonidentity type-13 roots supply prepared source records; paired selectors
 // also require each selected reference's actual affine source and context.
 // Format 6 and special format 0 traverse explicitly bound reference contexts;
@@ -166,7 +179,9 @@ struct NativeDependencyLoadResult {
 // Type-47 roots share collector state across nested programs; their format-6
 // terminal is appended without expansion or an implied owner. Standard type-47
 // terminals have no extra local transform; prepared type-62 block matrices are
-// composed in collector order. Entity parent chains remain unsupported here.
+// composed in collector order. Audited tree profiles follow actual entity
+// parents, append the first non-child ancestor, then the target. An ancestor
+// is not looked up by ID and is not subjected to a second deletion filter.
 // Disabled/zero-entry/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,
 // typed-handler work queues or geometry regeneration. Failure publishes no
