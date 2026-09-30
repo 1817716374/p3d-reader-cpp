@@ -109,4 +109,33 @@ struct NativeDependencyNormalizationResult {
 // Keep the first occurrence of each scheduled dependent and all occurrences
 // of other dependents, in unchanged head-to-tail order. No geometry refresh.
 NativeDependencyNormalizationResult project_native_dependency_normalization(const NativeDependencyNormalizationInput &input);
+
+struct NativeDependencyCycleInput : NativeDependencyRetryInput {
+    // At entry, all work queues except the supplied pending set are empty.
+    bool other_work_queues_known_empty = false;
+    bool standard_entities_known = false;
+    // Original +a8/+b0 callbacks take/release a nested hold; final unload is
+    // outside this profile and must not be silently treated as a no-op.
+    bool caller_holds_model = false;
+    bool link_update_handlers_known_absent = false;
+};
+struct NativeDependencyCycleResult {
+    bool resolved = false;
+    std::string reason;
+    std::optional<std::size_t> failed_entity;
+    std::vector<std::vector<std::size_t>> dependents;
+    // This iteration consumes pending work even when IDs remain missing.
+    std::vector<std::size_t> pending_entities;
+    // Missing/excluded targets survive here; an empty pending queue does not
+    // mean every reference resolved. Membership uses stable input indices.
+    std::vector<std::size_t> monitored_entities;
+    std::vector<NativeDependencyEdge> scheduled_pairs;
+};
+// Complete R1.18 1eb240 iteration in a single caller-held standard model:
+// retry, selective duplicate removal, remaining link callbacks and cleanup.
+// Requires absent link-update handlers; active flag 0x4000 is unsupported.
+// Shares one max_work_items budget across all phases. Does not run outer
+// 1f1a90 host transactions, model unload, cross-model or attribute callbacks.
+// resolved describes this bounded projection, not a fully resolved graph.
+NativeDependencyCycleResult project_native_dependency_cycle(const NativeDependencyCycleInput &input);
 } // namespace p3d

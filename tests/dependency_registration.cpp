@@ -3,6 +3,7 @@
 #include "dependency_registration_oracle.hpp"
 #include "dependency_retry_oracle.hpp"
 #include "dependency_cycle_oracle.hpp"
+#include "dependency_held_cycle_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -22,6 +23,9 @@ unsigned dependency_registration_tests() {
     const auto cycle_oracle=Json::parse(dependency_cycle_oracle);
     check(cycle_oracle.at("cases").size()==176,"all complete native iteration observations are tested");
     for(const auto &row:cycle_oracle.at("cases"))cases.push_back(row);
+    const auto held_oracle=Json::parse(dependency_held_cycle_oracle);
+    check(held_oracle.at("cases").size()==804,"all original constructed-model iterations are tested");
+    for(const auto &row:held_oracle.at("cases"))cases.push_back(row);
     std::size_t case_index=0;
     for(const auto &row:cases) {
         const bool retry=row.contains("before_retry");
@@ -91,6 +95,30 @@ unsigned dependency_registration_tests() {
             const auto &after=row.at("after_retry");
             const bool cycle=row.contains("cycle_return");
             if(cycle) {
+                NativeDependencyCycleInput complete;
+                static_cast<NativeDependencyRetryInput &>(complete)=next;
+                complete.other_work_queues_known_empty=complete.standard_entities_known=
+                    complete.caller_holds_model=complete.link_update_handlers_known_absent=true;
+                const auto completed=project_native_dependency_cycle(complete);
+                require(completed.resolved,"complete iteration case "+std::to_string(case_index)+": "+completed.reason);
+                check(after.at("dependents")==completed.dependents,"complete projection agrees with original iteration graph");
+                check(after.at("context").at("pending_entities")==completed.pending_entities,
+                      "complete iteration consumes pending work even with missing targets");
+                check(after.at("context").at("monitored_entities")==completed.monitored_entities,
+                      "unresolved references remain monitored after pending work is consumed");
+                check(completed.scheduled_pairs.empty(),"complete iteration consumes scheduled pairs");
+                if(row.contains("native_after")) {
+                    const auto &meta=row.at("native_after");
+                    check(meta.at("file_vtable")=="0x52eef8" && meta.at("model_vtable")=="0x5333c8" &&
+                          meta.at("model_host_vtable")=="0x544230","original constructors provide actual file/model/host services");
+                    check(meta.at("model_reference_count")==1 && meta.at("file_reference_count")==1 &&
+                          meta.at("file_held_model_count")==1 && meta.at("file_model_count")==1,
+                          "iteration restores the caller hold and preserves active model membership");
+                    std::size_t bytes=0;
+                    for(const auto &entity:row.at("entities"))bytes+=(entity.at("source_header").get<std::string>().size()/2+7)&~std::size_t(7);
+                    check(meta.at("storage_page_used")==bytes && meta.at("storage_page_bytes").get<std::size_t>()>=bytes,
+                          "original storage allocator retains every aligned record");
+                }
                 NativeDependencyNormalizationInput normalized_input;
                 normalized_input.dependents=retried.dependents;normalized_input.scheduled_pairs=retried.scheduled_pairs;
                 normalized_input.input_complete=normalized_input.standard_entities_known=normalized_input.removal_work_known_empty=true;
@@ -106,7 +134,7 @@ unsigned dependency_registration_tests() {
                     check(replay==normalized.dependents[i],"retained positions identify the exact surviving list occurrences");
                 }
             } else check(after.at("dependents")==retried.dependents,"retry preserves duplicates and matches native reverse-list ordering");
-            check(after.at("context").at("pending_entities")==retried.pending_entities,"retry requeues missing or excluded targets");
+            if(!cycle)check(after.at("context").at("pending_entities")==retried.pending_entities,"retry requeues missing or excluded targets");
             check(after.at("context").at("monitored_entities")==retried.monitored_entities,"remaining pending members become monitored");
             Json pairs=Json::array();for(const auto &edge:retried.scheduled_pairs)pairs.push_back({edge.target_entity,edge.dependent_entity});
             if(!cycle) {
@@ -210,5 +238,37 @@ unsigned dependency_registration_tests() {
     n=normal;n.max_work_items=14;check(project_native_dependency_normalization(n).resolved,"exact normalization work budget accepted");
     n=normal;n.dependents.clear();n.scheduled_pairs.clear();n.max_work_items=0;
     check(project_native_dependency_normalization(n).resolved,"empty normalization consumes no work");
+    NativeDependencyCycleInput complete;
+    static_cast<NativeDependencyRetryInput &>(complete)=retry;
+    complete.other_work_queues_known_empty=complete.standard_entities_known=
+        complete.caller_holds_model=complete.link_update_handlers_known_absent=true;
+    complete.entities[1].dependency_payloads={unhex("e7030100000002000100000000000000e703000000000000")};
+    auto completed=project_native_dependency_cycle(complete);
+    check(completed.resolved && completed.dependents==std::vector<std::vector<std::size_t>>{{1},{}} &&
+          completed.pending_entities.empty() && completed.monitored_entities==std::vector<std::size_t>{1},
+          "missing ID remains observable after successful complete iteration");
+    auto reject_cycle=[&](const NativeDependencyCycleInput &c,const char *reason) {
+        const auto r=project_native_dependency_cycle(c);
+        check(!r.resolved && r.reason==reason && r.dependents.empty() && r.pending_entities.empty() &&
+              r.monitored_entities.empty() && r.scheduled_pairs.empty(),"failed complete iteration publishes no partial graph or queues");
+    };
+    auto c=complete;c.other_work_queues_known_empty=false;reject_cycle(c,"dependency_work_queues_require_context");
+    c=complete;c.standard_entities_known=false;reject_cycle(c,"target_entity_interface_requires_context");
+    c=complete;c.caller_holds_model=false;reject_cycle(c,"model_release_requires_context");
+    c=complete;c.link_update_handlers_known_absent=false;reject_cycle(c,"link_update_handlers_require_context");
+    c=complete;c.input_complete=false;reject_cycle(c,"incomplete_input");
+    c=complete;c.entities[1].dependency_payloads[0][5]=0x40;reject_cycle(c,"required_link_handler_requires_context");
+    // The disabled second linkage does not participate in retry, but the full
+    // update callback still dispatches it when the first link remains missing.
+    c=complete;c.entities[1].dependency_payloads.push_back(unhex("e703010001000100"));
+    reject_cycle(c,"truncated_dependency_entries");
+    c.entities[1].dependency_payloads.back()[5]=8;reject_cycle(c,"dependency_format_requires_context");
+    c=complete;c.entities[1].dependency_payloads.push_back(unhex("10270400010001000100000000000000"));
+    reject_cycle(c,"dependency_owner_path_requires_context");
+    for(std::size_t budget=0;budget<14;++budget) {c=complete;c.max_work_items=budget;reject_cycle(c,"work_limit_exceeded");}
+    c=complete;c.max_work_items=14;
+    check(project_native_dependency_cycle(c).resolved,"complete iteration accepts the exact shared phase budget");
+    c=complete;c.entities.clear();c.dependents.clear();c.pending_iteration_order.clear();c.max_work_items=0;
+    check(project_native_dependency_cycle(c).resolved,"known empty complete iteration needs no entity work");
     return checks;
 }

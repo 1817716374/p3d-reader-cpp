@@ -4,12 +4,12 @@
 
 namespace p3d {
 namespace {
-Json direct_dependency_entries(const Bytes &payload,std::size_t remaining) {
+Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool honor_disabled=true) {
     require(payload.size()>=8,"truncated_dependency_header");
     Reader header(payload);
     const auto owner=header.u16(),relation=header.u16(),flags=header.u16(),count=header.u16();
     const auto format=(flags>>10)&15u;
-    if(format>8 || (flags&1) || count==0)return Json::array();
+    if(format>8 || (honor_disabled && (flags&1)) || count==0)return Json::array();
     require(format<=1,"dependency_format_requires_context");
     require(!(format==0 && owner==10000 && relation==4),"dependency_owner_path_requires_context");
     require(count<=remaining,"work_limit_exceeded");
@@ -85,7 +85,8 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
     } catch(const std::exception &e) {return fail(e.what());}
 }
 
-NativeDependencyRetryResult project_native_dependency_retry(const NativeDependencyRetryInput &input) {
+namespace {
+NativeDependencyRetryResult retry_impl(const NativeDependencyRetryInput &input,std::size_t &remaining) {
     NativeDependencyRetryResult out;
     auto fail=[&](const std::string &reason) {
         out.reason=reason;out.dependents.clear();out.pending_entities.clear();out.monitored_entities.clear();
@@ -98,7 +99,6 @@ NativeDependencyRetryResult project_native_dependency_retry(const NativeDependen
     if(!input.model_notified.has_value())return fail("model_notification_requires_context");
     if(input.entities.size()>input.max_work_items)return fail("work_limit_exceeded");
     if(input.dependents.size()!=input.entities.size())return fail("reverse_list_count_mismatch");
-    std::size_t remaining=input.max_work_items;
     auto tick=[&](){require(remaining!=0,"work_limit_exceeded");--remaining;};
     try {
         std::unordered_map<std::uint64_t,std::size_t> registry;
@@ -147,7 +147,7 @@ NativeDependencyRetryResult project_native_dependency_retry(const NativeDependen
         out.failed_entity.reset();out.resolved=true;return out;
     } catch(const std::exception &e) {return fail(e.what());}
 }
-NativeDependencyNormalizationResult project_native_dependency_normalization(const NativeDependencyNormalizationInput &input) {
+NativeDependencyNormalizationResult normalization_impl(const NativeDependencyNormalizationInput &input,std::size_t &remaining) {
     NativeDependencyNormalizationResult out;
     auto fail=[&](const std::string &reason) {
         out.reason=reason;out.dependents.clear();out.retained_positions.clear();return out;
@@ -156,7 +156,6 @@ NativeDependencyNormalizationResult project_native_dependency_normalization(cons
     if(!input.standard_entities_known)return fail("target_entity_interface_requires_context");
     if(!input.removal_work_known_empty)return fail("dependency_removal_requires_context");
     if(input.dependents.size()>input.max_work_items)return fail("work_limit_exceeded");
-    std::size_t remaining=input.max_work_items;
     auto tick=[&](){require(remaining!=0,"work_limit_exceeded");--remaining;};
     try {
         const auto count=input.dependents.size();
@@ -177,5 +176,57 @@ NativeDependencyNormalizationResult project_native_dependency_normalization(cons
         }
         out.resolved=true;return out;
     } catch(const std::exception &e) {return fail(e.what());}
+}
+} // namespace
+NativeDependencyRetryResult project_native_dependency_retry(const NativeDependencyRetryInput &input) {
+    auto remaining=input.max_work_items;
+    return retry_impl(input,remaining);
+}
+NativeDependencyNormalizationResult project_native_dependency_normalization(const NativeDependencyNormalizationInput &input) {
+    auto remaining=input.max_work_items;
+    return normalization_impl(input,remaining);
+}
+NativeDependencyCycleResult project_native_dependency_cycle(const NativeDependencyCycleInput &input) {
+    NativeDependencyCycleResult out;
+    auto fail=[&](const std::string &reason) {
+        out.reason=reason;out.dependents.clear();out.pending_entities.clear();
+        out.monitored_entities.clear();out.scheduled_pairs.clear();return out;
+    };
+    if(!input.other_work_queues_known_empty)return fail("dependency_work_queues_require_context");
+    if(!input.standard_entities_known)return fail("target_entity_interface_requires_context");
+    if(!input.caller_holds_model)return fail("model_release_requires_context");
+    if(!input.link_update_handlers_known_absent)return fail("link_update_handlers_require_context");
+    auto remaining=input.max_work_items;
+    const auto retry=retry_impl(input,remaining);
+    if(!retry.resolved) {out.failed_entity=retry.failed_entity;return fail(retry.reason);}
+    auto tick=[&](){require(remaining!=0,"work_limit_exceeded");--remaining;};
+    try {
+        // 1f5130 visits every linkage of remaining entities. Unlike the retry
+        // phase, its update callback does not skip flag bit 0. Validate those
+        // references too, including links which did not cause the pending work.
+        for(auto index:retry.pending_entities) {
+            out.failed_entity=index;tick();
+            for(const auto &payload:input.entities[index].dependency_payloads) {
+                tick();require(payload.size()>=8,"truncated_dependency_header");
+                Reader header(payload);header.u16();header.u16();const auto flags=header.u16();
+                if(((flags>>10)&15)>8 || (flags&0x8000))continue;
+                require(!(flags&0x4000),"required_link_handler_requires_context");
+                for(const auto &entry:direct_dependency_entries(payload,remaining,false)) {
+                    (void)entry;tick();
+                }
+            }
+        }
+    } catch(const std::exception &e) {return fail(e.what());}
+    NativeDependencyNormalizationInput normal;
+    normal.dependents=retry.dependents;normal.scheduled_pairs=retry.scheduled_pairs;
+    normal.input_complete=normal.standard_entities_known=normal.removal_work_known_empty=true;
+    normal.max_work_items=input.max_work_items;
+    auto normalized=normalization_impl(normal,remaining);
+    if(!normalized.resolved) {out.failed_entity.reset();return fail(normalized.reason);}
+    out.dependents=std::move(normalized.dependents);
+    out.monitored_entities=retry.monitored_entities;
+    // registry30 -> registryc0 -> registry140 is consumed by this iteration.
+    // service40 is separate and retains the unresolved membership.
+    out.failed_entity.reset();out.resolved=true;return out;
 }
 } // namespace p3d

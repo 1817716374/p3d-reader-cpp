@@ -6,9 +6,10 @@ The default profile starts with prepared input trees. The optional file-entry
 profile executes original preparation and callbacks, limited to inputs without
 dependency linkages unless the direct-ID dependency profile is explicitly
 selected. None of these profiles opens a complete file. Native allocations
-remain until process exit. A bounded
-record-storage page avoids page growth/release; no synthetic destructors,
-Python native callbacks or patched code are used.
+remain until process exit. The constructed profile uses original file/model
+constructors and native list/storage allocation with a caller-held model;
+other profiles use a bounded storage page. No synthetic destructors, Python
+native callbacks or patched code are used.
 """
 import argparse,ctypes as C,hashlib,json,os,struct,sys
 from contextlib import nullcontext
@@ -16,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from probe_view_frame import HASHES
 from native_input_context import input_context
+from native_constructed_model import constructed_model
 
 def cases():
     rows=[]
@@ -28,7 +30,7 @@ def cases():
                                      extended_flags=flags,spatial=spatial))
     return rows
 
-def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False, dependency_retry=False, dependency_cycle=False):
+def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False, dependency_retry=False, dependency_cycle=False, constructed=False):
     if os.name!='nt' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('Requires Windows x64')
     for name,h in HASHES.items():
         if hashlib.sha256((root/name).read_bytes()).hexdigest()!=h:raise ValueError(name)
@@ -36,6 +38,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
     try:
         assert not dependency_retry or dependencies
         assert not dependency_cycle or dependency_retry
+        assert not constructed or dependency_cycle
         dll=C.WinDLL(str(root/'ROOT/P3DKJ.dll'));base=dll._handle
         if dependencies:
             assert file_entry
@@ -84,33 +87,34 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
             def ptr(v,o,x):C.c_void_p.from_buffer(v,o).value=x
             def q(v,o,x):C.c_uint64.from_buffer(v,o).value=x
             def u(v,o,x):C.c_uint32.from_buffer(v,o).value=x
-            model=buf(0x800);file=buf(0x1000);vt=buf(0xf0 if dependencies else 0x70)
-            ptr(model,0,C.addressof(vt));ptr(vt,0x28,base+0x8a80)
-            ptr(vt,0x48,base+0x8a80)
-            ptr(vt,0x68,base+(0x6570 if case['spatial'] else 0x8a80))
-            ptr(model,0xa0,C.addressof(file));C.c_uint8.from_buffer(model,0x78).value=case['spatial']
-            q(file,0x190,case['initial_counter'])
-            if dependencies:
-                ptr(vt,0xe8,base+0x8a80)
-                C.CFUNCTYPE(C.c_void_p,C.c_void_p,C.c_void_p,C.c_bool)(base+0x190250)(C.addressof(model)+0x1d0,None,False)
-            if prepare_ids or file_entry:
-                # File-input service: original vtable +50 -> 192210, whose
-                # constructor stores its file at +30. No host callback stub.
-                service=buf(0xa0);ptr(service,0,base+0x534708)
-                ptr(service,0x30,C.addressof(file));ptr(file,0xee0,C.addressof(service))
-            if file_entry:
-                ptr(file,0,base+0x52eef8);C.c_uint8.from_buffer(file,0xf40).value=1
-            # Exact pool configuration from 198300; allocation code is original.
-            q(model,0xc8,0x60);q(model,0xd0,32);q(model,0xd8,32)
-            ptr(model,0x610,base+0x533798)
-            for off,value in [(0x630,0x1b8),(0x638,4),(0x640,32),(0x650,4),(0x670,0xd0),(0x678,4),(0x680,32),(0x690,4)]:q(model,off,value)
-            storage=buf(0x28);page=buf(65536);ptr(storage,8,C.addressof(page));u(storage,0x10,65536)
-            ptr(model,0x178,C.addressof(storage))
-            listing=buf(0x38);block=buf(0x48);slots=buf(128*8)
-            if file_entry:ptr(listing,0,base+0x533640);u(block,0x30,128)
-            ptr(listing,0x20,C.addressof(block));ptr(listing,0x30,C.addressof(model))
-            ptr(block,0,C.addressof(listing));ptr(block,0x18,C.addressof(slots));ptr(block,0x20,C.addressof(slots));ptr(block,0x28,C.addressof(slots)+128*8)
-            ptr(model,0x158,C.addressof(block))
+            if not constructed:
+                model=buf(0x800);file=buf(0x1000);vt=buf(0xf0 if dependencies else 0x70)
+                ptr(model,0,C.addressof(vt));ptr(vt,0x28,base+0x8a80)
+                ptr(vt,0x48,base+0x8a80)
+                ptr(vt,0x68,base+(0x6570 if case['spatial'] else 0x8a80))
+                ptr(model,0xa0,C.addressof(file));C.c_uint8.from_buffer(model,0x78).value=case['spatial']
+                q(file,0x190,case['initial_counter'])
+                if dependencies:
+                    ptr(vt,0xe8,base+0x8a80)
+                    C.CFUNCTYPE(C.c_void_p,C.c_void_p,C.c_void_p,C.c_bool)(base+0x190250)(C.addressof(model)+0x1d0,None,False)
+                if prepare_ids or file_entry:
+                    # File-input service: original vtable +50 -> 192210, whose
+                    # constructor stores its file at +30. No host callback stub.
+                    service=buf(0xa0);ptr(service,0,base+0x534708)
+                    ptr(service,0x30,C.addressof(file));ptr(file,0xee0,C.addressof(service))
+                if file_entry:
+                    ptr(file,0,base+0x52eef8);C.c_uint8.from_buffer(file,0xf40).value=1
+                # Exact pool configuration from 198300; allocation code is original.
+                q(model,0xc8,0x60);q(model,0xd0,32);q(model,0xd8,32)
+                ptr(model,0x610,base+0x533798)
+                for off,value in [(0x630,0x1b8),(0x638,4),(0x640,32),(0x650,4),(0x670,0xd0),(0x678,4),(0x680,32),(0x690,4)]:q(model,off,value)
+                storage=buf(0x28);page=buf(65536);ptr(storage,8,C.addressof(page));u(storage,0x10,65536)
+                ptr(model,0x178,C.addressof(storage))
+                listing=buf(0x38);block=buf(0x48);slots=buf(128*8)
+                if file_entry:ptr(listing,0,base+0x533640);u(block,0x30,128)
+                ptr(listing,0x20,C.addressof(block));ptr(listing,0x30,C.addressof(model))
+                ptr(block,0,C.addressof(listing));ptr(block,0x18,C.addressof(slots));ptr(block,0x20,C.addressof(slots));ptr(block,0x28,C.addressof(slots)+128*8)
+                ptr(model,0x158,C.addressof(block))
             children={i:[] for i in range(len(case['parents']))}
             for i,parent in enumerate(case['parents']):
                 if parent>=0:children[parent].append(i)
@@ -166,6 +170,9 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
             roots=[i for i,parent in enumerate(case['parents']) if parent<0]
             calls=[]
             with input_context(base,dependency_retry,dependency_cycle) if file_entry else nullcontext() as snapshot:
+                if constructed:
+                    model,file,listing,model_metadata=constructed_model(base,case['initial_counter'],case['spatial'])
+                    native_before=model_metadata()
                 for index in roots:
                     if file_entry:
                         result=load(model,nodes[index],listing,0.,False)
@@ -194,29 +201,42 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                     for i,flags in case.get('pre_retry_flags',{}).items():
                         C.c_uint32.from_address(pointers[int(i)]+0x10).value=flags
                     assert all(not(C.c_uint32.from_address(p+0x10).value&0x100000) for p in pointers)
-                    notice=buf(0x18)
+                    if constructed:
+                        notice=(C.c_char*0x18).from_address(C.c_void_p.from_buffer(model,0x138).value)
+                    else:
+                        notice=buf(0x18)
+                        ptr(model,0x138,C.addressof(notice))
                     C.c_uint8.from_buffer(notice,0x14).value=case['notice_list_flag']
-                    ptr(model,0x138,C.addressof(notice))
                     C.c_uint8.from_buffer(model,0x154).value=case['notice_model_flag']
                     before_retry=dict(context=snapshot(pointers),dependents=dependent_indices(pointers))
                     if dependency_cycle:
                         assert all(n==0 for k,n in enumerate(before_retry['context']['registry_set_counts']) if k!=2)
-                        # A remaining missing/excluded target enters a later
-                        # geometry callback requiring a complete model host.
-                        flags=[C.c_uint32.from_address(p+0x10).value for p in pointers]
-                        id_flags={C.c_uint64.from_address(C.c_void_p.from_address(p+0x40).value+0x10).value:f
-                                  for p,f in zip(pointers,flags)}
-                        for i in before_retry['context']['pending_entities']:
-                            if flags[i]&0x20008:continue
-                            for data in case['dependency_payloads'][i]:
-                                data=bytes.fromhex(data);_,_,bits,count=struct.unpack_from('<4H',data)
-                                if bits&1:continue
-                                stride=8 if ((bits>>10)&15)==0 else 16
-                                for j in range(count):
-                                    id_=struct.unpack_from('<Q',data,8+j*stride)[0]
-                                    assert id_==0 or (id_ in id_flags and not(id_flags[id_]&0x20008))
+                        # Remaining missing/excluded targets enter original
+                        # model acquisition and linkage-update callbacks.
+                        if not constructed:
+                            flags=[C.c_uint32.from_address(p+0x10).value for p in pointers]
+                            id_flags={C.c_uint64.from_address(C.c_void_p.from_address(p+0x40).value+0x10).value:f
+                                      for p,f in zip(pointers,flags)}
+                            for i in before_retry['context']['pending_entities']:
+                                if flags[i]&0x20008:continue
+                                for data in case['dependency_payloads'][i]:
+                                    data=bytes.fromhex(data);_,_,bits,count=struct.unpack_from('<4H',data)
+                                    if bits&1:continue
+                                    stride=8 if ((bits>>10)&15)==0 else 16
+                                    for j in range(count):
+                                        id_=struct.unpack_from('<Q',data,8+j*stride)[0]
+                                        assert id_==0 or (id_ in id_flags and not(id_flags[id_]&0x20008))
+                        else:
+                            handlers=C.CFUNCTYPE(C.c_void_p)(base+0x1f2600)()
+                            lookup=C.CFUNCTYPE(C.c_void_p,C.c_void_p,C.c_uint16)(base+0x1f5330)
+                            for payloads in case['dependency_payloads']:
+                                for encoded in payloads:
+                                    owner,_,bits,_=struct.unpack_from('<4H',bytes.fromhex(encoded))
+                                    assert not(bits&0x4000) and lookup(handlers+8,owner) is None
+                                    assert lookup(handlers+0x18,owner) is None
                     cycle_result=snapshot.retry(model)
                     after_retry=dict(context=snapshot(pointers),dependents=dependent_indices(pointers))
+                    if constructed:native_after=model_metadata()
             entities=[C.c_void_p.from_address(n+0x28).value for n in nodes];observed=[]
             observed_dependencies=dependent_indices(entities) if dependencies else None
             for i,entity in enumerate(entities):
@@ -236,19 +256,28 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                 if file_entry:observed[-1].update(source_header=headers[i].hex(),loaded_header=actual.hex())
                 if dependencies:
                     observed[-1]['dependents']=observed_dependencies[i]
-            count=(C.c_void_p.from_buffer(block,0x20).value-C.addressof(slots))//8
-            actual_roots=[entities.index(C.c_void_p.from_buffer(slots,8*i).value) for i in range(count)]
+            if constructed:
+                native_block=C.c_void_p.from_buffer(listing,0x20).value
+                begin=C.c_void_p.from_address(native_block+0x18).value
+                end=C.c_void_p.from_address(native_block+0x20).value
+                actual_roots=[entities.index(C.c_void_p.from_address(p).value) for p in range(begin,end,8)]
+                assert actual_roots==roots
+            else:
+                count=(C.c_void_p.from_buffer(block,0x20).value-C.addressof(slots))//8
+                actual_roots=[entities.index(C.c_void_p.from_buffer(slots,8*i).value) for i in range(count)]
             output=(C.c_double*6)(11,22,33,44,55,66);code=getbounds(model,output)
             rows.append(dict(case,calls=calls,source_ranges=source_ranges,entities=observed,root_indices=actual_roots,
                              bounds_result=code,bounds=list(output),counter=C.c_uint64.from_buffer(file,0x190).value))
             if dependency_retry:rows[-1].update(before_retry=before_retry,after_retry=after_retry)
             if dependency_cycle:rows[-1]['cycle_return']=cycle_result
+            if constructed:rows[-1].update(native_before=native_before,native_after=native_after)
         scope=('R1.18_file_service_id_preparation_and_registration_without_file_callbacks' if prepare_ids
                else 'R1.18_prepared_tree_registration_and_cache_update_without_file_callbacks')
         if file_entry:scope='R1.18_file_entry_header_preparation_registration_and_original_callbacks_bounded_context'
         if dependencies:scope='R1.18_file_entry_direct_ID_dependencies_in_bounded_single_model_context'
         if dependency_retry:scope='R1.18_direct_ID_pending_retry_core_after_model_notice_not_full_service_flush'
         if dependency_cycle:scope='R1.18_complete_dependency_iteration_with_no_remaining_pending_not_outer_host_flush'
+        if constructed:scope='R1.18_complete_dependency_iteration_in_original_constructed_caller_held_model_not_outer_host_flush'
         return dict(scope=scope,dll_sha256=HASHES,cases=rows)
     finally:
         for d in dirs:d.close()

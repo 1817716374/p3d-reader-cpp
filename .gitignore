@@ -283,3 +283,4 @@
 !/tests/dependency_registration_oracle.hpp
 !/tests/dependency_retry_oracle.hpp
 !/tests/dependency_cycle_oracle.hpp
+!/tests/dependency_held_cycle_oracle.hpp
