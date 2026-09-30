@@ -4,6 +4,51 @@
 
 namespace p3d {
 namespace {
+void dependency_path_header(const Bytes &source,std::uint64_t id) {
+    require(source.size()>=38 && Reader(source,4).u16()==47 && Reader(source,6).u16()==4 &&
+            Reader(source,12).u32()==17 && std::uint64_t(Reader(source,8).u32())*2+4==source.size(),
+            "owner_path_source_profile_required");
+    require(Reader(source,20).u64()==id,"owner_path_source_id_mismatch");
+    require(Reader(source,28).u64()==0,"owner_path_source_profile_required");
+}
+struct DependencyOwnerProgram {bool valid=false;unsigned format=0;std::vector<std::uint64_t> ids;};
+DependencyOwnerProgram dependency_owner_program(const Bytes &source,std::size_t &remaining) {
+    // Header/profile already validated. Native rejects these discriminators
+    // before examining any link, and never falls back past the first match.
+    if(Reader(source,16).u32()!=20 || Reader(source,36).u16()!=0x56e6)return {};
+    for(std::size_t at=38;at<source.size();) {
+        require(remaining!=0,"work_limit_exceeded");--remaining;
+        require(source.size()-at>=4,"truncated_owner_path_linkage");
+        const auto h=Reader(source,at).u16(),app=Reader(source,at+2).u16();
+        std::size_t bytes=8;
+        if(h&0x1000) {
+            const auto words=(h&0x4000)?std::size_t(h&255)<<((h>>8)&15):std::size_t(h&255)+1;
+            require(words>=2 && words<=65535,"invalid_owner_path_linkage_length");bytes=words*2;
+        }
+        require(bytes<=source.size()-at,"truncated_owner_path_linkage");
+        const auto payload=at+4,size=bytes-4;at+=bytes;
+        if(!(h&0x1000) || app!=0x56d0)continue;
+        if(size>=2 && Reader(source,payload).u16()!=10000)continue;
+        require(size>=4,"truncated_owner_path_linkage_key");
+        if(Reader(source,payload+2).u16()!=4)continue;
+        require(size>=8,"truncated_owner_path_header");
+        const auto format=(Reader(source,payload+4).u16()>>10)&15u;
+        const auto count=Reader(source,payload+6).u16();
+        if(format!=0 && format!=6)return {};
+        if(format==6 && count!=1)return {};
+        require(format==0 || size>=24,"truncated_owner_path_header");
+        const auto n=format==0?std::uint32_t(count):Reader(source,payload+8).u32();
+        if(format==6 && n==0)return {};
+        const std::size_t offset=format==0?8:24;
+        require(n<=(size-offset)/8,"truncated_owner_path_ids");
+        require(n<=remaining,"work_limit_exceeded");remaining-=n;
+        DependencyOwnerProgram result{true,format,{}};result.ids.reserve(n);
+        Reader ids(source,payload+offset);
+        for(std::uint32_t i=0;i<n;++i)result.ids.push_back(ids.u64());
+        return result;
+    }
+    return {};
+}
 Json dependency_owner_source(const Bytes &source,std::uint64_t id) {
     require(source.size()==372,"owner_reference_source_profile_required");
     require(Reader(source,4).u16()==13 &&
@@ -193,42 +238,122 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 for(auto index:chain)state[index]=2;
             }
         }
-        auto owner_path_context=[&](std::uint64_t id,const OwnerContext &context)->std::optional<OwnerContext> {
-            const auto owner=model_lookup(id,context.scope,context.model);
-            if(!owner)return {};
-            const auto flags=target_flags(*owner);
-            require(flags.has_value(),"owner_runtime_flags_require_context");
-            if(*flags&8) {
-                require(input.owner_lookup_includes_deleted.has_value(),"owner_lookup_mode_requires_context");
-                if(!*input.owner_lookup_includes_deleted)return {};
-            }
+        struct OwnerProfile {unsigned type;const Bytes *source=nullptr;};
+        auto owner_profile=[&](const Target &owner) {
             bool plain=false,reference=false;
-            const std::optional<Bytes> *source=nullptr;
-            if(owner->scope==0) {
-                const auto &entity=input.entities[owner->index];
+            const std::optional<Bytes> *source=nullptr,*path=nullptr;
+            std::uint64_t id=0;
+            if(owner.scope==0) {
+                const auto &entity=input.entities[owner.index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
-                source=&entity.standard_type13_root_source;
+                source=&entity.standard_type13_root_source;path=&entity.standard_type47_root_source;id=entity.assigned_id;
             } else {
-                const auto &entity=owner->scope==1?input.system_registry->at(owner->index):
-                    input.file_context->models[owner->model].entities[owner->index];
+                const auto &entity=owner.scope==1?input.system_registry->at(owner.index):
+                    input.file_context->models[owner.model].entities[owner.index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
-                source=&entity.standard_type13_root_source;
+                source=&entity.standard_type13_root_source;path=&entity.standard_type47_root_source;id=entity.assigned_id;
             }
-            require(unsigned(plain)+unsigned(reference)+unsigned(source->has_value())<=1,"contradictory_owner_profile");
+            require(unsigned(plain)+unsigned(reference)+unsigned(source->has_value())+unsigned(path->has_value())<=1,
+                    "contradictory_owner_profile");
+            if(*path) {tick();dependency_path_header(**path,id);return OwnerProfile{47,&**path};}
             if(*source) {tick();dependency_owner_source(**source,id);reference=true;}
-            if(plain)return context;
+            if(plain)return OwnerProfile{33};
             require(reference,"dependency_owner_path_requires_context");
-            require(input.owner_references.has_value() && input.owner_reference_lists_complete,"owner_reference_list_requires_context");
-            const auto found=reference_children.find(context_key(context));
-            if(found!=reference_children.end())for(auto index:found->second) {
-                tick();const auto &ref=input.owner_references->at(index);
-                if(ref.source_id!=id)continue;
-                require(ref.bound_model_id.has_value(),"owner_reference_loading_requires_context");
-                auto next=model_context(*ref.bound_model_id);next.reference=index;return next;
+            return OwnerProfile{13};
+        };
+        auto owner_path_context=[&](std::uint64_t id,const OwnerContext &initial,bool transform=false)->std::optional<OwnerContext> {
+            auto find_owner=[&](std::uint64_t target_id,const std::optional<OwnerContext> &context,bool outer)->std::optional<Target> {
+                if(!context)return {};
+                const auto owner=model_lookup(target_id,context->scope,context->model);
+                if(!owner)return {};
+                const auto flags=target_flags(*owner);
+                require(flags.has_value(),"owner_runtime_flags_require_context");
+                if(*flags&8) {
+                    if(!outer)return {}; // Nested type-47 paths always reject deleted nodes.
+                    require(input.owner_lookup_includes_deleted.has_value(),"owner_lookup_mode_requires_context");
+                    if(!*input.owner_lookup_includes_deleted)return {};
+                }
+                return owner;
+            };
+            const auto first=find_owner(id,initial,true);
+            if(!first)return {};
+            // A shared native collector may succeed without an owner. Keep its
+            // state across child expansions; do not substitute the caller for
+            // a format-6 terminal or discard a previous context on empty paths.
+            std::optional<OwnerContext> collected_owner;
+            std::vector<unsigned> collected_types;
+            using ActiveKey=std::tuple<unsigned,std::size_t,std::size_t,unsigned,std::size_t>;
+            std::set<ActiveKey> active;
+            struct Frame {
+                Target target;std::optional<OwnerContext> caller;
+                bool entered=false,waiting=false;
+                DependencyOwnerProgram program{};
+                std::size_t cursor=0;
+                ActiveKey key{};
+            };
+            std::vector<Frame> stack{{*first,initial}};
+            bool initial_step=true; // The caller already charged the outer selector/transition.
+            while(!stack.empty()) {
+                if(!initial_step)tick();
+                initial_step=false;auto &frame=stack.back();
+                if(!frame.entered) {
+                    const auto profile=owner_profile(frame.target);
+                    if(profile.type==33) {
+                        collected_types.push_back(33);
+                        if(frame.caller)collected_owner=frame.caller;
+                        stack.pop_back();continue;
+                    }
+                    if(profile.type==13) {
+                        require(frame.caller.has_value(),"owner_reference_caller_requires_context");
+                        require(input.owner_references.has_value() && input.owner_reference_lists_complete,"owner_reference_list_requires_context");
+                        const auto &caller=*frame.caller;
+                        const auto source_id=frame.target.scope==0?input.entities[frame.target.index].assigned_id:
+                            frame.target.scope==1?input.system_registry->at(frame.target.index).assigned_id:
+                            input.file_context->models[frame.target.model].entities[frame.target.index].assigned_id;
+                        const auto found=reference_children.find(context_key(caller));
+                        bool selected=false;
+                        if(found!=reference_children.end())for(auto index:found->second) {
+                            tick();const auto &ref=input.owner_references->at(index);
+                            if(ref.source_id!=source_id)continue;
+                            require(ref.bound_model_id.has_value(),"owner_reference_loading_requires_context");
+                            auto next=model_context(*ref.bound_model_id);next.reference=index;collected_owner=next;selected=true;break;
+                        }
+                        require(selected,"owner_reference_creation_requires_context");
+                        stack.pop_back();continue;
+                    }
+                    const auto key=context_key(*frame.caller);
+                    frame.key={frame.target.scope,frame.target.model,frame.target.index,key.first,key.second};
+                    require(active.insert(frame.key).second,"cyclic_owner_reference_path");
+                    frame.program=dependency_owner_program(*profile.source,remaining);
+                    if(!frame.program.valid)return {};
+                    frame.cursor=frame.program.ids.size();frame.entered=true;
+                    if(frame.program.format==0 && frame.program.ids.empty() && !collected_owner)
+                        collected_owner=frame.caller;
+                }
+                if(frame.waiting) {frame.caller=collected_owner;frame.waiting=false;}
+                const auto limit=frame.program.format==6?1u:0u;
+                if(frame.cursor>limit) {
+                    const auto next=find_owner(frame.program.ids[--frame.cursor],frame.caller,false);
+                    if(!next)return {};
+                    frame.waiting=true;
+                    const auto caller=frame.caller;
+                    stack.push_back({*next,caller});continue;
+                }
+                if(frame.program.format==6) {
+                    const auto terminal=find_owner(frame.program.ids.front(),frame.caller,false);
+                    if(!terminal)return {};
+                    // Only append; even a type-13/47 terminal is not expanded.
+                    collected_types.push_back(owner_profile(*terminal).type);
+                }
+                active.erase(frame.key);stack.pop_back();
             }
-            // A missing child can trigger original creation/loading. An empty
-            // supplied list is not evidence that this operation will fail.
-            throw std::runtime_error("owner_reference_creation_requires_context");
+            if(transform && collected_owner && collected_types.size()==1)
+                require(collected_types.front()==33 || collected_types.front()==13,
+                        "owner_terminal_transform_requires_context");
+            // All audited collected roots are non-block, parent-free records.
+            // A single standard type-33/13 has no custom local transform;
+            // remaining transformation is the selected reference parent chain.
+            return collected_owner;
         };
         auto owner_transition=[&](std::uint64_t id,const OwnerContext &context)->std::optional<OwnerContext> {
             tick();auto next=owner_path_context(id,context);
@@ -304,7 +429,7 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                             // 1f14a0 returns a null target but preserves the ID;
                             // a nonzero missing ID still queues this dependent.
                         } else if(entry.contains("owner_reference_id") && entry.at("owner_reference_id")!=0) {
-                            if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{})) {
+                            if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{},true)) {
                                 // 1f14a0 also evaluates the selected reference
                                 // and its ancestors before looking up the ID.
                                 auto ancestor=context->reference;

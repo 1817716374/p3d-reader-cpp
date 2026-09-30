@@ -75,9 +75,23 @@ def main():
     result['scope']='R1.18_original_type47_owner_expansion_and_callbacks'
     args.output.write_text(json.dumps(result,indent=2)+'\n',encoding='utf8')
     if args.fixture:
+        catalog=[];indices={};rows=[]
+        for original in result['cases']:
+            row={k:original[k] for k in ('format','disabled','payload_hex','target_flags','owner_flags',
+                 'owner_lookup_includes_deleted','path_program','path_owners','calls')}
+            if 'transform_case' in original:row['transform_case']=original['transform_case']
+            row['source_indices']=[]
+            for source in original['source_headers']:
+                key=json.dumps(source,sort_keys=True,separators=(',',':'))
+                if key not in indices:indices[key]=len(catalog);catalog.append(source)
+                row['source_indices'].append(indices[key])
+            assert [catalog[i] for i in row['source_indices']]==original['source_headers']
+            rows.append(row)
+        compact=dict(scope='R1.18_type47_initial_dependency_graph_fixture',
+                     dll_sha256=result['dll_sha256'],source_catalog=catalog,cases=rows)
         args.fixture.write_text('#pragma once\n// Pure synthetic original type-47 owner path observations.\n'
             'inline constexpr const char* dependency_type47_oracle = R"oracle('
-            +json.dumps(result,separators=(',',':'))+')oracle";\n',encoding='utf8')
+            +json.dumps(compact,separators=(',',':'))+')oracle";\n',encoding='utf8')
     print('Observed',len(result['cases']),'original type-47 cases')
 
 

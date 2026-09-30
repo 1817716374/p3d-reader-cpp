@@ -11,6 +11,7 @@
 #include "dependency_paths_oracle.hpp"
 #include "dependency_reference_owners_oracle.hpp"
 #include "dependency_reference_affines_oracle.hpp"
+#include "dependency_type47_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -250,7 +251,14 @@ unsigned dependency_registration_tests() {
     auto bound_cases=bound_oracle.at("cases");
     check(affine_oracle.at("dependency_cases").size()==288,"all nonidentity original graph callbacks are tested");
     for(const auto &row:affine_oracle.at("dependency_cases"))bound_cases.push_back(row);
-    NativeDependencyLoadInput bound_sample,affine_sample;
+    const auto path_oracle=Json::parse(dependency_type47_oracle);
+    check(path_oracle.at("cases").size()==1566,"all original type47 callback cases are tested");
+    for(auto row:path_oracle.at("cases")) {
+        row["source_headers"]=Json::array();
+        for(const auto &index:row.at("source_indices"))row["source_headers"].push_back(path_oracle.at("source_catalog").at(index.get<std::size_t>()));
+        bound_cases.push_back(std::move(row));
+    }
+    NativeDependencyLoadInput bound_sample,affine_sample,path_sample;
     for(const auto &row:bound_cases) {
         const bool affine=row.contains("transform_case");
         std::map<std::uint64_t,Bytes> affine_sources;
@@ -271,8 +279,10 @@ unsigned dependency_registration_tests() {
             const auto id=source.at("id").get<std::uint64_t>();
             const auto type=source.at("type").get<unsigned>();
             const auto model=source.at("model_id").get<int>();
-            const auto flags=model==7?(id==42?row.at("owner_flags").get<unsigned>():0):
+            auto flags=model==7?(id==42?row.at("owner_flags").get<unsigned>():0):
                 (id==41?row.at("target_flags").get<unsigned>():0);
+            if(type==47)for(const auto &path:row.at("path_owners"))
+                if(path.at("id")==id)flags=path.at("runtime_flags").get<unsigned>();
             if(model!=7) {
                 NativeDependencySystemTarget entity{id,flags,type==33,type==13 && !affine};
                 if(type==13 && affine)entity.standard_type13_root_source=affine_sources.at(id);
@@ -281,6 +291,12 @@ unsigned dependency_registration_tests() {
             else {
                 NativeDependencyLoadEntity entity{id,flags,{},type==33,type==13 && !affine};
                 if(type==13 && affine)entity.standard_type13_root_source=affine_sources.at(id);
+                if(type==47) {
+                    auto bytes=unhex(source.at("header_hex"));bytes.insert(bytes.begin(),4,0);
+                    entity.standard_type47_root_source=std::move(bytes);
+                    for(const auto &path:row.at("path_owners"))if(path.at("id")==id)
+                        for(const auto &payload:path.at("links"))entity.dependency_payloads.push_back(unhex(payload));
+                }
                 if(id==77 || id==78)entity.dependency_payloads.push_back(unhex(row.at("payload_hex")));
                 input.batches.push_back({input.entities.size()});input.entities.push_back(std::move(entity));
             }
@@ -297,8 +313,8 @@ unsigned dependency_registration_tests() {
         }
         const auto result=project_native_dependency_load(input);
         require(result.resolved,"bound reference projection: "+result.reason);
-        check(result.batches.size()==4,"all roots with bound references complete");
-        std::vector<std::vector<std::size_t>> local(4);
+        check(result.batches.size()==row.at("calls").size(),"all roots with bound references complete");
+        std::vector<std::vector<std::size_t>> local(input.entities.size());
         std::vector<std::vector<std::vector<std::size_t>>> others{{{},{}},{{}}};
         std::set<std::size_t> pending;
         for(std::size_t i=0;i<result.batches.size();++i) {
@@ -321,6 +337,7 @@ unsigned dependency_registration_tests() {
         check(result.pending_entities==std::vector<std::size_t>(pending.begin(),pending.end()),"bound-reference final pending set agrees");
         if(bound_sample.entities.empty())bound_sample=input;
         if(affine && row.at("format")==4 && !row.at("disabled").get<bool>() && affine_sample.entities.empty())affine_sample=input;
+        if(row.contains("path_program") && row.at("path_program")=="nested_reference" && row.at("format")==4 && path_sample.entities.empty())path_sample=input;
     }
     NativeDependencyLoadInput base;
     base.input_complete=base.system_registry_known_empty=base.file_fallback_disabled=base.monitored_entity_set_known_empty=true;
@@ -331,6 +348,60 @@ unsigned dependency_registration_tests() {
               "unknown or invalid dependency input never publishes a partial graph");
     };
     auto input=base;input.input_complete=false;rejected(input,"incomplete_input");
+    check(!path_sample.entities.empty(),"native nested type47 case supplies guard inputs");
+    auto put_path=[](Bytes &bytes,std::size_t offset,std::uint64_t value,unsigned size) {
+        for(unsigned i=0;i<size;++i)bytes.at(offset+i)=std::uint8_t(value>>(8*i));
+    };
+    auto make_path_record=[&](std::uint64_t id,const Bytes &payload) {
+        const auto &sample=*path_sample.entities[3].standard_type47_root_source;
+        Bytes bytes(sample.begin(),sample.begin()+38);bytes.resize(42+payload.size());
+        put_path(bytes,8,(bytes.size()-4)/2,4);put_path(bytes,20,id,8);
+        put_path(bytes,38,0x1000+(payload.size()+4)/2-1,2);put_path(bytes,40,0x56d0,2);
+        std::copy(payload.begin(),payload.end(),bytes.begin()+42);return bytes;
+    };
+    input=path_sample;input.entities[3].standard_type33_root_owner=true;rejected(input,"contradictory_owner_profile");
+    input=path_sample;input.entities[3].standard_type47_root_source->at(20)=99;rejected(input,"owner_path_source_id_mismatch");
+    input=path_sample;input.entities[3].standard_type47_root_source->at(6)|=0x80;rejected(input,"owner_path_source_profile_required");
+    input=path_sample;input.entities[3].standard_type47_root_source->at(28)=1;rejected(input,"owner_path_source_profile_required");
+    input=path_sample;input.entities[3].standard_type47_root_source->resize(56);
+    put_path(*input.entities[3].standard_type47_root_source,8,26,4);rejected(input,"truncated_owner_path_linkage");
+    input=path_sample;input.entities[3].standard_type47_root_source=make_path_record(44,unhex("10270400"));
+    rejected(input,"truncated_owner_path_header");
+    input=path_sample;put_path(*input.entities[3].standard_type47_root_source,48,2,2);rejected(input,"truncated_owner_path_ids");
+    input=path_sample;put_path(*input.entities[3].standard_type47_root_source,50,44,8);rejected(input,"cyclic_owner_reference_path");
+    input=path_sample;put_path(*input.entities[4].standard_type47_root_source,50,44,8);rejected(input,"cyclic_owner_reference_path");
+    input=path_sample;input.entities[4].runtime_flags_10.reset();rejected(input,"owner_runtime_flags_require_context");
+    const auto empty_path=unhex("1027040001000000");
+    input=path_sample;
+    NativeDependencySystemTarget same_id{44,0};same_id.standard_type47_root_source=make_path_record(44,empty_path);
+    input.file_context->models[0].entities.push_back(same_id);
+    input.entities[3].standard_type47_root_source=make_path_record(44,unhex("10270400010002002c000000000000002a00000000000000"));
+    auto type47_result=project_native_dependency_load(input);
+    check(type47_result.resolved && type47_result.file_dependents[0][0]==std::vector<std::size_t>{5},
+          "same path ID in another model/reference context is not a recursion cycle and empty nested path preserves owner");
+    input=path_sample;
+    same_id.assigned_id=45;same_id.standard_type47_root_source=make_path_record(45,empty_path);
+    input.file_context->models[0].entities.push_back(same_id);
+    input.entities[3].standard_type47_root_source=make_path_record(44,unhex("1027040001180100020000000000000000000000000000002d000000000000002a00000000000000"));
+    rejected(input,"owner_terminal_transform_requires_context");
+    input.entities[5].dependency_payloads={unhex("10270400001801000200000000000000000000000000000029000000000000002c00000000000000")};
+    check(project_native_dependency_load(input).resolved,"path-only transition does not invent a terminal type47 transform requirement");
+    input=affine_sample;
+    auto dependent=input.entities.back();input.entities.pop_back();input.batches.pop_back();
+    put_path(dependent.dependency_payloads[0],16,1000,8);
+    for(std::uint64_t id=1000;id<2000;++id) {
+        auto payload=unhex("10270400010001002a00000000000000");
+        put_path(payload,8,id==1999?42:id+1,8);
+        NativeDependencyLoadEntity node{id,0,{payload}};node.standard_type47_root_source=make_path_record(id,payload);
+        input.batches.push_back({input.entities.size()});input.entities.push_back(std::move(node));
+    }
+    input.batches.push_back({input.entities.size()});input.entities.push_back(std::move(dependent));
+    type47_result=project_native_dependency_load(input);
+    check(type47_result.resolved && type47_result.file_dependents[0][0]==std::vector<std::size_t>{1003},
+          "one thousand nested path roots resolve with an explicit stack rather than native call-stack recursion");
+    auto deep_path=input;input.max_work_items=6000;rejected(input,"work_limit_exceeded");
+    input=deep_path;put_path(*input.entities[1002].standard_type47_root_source,50,1000,8);
+    rejected(input,"cyclic_owner_reference_path");
     check(!affine_sample.entities.empty(),"a native nonidentity paired selector supplies guard tests");
     input=affine_sample;input.entities[1].standard_type13_identity_root_owner=true;rejected(input,"contradictory_owner_profile");
     input=affine_sample;input.entities[1].standard_type13_root_source->pop_back();rejected(input,"owner_reference_source_profile_required");

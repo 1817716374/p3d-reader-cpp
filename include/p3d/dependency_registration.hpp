@@ -23,6 +23,10 @@ struct NativeDependencyLoadEntity {
     // The record ID must equal assigned_id. Mutually exclusive with both
     // legacy owner profile flags above. Unknown source fields are rejected.
     std::optional<Bytes> standard_type13_root_source;
+    // Complete prepared type-47 root: four-byte physical prefix, minimal
+    // 34-byte native base (flags 4), and original ordered linkages. No parent
+    // or custom transform handler. Mutually exclusive with other profiles.
+    std::optional<Bytes> standard_type47_root_source;
 };
 struct NativeDependencySystemTarget {
     std::uint64_t assigned_id = 0;
@@ -30,6 +34,7 @@ struct NativeDependencySystemTarget {
     bool standard_type33_root_owner = false;
     bool standard_type13_identity_root_owner = false;
     std::optional<Bytes> standard_type13_root_source;
+    std::optional<Bytes> standard_type47_root_source;
 };
 struct NativeDependencyOwnerContext {
     // Neither field: current input model. Exactly one: another model in the
@@ -145,11 +150,14 @@ struct NativeDependencyLoadResult {
 // service monitored set. Local lookup precedes the supplied system registry;
 // file fallback context is required only if both miss. Resolves
 // direct IDs in formats 0/1, selector references in 2/3/4/5/7 and model IDs in 8.
-// Owner paths require audited standard type-33 or type-13 root profiles.
+// Owner paths require audited standard type-33, type-13 or type-47 root profiles.
 // Nonidentity type-13 roots supply prepared source records; paired selectors
 // also require each selected reference's actual affine source and context.
 // Format 6 and special format 0 traverse explicitly bound reference contexts;
 // missing/unbound reference objects require creation/loading and are unknown.
+// Type-47 roots share collector state across nested programs; their format-6
+// terminal is appended without expansion or an implied owner. Parent chains,
+// block transforms and a single type-47 terminal transform remain unknown.
 // Disabled/zero-entry/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,
 // typed-handler work queues or geometry regeneration. Failure publishes no
