@@ -18,6 +18,8 @@ struct NativeDependencyLoadInput {
     // Every entity must occur exactly once; indices are occurrence identities.
     std::vector<std::vector<std::size_t>> batches;
     bool input_complete = false;
+    // Required only when an active entry misses the already registered local
+    // model. Local hits do not consult the system registry or file fallback.
     bool system_registry_known_empty = false;
     bool file_fallback_disabled = false;
     bool monitored_entity_set_known_empty = false;

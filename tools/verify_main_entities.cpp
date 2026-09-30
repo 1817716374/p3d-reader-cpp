@@ -2,6 +2,7 @@
 #include "internal.hpp"
 #include <p3d/model_bounds.hpp>
 #include <p3d/default_view_table.hpp>
+#include <p3d/dependency_registration.hpp>
 #include <fstream>
 #include <iostream>
 
@@ -15,6 +16,9 @@ struct Verifier {
     std::map<std::size_t, Json> prepared_headers;
     std::size_t complete_headers = 0, expanded_ranges = 0;
     std::size_t bounds_models = 0, valid_bounds_models = 0, bounds_included_roots = 0;
+    bool with_dependencies = false;
+    Json dependency_entities = Json::array(), dependency_reverse = Json::array();
+    std::size_t dependency_payloads = 0, dependency_edges = 0;
     void same(const std::string &field, const Json &ours, const Json &native) {
         ++checks;
         if (ours != native)
@@ -53,6 +57,19 @@ struct Verifier {
                                      attachment).second, "duplicate attached collection");
         std::vector<Json> children(entries.size(), Json::array());
         NativeModelBoundsProviderInput bounds_input;
+        NativeDependencyLoadInput dependency_input;
+        if (with_dependencies) {
+            dependency_input.input_complete = true;
+            dependency_input.monitored_entity_set_known_empty = true;
+            // Real system data is present. Leave both fallback guarantees false:
+            // only lookups proved to hit the already registered local model pass.
+            for (const auto &root : ids.at("roots")) {
+                std::vector<std::size_t> batch;
+                for (const auto &entry : root.at("records"))
+                    batch.push_back(entry.at("input_occurrence_index").get<std::size_t>());
+                dependency_input.batches.push_back(std::move(batch));
+            }
+        }
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const auto &parent = entries[i].at("parent_input_occurrence_index");
             if (!parent.is_null()) children.at(parent.get<std::size_t>()).push_back(i);
@@ -68,6 +85,17 @@ struct Verifier {
             // Compare every byte; never accept unsupported size conversions.
             const auto ni = entry.at("native_record_index").get<std::size_t>();
             const auto &record = document->native_records().at(ni);
+            if (with_dependencies) {
+                NativeDependencyLoadEntity entity;
+                entity.assigned_id = entry.at("assigned_id").get<std::uint64_t>();
+                entity.runtime_flags_10 = observed.at("flags").get<std::uint32_t>();
+                for (const auto &link : record.at("links"))
+                    if (link.at("app") == 0x56d0) {
+                        entity.dependency_payloads.push_back(bytesof(link.at("payload")));
+                        ++dependency_payloads;
+                    }
+                dependency_input.entities.push_back(std::move(entity));
+            }
             const auto &prepared = prepared_headers.at(ni);
             const auto path = record.at("stream").get<StreamPath>();
             Bytes input;
@@ -126,6 +154,19 @@ struct Verifier {
             attributes += observed.at("attributes").size();
         }
         entities += entries.size();
+        if (with_dependencies) {
+            const auto projected = project_native_dependency_load(dependency_input);
+            require(projected.resolved, "full-file local dependency projection: " + projected.reason);
+            require(projected.pending_entities.empty(), "unmodeled full-file retry required");
+            const auto offset = dependency_entities.size();
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                dependency_entities.push_back({{"model", native.at("model_id")}, {"occurrence", i}});
+                Json reverse = Json::array();
+                for (const auto dependent : projected.dependents[i]) reverse.push_back(offset + dependent);
+                dependency_edges += reverse.size();
+                dependency_reverse.push_back(std::move(reverse));
+            }
+        }
         if (native.contains("initial_bounds")) {
             require(!system, "ordinary-model bounds observation required");
             const auto &bounds = native.at("initial_bounds");
@@ -181,6 +222,7 @@ int main(int argc, char **argv) {
                     verifier.prepared_headers[header.at("native_record_index").get<std::size_t>()] = header;
         verifier.context = "file";
         const auto &loading = native.at("model_loading");
+        verifier.with_dependencies = loading.contains("dependencies");
         verifier.same("unchanged", native.at("source_and_copy_unchanged"), true);
         verifier.same("scope", native.at("scope"), "original_system_first_then_directory_models_core_console_input");
         verifier.same("system_return", loading.at("system_return"), 0);
@@ -233,11 +275,38 @@ int main(int argc, char **argv) {
         verifier.context = "file";
         verifier.same("final_counter", counter, loading.at("final_counter"));
         verifier.same("system_preserved_across_models", loading.at("system_initial"), loading.at("system"));
+        if (verifier.with_dependencies) {
+            const auto &dep = loading.at("dependencies");
+            verifier.same("dependency.scope", native.at("dependency_outer_flush"), "original_notification_only_work");
+            for (const auto stage : {"before", "after"}) {
+                const auto &snapshot = dep.at(stage);
+                verifier.same(std::string(stage) + ".dependency_entities", verifier.dependency_entities, snapshot.at("entities"));
+                verifier.same(std::string(stage) + ".dependents", verifier.dependency_reverse, snapshot.at("dependents"));
+                for (const auto empty : {"pending", "monitored", "scheduled_pairs"})
+                    verifier.same(std::string(stage) + "." + empty, Json::array(), snapshot.at(empty));
+                verifier.same(std::string(stage) + ".callback_depth", 0, snapshot.at("callback_depth"));
+                verifier.same(std::string(stage) + ".transaction_status", 0, snapshot.at("transaction_status"));
+                Json counts = std::vector<unsigned>(20, 0), notified = Json::array();
+                if (std::string(stage) == "before") {
+                    counts[6] = verifier.models + 1;
+                    for (const auto id : seen) notified.push_back(id);
+                    notified.push_back(0xffffffffu);
+                }
+                verifier.same(std::string(stage) + ".queues", counts, snapshot.at("registry_counts"));
+                verifier.same(std::string(stage) + ".notified_models", notified, snapshot.at("notified_models"));
+                verifier.same(std::string(stage) + ".work_count", std::string(stage) == "before" ? verifier.models + 1 : 0,
+                              snapshot.at("registry_work_count"));
+            }
+            verifier.same("dependency.flush_return", 0, dep.at("flush_return"));
+            verifier.same("dependency.entity_snapshots_preserved", true, dep.at("entity_snapshots_preserved"));
+            verifier.same("dependency.configuration_restored", true, dep.at("configuration_restored"));
+        }
         Json result = {{"checks", verifier.checks}, {"models", verifier.models},
             {"complete_headers", verifier.complete_headers}, {"expanded_ranges", verifier.expanded_ranges},
             {"bounds_models", verifier.bounds_models}, {"valid_bounds_models", verifier.valid_bounds_models},
             {"bounds_included_roots", verifier.bounds_included_roots},
             {"bounds_runtime_flags", "explicit_native_observation"},
+            {"dependency_payloads", verifier.dependency_payloads}, {"dependency_edges", verifier.dependency_edges},
             {"entities", verifier.entities}, {"attributes", verifier.attributes}, {"differences", verifier.differences}};
         std::ofstream(std::filesystem::u8path(argv[2])) << result.dump(2) << '\n';
         std::cout << verifier.checks << " checks, " << verifier.differences.size() << " differences\n";

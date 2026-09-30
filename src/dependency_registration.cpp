@@ -29,8 +29,6 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
         return out;
     };
     if(!input.input_complete)return fail("incomplete_input");
-    if(!input.system_registry_known_empty)return fail("system_registry_requires_context");
-    if(!input.file_fallback_disabled)return fail("file_fallback_requires_context");
     if(!input.monitored_entity_set_known_empty)return fail("monitored_entities_require_context");
     if(input.entities.size()>input.max_work_items)return fail("work_limit_exceeded");
     std::size_t remaining=input.max_work_items;
@@ -59,6 +57,10 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                         tick();const auto id=entry.at("element_id").get<std::uint64_t>();
                         const auto found=registry.find(id);
                         if(found==registry.end()) {
+                            // 19a8f0 searches the current model first; 1f12b0
+                            // reaches system/file lookup only after that miss.
+                            require(input.system_registry_known_empty,"system_registry_requires_context");
+                            require(input.file_fallback_disabled,"file_fallback_requires_context");
                             if(id!=0 && !pending[index]) {
                                 pending[index]=true;result.newly_pending_entities.push_back(index);
                             }

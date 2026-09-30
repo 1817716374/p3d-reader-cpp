@@ -168,8 +168,26 @@ unsigned dependency_registration_tests() {
               "unknown or invalid dependency input never publishes a partial graph");
     };
     auto input=base;input.input_complete=false;rejected(input,"incomplete_input");
-    input=base;input.system_registry_known_empty=false;rejected(input,"system_registry_requires_context");
-    input=base;input.file_fallback_disabled=false;rejected(input,"file_fallback_requires_context");
+    input=base;input.system_registry_known_empty=false;input.entities[1].dependency_payloads[0][8]=3;
+    rejected(input,"system_registry_requires_context");
+    input=base;input.file_fallback_disabled=false;input.entities[1].dependency_payloads[0][8]=3;
+    rejected(input,"file_fallback_requires_context");
+    input=base;input.system_registry_known_empty=input.file_fallback_disabled=false;
+    auto local=project_native_dependency_load(input);
+    check(local.resolved && local.dependents==std::vector<std::vector<std::size_t>>{{1},{}},
+          "known local hit does not require unused system or file fallback context");
+    input.entities[1].dependency_payloads.push_back(unhex("e7030100000001000300000000000000"));
+    rejected(input,"system_registry_requires_context");
+    input.entities[1].dependency_payloads.pop_back();
+    input.batches={{1},{0}};
+    rejected(input,"system_registry_requires_context");
+    input.batches={{0,1}};
+    check(project_native_dependency_load(input).resolved,"whole subtree registration precedes local dependency lookup");
+    input.entities[1].dependency_payloads[0][4]=1;
+    input.batches={{1},{0}};
+    check(project_native_dependency_load(input).resolved,"disabled dependency never requires lookup fallback");
+    input.entities[1].dependency_payloads.clear();
+    check(project_native_dependency_load(input).resolved,"no dependency payload needs no fallback context");
     input=base;input.monitored_entity_set_known_empty=false;rejected(input,"monitored_entities_require_context");
     input=base;input.entities[0].runtime_flags_10.reset();rejected(input,"target_runtime_flags_require_context");
     input=base;input.entities[1].assigned_id=1;rejected(input,"assigned_id_collision");

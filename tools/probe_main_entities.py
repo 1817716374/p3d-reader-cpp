@@ -27,6 +27,8 @@ def main():
     parser.add_argument('--case-index', type=int, required=True)
     parser.add_argument('--with-bounds', action='store_true',
                         help='also verify the guarded original lazy bounds cache path')
+    parser.add_argument('--with-dependency-flush', action='store_true',
+                        help='observe reverse lists and flush model-notification-only work')
     args = parser.parse_args()
     assert os.name == 'nt' and C.sizeof(C.c_void_p) == 8
     inventory = json.loads(args.source_inventory.read_text(encoding='utf-8-sig'))
@@ -55,14 +57,19 @@ def main():
             C.CFUNCTYPE(None)(base + rva)()
         def load(base, file, directory):
             assert {m['model_id'] for m in directory} == expected_ids
-            return acquire(base, file, directory, args.with_bounds)
+            result = acquire(base, file, directory, args.with_bounds)
+            if args.with_dependency_flush:
+                from native_main_dependencies import observe_and_flush
+                result = observe_and_flush(base, file, result)
+            return result
         result = observe(base, target, load)
         assert digest(source) == digest(target) == row['source']['sha256']
         result.update(source=row['source'], copy_path=str(target),
             source_and_copy_unchanged=True, dll_sha256=HASHES,
             scope='original_system_first_then_directory_models_core_console_input',
             host_context='inspected_shell_original_services_and_inline_font_outer_fields',
-            dependency_outer_flush='not_executed', final_unload='not_executed')
+            dependency_outer_flush=('original_notification_only_work' if args.with_dependency_flush
+                                    else 'not_executed'), final_unload='not_executed')
         args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf8')
         print(source.name, len(result['model_loading']['models']), 'models loaded; source unchanged')
     finally:
