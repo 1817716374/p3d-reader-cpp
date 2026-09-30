@@ -8,6 +8,7 @@
 #include "dependency_system_oracle.hpp"
 #include "dependency_models_oracle.hpp"
 #include "dependency_selectors_oracle.hpp"
+#include "dependency_paths_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -171,9 +172,13 @@ unsigned dependency_registration_tests() {
     const auto selectors_oracle=Json::parse(dependency_selectors_oracle);
     check(selectors_oracle.at("cases").size()==344,"all original selector/owner experiments are tested");
     for(const auto &row:selectors_oracle.at("cases"))model_cases.push_back(row);
+    const auto paths_oracle=Json::parse(dependency_paths_oracle);
+    check(paths_oracle.at("cases").size()==1024,"all original owner-path experiments are tested");
+    for(const auto &row:paths_oracle.at("cases"))model_cases.push_back(row);
     for(const auto &row:model_cases) {
         NativeDependencyLoadInput input;
         input.input_complete=input.file_fallback_disabled=input.monitored_entity_set_known_empty=true;
+        input.standard_model_owner_transition_known_null=row.value("standard_model_owner_transition_known_null",false);
         input.system_registry.emplace();
         for(const auto &id:row.at("system_ids"))
             input.system_registry->push_back({id.get<std::uint64_t>(),row.at("system_flags").get<std::uint32_t>()});
@@ -370,6 +375,49 @@ unsigned dependency_registration_tests() {
     input=selector_input;input.max_work_items=6;rejected(input,"work_limit_exceeded");
     input.max_work_items=7;
     check(project_native_dependency_load(input).resolved,"work budget counts both emitted selector references");
+    auto path_payload=[](std::initializer_list<std::uint64_t> ids) {
+        Bytes raw(24+ids.size()*8);raw[0]=0x10;raw[1]=0x27;raw[2]=4;raw[5]=24;raw[6]=1;
+        raw[8]=std::uint8_t(ids.size());std::size_t offset=24;
+        for(auto id:ids)for(unsigned i=0;i<8;++i)raw[offset++]=std::uint8_t(id>>(i*8));
+        return raw;
+    };
+    auto path_input=base;path_input.file_fallback_disabled=false;
+    path_input.entities[1].dependency_payloads={path_payload({1})};
+    auto path_result=project_native_dependency_load(path_input);
+    check(path_result.resolved && path_result.dependents[0]==std::vector<std::size_t>{1,1},
+          "single-ID path does not traverse an owner and preserves two original nodes");
+    path_input.entities[1].dependency_payloads={path_payload({1,1})};
+    rejected(path_input,"dependency_owner_path_requires_context");
+    path_input.entities[0].standard_type33_root_owner=true;
+    rejected(path_input,"model_owner_transition_requires_context");
+    path_input.standard_model_owner_transition_known_null=true;
+    path_result=project_native_dependency_load(path_input);
+    check(path_result.resolved && path_result.dependents[0]==std::vector<std::size_t>{1} && path_result.pending_entities==std::vector<std::size_t>{1},
+          "ordinary model null transition keeps the outer owner edge and queues the failed path");
+    input=path_input;input.entities[0].runtime_flags_10.reset();rejected(input,"owner_runtime_flags_require_context");
+    input=path_input;input.entities[0].runtime_flags_10=8;rejected(input,"owner_lookup_mode_requires_context");
+    input.standard_model_owner_transition_known_null=false;input.owner_lookup_includes_deleted=false;
+    path_result=project_native_dependency_load(input);
+    check(path_result.resolved && path_result.dependents[0].empty() && path_result.pending_entities==std::vector<std::size_t>{1},
+          "rejected deleted path owner never requires the model transition");
+    input.owner_lookup_includes_deleted=true;rejected(input,"model_owner_transition_requires_context");
+    input=base;input.file_fallback_disabled=false;input.entities[1].dependency_payloads={path_payload({1,99})};
+    path_result=project_native_dependency_load(input);
+    check(path_result.resolved && path_result.pending_entities==std::vector<std::size_t>{1},
+          "missing path owner stops without unknown profile or file fallback");
+    input.entities[1].dependency_payloads={path_payload({})};
+    path_result=project_native_dependency_load(input);
+    check(path_result.resolved && path_result.pending_entities==std::vector<std::size_t>{1},
+          "active empty path returns two MAX/null slots without context-free reader underflow");
+    input.entities[1].dependency_payloads={path_payload({0})};
+    path_result=project_native_dependency_load(input);
+    check(path_result.resolved && path_result.pending_entities.empty(),"missing zero single-path IDs do not queue");
+    input=path_input;input.entities[1].dependency_payloads[0].pop_back();rejected(input,"truncated_dependency_owner_path");
+    input=path_input;input.max_work_items=9;rejected(input,"work_limit_exceeded");
+    input.max_work_items=10;
+    check(project_native_dependency_load(input).resolved,"path work budget includes source IDs, slots and attempted transition");
+    input=base;input.entities[1].dependency_payloads.push_back(path_payload({1,1}));
+    rejected(input,"dependency_owner_path_requires_context");
     input=base;input.entities[0].runtime_flags_10.reset();rejected(input,"target_runtime_flags_require_context");
     input=base;input.entities[1].assigned_id=1;rejected(input,"assigned_id_collision");
     input=base;input.batches={{0},{0,1}};rejected(input,"entity_registered_more_than_once");
@@ -383,7 +431,7 @@ unsigned dependency_registration_tests() {
     rejected(input,"dependency_owner_path_requires_context");
     for(unsigned format=2;format<=8;++format) {
         input=base;input.entities[1].dependency_payloads[0][5]=std::uint8_t(format<<2);
-        rejected(input,format==6?"dependency_owner_path_requires_context":"truncated_dependency_entries");
+        rejected(input,format==6?"truncated_dependency_owner_path":"truncated_dependency_entries");
         input.entities[1].dependency_payloads[0][4]=1;input.entities[1].dependency_payloads[0].resize(8);
         check(project_native_dependency_load(input).resolved,"disabled unsupported formats do not access entries");
     }

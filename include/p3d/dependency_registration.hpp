@@ -58,6 +58,9 @@ struct NativeDependencyLoadInput {
     // Original dependency service byte +8 controls whether 101710 accepts a
     // deleted owner record. Required only when an owner has runtime bit 0x8.
     std::optional<bool> owner_lookup_includes_deleted;
+    // Audited R1.18 current model: virtual +28 returns itself and +58 returns
+    // null. Required when a plain root reaches 1023e0's model transition.
+    bool standard_model_owner_transition_known_null = false;
 };
 struct NativeDependencyEdge {
     std::size_t target_entity = 0;
@@ -99,9 +102,9 @@ struct NativeDependencyLoadResult {
 // file fallback context is required only if both miss. Resolves
 // direct IDs in formats 0/1, selector references in 2/3/4/5/7 and model IDs in 8.
 // Nonzero owner paths require the explicit standard type-33 root profile.
-// Format 6 and format 0
-// owner=10000/relation=4 is a separate path
-// program and remains unsupported. Disabled/empty/out-of-range formats skip.
+// Format 6 and special format 0 owner paths support direct, empty and proven
+// failed transitions only; reference-model transitions remain undetermined.
+// Disabled/zero-entry/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,
 // typed-handler work queues or geometry regeneration. Failure publishes no
 // partial graph. A resolved result may still contain pending entities.

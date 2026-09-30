@@ -25,13 +25,35 @@ Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool h
     }
     return std::move(decoded.at("entries"));
 }
-Json load_dependency_entries(const Bytes &payload,std::size_t remaining) {
+struct LoadDependencyEntries {
+    Json references;
+    std::vector<std::uint64_t> path;
+    unsigned path_format=9;
+};
+LoadDependencyEntries load_dependency_entries(const Bytes &payload,std::size_t &remaining) {
     require(payload.size()>=8,"truncated_dependency_header");
     const auto flags=Reader(payload,4).u16(),count=Reader(payload,6).u16();
     const auto format=(flags>>10)&15u;
-    if(format<=1 || format==8 || format>8 || (flags&1) || count==0)
-        return direct_dependency_entries(payload,remaining,true,true);
-    require(format!=6,"dependency_owner_path_requires_context");
+    if(format>8 || (flags&1) || count==0)
+        return {direct_dependency_entries(payload,remaining,true,true),{},9};
+    if(format==6 || (format==0 && Reader(payload).u16()==10000 && Reader(payload,2).u16()==4)) {
+        require(payload.size()>=(format==6?24u:8u),"truncated_dependency_owner_path");
+        const auto n=format==6?Reader(payload,8).u32():std::uint32_t(count);
+        const std::size_t offset=format==6?24:8;
+        require(n<=(payload.size()-offset)/8,"truncated_dependency_owner_path");
+        require(n<=remaining,"work_limit_exceeded");remaining-=n;
+        const auto slots=std::size_t(count)*(format==6?2u:1u);
+        require(slots<=remaining,"work_limit_exceeded");
+        LoadDependencyEntries out{Json::array(),{},format};out.path.reserve(n);
+        Reader path(payload,offset);
+        for(std::uint32_t i=0;i<n;++i)out.path.push_back(path.u64());
+        // One shared path, not a copy per iteration (special format 0 would
+        // otherwise allocate quadratic memory before its first transition).
+        for(std::size_t i=0;i<slots;++i)
+            out.references.push_back({{"element_id",UINT64_MAX},{"path_slot",i}});
+        return out;
+    }
+    if(format<=1 || format==8)return {direct_dependency_entries(payload,remaining,true,true),{},9};
     static constexpr unsigned strides[]={8,16,40,48,16,24,0,24,16};
     require(count<=remaining,"work_limit_exceeded");
     const auto needed=8+std::size_t(count)*strides[format];
@@ -46,7 +68,7 @@ Json load_dependency_entries(const Bytes &payload,std::size_t remaining) {
             references.push_back(reference);
         }
     }
-    return references;
+    return {std::move(references),{},9};
 }
 }
 NativeDependencyLoadResult project_native_dependency_load(const NativeDependencyLoadInput &input) {
@@ -113,6 +135,28 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
             if(target.scope==1)return input.system_registry->at(target.index).runtime_flags_10;
             return input.file_context->models.at(target.model).entities.at(target.index).runtime_flags_10;
         };
+        auto accepted_plain_owner=[&](std::uint64_t id) {
+            const auto owner=model_lookup(id,0,0);
+            if(!owner)return false;
+            const auto flags=target_flags(*owner);
+            require(flags.has_value(),"owner_runtime_flags_require_context");
+            if(*flags&8) {
+                require(input.owner_lookup_includes_deleted.has_value(),"owner_lookup_mode_requires_context");
+                if(!*input.owner_lookup_includes_deleted)return false;
+            }
+            const bool plain=owner->scope==0?input.entities[owner->index].standard_type33_root_owner:
+                input.system_registry->at(owner->index).standard_type33_root_owner;
+            require(plain,"dependency_owner_path_requires_context");
+            return true;
+        };
+        auto require_null_owner_transition=[&](std::uint64_t id) {
+            tick();
+            if(accepted_plain_owner(id))
+                require(input.standard_model_owner_transition_known_null,"model_owner_transition_requires_context");
+            // 1023e0 returns null for a missing/rejected owner, or for an
+            // ordinary root whose caller model virtual +58 returns null.
+            // A reference object must not be silently treated as this case.
+        };
         auto lookup=[&](std::uint64_t id,unsigned scope,std::size_t model)->std::optional<Target> {
             if(auto target=model_lookup(id,scope,model))return target;
             std::optional<bool> fallback;
@@ -152,31 +196,29 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 out.failed_entity=index;
                 for(const auto &payload:input.entities[index].dependency_payloads) {
                     tick();
-                    for(const auto &entry:load_dependency_entries(payload,remaining)) {
-                        tick();const auto id=entry.at("element_id").get<std::uint64_t>();
+                    const auto entries=load_dependency_entries(payload,remaining);
+                    for(const auto &entry:entries.references) {
+                        tick();auto id=entry.at("element_id").get<std::uint64_t>();
                         std::optional<Target> target;
-                        if(entry.value("target_lookup",std::string())=="skipped_maximum_id") {
+                        if(entries.path_format!=9) {
+                            const auto &path=entries.path;
+                            const auto slot=entry.at("path_slot").get<std::size_t>();
+                            if(entries.path_format==0)require_null_owner_transition(path.back());
+                            else if(!path.empty() && slot<2) {
+                                if(slot==1 || path.size()==1) {
+                                    id=slot==1?path.back():path.front();target=model_lookup(id,0,0);
+                                } else require_null_owner_transition(path.back());
+                            }
+                            // Later format-6 iterations retain MAX/null slots,
+                            // even after the first iteration found a target.
+                        } else if(entry.value("target_lookup",std::string())=="skipped_maximum_id") {
                             // 1f14a0 returns a null target but preserves the ID;
                             // a nonzero missing ID still queues this dependent.
                         } else if(entry.contains("owner_reference_id") && entry.at("owner_reference_id")!=0) {
-                            const auto owner=model_lookup(entry.at("owner_reference_id").get<std::uint64_t>(),0,0);
-                            if(owner) {
-                                const auto flags=target_flags(*owner);
-                                require(flags.has_value(),"owner_runtime_flags_require_context");
-                                bool accepted=true;
-                                if(*flags&8) {
-                                    require(input.owner_lookup_includes_deleted.has_value(),"owner_lookup_mode_requires_context");
-                                    accepted=*input.owner_lookup_includes_deleted;
-                                }
-                                if(accepted) {
-                                    const bool plain=owner->scope==0?input.entities[owner->index].standard_type33_root_owner:
-                                        input.system_registry->at(owner->index).standard_type33_root_owner;
-                                    require(plain,"dependency_owner_path_requires_context");
-                                    // 1017b0's ordinary root path retains the
-                                    // caller's model even if the owner is system.
-                                    target=model_lookup(id,0,0);
-                                }
-                            }
+                            if(accepted_plain_owner(entry.at("owner_reference_id").get<std::uint64_t>()))
+                                // 1017b0 retains the caller model here; unlike
+                                // 1023e0, this path does not call model +58.
+                                target=model_lookup(id,0,0);
                         } else if(entry.value("lookup_profile",std::string())=="owner_system")target=model_lookup(id,0,0);
                         else if(!entry.contains("model_id"))target=lookup(id,0,0);
                         else {

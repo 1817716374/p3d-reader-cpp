@@ -72,6 +72,11 @@ def probe(root, inputs):
                 # Actual original ordinary-model getter disables file fallback.
                 assert ptr(ptr(model) + 0xe8) == base + 0x8a90
                 assert not fn(0x8a90, C.c_bool, V)(model)
+                if case.get('standard_model_owner_transition_known_null'):
+                    assert ptr(ptr(model) + 0x28) == base + 0x9f030
+                    assert ptr(ptr(model) + 0x58) == base + 0x8a80
+                    assert fn(0x9f030, V, V)(model) == model
+                    assert fn(0x8a80, V, V)(model) is None
 
                 def insert(target_model, id_, payloads):
                     data = bytearray(128)
@@ -174,6 +179,34 @@ def probe(root, inputs):
                     current_model_id=u32(model + 0x1b8),
                     resident_models=C.c_uint64.from_address(file + 0x6b0).value,
                     system_file_fallback=True, ordinary_file_fallback=False)
+                if case.get('observe_path_readers'):
+                    readers = []
+                    for encoded in next(links for links in case['dependency_payloads'] if links):
+                        raw = bytes.fromhex(encoded)
+                        _, _, flags, count = struct.unpack_from('<4H', raw)
+                        if flags & 1 or not count:
+                            continue  # Outer input never calls a skipped reader.
+                        format_ = (flags >> 10) & 15
+                        assert format_ in (0, 6)
+                        buffer = C.create_string_buffer(raw)
+                        for iteration in range(count):
+                            output = (C.c_uint64 * 30)()
+                            slots = fn(0x1ef320 if format_ == 0 else 0x1ef8d0,
+                                       C.c_int, V, V, V, C.c_uint16)(output, model, buffer, iteration)
+                            assert slots == (1 if format_ == 0 else 2)
+                            refs = []
+                            for i in range(slots):
+                                target = output[i * 15 + 2]
+                                identity = None
+                                if target in local_entities: identity = ['local', local_entities.index(target)]
+                                elif target in system_entities: identity = ['system', system_entities.index(target)]
+                                else: assert target == 0
+                                refs.append(dict(id=output[i * 15], owner=output[i * 15 + 1], target=identity))
+                            readers.append(dict(iteration=iteration, references=refs))
+                    native['path_readers'] = readers
+                    assert snapshot(local_entities)['pending_entities'] == calls[-1]['pending_entities']
+                    assert reverse(local_entities) == calls[-1]['dependents']
+                    assert reverse(system_entities) == calls[-1]['system_dependents']
                 rows.append(dict(case, source_headers=headers, calls=calls, lookups=lookups,
                                  runtime_flags=[u32(e + 0x10) for e in local_entities], native=native))
         return dict(scope='R1.18_local_file_callbacks_with_original_prepared_system_registry',
