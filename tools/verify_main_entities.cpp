@@ -1,6 +1,7 @@
 // Differential corpus verifier. Links only the independent parser library.
 #include "internal.hpp"
 #include <p3d/model_bounds.hpp>
+#include <p3d/default_view_table.hpp>
 #include <fstream>
 #include <iostream>
 
@@ -13,6 +14,7 @@ struct Verifier {
     const Document *document = nullptr;
     std::map<std::size_t, Json> prepared_headers;
     std::size_t complete_headers = 0, expanded_ranges = 0;
+    std::size_t bounds_models = 0, valid_bounds_models = 0, bounds_included_roots = 0;
     void same(const std::string &field, const Json &ours, const Json &native) {
         ++checks;
         if (ours != native)
@@ -50,6 +52,7 @@ struct Verifier {
             require(attached.emplace(attachment.at("target").at("input_occurrence_index").get<std::size_t>(),
                                      attachment).second, "duplicate attached collection");
         std::vector<Json> children(entries.size(), Json::array());
+        NativeModelBoundsProviderInput bounds_input;
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const auto &parent = entries[i].at("parent_input_occurrence_index");
             if (!parent.is_null()) children.at(parent.get<std::size_t>()).push_back(i);
@@ -98,6 +101,16 @@ struct Verifier {
                 write(4 + count.at("header_offset").get<std::size_t>(), count.at("output_value").get<std::uint32_t>());
             same(field + "complete_header", hex(slice(input, 4, input.size() - 4)), observed.at("loaded_header"));
             ++complete_headers;
+            if (native.contains("initial_bounds")) {
+                NativeModelBoundsRecord bounds_record;
+                bounds_record.record_base = input;
+                // Runtime flags are explicit oracle context, not inferred from
+                // persisted flags or claimed to be independently reconstructed.
+                bounds_record.runtime_flags_10 = observed.at("flags").get<std::uint32_t>();
+                require((*bounds_record.runtime_flags_10 & 0xc00000) != 0x400000,
+                        "bounds override observation required for special runtime flags");
+                bounds_input.records.push_back(std::move(bounds_record));
+            }
             Json values = Json::array(), flags;
             const auto attachment = attached.find(i);
             if (attachment != attached.end()) {
@@ -113,6 +126,40 @@ struct Verifier {
             attributes += observed.at("attributes").size();
         }
         entities += entries.size();
+        if (native.contains("initial_bounds")) {
+            require(!system, "ordinary-model bounds observation required");
+            const auto &bounds = native.at("initial_bounds");
+            const auto model_id = native.at("model_id").get<std::uint32_t>();
+            const auto model_header = document->models().at(std::to_string(model_id)).at("initial_header_input");
+            require(model_header.at("status") == "resolved", "resolved model dimension required");
+            const bool spatial = model_header.at("spatial").get<bool>();
+            same("bounds.model_query_68", spatial, bounds.at("model_query_68"));
+            same("bounds.spatial_byte_78", unsigned(spatial), bounds.at("spatial_byte_78"));
+            same("bounds.provider_spatial", unsigned(spatial), bounds.at("provider_spatial"));
+            for (const auto &block : blocks[1])
+                for (const auto &root : block.at("roots"))
+                    bounds_input.record_indices.push_back(root.get<std::size_t>());
+            bounds_input.record_list_complete = true;
+            bounds_input.model_query_68 = spatial;
+            const auto provider = project_native_model_bounds_provider(bounds_input);
+            require(provider.resolved && provider.integer_range, "independent model bounds unresolved");
+            same("bounds.integer_range", *provider.integer_range, bounds.at("integer_range"));
+            NativeCachedModelBoundsInput cached;
+            cached.range_pointer_known = true;
+            cached.integer_range = provider.integer_range;
+            cached.spatial_byte_78 = static_cast<std::uint8_t>(spatial);
+            const auto result = project_native_cached_model_bounds(cached);
+            require(result.resolved && result.return_code, "independent cached bounds unresolved");
+            same("bounds.return_code", *result.return_code, bounds.at("return_code"));
+            same("bounds.double_range", result.range.value_or(std::array<double, 6>{11,22,33,44,55,66}), bounds.at("double_range"));
+            same("bounds.provider_existed", bounds.at("provider_existed"), false);
+            same("bounds.repeated_query_preserved_cache", bounds.at("repeated_query_preserved_cache"), true);
+            same("bounds.entity_snapshot_unchanged", bounds.at("entity_snapshot_unchanged"), true);
+            same("bounds.preserved_after_all_models", bounds.at("preserved_after_all_models"), true);
+            ++bounds_models;
+            valid_bounds_models += *result.return_code == 0;
+            bounds_included_roots += provider.included_record_indices.size();
+        }
         return ids.at("final_id_counter").get<std::uint64_t>();
     }
 };
@@ -188,6 +235,9 @@ int main(int argc, char **argv) {
         verifier.same("system_preserved_across_models", loading.at("system_initial"), loading.at("system"));
         Json result = {{"checks", verifier.checks}, {"models", verifier.models},
             {"complete_headers", verifier.complete_headers}, {"expanded_ranges", verifier.expanded_ranges},
+            {"bounds_models", verifier.bounds_models}, {"valid_bounds_models", verifier.valid_bounds_models},
+            {"bounds_included_roots", verifier.bounds_included_roots},
+            {"bounds_runtime_flags", "explicit_native_observation"},
             {"entities", verifier.entities}, {"attributes", verifier.attributes}, {"differences", verifier.differences}};
         std::ofstream(std::filesystem::u8path(argv[2])) << result.dump(2) << '\n';
         std::cout << verifier.checks << " checks, " << verifier.differences.size() << " differences\n";

@@ -25,6 +25,8 @@ def main():
     for option in ('dll-root', 'source-inventory', 'copy-dir', 'output'):
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--case-index', type=int, required=True)
+    parser.add_argument('--with-bounds', action='store_true',
+                        help='also verify the guarded original lazy bounds cache path')
     args = parser.parse_args()
     assert os.name == 'nt' and C.sizeof(C.c_void_p) == 8
     inventory = json.loads(args.source_inventory.read_text(encoding='utf-8-sig'))
@@ -53,7 +55,7 @@ def main():
             C.CFUNCTYPE(None)(base + rva)()
         def load(base, file, directory):
             assert {m['model_id'] for m in directory} == expected_ids
-            return acquire(base, file, directory)
+            return acquire(base, file, directory, args.with_bounds)
         result = observe(base, target, load)
         assert digest(source) == digest(target) == row['source']['sha256']
         result.update(source=row['source'], copy_path=str(target),
