@@ -33,6 +33,8 @@ def constructed_model(base, initial_counter, spatial):
     # a nested hold. Final caller release/unload is outside this experiment.
     assert C.CFUNCTYPE(C.c_int,C.c_void_p)(base+0x199330)(model)==1
     input_service=allocate(0xa0)
+    # This derived provider targets linked substorages when opening files. Here
+    # only its inherited entity-input methods run; no disk storage is opened.
     assert C.CFUNCTYPE(C.c_void_p,C.c_void_p,C.c_void_p,C.c_void_p,C.c_int)(base+0x1cb2a0)(input_service,file,None,0)==input_service
     C.c_void_p.from_address(file+0xee0).value=input_service
     C.c_uint64.from_address(file+0x190).value=initial_counter
