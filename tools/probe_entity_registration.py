@@ -28,13 +28,14 @@ def cases():
                                      extended_flags=flags,spatial=spatial))
     return rows
 
-def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False, dependency_retry=False):
+def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False, dependency_retry=False, dependency_cycle=False):
     if os.name!='nt' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('Requires Windows x64')
     for name,h in HASHES.items():
         if hashlib.sha256((root/name).read_bytes()).hexdigest()!=h:raise ValueError(name)
     dirs=[os.add_dll_directory(str(root/d)) for d in ['ROOT','SHARE','SHARE/vcredist/X64','PLATFORM']]
     try:
         assert not dependency_retry or dependencies
+        assert not dependency_cycle or dependency_retry
         dll=C.WinDLL(str(root/'ROOT/P3DKJ.dll'));base=dll._handle
         if dependencies:
             assert file_entry
@@ -164,7 +165,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                     if parent>=0:C.c_void_p.from_address(nodes[i]+0x10).value=nodes[parent]
             roots=[i for i,parent in enumerate(case['parents']) if parent<0]
             calls=[]
-            with input_context(base,dependency_retry) if file_entry else nullcontext() as snapshot:
+            with input_context(base,dependency_retry,dependency_cycle) if file_entry else nullcontext() as snapshot:
                 for index in roots:
                     if file_entry:
                         result=load(model,nodes[index],listing,0.,False)
@@ -198,7 +199,23 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                     ptr(model,0x138,C.addressof(notice))
                     C.c_uint8.from_buffer(model,0x154).value=case['notice_model_flag']
                     before_retry=dict(context=snapshot(pointers),dependents=dependent_indices(pointers))
-                    snapshot.retry(model)
+                    if dependency_cycle:
+                        assert all(n==0 for k,n in enumerate(before_retry['context']['registry_set_counts']) if k!=2)
+                        # A remaining missing/excluded target enters a later
+                        # geometry callback requiring a complete model host.
+                        flags=[C.c_uint32.from_address(p+0x10).value for p in pointers]
+                        id_flags={C.c_uint64.from_address(C.c_void_p.from_address(p+0x40).value+0x10).value:f
+                                  for p,f in zip(pointers,flags)}
+                        for i in before_retry['context']['pending_entities']:
+                            if flags[i]&0x20008:continue
+                            for data in case['dependency_payloads'][i]:
+                                data=bytes.fromhex(data);_,_,bits,count=struct.unpack_from('<4H',data)
+                                if bits&1:continue
+                                stride=8 if ((bits>>10)&15)==0 else 16
+                                for j in range(count):
+                                    id_=struct.unpack_from('<Q',data,8+j*stride)[0]
+                                    assert id_==0 or (id_ in id_flags and not(id_flags[id_]&0x20008))
+                    cycle_result=snapshot.retry(model)
                     after_retry=dict(context=snapshot(pointers),dependents=dependent_indices(pointers))
             entities=[C.c_void_p.from_address(n+0x28).value for n in nodes];observed=[]
             observed_dependencies=dependent_indices(entities) if dependencies else None
@@ -225,11 +242,13 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
             rows.append(dict(case,calls=calls,source_ranges=source_ranges,entities=observed,root_indices=actual_roots,
                              bounds_result=code,bounds=list(output),counter=C.c_uint64.from_buffer(file,0x190).value))
             if dependency_retry:rows[-1].update(before_retry=before_retry,after_retry=after_retry)
+            if dependency_cycle:rows[-1]['cycle_return']=cycle_result
         scope=('R1.18_file_service_id_preparation_and_registration_without_file_callbacks' if prepare_ids
                else 'R1.18_prepared_tree_registration_and_cache_update_without_file_callbacks')
         if file_entry:scope='R1.18_file_entry_header_preparation_registration_and_original_callbacks_bounded_context'
         if dependencies:scope='R1.18_file_entry_direct_ID_dependencies_in_bounded_single_model_context'
         if dependency_retry:scope='R1.18_direct_ID_pending_retry_core_after_model_notice_not_full_service_flush'
+        if dependency_cycle:scope='R1.18_complete_dependency_iteration_with_no_remaining_pending_not_outer_host_flush'
         return dict(scope=scope,dll_sha256=HASHES,cases=rows)
     finally:
         for d in dirs:d.close()

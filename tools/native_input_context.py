@@ -10,7 +10,8 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def input_context(base, dependency_retry=False):
+def input_context(base, dependency_retry=False, dependency_cycle=False):
+    assert not dependency_cycle or dependency_retry
     host=C.create_string_buffer(0x110)
     config=C.create_string_buffer(0x2a0 if dependency_retry else 0x150)
     service=C.create_string_buffer(0x68)
@@ -83,8 +84,13 @@ def input_context(base, dependency_retry=False):
                 assert C.c_uint64.from_buffer(service,0x48).value==0
                 assert C.c_void_p.from_buffer(config,0x250).value is None
                 C.CFUNCTYPE(None,C.c_void_p)(base+0x1efe40)(model)
-                C.CFUNCTYPE(None,C.c_void_p)(base+0x1e9640)(registry)
+                if dependency_cycle:
+                    result=C.CFUNCTYPE(C.c_int,C.c_void_p)(base+0x1eb240)(registry)
+                else:
+                    C.CFUNCTYPE(None,C.c_void_p)(base+0x1e9640)(registry)
+                    result=None
                 assert C.c_void_p.from_buffer(config,0x250).value is None
+                return result
             snapshot.retry=retry
         yield snapshot
     finally:

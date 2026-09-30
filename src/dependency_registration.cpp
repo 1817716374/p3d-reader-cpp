@@ -147,4 +147,35 @@ NativeDependencyRetryResult project_native_dependency_retry(const NativeDependen
         out.failed_entity.reset();out.resolved=true;return out;
     } catch(const std::exception &e) {return fail(e.what());}
 }
+NativeDependencyNormalizationResult project_native_dependency_normalization(const NativeDependencyNormalizationInput &input) {
+    NativeDependencyNormalizationResult out;
+    auto fail=[&](const std::string &reason) {
+        out.reason=reason;out.dependents.clear();out.retained_positions.clear();return out;
+    };
+    if(!input.input_complete)return fail("incomplete_input");
+    if(!input.standard_entities_known)return fail("target_entity_interface_requires_context");
+    if(!input.removal_work_known_empty)return fail("dependency_removal_requires_context");
+    if(input.dependents.size()>input.max_work_items)return fail("work_limit_exceeded");
+    std::size_t remaining=input.max_work_items;
+    auto tick=[&](){require(remaining!=0,"work_limit_exceeded");--remaining;};
+    try {
+        const auto count=input.dependents.size();
+        std::vector<std::set<std::size_t>> scheduled(count);
+        for(const auto &edge:input.scheduled_pairs) {
+            tick();require(edge.target_entity<count && edge.dependent_entity<count,"scheduled_entity_index_out_of_range");
+            scheduled[edge.target_entity].insert(edge.dependent_entity);
+        }
+        out.dependents.resize(count);out.retained_positions.resize(count);
+        for(std::size_t target=0;target<count;++target) {
+            tick();std::set<std::size_t> seen;
+            for(std::size_t position=0;position<input.dependents[target].size();++position) {
+                tick();const auto dependent=input.dependents[target][position];
+                require(dependent<count,"dependent_index_out_of_range");
+                if(scheduled[target].count(dependent) && !seen.insert(dependent).second)continue;
+                out.dependents[target].push_back(dependent);out.retained_positions[target].push_back(position);
+            }
+        }
+        out.resolved=true;return out;
+    } catch(const std::exception &e) {return fail(e.what());}
+}
 } // namespace p3d

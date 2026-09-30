@@ -87,4 +87,26 @@ struct NativeDependencyRetryResult {
 // IDs remain pending and become monitored. Hits only register when notified.
 // Active pending entities with attribute-provider flag 0x100000 are unsupported.
 NativeDependencyRetryResult project_native_dependency_retry(const NativeDependencyRetryInput &input);
+
+struct NativeDependencyNormalizationInput {
+    std::vector<std::vector<std::size_t>> dependents;
+    std::vector<NativeDependencyEdge> scheduled_pairs;
+    bool input_complete = false;
+    // All target entities use the standard entity interface (virtual +38 = 1).
+    bool standard_entities_known = false;
+    // registry+110 has no separate removed-dependency work.
+    bool removal_work_known_empty = false;
+    std::size_t max_work_items = 1000000;
+};
+struct NativeDependencyNormalizationResult {
+    bool resolved = false;
+    std::string reason;
+    std::vector<std::vector<std::size_t>> dependents;
+    // Positions in each input list, preserving node occurrence identity.
+    std::vector<std::vector<std::size_t>> retained_positions;
+};
+// R1.18 1ec3e0 after work-set exchange: only scheduled pairs are normalized.
+// Keep the first occurrence of each scheduled dependent and all occurrences
+// of other dependents, in unchanged head-to-tail order. No geometry refresh.
+NativeDependencyNormalizationResult project_native_dependency_normalization(const NativeDependencyNormalizationInput &input);
 } // namespace p3d

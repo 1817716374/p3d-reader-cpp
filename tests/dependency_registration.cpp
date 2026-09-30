@@ -2,6 +2,7 @@
 #include <p3d/dependency_registration.hpp>
 #include "dependency_registration_oracle.hpp"
 #include "dependency_retry_oracle.hpp"
+#include "dependency_cycle_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -18,6 +19,9 @@ unsigned dependency_registration_tests() {
     check(retry_oracle.at("cases").size()==804,"all native pending retry observations are tested");
     auto cases=oracle.at("cases");
     for(const auto &row:retry_oracle.at("cases"))cases.push_back(row);
+    const auto cycle_oracle=Json::parse(dependency_cycle_oracle);
+    check(cycle_oracle.at("cases").size()==176,"all complete native iteration observations are tested");
+    for(const auto &row:cycle_oracle.at("cases"))cases.push_back(row);
     std::size_t case_index=0;
     for(const auto &row:cases) {
         const bool retry=row.contains("before_retry");
@@ -85,13 +89,31 @@ unsigned dependency_registration_tests() {
             const auto retried=project_native_dependency_retry(next);
             require(retried.resolved,"retry case "+std::to_string(case_index)+": "+retried.reason);
             const auto &after=row.at("after_retry");
-            check(after.at("dependents")==retried.dependents,"retry preserves duplicates and matches native reverse-list ordering");
+            const bool cycle=row.contains("cycle_return");
+            if(cycle) {
+                NativeDependencyNormalizationInput normalized_input;
+                normalized_input.dependents=retried.dependents;normalized_input.scheduled_pairs=retried.scheduled_pairs;
+                normalized_input.input_complete=normalized_input.standard_entities_known=normalized_input.removal_work_known_empty=true;
+                const auto normalized=project_native_dependency_normalization(normalized_input);
+                check(normalized.resolved && after.at("dependents")==normalized.dependents,
+                      "library load, retry and normalization reproduce a complete native service iteration");
+                check(row.at("cycle_return")==0 && after.at("context").at("registry_work_count")==0,"native iteration completes and drains work");
+                check(after.at("context").at("scheduled_pairs").empty(),"scheduled pairs are consumed by complete iteration");
+                check(after.at("context").at("registry_set_counts")==std::vector<unsigned>(18,0),"all work sets are empty after this bounded iteration");
+                for(std::size_t i=0;i<normalized.dependents.size();++i) {
+                    std::vector<std::size_t> replay;
+                    for(auto position:normalized.retained_positions[i])replay.push_back(retried.dependents[i].at(position));
+                    check(replay==normalized.dependents[i],"retained positions identify the exact surviving list occurrences");
+                }
+            } else check(after.at("dependents")==retried.dependents,"retry preserves duplicates and matches native reverse-list ordering");
             check(after.at("context").at("pending_entities")==retried.pending_entities,"retry requeues missing or excluded targets");
             check(after.at("context").at("monitored_entities")==retried.monitored_entities,"remaining pending members become monitored");
             Json pairs=Json::array();for(const auto &edge:retried.scheduled_pairs)pairs.push_back({edge.target_entity,edge.dependent_entity});
-            check(after.at("context").at("scheduled_pairs")==pairs,"retry schedules distinct target-dependent pairs");
-            check(after.at("context").at("registry_work_count").get<std::size_t>()==1+retried.added_edges.size(),
-                  "each inserted reference contributes work even if a pair was already scheduled");
+            if(!cycle) {
+                check(after.at("context").at("scheduled_pairs")==pairs,"retry schedules distinct target-dependent pairs");
+                check(after.at("context").at("registry_work_count").get<std::size_t>()==1+retried.added_edges.size(),
+                      "each inserted reference contributes work even if a pair was already scheduled");
+            }
             auto applied=result.dependents;
             for(const auto &edge:retried.added_edges)applied[edge.target_entity].insert(applied[edge.target_entity].begin(),edge.dependent_entity);
             check(applied==retried.dependents,"retry action order reconstructs final lists");
@@ -167,5 +189,26 @@ unsigned dependency_registration_tests() {
     v=retry;v.max_work_items=5;check(project_native_dependency_retry(v).resolved,"exact retry work budget is accepted");
     v=retry;v.entities.clear();v.dependents.clear();v.pending_iteration_order.clear();v.max_work_items=0;
     check(project_native_dependency_retry(v).resolved,"empty retry consumes no entity work");
+    NativeDependencyNormalizationInput normal;
+    normal.input_complete=normal.standard_entities_known=normal.removal_work_known_empty=true;
+    normal.dependents={{1,2,1,2,0,1},{0,0},{}};normal.scheduled_pairs={{0,1},{0,1},{2,2}};
+    auto normalized=project_native_dependency_normalization(normal);
+    check(normalized.resolved && normalized.dependents==std::vector<std::vector<std::size_t>>{{1,2,2,0},{0,0},{}},
+          "only scheduled pairs are normalized; unrelated duplicates and absent pairs are preserved");
+    check(normalized.retained_positions==std::vector<std::vector<std::size_t>>{{0,1,3,4},{0,1},{}},"normalization keeps the first scheduled occurrence");
+    auto reject_normal=[&](const NativeDependencyNormalizationInput &n,const char *reason) {
+        auto r=project_native_dependency_normalization(n);
+        check(!r.resolved && r.reason==reason && r.dependents.empty() && r.retained_positions.empty(),"normalization failure publishes no partial lists");
+    };
+    auto n=normal;n.input_complete=false;reject_normal(n,"incomplete_input");
+    n=normal;n.standard_entities_known=false;reject_normal(n,"target_entity_interface_requires_context");
+    n=normal;n.removal_work_known_empty=false;reject_normal(n,"dependency_removal_requires_context");
+    n=normal;n.scheduled_pairs={{3,0}};reject_normal(n,"scheduled_entity_index_out_of_range");
+    n=normal;n.scheduled_pairs={{0,3}};reject_normal(n,"scheduled_entity_index_out_of_range");
+    n=normal;n.dependents[1].push_back(3);reject_normal(n,"dependent_index_out_of_range");
+    for(std::size_t budget=0;budget<14;++budget) {n=normal;n.max_work_items=budget;reject_normal(n,"work_limit_exceeded");}
+    n=normal;n.max_work_items=14;check(project_native_dependency_normalization(n).resolved,"exact normalization work budget accepted");
+    n=normal;n.dependents.clear();n.scheduled_pairs.clear();n.max_work_items=0;
+    check(project_native_dependency_normalization(n).resolved,"empty normalization consumes no work");
     return checks;
 }
