@@ -25,6 +25,29 @@ Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool h
     }
     return std::move(decoded.at("entries"));
 }
+Json load_dependency_entries(const Bytes &payload,std::size_t remaining) {
+    require(payload.size()>=8,"truncated_dependency_header");
+    const auto flags=Reader(payload,4).u16(),count=Reader(payload,6).u16();
+    const auto format=(flags>>10)&15u;
+    if(format<=1 || format==8 || format>8 || (flags&1) || count==0)
+        return direct_dependency_entries(payload,remaining,true,true);
+    require(format!=6,"dependency_owner_path_requires_context");
+    static constexpr unsigned strides[]={8,16,40,48,16,24,0,24,16};
+    require(count<=remaining,"work_limit_exceeded");
+    const auto needed=8+std::size_t(count)*strides[format];
+    require(payload.size()>=needed,"truncated_dependency_entries");
+    const auto decoded=native_dependency_link(slice(payload,0,needed));
+    require(!decoded.contains("error") && decoded.at("entries").size()==count,"truncated_dependency_entries");
+    Json references=Json::array();
+    for(const auto &entry:decoded.at("entries")) {
+        require(!entry.contains("reference_status"),"compact_dependency_selector_requires_context");
+        for(const auto &reference:entry.at("references")) {
+            require(references.size()<remaining,"work_limit_exceeded");
+            references.push_back(reference);
+        }
+    }
+    return references;
+}
 }
 NativeDependencyLoadResult project_native_dependency_load(const NativeDependencyLoadInput &input) {
     NativeDependencyLoadResult out;
@@ -85,6 +108,11 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
             if(found!=index.end())return Target{scope,model,found->second};
             return system_lookup(id);
         };
+        auto target_flags=[&](const Target &target) {
+            if(target.scope==0)return input.entities.at(target.index).runtime_flags_10;
+            if(target.scope==1)return input.system_registry->at(target.index).runtime_flags_10;
+            return input.file_context->models.at(target.model).entities.at(target.index).runtime_flags_10;
+        };
         auto lookup=[&](std::uint64_t id,unsigned scope,std::size_t model)->std::optional<Target> {
             if(auto target=model_lookup(id,scope,model))return target;
             std::optional<bool> fallback;
@@ -124,10 +152,33 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 out.failed_entity=index;
                 for(const auto &payload:input.entities[index].dependency_payloads) {
                     tick();
-                    for(const auto &entry:direct_dependency_entries(payload,remaining,true,true)) {
+                    for(const auto &entry:load_dependency_entries(payload,remaining)) {
                         tick();const auto id=entry.at("element_id").get<std::uint64_t>();
                         std::optional<Target> target;
-                        if(!entry.contains("model_id"))target=lookup(id,0,0);
+                        if(entry.value("target_lookup",std::string())=="skipped_maximum_id") {
+                            // 1f14a0 returns a null target but preserves the ID;
+                            // a nonzero missing ID still queues this dependent.
+                        } else if(entry.contains("owner_reference_id") && entry.at("owner_reference_id")!=0) {
+                            const auto owner=model_lookup(entry.at("owner_reference_id").get<std::uint64_t>(),0,0);
+                            if(owner) {
+                                const auto flags=target_flags(*owner);
+                                require(flags.has_value(),"owner_runtime_flags_require_context");
+                                bool accepted=true;
+                                if(*flags&8) {
+                                    require(input.owner_lookup_includes_deleted.has_value(),"owner_lookup_mode_requires_context");
+                                    accepted=*input.owner_lookup_includes_deleted;
+                                }
+                                if(accepted) {
+                                    const bool plain=owner->scope==0?input.entities[owner->index].standard_type33_root_owner:
+                                        input.system_registry->at(owner->index).standard_type33_root_owner;
+                                    require(plain,"dependency_owner_path_requires_context");
+                                    // 1017b0's ordinary root path retains the
+                                    // caller's model even if the owner is system.
+                                    target=model_lookup(id,0,0);
+                                }
+                            }
+                        } else if(entry.value("lookup_profile",std::string())=="owner_system")target=model_lookup(id,0,0);
+                        else if(!entry.contains("model_id"))target=lookup(id,0,0);
                         else {
                             const auto model_id=entry.at("model_id").get<std::int32_t>();
                             if(model_id==-1)target=lookup(id,1,0);
@@ -147,9 +198,7 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                             continue;
                         }
                         const auto t=target->index,m=target->model;
-                        const auto flags=target->scope==0?input.entities[t].runtime_flags_10:
-                            target->scope==1?input.system_registry->at(t).runtime_flags_10:
-                            input.file_context->models[m].entities[t].runtime_flags_10;
+                        const auto flags=target_flags(*target);
                         require(flags.has_value(),target->scope==0?"target_runtime_flags_require_context":
                             target->scope==1?"system_target_runtime_flags_require_context":"file_target_runtime_flags_require_context");
                         // Mode 1 and a fresh service skip rejected targets. They

@@ -10,10 +10,14 @@ struct NativeDependencyLoadEntity {
     // All 56d0 user-link payloads in original order, excluding the four-byte
     // linkage header. Other linkage applications are not supplied here.
     std::vector<Bytes> dependency_payloads;
+    // Audited owner-path profile: type-33/subtype-0 root, no parent/attributes
+    // and no custom geometry/transform handler. Not a generic owner override.
+    bool standard_type33_root_owner = false;
 };
 struct NativeDependencySystemTarget {
     std::uint64_t assigned_id = 0;
     std::optional<std::uint32_t> runtime_flags_10;
+    bool standard_type33_root_owner = false;
 };
 struct NativeDependencyFileModel {
     std::int32_t model_id = 0;
@@ -51,6 +55,9 @@ struct NativeDependencyLoadInput {
     // Format 8's model selection and 129a00 file-wide fallback. Other models'
     // entities/flags must remain fixed while current-model batches register.
     std::optional<NativeDependencyFileContext> file_context;
+    // Original dependency service byte +8 controls whether 101710 accepts a
+    // deleted owner record. Required only when an owner has runtime bit 0x8.
+    std::optional<bool> owner_lookup_includes_deleted;
 };
 struct NativeDependencyEdge {
     std::size_t target_entity = 0;
@@ -90,7 +97,9 @@ struct NativeDependencyLoadResult {
 // R1.18 initial file callbacks (mode 1), fresh current-model ID registry, empty
 // service monitored set. Local lookup precedes the supplied system registry;
 // file fallback context is required only if both miss. Resolves
-// direct IDs in formats 0/1 and model-qualified IDs in format 8. Format 0
+// direct IDs in formats 0/1, selector references in 2/3/4/5/7 and model IDs in 8.
+// Nonzero owner paths require the explicit standard type-33 root profile.
+// Format 6 and format 0
 // owner=10000/relation=4 is a separate path
 // program and remains unsupported. Disabled/empty/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,

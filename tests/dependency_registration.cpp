@@ -7,6 +7,7 @@
 #include "dependency_flush_oracle.hpp"
 #include "dependency_system_oracle.hpp"
 #include "dependency_models_oracle.hpp"
+#include "dependency_selectors_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -167,12 +168,19 @@ unsigned dependency_registration_tests() {
     check(models_oracle.at("cases").size()==72,"all original format-8 resident-model experiments are tested");
     auto model_cases=system_oracle.at("cases");
     for(const auto &row:models_oracle.at("cases"))model_cases.push_back(row);
+    const auto selectors_oracle=Json::parse(dependency_selectors_oracle);
+    check(selectors_oracle.at("cases").size()==344,"all original selector/owner experiments are tested");
+    for(const auto &row:selectors_oracle.at("cases"))model_cases.push_back(row);
     for(const auto &row:model_cases) {
         NativeDependencyLoadInput input;
         input.input_complete=input.file_fallback_disabled=input.monitored_entity_set_known_empty=true;
         input.system_registry.emplace();
         for(const auto &id:row.at("system_ids"))
             input.system_registry->push_back({id.get<std::uint64_t>(),row.at("system_flags").get<std::uint32_t>()});
+        if(row.value("plain_root_owner_profile",false)) {
+            input.owner_lookup_includes_deleted=row.value("owner_lookup_includes_deleted",false);
+            for(auto &entity:*input.system_registry)entity.standard_type33_root_owner=true;
+        }
         std::vector<std::vector<std::vector<std::size_t>>> file_lists;
         if(row.contains("file_models")) {
             input.file_context.emplace();auto &context=*input.file_context;
@@ -188,6 +196,7 @@ unsigned dependency_registration_tests() {
             NativeDependencyLoadEntity entity;
             entity.assigned_id=row.at("ids")[i];
             entity.runtime_flags_10=entity.assigned_id==41?row.at("local_flags").get<std::uint32_t>():0;
+            entity.standard_type33_root_owner=row.value("plain_root_owner_profile",false);
             check(*entity.runtime_flags_10==row.at("runtime_flags")[i],"explicit target state agrees with native system experiment");
             for(const auto &payload:row.at("dependency_payloads")[i])entity.dependency_payloads.push_back(unhex(payload));
             input.entities.push_back(std::move(entity));input.batches.push_back({i});
@@ -323,6 +332,44 @@ unsigned dependency_registration_tests() {
     check(project_native_dependency_load(input).resolved,"system hit in format 8 needs no unrelated resident model registry");
     input=model_input;input.max_work_items=2;
     input.file_context->models[0].entities={{42,0},{43,0}};rejected(input,"work_limit_exceeded");
+    auto selector_input=base;
+    selector_input.entities[1].dependency_payloads={unhex("e70301000010010001000000000000000000000000000000")};
+    selector_input.file_fallback_disabled=false;
+    check(project_native_dependency_load(selector_input).resolved,"zero-owner selector adds a system-only owner lookup without requiring file fallback");
+    selector_input.entities[1].dependency_payloads[0][16]=1;
+    rejected(selector_input,"dependency_owner_path_requires_context");
+    selector_input.entities[0].standard_type33_root_owner=true;
+    auto selector_result=project_native_dependency_load(selector_input);
+    check(selector_result.resolved && selector_result.dependents[0]==std::vector<std::size_t>{1,1},
+          "paired target and additional owner reference remain two independent reverse nodes");
+    input=selector_input;input.entities[0].runtime_flags_10.reset();rejected(input,"owner_runtime_flags_require_context");
+    input=selector_input;input.entities[0].runtime_flags_10=8;rejected(input,"owner_lookup_mode_requires_context");
+    input.owner_lookup_includes_deleted=false;
+    selector_result=project_native_dependency_load(input);
+    check(selector_result.resolved && selector_result.pending_entities==std::vector<std::size_t>{1} && selector_result.dependents[0].empty(),
+          "deleted owner rejection queues the paired target while the excluded owner edge is skipped");
+    input.owner_lookup_includes_deleted=true;
+    selector_result=project_native_dependency_load(input);
+    check(selector_result.resolved && selector_result.pending_entities.empty() && selector_result.dependents[0].empty(),
+          "permitted deleted owner can resolve a target that mode 1 subsequently filters");
+    input=selector_input;input.entities[0].standard_type33_root_owner=false;input.entities[1].dependency_payloads[0][16]=99;
+    selector_result=project_native_dependency_load(input);
+    check(selector_result.resolved && selector_result.pending_entities==std::vector<std::size_t>{1},
+          "a genuinely missing owner requires neither a path profile nor file fallback");
+    input=selector_input;input.entities[1].dependency_payloads.push_back(unhex("e70301000010010001000000000000000200000000000000"));
+    rejected(input,"dependency_owner_path_requires_context");
+    input=selector_input;input.entities[1].dependency_payloads[0][5]=28;
+    input.entities[1].dependency_payloads[0].resize(32);input.entities[1].dependency_payloads[0][16]=4;
+    rejected(input,"compact_dependency_selector_requires_context");
+    input=selector_input;input.entities[0].assigned_id=UINT64_MAX;
+    for(unsigned i=8;i<16;++i)input.entities[1].dependency_payloads[0][i]=255;
+    input.entities[1].dependency_payloads[0][16]=0;
+    selector_result=project_native_dependency_load(input);
+    check(selector_result.resolved && selector_result.pending_entities==std::vector<std::size_t>{1} && selector_result.dependents[0].empty(),
+          "paired maximum ID suppresses target lookup but still produces native nonzero pending work");
+    input=selector_input;input.max_work_items=6;rejected(input,"work_limit_exceeded");
+    input.max_work_items=7;
+    check(project_native_dependency_load(input).resolved,"work budget counts both emitted selector references");
     input=base;input.entities[0].runtime_flags_10.reset();rejected(input,"target_runtime_flags_require_context");
     input=base;input.entities[1].assigned_id=1;rejected(input,"assigned_id_collision");
     input=base;input.batches={{0},{0,1}};rejected(input,"entity_registered_more_than_once");
@@ -336,7 +383,7 @@ unsigned dependency_registration_tests() {
     rejected(input,"dependency_owner_path_requires_context");
     for(unsigned format=2;format<=8;++format) {
         input=base;input.entities[1].dependency_payloads[0][5]=std::uint8_t(format<<2);
-        rejected(input,format==8?"truncated_dependency_entries":"dependency_format_requires_context");
+        rejected(input,format==6?"dependency_owner_path_requires_context":"truncated_dependency_entries");
         input.entities[1].dependency_payloads[0][4]=1;input.entities[1].dependency_payloads[0].resize(8);
         check(project_native_dependency_load(input).resolved,"disabled unsupported formats do not access entries");
     }

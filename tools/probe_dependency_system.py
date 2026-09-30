@@ -63,6 +63,12 @@ def probe(root, inputs):
                 system = file + 0x6c8
                 assert ptr(system) == base + 0x535e10
                 assert ptr(system + 0x698) is None and ptr(model + 0x698) is None
+                if case.get('plain_root_owner_profile'):
+                    assert ptr(base + 0x664be0 + 33 * 8) is None
+                    host = C.CFUNCTYPE(V, V)(ptr(base + 0x51e788))(base + 0x643db8)
+                    service = ptr(fn(0x1632e0, V, V, V)(host + 8, base + 0x643e18))
+                    assert C.c_uint8.from_address(service + 8).value == 0
+                    C.c_uint8.from_address(service + 8).value = case.get('owner_lookup_includes_deleted', False)
                 # Actual original ordinary-model getter disables file fallback.
                 assert ptr(ptr(model) + 0xe8) == base + 0x8a90
                 assert not fn(0x8a90, C.c_bool, V)(model)
@@ -93,6 +99,11 @@ def probe(root, inputs):
                     entity = ptr(node + 0x28)
                     assert entity and C.c_uint64.from_address(ptr(entity + 0x40) + 16).value == id_
                     assert fn(ptr(ptr(entity) + 0x20) - base, V, V)(entity) == target_model
+                    if case.get('plain_root_owner_profile'):
+                        assert ptr(entity + 0x20) is None
+                        assert ptr(entity + 0x28) is None
+                        assert C.c_uint16.from_address(ptr(entity + 0x40)).value == 33
+                        assert u32(ptr(entity + 0x40) + 12) == 0
                     return entity, data.hex()
 
                 def reverse(entities):
