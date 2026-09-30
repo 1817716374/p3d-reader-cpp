@@ -7,7 +7,9 @@ or run the outer host flush. All allocations survive until process exit.
 import ctypes as C
 
 
-def constructed_model(base, initial_counter, spatial):
+def constructed_model(base, initial_counter, spatial, file_wrapper=None):
+    # An optional original file wrapper supplies the file specification needed
+    # by type-13 input. It is retained by the original file factory below.
     ptr=lambda a:C.c_void_p.from_address(a).value
     u32=lambda a:C.c_uint32.from_address(a).value
     u64=lambda a:C.c_uint64.from_address(a).value
@@ -22,7 +24,7 @@ def constructed_model(base, initial_counter, spatial):
     assert ptr(service)==base+0x544230
     C.c_void_p.from_address(host+0x70).value=service
     holder=C.c_void_p()
-    C.CFUNCTYPE(C.c_void_p,C.c_void_p,C.c_void_p,C.c_void_p)(base+0x360c10)(service,C.byref(holder),None)
+    C.CFUNCTYPE(C.c_void_p,C.c_void_p,C.c_void_p,C.c_void_p)(base+0x360c10)(service,C.byref(holder),file_wrapper)
     file=holder.value
     assert file and ptr(file)==base+0x52eef8 and u32(file+0x680)==1
     model=allocate(0x7f8)
