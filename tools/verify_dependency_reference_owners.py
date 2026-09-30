@@ -15,11 +15,12 @@ from probe_dependency_reference_owners import cases
 from probe_view_frame import HASHES
 
 
-def verify(result):
+def verify(result, inputs=None):
     assert result['dll_sha256'] == HASHES
+    supplied_cases = list(cases() if inputs is None else inputs)
     totals = dict(cases=0, source_records=0, root_callbacks=0, reference_bindings=0,
                   local_edges=0, other_model_edges=0, pending_entities=0, transitions=0)
-    for supplied, row in zip(cases(), result['cases'], strict=True):
+    for supplied, row in zip(supplied_cases, result['cases'], strict=True):
         assert all(row[k] == value for k, value in supplied.items())
         assert row['reference_ids'] == [42, 43, 43]
         assert row['reference_parent_contexts'] == ['current', 'model_9', 'reference_42']
@@ -37,6 +38,12 @@ def verify(result):
             assert struct.unpack_from('<Q', raw, 16)[0] == source['id']
             assert struct.unpack_from('<I', raw, 4)[0] * 2 == len(raw)
             assert struct.unpack_from('<I', raw, 8)[0] * 2 == (368 if source['type'] == 13 else 128)
+            if source['type'] == 13:
+                transform = row.get('source_transforms', {}).get(str(source['id']), {})
+                assert list(struct.unpack_from('<3d', raw, 168)) == transform.get('reference_point', [0, 0, 0])
+                assert list(struct.unpack_from('<3d', raw, 192)) == transform.get('translation', [0, 0, 0])
+                assert list(struct.unpack_from('<9d', raw, 216)) == transform.get('matrix', [1, 0, 0, 0, 1, 0, 0, 0, 1])
+                assert struct.unpack_from('<d', raw, 288)[0] == transform.get('scale', 1)
             tail = raw[368 if source['type'] == 13 else 128:]
             if source['id'] in (77, 78):
                 h, app = struct.unpack_from('<HH', tail)
@@ -108,7 +115,7 @@ def verify(result):
         totals['other_model_edges'] += sum(len(ids) for group in expected['file_dependents'] for ids in group)
         totals['pending_entities'] += len(expected['pending_entities'])
         totals['transitions'] += len(row['transitions'])
-    assert totals['cases'] == 408
+    assert totals['cases'] == len(supplied_cases)
     return totals
 
 

@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "dependency_reference_affines_oracle.hpp"
 
 unsigned reference_affine_tests() {
     using namespace p3d;
@@ -294,5 +295,48 @@ unsigned reference_affine_tests() {
     check(owner_reference_path_transform(Json::array({parsed.at(0), {}}), {}, pc)["matrix"] ==
               translation,
           "actual parsed native block record is consumed without a private field adapter");
+    // Complete original source input -> bound reference -> owner-chain query,
+    // including normalized shear/singular bases and zero-scale input default.
+    const auto original = Json::parse(dependency_reference_affines_oracle);
+    check(original.at("native_case_count") == 288 && original.at("cases").size() == 4,
+          "four distinct transforms compact 288 identical affine observations across graph flags");
+    for (const auto &row : original.at("cases")) {
+        std::array<Json, 2> affines;
+        for (const auto &source : row.at("source_headers")) {
+            if (source.at("type") != 13) continue;
+            Bytes data(4, 0);
+            const auto text = source.at("header_hex").get<std::string>();
+            for (std::size_t at = 0; at < text.size(); at += 2)
+                data.push_back(std::uint8_t(std::stoul(text.substr(at, 2), nullptr, 16)));
+            ReferenceAffineContext context;
+            context.provider_id = 0;
+            context.origin.model_coordinates = Json{{"status", "decoded"},
+                {"reference_origin", {{"value", Point3{0, 0, 0}}}}};
+            auto affine = reference_affine_transform(native_reference_input(data), context);
+            check(affine.at("status") == "computed", "original constructed source produces a finite affine");
+            affines[source.at("id") == 42 ? 0 : 1] = std::move(affine);
+        }
+        for (const auto &query : row.at("affine_queries")) {
+            std::vector<Json> chain;
+            auto current = query.at("reference_index").get<int>();
+            const auto stop = query.at("stop_reference_index").is_null() ? -1 :
+                query.at("stop_reference_index").get<int>();
+            while (current != -1 && current != stop) {
+                chain.push_back(affines[current == 0 ? 0 : 1]);
+                current = current == 2 ? 0 : -1;
+            }
+            auto composed = compose_owner_reference_chain_transforms(chain);
+            check(composed.at("status") == "computed", "original owner ancestry composes successfully");
+            const auto matrix = composed.at("matrix").get<Matrix4>();
+            const auto expected = query.at("native_matrix").get<std::vector<double>>();
+            check(expected.size() == 12, "native affine is row-major 3 by 4");
+            for (unsigned r = 0; r < 3; ++r)
+                for (unsigned col = 0; col < 4; ++col) {
+                    const auto value = expected[4 * r + col];
+                    check(std::abs(matrix[r][col] - value) <= 2e-13 + 2e-14 * std::abs(value),
+                          "C++ source preparation and owner composition match original constructed references");
+                }
+        }
+    }
     return checks;
 }

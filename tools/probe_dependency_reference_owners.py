@@ -92,8 +92,11 @@ def probe(root, inputs):
                     raw = bytearray(size)
                     struct.pack_into('<HHIIIQ', raw, 0, type_, 0x20, size // 2, size // 2, 0, id_)
                     if type_ == 13:
-                        struct.pack_into('<9d', raw, 216, 1, 0, 0, 0, 1, 0, 0, 0, 1)
-                        struct.pack_into('<d', raw, 288, 1)
+                        transform = case.get('source_transforms', {}).get(str(id_), {})
+                        struct.pack_into('<3d', raw, 168, *transform.get('reference_point', [0, 0, 0]))
+                        struct.pack_into('<3d', raw, 192, *transform.get('translation', [0, 0, 0]))
+                        struct.pack_into('<9d', raw, 216, *transform.get('matrix', [1, 0, 0, 0, 1, 0, 0, 0, 1]))
+                        struct.pack_into('<d', raw, 288, transform.get('scale', 1))
                     else: struct.pack_into('<6q', raw, 56, -1, -2, -3, 1, 2, 3)
                     for link in links:
                         data = bytes.fromhex(link)
@@ -181,9 +184,22 @@ def probe(root, inputs):
                     transitions.append(dict(owner_id=id_, accepted=got is not None,
                                             result='null' if got is None else 'same_reference' if got == context else 'child_reference'))
                 assert observe() == calls[-1]
-                rows.append(dict(case, source_headers=sources, calls=calls, transitions=transitions,
+                affine_queries = []
+                if 'source_transforms' in case:
+                    for ref_index, ref, stop_index, stop in ((0, root_ref, None, None),
+                            (1, nested_model_ref, None, None), (2, nested_ref, None, None),
+                            (2, nested_ref, 0, root_ref), (2, nested_ref, 2, nested_ref),
+                            (0, root_ref, 2, nested_ref)):
+                        out = (C.c_double * 12)()
+                        fn(0x33af90, None, V, V, V)(out, ref, stop)
+                        affine_queries.append(dict(reference_index=ref_index, stop_reference_index=stop_index,
+                                                   native_matrix=list(out)))
+                    assert observe() == calls[-1]
+                row = dict(case, source_headers=sources, calls=calls, transitions=transitions,
                                  reference_ids=[42, 43, 43], reference_parent_contexts=['current', 'model_9', 'reference_42'],
-                                 target_model_ids=[9, 7, 10]))
+                                 target_model_ids=[9, 7, 10])
+                if affine_queries: row['affine_queries'] = affine_queries
+                rows.append(row)
         return dict(scope='R1.18_original_bound_type13_reference_owner_callbacks', dll_sha256=HASHES, cases=rows)
     finally:
         for directory in directories: directory.close()
