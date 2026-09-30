@@ -8,18 +8,18 @@ struct TreeOwnerProfile {unsigned type;std::optional<Matrix4> block;};
 TreeOwnerProfile dependency_tree_source(const NativeDependencyTreeOwnerInput &tree,
                                        std::uint64_t id,std::size_t &remaining) {
     const auto &source=tree.prepared_source;
-    require(source.size()>=132,"owner_tree_source_profile_required");
+    require(source.size()>=38,"owner_tree_source_profile_required");
     const auto type=Reader(source,4).u16();
-    require(type==14 || type==33 || type==62,"owner_tree_source_profile_required");
-    const std::size_t base=type==62?260:132;
+    require(type==14 || type==33 || type==47 || type==62,"owner_tree_source_profile_required");
+    const std::size_t base=type==47?38:type==62?260:132;
     require(source.size()>=base && source.size()<=131074 &&
-            Reader(source,6).u16()==(0x20u|(type==14?0x40u:0u)|(tree.parent_entity?0x80u:0u)) &&
+            Reader(source,6).u16()==((type==47?4u:0x20u)|(type==14?0x40u:0u)|(tree.parent_entity?0x80u:0u)) &&
             Reader(source,12).u32()==(base-4)/2 &&
-            std::uint64_t(Reader(source,8).u32())*2+4==source.size() && Reader(source,16).u32()==0,
+            std::uint64_t(Reader(source,8).u32())*2+4==source.size() && (type==47 || Reader(source,16).u32()==0),
             "owner_tree_source_profile_required");
     require(Reader(source,20).u64()==id,"owner_tree_source_id_mismatch");
     for(std::size_t at=28;at<base;++at) {
-        const bool field=type==62?at>=164:(at>=60 && at<108) || (type==14 && at>=108 && at<112);
+        const bool field=type==47?at>=36:type==62?at>=164:(at>=60 && at<108) || (type==14 && at>=108 && at<112);
         if(!field)require(source[at]==0,"owner_tree_source_profile_required");
     }
     TreeOwnerProfile profile{type,{}};

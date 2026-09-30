@@ -40,6 +40,7 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
         local={}
         programs={s['id']:s for s in row['path_owners']}
         tree_list=row.get('tree_sources',[])
+        programs.update({s['id']:s for s in tree_list if s['type']==47})
         tree={s['id']:s for s in tree_list}
         children=[[] for _ in tree_list]
         for i,spec in enumerate(tree_list):
@@ -47,7 +48,7 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
         subtrees=[[i] for i in range(len(tree_list))]
         for i in reversed(range(len(tree_list))):
             for child in children[i]:subtrees[i].extend(subtrees[child])
-        tree_flags={spec['id']:spec.get('source_flags',0x20|(0x80 if spec['parent'] is not None else 0)|
+        tree_flags={spec['id']:spec.get('source_flags',(4 if spec['type']==47 else 0x20)|(0x80 if spec['parent'] is not None else 0)|
                     (0x40 if children[i] else 0)) for i,spec in enumerate(tree_list)}
         loaded_tree_flags={spec['id']:tree_flags[spec['id']]|(0x80 if spec['parent'] is not None else 0)
                            for spec in tree_list}

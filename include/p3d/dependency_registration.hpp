@@ -5,12 +5,15 @@
 namespace p3d {
 struct NativeDependencyTreeOwnerInput {
     // Actual loaded physical source (including prefix), after child-flag and
-    // block-matrix preparation. Audited types 14/33/62, subtype 0, standard
+    // block-matrix preparation. Audited types 14/33/62 (subtype 0), and type-47
+    // path applications (minimal 34-byte native base, flags 4/0x84), standard
     // header and optional 56d0 user linkages; no custom transform handler.
     Bytes prepared_source;
     // Actual parent occurrence in the SAME model's entity vector, not an ID.
     // nullopt explicitly means a root. Parents must use type-14 tree profiles.
-    // Current-model parents must already belong to an accepted input batch.
+    // Current-model parents must already belong to an accepted input batch
+    // when traversed. Type-47 expansion follows its path without appending its
+    // own ancestry; terminal append follows parents without dispatching its path.
     std::optional<std::size_t> parent_entity;
 };
 struct NativeDependencyLoadEntity {

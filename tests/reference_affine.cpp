@@ -2,6 +2,7 @@
 #include "dependency_reference_affines_oracle.hpp"
 #include "dependency_blocks_oracle.hpp"
 #include "dependency_parents_oracle.hpp"
+#include "dependency_child_paths_oracle.hpp"
 
 unsigned reference_affine_tests() {
     using namespace p3d;
@@ -352,9 +353,18 @@ unsigned reference_affine_tests() {
     auto blocks = Json::parse(dependency_blocks_oracle);
     check(blocks.at("native_case_count") == 720 && blocks.at("cases").size() == 440 &&
           blocks.at("source_catalog").size() == 33, "all original block collector cases are represented");
-    const auto parents = Json::parse(dependency_parents_oracle);
+    auto parents = Json::parse(dependency_parents_oracle);
     check(parents.at("native_case_count") == 576 && parents.at("cases").size() == 576,
           "all original parented collector observations are represented");
+    const auto children=Json::parse(dependency_child_paths_oracle);
+    check(children.at("native_case_count")==864 && children.at("cases").size()==864,
+          "all original child application collector observations are represented");
+    const auto child_offset=parents.at("source_catalog").size();
+    for(const auto &source:children.at("source_catalog"))parents["source_catalog"].push_back(source);
+    for(auto row:children.at("cases")) {
+        for(auto &index:row["source_indices"])index=index.get<std::size_t>()+child_offset;
+        parents["cases"].push_back(std::move(row));
+    }
     const auto catalog_offset=blocks.at("source_catalog").size();
     for(const auto &source:parents.at("source_catalog"))blocks["source_catalog"].push_back(source);
     for(auto row:parents.at("cases")) {

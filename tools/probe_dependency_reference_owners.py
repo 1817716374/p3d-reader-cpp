@@ -211,9 +211,10 @@ def probe(root, inputs):
                     assert [j for i,s in enumerate(specs) if s['parent'] is None for j in subtrees[i]]==list(range(len(specs)))
                     nodes=[]
                     for i,spec in enumerate(specs):
-                        assert spec['type'] in (14,33,62)
+                        assert spec['type'] in (14,33,47,62)
                         assert not children[i] or spec['type']==14
-                        flags=spec.get('source_flags',0x20|(0x80 if spec['parent'] is not None else 0)|(0x40 if children[i] else 0))
+                        flags=spec.get('source_flags',(4 if spec['type']==47 else 0x20)|
+                                       (0x80 if spec['parent'] is not None else 0)|(0x40 if children[i] else 0))
                         nodes.append(source_node(spec['id'],spec['type'],spec.get('links',[]),spec,flags,
                                                  len(subtrees[i])-1 if spec['type']==14 else None))
                     # Link only input nodes, before original entity creation.

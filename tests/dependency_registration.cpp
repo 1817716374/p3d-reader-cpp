@@ -14,6 +14,7 @@
 #include "dependency_type47_oracle.hpp"
 #include "dependency_blocks_oracle.hpp"
 #include "dependency_parents_oracle.hpp"
+#include "dependency_child_paths_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -274,7 +275,14 @@ unsigned dependency_registration_tests() {
         for(const auto &index:row.at("source_indices"))row["source_headers"].push_back(parent_oracle.at("source_catalog").at(index.get<std::size_t>()));
         bound_cases.push_back(std::move(row));
     }
-    NativeDependencyLoadInput bound_sample,affine_sample,path_sample,block_sample,block_reference_sample,tree_sample;
+    const auto child_oracle=Json::parse(dependency_child_paths_oracle);
+    check(child_oracle.at("dependency_cases").size()==864,"all original child application callbacks are tested");
+    for(auto row:child_oracle.at("dependency_cases")) {
+        row["source_headers"]=Json::array();
+        for(const auto &index:row.at("source_indices"))row["source_headers"].push_back(child_oracle.at("source_catalog").at(index.get<std::size_t>()));
+        bound_cases.push_back(std::move(row));
+    }
+    NativeDependencyLoadInput bound_sample,affine_sample,path_sample,block_sample,block_reference_sample,tree_sample,child_sample;
     for(const auto &row:bound_cases) {
         const bool affine=row.contains("transform_case");
         std::map<std::uint64_t,Bytes> affine_sources;
@@ -321,7 +329,7 @@ unsigned dependency_registration_tests() {
                     entity.standard_tree_owner=std::move(tree);entity.runtime_flags_10=node.at("runtime_flags").get<unsigned>();
                     for(const auto &payload:node.at("links"))entity.dependency_payloads.push_back(unhex(payload));
                 }
-                if(type==47) {
+                if(type==47 && !entity.standard_tree_owner) {
                     auto bytes=unhex(source.at("header_hex"));bytes.insert(bytes.begin(),4,0);
                     entity.standard_type47_root_source=std::move(bytes);
                     for(const auto &path:row.at("path_owners"))if(path.at("id")==id)
@@ -369,6 +377,8 @@ unsigned dependency_registration_tests() {
               "bound-reference final graph matches every original target identity");
         check(result.pending_entities==std::vector<std::size_t>(pending.begin(),pending.end()),"bound-reference final pending set agrees");
         if(bound_sample.entities.empty())bound_sample=input;
+        if(row.contains("tree_layout") && row.at("tree_layout")=="deep" && row.at("tree_state")=="normal" &&
+           !affine && row.at("path_program")==Json{{"format",6},{"path",Json::array({46,45})}})child_sample=input;
         if(row.contains("tree_layout") && row.at("tree_layout")=="deep" && row.at("tree_state")=="normal" &&
            !affine && row.at("path_program")==Json{{"format",0},{"path",Json::array({50,50})}})tree_sample=input;
         if(affine && row.at("format")==4 && !row.at("disabled").get<bool>() && affine_sample.entities.empty())affine_sample=input;
@@ -610,6 +620,47 @@ unsigned dependency_registration_tests() {
         result=project_native_dependency_load(input);
         check(result.resolved && result.file_dependents[0][0]==std::vector<std::size_t>{10},
               "resident tree uses its own parent occurrence after a reference transition");
+    }
+    check(!child_sample.entities.empty(),"original deep child application supplies dispatch guards");
+    {
+        // Order: 77,42,41,60,63,50,61,46,48,51,44,45,78.
+        auto &sample=child_sample;
+        input=sample;input.entities[7].standard_tree_owner.reset();
+        rejected(input,"dependency_owner_path_requires_context");
+        input=sample;input.entities[7].standard_type47_root_source=input.entities[7].standard_tree_owner->prepared_source;
+        rejected(input,"contradictory_owner_profile");
+        for(auto at:{6u,8u,12u,28u}) {
+            input=sample;input.entities[7].standard_tree_owner->prepared_source.at(at)^=1;
+            rejected(input,"owner_tree_source_profile_required");
+        }
+        input=sample;input.entities[7].standard_tree_owner->parent_entity=999;
+        rejected(input,"owner_entity_parent_out_of_range");
+        input=sample;input.entities[3].standard_tree_owner->prepared_source.at(28)=1;
+        rejected(input,"owner_tree_source_profile_required");
+        input=sample;input.entities[7].runtime_flags_10=8;
+        input.entities[7].standard_tree_owner->prepared_source.at(28)=1;
+        check(project_native_dependency_load(input).resolved,"deleted child application skips unused source and ancestry");
+        input=sample;
+        auto child_empty=make_path_record(46,unhex("1027040001000000"));child_empty[6]|=0x80;
+        input.entities[7].standard_tree_owner->prepared_source=child_empty;
+        input.entities[7].standard_tree_owner->parent_entity=999;
+        const auto expanded=unhex("10270400010001002e00000000000000");
+        input.entities[10].standard_type47_root_source=make_path_record(44,expanded);
+        check(project_native_dependency_load(input).resolved,"expanded child application never reads its own unused parent");
+        input.entities[7].standard_tree_owner->parent_entity=4;
+        input.entities[3].standard_tree_owner->prepared_source[28]=1;
+        check(project_native_dependency_load(input).resolved,"empty child path does not append or audit its own ancestor");
+        input=sample;
+        auto short_path=make_path_record(46,unhex("10270400"));short_path[6]|=0x80;
+        input.entities[7].standard_tree_owner->prepared_source=short_path;
+        check(project_native_dependency_load(input).resolved,"terminal child retains an unexecuted malformed path payload");
+        input.entities[10].standard_type47_root_source=make_path_record(44,expanded);
+        rejected(input,"truncated_owner_path_header");
+        input=sample;
+        auto cycle=make_path_record(46,unhex("10270400010001003000000000000000"));cycle[6]|=0x80;
+        input.entities[7].standard_tree_owner->prepared_source=cycle;
+        input.entities[10].standard_type47_root_source=make_path_record(44,expanded);
+        rejected(input,"cyclic_owner_reference_path");
     }
     check(!affine_sample.entities.empty(),"a native nonidentity paired selector supplies guard tests");
     input=affine_sample;input.entities[1].standard_type13_identity_root_owner=true;rejected(input,"contradictory_owner_profile");
