@@ -39,7 +39,22 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
                               result=('same_reference' if i==3 else 'child_reference') if accepted else 'null')
         local={}
         programs={s['id']:s for s in row['path_owners']}
-        blocks={s['id']:s for s in row.get('block_sources',[])}
+        tree_list=row.get('tree_sources',[])
+        tree={s['id']:s for s in tree_list}
+        children=[[] for _ in tree_list]
+        for i,spec in enumerate(tree_list):
+            if spec['parent'] is not None:children[spec['parent']].append(i)
+        subtrees=[[i] for i in range(len(tree_list))]
+        for i in reversed(range(len(tree_list))):
+            for child in children[i]:subtrees[i].extend(subtrees[child])
+        tree_flags={spec['id']:spec.get('source_flags',0x20|(0x80 if spec['parent'] is not None else 0)|
+                    (0x40 if children[i] else 0)) for i,spec in enumerate(tree_list)}
+        loaded_tree_flags={spec['id']:tree_flags[spec['id']]|(0x80 if spec['parent'] is not None else 0)
+                           for spec in tree_list}
+        if tree_list:
+            assert row['tree_entities']==[dict(id=s['id'],parent=s['parent'],children=children[i],runtime_flags=s['runtime_flags'])
+                                          for i,s in enumerate(tree_list)]
+        blocks={s['id']:s for s in tree_list+row.get('block_sources',[]) if s.get('type',62)==62}
         block_matrices={}
         for id_,spec in blocks.items():
             linear=spec['matrix']
@@ -62,10 +77,17 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
             else:
                 path=list(struct.unpack_from('<'+'Q'*count,raw,8)) if format_==0 else []
             return owner,relation,flags,count,format_,path
+        def append(target,collector):
+            if target['model']==7 and target['id'] in tree and loaded_tree_flags[target['id']]&0x80:
+                ancestor=tree[target['id']]
+                while ancestor is not None and loaded_tree_flags[ancestor['id']]&0x80:
+                    parent=ancestor['parent'];ancestor=None if parent is None else tree_list[parent]
+                if ancestor is not None:collector['collected'].append(dict(model_id=7,id=ancestor['id']))
+            collector['collected'].append(dict(model_id=target['model'],id=target['id']))
         def expand(target,context,collector):
             if target is None:return False
-            if target['type'] in (33,62):
-                collector['collected'].append(dict(model_id=target['model'],id=target['id']))
+            if target['type'] in (14,33,62):
+                append(target,collector)
                 if context is not None:collector['context']=context
                 return True
             if target['type']==13:
@@ -93,7 +115,7 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
             if format_==6:
                 node=lookup(context,path[0])
                 if node is None or node['flags']&8:return False
-                collector['collected'].append(dict(model_id=node['model'],id=node['id']))
+                append(node,collector)
             return True
         def collect(id_,context):
             node=lookup(context,id_)
@@ -131,7 +153,7 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
                 result.append((maximum,None) if context is None else (path[i],lookup(previous,path[i])))
             return result
         source_order=[(9,41,33),(10,41,33),(9,43,13),(7,77,33),(7,42,13),(7,41,33)]
-        source_order += [(7,id_,62) for id_ in blocks]+[(7,s['id'],47) for s in row['path_owners']]+[(7,78,33)]
+        source_order += [(7,s['id'],s['type']) for s in tree_list]+[(7,s['id'],62) for s in row.get('block_sources',[])]+[(7,s['id'],47) for s in row['path_owners']]+[(7,78,33)]
         assert [(s['model_id'],s['id'],s['type']) for s in row['source_headers']]==source_order
         affines={}
         for source in row['source_headers']:
@@ -158,7 +180,10 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
                 struct.pack_into('<3d',expected,232,*blocks[id_]['translation'])
             elif type_==47:struct.pack_into('<H',expected,32,programs[id_].get('signature',0x56e6))
             else:struct.pack_into('<6q',expected,56,-1,-2,-3,1,2,3)
-            links=programs[id_]['links'] if type_==47 else [row['payload_hex']] if id_ in (77,78) else []
+            if id_ in tree:
+                struct.pack_into('<H',expected,2,tree_flags[id_])
+                if type_==14:struct.pack_into('<I',expected,104,len(subtrees[next(i for i,s in enumerate(tree_list) if s['id']==id_)])-1)
+            links=tree[id_].get('links',[]) if id_ in tree else programs[id_]['links'] if type_==47 else [row['payload_hex']] if id_ in (77,78) else []
             for link in links:
                 data=bytes.fromhex(link);expected+=struct.pack('<HH',0x1000+(len(data)+4)//2-1,0x56d0)+data
             struct.pack_into('<I',expected,4,len(expected)//2)
@@ -167,23 +192,35 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
             if type_==62:
                 struct.pack_into('<9d',expected,160,*[v for line in block_matrices[id_][:3] for v in line[:3]])
                 assert source['prepared_header_hex']==expected.hex()
+            if id_ in tree:struct.pack_into('<H',expected,2,loaded_tree_flags[id_])
             assert source['loaded_header_hex']==expected.hex()
         expected=dict(local_dependents=[],file_dependents=[[[],[]],[[]]],pending_entities=[])
-        ids=[77,42,41]+list(blocks)+[s['id'] for s in row['path_owners']]+[78]
-        assert len(row['calls'])==len(ids)
-        for index,id_ in enumerate(ids):
-            local[id_]=entity(7,id_,62 if id_ in blocks else 47 if id_ in programs else 13 if id_==42 else 33,0,index)
-            expected['local_dependents'].append([])
-            links=programs[id_]['links'] if id_ in programs else [row['payload_hex']] if id_ in (77,78) else []
-            for link in links:
-                for target_id,target in references(bytes.fromhex(link)):
-                    if target is None:
-                        if target_id and index not in expected['pending_entities']:expected['pending_entities'].append(index)
-                    elif not target['flags']&0x20008:
-                        lists=expected['local_dependents'] if target['model']==7 else expected['file_dependents'][0 if target['model']==9 else 1]
-                        lists[target['index']].insert(0,index)
-            local[id_]['flags']=row['owner_flags'] if id_==42 else blocks[id_]['runtime_flags'] if id_ in blocks else programs[id_]['runtime_flags'] if id_ in programs else 0
-            assert expected==row['calls'][index],(supplied,index,expected,row['calls'][index])
+        ids=[id_ for model,id_,_ in source_order if model==7]
+        batches=[[0],[1],[2]]+[[3+j for j in subtrees[i]] for i,s in enumerate(tree_list) if s['parent'] is None]
+        batches += [[i] for i in range(3+len(tree_list),len(ids))]
+        if tree_list:assert row['input_batches']==batches
+        assert len(row['calls'])==len(batches)
+        for batch_index,batch in enumerate(batches):
+            # Original root input registers the entire subtree before any of
+            # that root's dependency callbacks, including later children.
+            for index in batch:
+                id_=ids[index]
+                local[id_]=entity(7,id_,tree[id_]['type'] if id_ in tree else 62 if id_ in blocks else 47 if id_ in programs else 13 if id_==42 else 33,0,index)
+                expected['local_dependents'].append([])
+            for index in batch:
+                id_=ids[index]
+                links=tree[id_].get('links',[]) if id_ in tree else programs[id_]['links'] if id_ in programs else [row['payload_hex']] if id_ in (77,78) else []
+                for link in links:
+                    for target_id,target in references(bytes.fromhex(link)):
+                        if target is None:
+                            if target_id and index not in expected['pending_entities']:expected['pending_entities'].append(index)
+                        elif not target['flags']&0x20008:
+                            lists=expected['local_dependents'] if target['model']==7 else expected['file_dependents'][0 if target['model']==9 else 1]
+                            lists[target['index']].insert(0,index)
+            for index in batch:
+                id_=ids[index]
+                local[id_]['flags']=row['owner_flags'] if id_==42 else tree[id_]['runtime_flags'] if id_ in tree else blocks[id_]['runtime_flags'] if id_ in blocks else programs[id_]['runtime_flags'] if id_ in programs else 0
+            assert expected==row['calls'][batch_index],(supplied,batch_index,expected,row['calls'][batch_index])
         def path_matrix(collector,terminal):
             chain={0:identity4,1:affines[42],2:multiply(affines[42],affines[43])}.get(collector['context'])
             accumulated=identity4
@@ -198,7 +235,7 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
                 if node['model_id']==7 and node['id'] in blocks:
                     accumulated=multiply(block_matrices[node['id']],accumulated)
             return multiply(chain,accumulated) if chain is not None else None
-        for spec,observed in zip(row.get('block_sources',[])+row['path_owners'],row['path_queries'],strict=True):
+        for spec,observed in zip(tree_list+row.get('block_sources',[])+row['path_owners'],row['path_queries'],strict=True):
             collector=dict(context=None,collected=[])
             success=expand(local[spec['id']],0,collector)
             transform_code=(0 if collector['context'] is not None else 0x11006) if success else None
@@ -230,7 +267,7 @@ def verify(report, expected_cases=None, expected_scope='R1.18_original_type47_ow
             matrices=[affines[42],affines[43],multiply(affines[42],affines[43]),affines[43],identity4,affines[42]]
             assert all(equal_matrix(q['native_matrix'],flat(m)) for q,m in zip(queries,matrices,strict=True))
             totals['affine_queries']+=len(queries)
-        totals['cases']+=1;totals['root_callbacks']+=len(ids)
+        totals['cases']+=1;totals['root_callbacks']+=len(batches)
         totals['local_edges']+=sum(map(len,expected['local_dependents']))
         totals['other_model_edges']+=sum(len(ids) for group in expected['file_dependents'] for ids in group)
         totals['pending_entities']+=len(expected['pending_entities'])

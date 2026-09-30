@@ -158,14 +158,15 @@ struct NativeDependencyLoadResult {
 // service monitored set. Local lookup precedes the supplied system registry;
 // file fallback context is required only if both miss. Resolves
 // direct IDs in formats 0/1, selector references in 2/3/4/5/7 and model IDs in 8.
-// Owner paths require audited standard type-33, type-13 or type-47 root profiles.
+// Owner paths require audited standard type-33, type-13, type-47 or type-62 roots.
 // Nonidentity type-13 roots supply prepared source records; paired selectors
 // also require each selected reference's actual affine source and context.
 // Format 6 and special format 0 traverse explicitly bound reference contexts;
 // missing/unbound reference objects require creation/loading and are unknown.
 // Type-47 roots share collector state across nested programs; their format-6
-// terminal is appended without expansion or an implied owner. Parent chains,
-// block transforms and a single type-47 terminal transform remain unknown.
+// terminal is appended without expansion or an implied owner. Standard type-47
+// terminals have no extra local transform; prepared type-62 block matrices are
+// composed in collector order. Entity parent chains remain unsupported here.
 // Disabled/zero-entry/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,
 // typed-handler work queues or geometry regeneration. Failure publishes no

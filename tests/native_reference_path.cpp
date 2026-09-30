@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "dependency_parents_oracle.hpp"
 
 unsigned native_reference_path_tests() {
     using namespace p3d;
@@ -292,5 +293,109 @@ unsigned native_reference_path_tests() {
     }
     check(Json::parse(q.dump()) == q,
           "collected identity and source ancestry survive JSON roundtrip");
+    // Original 199e40 creates these trees from linked input nodes. No runtime
+    // parent pointer is patched. Compare fresh graphs only: this API does not
+    // claim to model later runtime deletion flags or attached type-13 owners.
+    const auto oracle=Json::parse(dependency_parents_oracle);
+    check(oracle.at("cases").size()==576,"all original parent cases retained");
+    unsigned parent_queries=0, normalized_missing_flags=0;
+    for(const auto &row:oracle.at("cases")) {
+        if(row.at("tree_state")!="normal")continue;
+        Json parsed=Json::array();
+        std::map<std::uint64_t,std::size_t> source_indices;
+        std::map<std::uint64_t,Json> loaded_sources;
+        auto physical=[](const Json &source,const char *field) {
+            Bytes data(4,0);
+            const auto hex=source.at(field).get<std::string>();
+            for(std::size_t at=0;at<hex.size();at+=2)
+                data.push_back(std::uint8_t(std::stoul(hex.substr(at,2),nullptr,16)));
+            return data;
+        };
+        for(const auto &catalog_index:row.at("source_indices")) {
+            const auto &source=oracle.at("source_catalog").at(catalog_index.get<std::size_t>());
+            if(source.at("model_id")!=7)continue;
+            const auto records=parse_native(physical(source,"header_hex"));
+            check(records.size()==1,"each observed native source parses independently");
+            const auto id=source.at("id").get<std::uint64_t>();
+            source_indices[id]=parsed.size();
+            loaded_sources[id]=source;
+            parsed.push_back(records.at(0));
+        }
+        std::map<std::uint64_t,Json> parents_by_id;
+        const auto &tree=row.at("tree_entities");
+        for(const auto &entity:tree)parents_by_id[entity.at("id").get<std::uint64_t>()]=entity;
+        Json roots=Json::array();
+        for(const auto &batch:row.at("input_batches")) {
+            Json headers=Json::array();
+            const auto first=batch.at(0).get<std::size_t>();
+            for(const auto &batch_index:batch) {
+                const auto index=batch_index.get<std::size_t>();
+                const auto id=parsed.at(index).at("id").get<std::uint64_t>();
+                const auto found=parents_by_id.find(id);
+                Json parent;
+                unsigned descendants=0;
+                bool compound=false;
+                if(found!=parents_by_id.end()) {
+                    const auto &entity=found->second;
+                    compound=!entity.at("children").empty();
+                    if(!entity.at("parent").is_null())
+                        parent=source_indices.at(tree.at(entity.at("parent").get<std::size_t>())
+                                                    .at("id").get<std::uint64_t>());
+                    for(const auto &candidate:tree) {
+                        auto ancestor=candidate.at("parent");
+                        while(!ancestor.is_null()) {
+                            const auto &item=tree.at(ancestor.get<std::size_t>());
+                            if(item.at("id")==id) {++descendants;break;}
+                            ancestor=item.at("parent");
+                        }
+                    }
+                }
+                auto header=native_list_record_header(parsed.at(index),Json(),!parent.is_null(),
+                                                      compound,descendants,false);
+                check(header.at("status")=="resolved","observed input header prepares");
+                const auto loaded=physical(loaded_sources.at(id),"loaded_header_hex");
+                check(header.at("output_element_flags")==Reader(loaded,6).u16(),
+                      "file preparation flags match original created entity source");
+                if(compound)check(Reader(loaded,108).u32()==descendants,
+                                  "original compound source retains whole subtree count");
+                if(!parent.is_null() && !(parsed.at(index).at("element_flags").get<unsigned>()&0x80)) {
+                    ++normalized_missing_flags;
+                    check((header.at("output_element_flags").get<unsigned>()&0x80)!=0,
+                          "actual input parent normalizes missing serialized child flag");
+                }
+                header["native_record_index"]=index;
+                header["parent_record_index"]=parent;
+                headers.push_back(std::move(header));
+            }
+            roots.push_back({{"native_record_index",first},{"block_number",first+1},{"headers",headers}});
+        }
+        Json inputs=Json::array({{{"kind","P3D-SMC"},{"container",StreamPath{"models","A","C"}},
+            {"list_preparation",{{"status","resolved"},{"system_bootstrap_required",false},{"roots",roots}}}}});
+        const auto assigned=native_model_id_assignments(inputs,parsed,aliases,storage,0);
+        check(assigned.at("status")=="resolved","original input batches assign completely");
+        const Json empty_system={{"status","resolved"},{"registry",Json::array()},{"roots",Json::array()}};
+        for(const auto &query:row.at("path_queries")) {
+            bool attached=false;
+            for(const auto &step:row.at("path_program").at("path"))
+                attached|=step==42 || step==43;
+            if(query.at("id")==44 && attached)continue;
+            const auto result=native_reference_path_collection(assigned,empty_system,parsed,
+                                                              query.at("id").get<std::uint64_t>());
+            require(result.at("status")=="resolved","original fresh parent collection: "+result.dump());
+            check(query.at("native_code")==0,"original fresh collection succeeds");
+            Json expected=Json::array();
+            for(const auto &item:query.at("collected")) {
+                check(item.at("model_id")==7,"fresh local observation belongs to owner model");
+                expected.push_back(item.at("id"));
+            }
+            check(collected_ids(result)==expected,"original ancestor and target order including repetitions");
+            check(result.at("terminal_index")==query.at("terminal_index"),"original append terminal boundary");
+            check(result.at("owner_scope")== (query.at("owner_context")=="null"?Json():Json("owner")),
+                  "terminal ancestry does not change collector owner");
+            ++parent_queries;
+        }
+    }
+    check(parent_queries==1264 && normalized_missing_flags==48,
+          "all local fresh tree queries and missing child flags are exercised");
     return checks;
 }

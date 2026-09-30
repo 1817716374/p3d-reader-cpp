@@ -87,7 +87,7 @@ def probe(root, inputs):
                     assert fn(0x199330, C.c_int, V)(target) == 1
                     return target
 
-                def insert(owner, id_, type_=33, links=(), path_profile=None):
+                def source_node(id_, type_=33, links=(), path_profile=None, source_flags=None, descendants=None):
                     size = 368 if type_ == 13 else 34 if type_ == 47 else 256 if type_ == 62 else 128
                     raw = bytearray(size)
                     struct.pack_into('<HHIIIQ', raw, 0, type_, 4 if type_ == 47 else 0x20,
@@ -107,6 +107,8 @@ def probe(root, inputs):
                         struct.pack_into('<I', raw, 12, profile.get('subtype', 20))
                         struct.pack_into('<H', raw, 32, profile.get('signature', 0x56e6))
                     else: struct.pack_into('<6q', raw, 56, -1, -2, -3, 1, 2, 3)
+                    if source_flags is not None:struct.pack_into('<H',raw,2,source_flags)
+                    if descendants is not None:struct.pack_into('<I',raw,104,descendants)
                     for link in links:
                         data = bytes.fromhex(link)
                         raw += struct.pack('<HH', 0x1000 + (len(data) + 4) // 2 - 1, 0x56d0) + data
@@ -118,16 +120,24 @@ def probe(root, inputs):
                         # Same source preparation called by physical reader
                         # 107830 before its node enters the model input path.
                         fn(0x1076b0, None, V)(node + 0x48)
-                        prepared = C.string_at(node + 0x48, len(raw)).hex()
-                    assert fn(0x199e40, C.c_int, V, V, V, C.c_double, B)(owner, node, owner + 0x140, 0., False) == 0
+                    return node,raw,C.string_at(node + 0x48, len(raw)).hex()
+
+                def observe_source(owner, id_, type_, node, raw, prepared):
                     entity = ptr(node + 0x28)
-                    assert entity and ptr(entity + 0x20) is None
+                    assert entity
                     assert C.c_uint64.from_address(ptr(entity + 0x40) + 16).value == id_
                     loaded = ptr(entity + 0x40)
                     assert u32(loaded + 4) * 2 == len(raw)
                     sources.append(dict(model_id=u32(owner + 0x1b8), id=id_, type=type_, header_hex=raw.hex(),
                                         loaded_header_hex=C.string_at(loaded, len(raw)).hex()))
                     if type_ == 62:sources[-1]['prepared_header_hex'] = prepared
+                    return entity
+
+                def insert(owner, id_, type_=33, links=(), path_profile=None):
+                    node,raw,prepared=source_node(id_,type_,links,path_profile)
+                    assert fn(0x199e40, C.c_int, V, V, V, C.c_double, B)(owner, node, owner + 0x140, 0., False) == 0
+                    entity=observe_source(owner,id_,type_,node,raw,prepared)
+                    assert ptr(entity + 0x20) is None
                     return entity
 
                 def reference(owner, source, target):
@@ -187,19 +197,70 @@ def probe(root, inputs):
                 C.c_uint32.from_address(source + 0x10).value = case['owner_flags']
                 calls.append(observe())
                 local.append(insert(model, 41)); calls.append(observe())
+                batches=[[0],[1],[2]]
+                tree_nodes=[];tree_observations=[]
+                if 'tree_sources' in case:
+                    specs=case['tree_sources'];children=[[] for _ in specs]
+                    for i,spec in enumerate(specs):
+                        parent=spec['parent']
+                        assert parent is None or 0<=parent<i
+                        if parent is not None:children[parent].append(i)
+                    subtrees=[[i] for i in range(len(specs))]
+                    for i in reversed(range(len(specs))):
+                        for child in children[i]:subtrees[i].extend(subtrees[child])
+                    assert [j for i,s in enumerate(specs) if s['parent'] is None for j in subtrees[i]]==list(range(len(specs)))
+                    nodes=[]
+                    for i,spec in enumerate(specs):
+                        assert spec['type'] in (14,33,62)
+                        assert not children[i] or spec['type']==14
+                        flags=spec.get('source_flags',0x20|(0x80 if spec['parent'] is not None else 0)|(0x40 if children[i] else 0))
+                        nodes.append(source_node(spec['id'],spec['type'],spec.get('links',[]),spec,flags,
+                                                 len(subtrees[i])-1 if spec['type']==14 else None))
+                    # Link only input nodes, before original entity creation.
+                    # Runtime parent/child pointers are never patched.
+                    for i,spec in enumerate(specs):
+                        node=nodes[i][0]
+                        if spec['parent'] is not None:V.from_address(node+0x10).value=nodes[spec['parent']][0]
+                        if children[i]:
+                            V.from_address(node+0x18).value=nodes[children[i][0]][0]
+                            C.c_uint32.from_address(node+0x30).value=1
+                        for first,second in zip(children[i],children[i][1:]):
+                            V.from_address(nodes[first][0]).value=nodes[second][0]
+                    tree_nodes=[None]*len(specs)
+                    for i,spec in enumerate(specs):
+                        if spec['parent'] is not None:continue
+                        assert fn(0x199e40,C.c_int,V,V,V,C.c_double,B)(model,nodes[i][0],model+0x140,0.,False)==0
+                        batch=[]
+                        for j in subtrees[i]:
+                            item=specs[j]
+                            tree_nodes[j]=observe_source(model,item['id'],item['type'],*nodes[j])
+                            batch.append(len(local));local.append(tree_nodes[j])
+                            C.c_uint32.from_address(tree_nodes[j]+0x10).value=item.get('runtime_flags',0)
+                        batches.append(batch);calls.append(observe())
+                    for i,(spec,entity) in enumerate(zip(specs,tree_nodes,strict=True)):
+                        parent=ptr(entity+0x20)
+                        assert parent==(None if spec['parent'] is None else tree_nodes[spec['parent']])
+                        listing=ptr(entity+0x38)
+                        actual=[] if not listing else [tree_nodes.index(ptr(at)) for at in range(ptr(listing),ptr(listing+8),8)]
+                        assert actual==children[i]
+                        tree_observations.append(dict(id=spec['id'],parent=spec['parent'],children=actual,
+                                                      runtime_flags=u32(entity+0x10)))
                 block_nodes = []
                 for block_source in case.get('block_sources', []):
                     local.append(insert(model, block_source['id'], 62, (), block_source))
                     block_nodes.append(local[-1])
                     C.c_uint32.from_address(local[-1] + 0x10).value = block_source.get('runtime_flags', 0)
+                    batches.append([len(local)-1])
                     calls.append(observe())
                 path_nodes = []
                 for path_source in case.get('path_owners', []):
                     local.append(insert(model, path_source['id'], 47, path_source['links'], path_source))
                     path_nodes.append(local[-1])
                     C.c_uint32.from_address(local[-1] + 0x10).value = path_source.get('runtime_flags', 0)
+                    batches.append([len(local)-1])
                     calls.append(observe())
                 local.append(insert(model, 78, links=[case['payload_hex']])); calls.append(observe())
+                batches.append([len(local)-1])
                 transitions = []
                 for context, id_, expected in ((model, 42, root_ref), (root_ref, 43, nested_ref),
                                                (a, 43, nested_model_ref), (root_ref, 41, root_ref)):
@@ -222,8 +283,8 @@ def probe(root, inputs):
                                        for id_, entities in zip((9,10), file_entities) for entity in entities})
                     contexts = {None: 'null', model: 'current', root_ref: 'reference_42',
                                 nested_ref: 'nested_reference_43', nested_model_ref: 'model9_reference_43'}
-                    query_sources = case.get('block_sources', []) + case['path_owners']
-                    for node, source_spec in zip(block_nodes + path_nodes, query_sources, strict=True):
+                    query_sources = case.get('tree_sources', []) + case.get('block_sources', []) + case['path_owners']
+                    for node, source_spec in zip(tree_nodes + block_nodes + path_nodes, query_sources, strict=True):
                         collector = C.create_string_buffer(0x38); keep.append(collector)
                         address = C.addressof(collector)
                         V.from_address(address).value = base + 0x52a1c0
@@ -238,7 +299,7 @@ def probe(root, inputs):
                             owner_context=contexts[ptr(address+0x28)], collected=collected,
                             terminal_index=C.c_int32.from_address(address+0x30).value,
                             transform_code=transform_code, native_matrix=list(out) if transform_code == 0 else None))
-                        if 'block_sources' in case:
+                        if 'block_sources' in case or 'tree_sources' in case:
                             owner = ptr(address+0x28)
                             path_queries[-1]['owner_kind'] = (C.CFUNCTYPE(C.c_int,V)(ptr(ptr(owner)+0x48))(owner)
                                                                     if owner else None)
@@ -273,6 +334,7 @@ def probe(root, inputs):
                                  target_model_ids=[9, 7, 10])
                 if affine_queries: row['affine_queries'] = affine_queries
                 if path_queries: row['path_queries'] = path_queries
+                if 'tree_sources' in case:row.update(input_batches=batches,tree_entities=tree_observations)
                 rows.append(row)
         return dict(scope='R1.18_original_bound_type13_reference_owner_callbacks', dll_sha256=HASHES, cases=rows)
     finally:
