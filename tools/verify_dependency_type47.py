@@ -16,7 +16,8 @@ def verify(report):
     assert report['scope']=='R1.18_original_type47_owner_expansion_and_callbacks'
     assert report['dll_sha256']==HASHES
     totals=dict(cases=0,root_callbacks=0,path_queries=0,successful_expansions=0,
-                transform_failures=0,local_edges=0,other_model_edges=0,pending_entities=0,affine_queries=0)
+                transform_failures=0,local_edges=0,other_model_edges=0,pending_entities=0,affine_queries=0,
+                single_type47_transforms=0,single_type47_reference_transforms=0)
     maximum=(1<<64)-1
     identity=[1.,0.,0.,0.,0.,1.,0.,0.,0.,0.,1.,0.]
     names={None:'null',0:'current',1:'reference_42',2:'nested_reference_43'}
@@ -181,6 +182,11 @@ def verify(report):
             assert equal_matrix(observed['native_matrix'],flat(matrix)) if transform_code==0 else observed['native_matrix'] is None
             totals['path_queries']+=1;totals['successful_expansions']+=success
             totals['transform_failures']+=transform_code==0x11006
+            if transform_code==0 and len(collector['collected'])==1:
+                terminal=collector['collected'][0]
+                if terminal['model_id']==7 and terminal['id'] in programs:
+                    totals['single_type47_transforms']+=1
+                    totals['single_type47_reference_transforms']+=collector['context'] in (1,2)
         if 'source_transforms' in row:
             queries=row['affine_queries']
             assert [(q['reference_index'],q['stop_reference_index']) for q in queries]==[(0,None),(1,None),(2,None),(2,0),(2,2),(0,2)]
@@ -191,7 +197,7 @@ def verify(report):
         totals['local_edges']+=sum(map(len,expected['local_dependents']))
         totals['other_model_edges']+=sum(len(ids) for group in expected['file_dependents'] for ids in group)
         totals['pending_entities']+=len(expected['pending_entities'])
-    assert totals['cases']==1566
+    assert totals['cases']==2030
     return totals
 
 
@@ -200,7 +206,7 @@ def main():
     parser.add_argument('report',type=Path);parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args();report=json.loads(args.report.read_text(encoding='utf8'))
     totals=verify(report);caught=[]
-    for kind in ('owner','terminal','transform','edge','source','matrix'):
+    for kind in ('owner','terminal','transform','edge','source','matrix','terminal47_matrix'):
         changed=copy.deepcopy(report)
         row=changed['cases'][0]
         if kind=='owner':row['path_queries'][0]['owner_context']='reference_42'
@@ -208,7 +214,8 @@ def main():
         elif kind=='transform':row['path_queries'][0]['transform_code']=1
         elif kind=='edge':next(ids for r in changed['cases'] for g in r['calls'][-1]['file_dependents'] for ids in g if ids).pop()
         elif kind=='source':next(s for s in row['source_headers'] if s['type']==47)['header_hex']=''
-        else:next(q for r in changed['cases'] if 'source_transforms' in r for q in r['path_queries'] if q['owner_context']=='nested_reference_43' and q['transform_code']==0)['native_matrix'][3]+=1
+        elif kind=='matrix':next(q for r in changed['cases'] if 'source_transforms' in r for q in r['path_queries'] if q['owner_context']=='nested_reference_43' and q['transform_code']==0)['native_matrix'][3]+=1
+        else:next(r for r in changed['cases'] if 'source_transforms' in r and r['path_program']=='single_type47_nested_reference')['path_queries'][0]['native_matrix'][3]+=1
         try:verify(changed)
         except AssertionError:caught.append(kind)
         else:raise AssertionError('Negative control not detected: '+kind)

@@ -261,7 +261,7 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
             require(reference,"dependency_owner_path_requires_context");
             return OwnerProfile{13};
         };
-        auto owner_path_context=[&](std::uint64_t id,const OwnerContext &initial,bool transform=false)->std::optional<OwnerContext> {
+        auto owner_path_context=[&](std::uint64_t id,const OwnerContext &initial)->std::optional<OwnerContext> {
             auto find_owner=[&](std::uint64_t target_id,const std::optional<OwnerContext> &context,bool outer)->std::optional<Target> {
                 if(!context)return {};
                 const auto owner=model_lookup(target_id,context->scope,context->model);
@@ -281,7 +281,6 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
             // state across child expansions; do not substitute the caller for
             // a format-6 terminal or discard a previous context on empty paths.
             std::optional<OwnerContext> collected_owner;
-            std::vector<unsigned> collected_types;
             using ActiveKey=std::tuple<unsigned,std::size_t,std::size_t,unsigned,std::size_t>;
             std::set<ActiveKey> active;
             struct Frame {
@@ -299,7 +298,6 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 if(!frame.entered) {
                     const auto profile=owner_profile(frame.target);
                     if(profile.type==33) {
-                        collected_types.push_back(33);
                         if(frame.caller)collected_owner=frame.caller;
                         stack.pop_back();continue;
                     }
@@ -342,17 +340,15 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 if(frame.program.format==6) {
                     const auto terminal=find_owner(frame.program.ids.front(),frame.caller,false);
                     if(!terminal)return {};
-                    // Only append; even a type-13/47 terminal is not expanded.
-                    collected_types.push_back(owner_profile(*terminal).type);
+                    // Audit the appended terminal; type-13/47 is not expanded.
+                    owner_profile(*terminal);
                 }
                 active.erase(frame.key);stack.pop_back();
             }
-            if(transform && collected_owner && collected_types.size()==1)
-                require(collected_types.front()==33 || collected_types.front()==13,
-                        "owner_terminal_transform_requires_context");
             // All audited collected roots are non-block, parent-free records.
-            // A single standard type-33/13 has no custom local transform;
-            // remaining transformation is the selected reference parent chain.
+            // A single standard type-33/13/47 has no custom local transform;
+            // a type-47 terminal is not expanded again by its transform query.
+            // The remaining transform is the selected reference parent chain.
             return collected_owner;
         };
         auto owner_transition=[&](std::uint64_t id,const OwnerContext &context)->std::optional<OwnerContext> {
@@ -429,7 +425,7 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                             // 1f14a0 returns a null target but preserves the ID;
                             // a nonzero missing ID still queues this dependent.
                         } else if(entry.contains("owner_reference_id") && entry.at("owner_reference_id")!=0) {
-                            if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{},true)) {
+                            if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{})) {
                                 // 1f14a0 also evaluates the selected reference
                                 // and its ancestors before looking up the ID.
                                 auto ancestor=context->reference;

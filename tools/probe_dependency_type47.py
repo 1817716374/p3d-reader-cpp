@@ -34,6 +34,24 @@ def identity_cases():
                  ('no_link', [dict(id=44,links=[])]),
                  ('wrong_format', [dict(id=44,links=[struct.pack('<4H2Q',10000,4,(4<<10)|1,1,41,42).hex()])]),
                  ('wrong_count', [dict(id=44,links=[payload(6,[41,42],2,True)])])]
+    # Establish an owner with an empty path, then append exactly one type-47
+    # terminal without dispatching its path. Later references may change the
+    # shared owner while retaining that terminal for the transform query.
+    for label, path in (('single_type47_terminal',[46,45]),
+                        ('single_type47_reference',[42,46,45]),
+                        ('single_type47_nested_reference',[43,42,46,45]),
+                        ('multiple_type47_terminals',[46,46,45])):
+        programs.append((label,[dict(id=44,links=[payload(0,path,1,True)]),
+                               dict(id=45,links=[payload(0,[],1,True)]),
+                               dict(id=46,links=[payload(6,[44],1,True)])]))
+    for label, terminal in (
+            ('no_link',dict(links=[])),
+            ('wrong_signature',dict(links=[payload(0,[42],1,True)],signature=0x56e7)),
+            ('wrong_subtype',dict(links=[payload(0,[42],1,True)],subtype=19)),
+            ('deleted',dict(links=[],runtime_flags=8))):
+        programs.append(('terminal47_'+label,[dict(id=44,links=[payload(0,[46,45],1,True)]),
+                         dict(id=45,links=[payload(0,[],1,True)]),
+                         dict(id=46,links=[payload(6,[47],1,True)]),dict(id=47,**terminal)]))
     states = [(0,0,0,False),(8,0,0,False),(0x20000,0,0,False),(0,8,0,False),
               (0,8,0,True),(0,0x20000,0,False),(0,0,8,False),(0,0,8,True),(0,0,0x20000,False)]
     for label, owners in programs:

@@ -26,6 +26,8 @@ struct NativeDependencyLoadEntity {
     // Complete prepared type-47 root: four-byte physical prefix, minimal
     // 34-byte native base (flags 4), and original ordered linkages. No parent
     // or custom transform handler. Mutually exclusive with other profiles.
+    // Also audited as a single terminal: no extra local transform and no
+    // repeated path dispatch, even when its own path would fail expansion.
     std::optional<Bytes> standard_type47_root_source;
 };
 struct NativeDependencySystemTarget {

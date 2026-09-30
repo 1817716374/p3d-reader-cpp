@@ -252,7 +252,7 @@ unsigned dependency_registration_tests() {
     check(affine_oracle.at("dependency_cases").size()==288,"all nonidentity original graph callbacks are tested");
     for(const auto &row:affine_oracle.at("dependency_cases"))bound_cases.push_back(row);
     const auto path_oracle=Json::parse(dependency_type47_oracle);
-    check(path_oracle.at("cases").size()==1566,"all original type47 callback cases are tested");
+    check(path_oracle.at("cases").size()==2030,"all original type47 callback cases are tested");
     for(auto row:path_oracle.at("cases")) {
         row["source_headers"]=Json::array();
         for(const auto &index:row.at("source_indices"))row["source_headers"].push_back(path_oracle.at("source_catalog").at(index.get<std::size_t>()));
@@ -383,7 +383,12 @@ unsigned dependency_registration_tests() {
     same_id.assigned_id=45;same_id.standard_type47_root_source=make_path_record(45,empty_path);
     input.file_context->models[0].entities.push_back(same_id);
     input.entities[3].standard_type47_root_source=make_path_record(44,unhex("1027040001180100020000000000000000000000000000002d000000000000002a00000000000000"));
-    rejected(input,"owner_terminal_transform_requires_context");
+    type47_result=project_native_dependency_load(input);
+    check(type47_result.resolved && type47_result.file_dependents[0][0]==std::vector<std::size_t>{5},
+          "single standard type47 terminal has no local transform and retains the reference owner");
+    input.file_context->models[0].entities.back().standard_type47_root_source.reset();
+    rejected(input,"dependency_owner_path_requires_context");
+    input.file_context->models[0].entities.back().standard_type47_root_source=same_id.standard_type47_root_source;
     input.entities[5].dependency_payloads={unhex("10270400001801000200000000000000000000000000000029000000000000002c00000000000000")};
     check(project_native_dependency_load(input).resolved,"path-only transition does not invent a terminal type47 transform requirement");
     input=affine_sample;
