@@ -30,7 +30,7 @@ def cases():
                                      extended_flags=flags,spatial=spatial))
     return rows
 
-def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False, dependency_retry=False, dependency_cycle=False, constructed=False):
+def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependencies=False, dependency_retry=False, dependency_cycle=False, constructed=False, dependency_flush=False):
     if os.name!='nt' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('Requires Windows x64')
     for name,h in HASHES.items():
         if hashlib.sha256((root/name).read_bytes()).hexdigest()!=h:raise ValueError(name)
@@ -39,6 +39,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
         assert not dependency_retry or dependencies
         assert not dependency_cycle or dependency_retry
         assert not constructed or dependency_cycle
+        assert not dependency_flush or constructed
         dll=C.WinDLL(str(root/'ROOT/P3DKJ.dll'));base=dll._handle
         if dependencies:
             assert file_entry
@@ -169,7 +170,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                     if parent>=0:C.c_void_p.from_address(nodes[i]+0x10).value=nodes[parent]
             roots=[i for i,parent in enumerate(case['parents']) if parent<0]
             calls=[]
-            with input_context(base,dependency_retry,dependency_cycle) if file_entry else nullcontext() as snapshot:
+            with input_context(base,dependency_retry,dependency_cycle,dependency_flush) if file_entry else nullcontext() as snapshot:
                 if constructed:
                     model,file,listing,model_metadata=constructed_model(base,case['initial_counter'],case['spatial'])
                     native_before=model_metadata()
@@ -237,6 +238,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
                     cycle_result=snapshot.retry(model)
                     after_retry=dict(context=snapshot(pointers),dependents=dependent_indices(pointers))
                     if constructed:native_after=model_metadata()
+                    if dependency_flush:flush_state=snapshot.flush_state()
             entities=[C.c_void_p.from_address(n+0x28).value for n in nodes];observed=[]
             observed_dependencies=dependent_indices(entities) if dependencies else None
             for i,entity in enumerate(entities):
@@ -271,6 +273,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
             if dependency_retry:rows[-1].update(before_retry=before_retry,after_retry=after_retry)
             if dependency_cycle:rows[-1]['cycle_return']=cycle_result
             if constructed:rows[-1].update(native_before=native_before,native_after=native_after)
+            if dependency_flush:rows[-1]['flush_state']=flush_state
         scope=('R1.18_file_service_id_preparation_and_registration_without_file_callbacks' if prepare_ids
                else 'R1.18_prepared_tree_registration_and_cache_update_without_file_callbacks')
         if file_entry:scope='R1.18_file_entry_header_preparation_registration_and_original_callbacks_bounded_context'
@@ -278,6 +281,7 @@ def probe(root, input_cases=None, prepare_ids=False, file_entry=False, dependenc
         if dependency_retry:scope='R1.18_direct_ID_pending_retry_core_after_model_notice_not_full_service_flush'
         if dependency_cycle:scope='R1.18_complete_dependency_iteration_with_no_remaining_pending_not_outer_host_flush'
         if constructed:scope='R1.18_complete_dependency_iteration_in_original_constructed_caller_held_model_not_outer_host_flush'
+        if dependency_flush:scope='R1.18_complete_dependency_flush_with_original_config_and_default_notifications_caller_held_model'
         return dict(scope=scope,dll_sha256=HASHES,cases=rows)
     finally:
         for d in dirs:d.close()

@@ -1,17 +1,20 @@
 """Bounded TLS context for original R1.18 file-input callback experiments.
 
-Call only after the caller verifies the original DLL hashes. The host/config
-and service shell contain inspected fields, not a full application host.
-Original constructors create all internal registries. No native destructor
-is applied to a Python buffer; allocations live until process exit.
+Call only after the caller verifies the original DLL hashes. Host and service
+shells contain inspected fields, not a full application host. The outer-flush
+profile uses the complete original config constructor/initializer and default
+notification factory; other profiles use bounded config fields. Original
+constructors create internal registries. No native destructor is applied to a
+Python buffer; native allocations and constructed config locks live until exit.
 """
 import ctypes as C
 from contextlib import contextmanager
 
 
 @contextmanager
-def input_context(base, dependency_retry=False, dependency_cycle=False):
+def input_context(base, dependency_retry=False, dependency_cycle=False, dependency_flush=False):
     assert not dependency_cycle or dependency_retry
+    assert not dependency_flush or dependency_cycle
     host=C.create_string_buffer(0x110)
     config=C.create_string_buffer(0x2a0 if dependency_retry else 0x150)
     service=C.create_string_buffer(0x68)
@@ -23,7 +26,19 @@ def input_context(base, dependency_retry=False, dependency_cycle=False):
     previous=get(key)
     lock=None
     try:
-        if dependency_retry:
+        if dependency_flush:
+            address=C.CFUNCTYPE(C.c_void_p,C.c_size_t)(base+0x4ef808)(0x2a0)
+            assert address
+            C.memset(address,0,0x2a0)
+            assert C.CFUNCTYPE(C.c_void_p,C.c_void_p)(base+0x11bab0)(address)==address
+            config=(C.c_char*0x2a0).from_address(address)
+            C.CFUNCTYPE(None,C.c_void_p)(base+0x11f710)(config)
+            assert C.c_void_p.from_buffer(config).value==base+0x52edf8
+            assert C.c_void_p.from_buffer(config,0x250).value==base+0x62ad80
+            notice_service=C.CFUNCTYPE(C.c_void_p)(base+0x1f2480)()
+            assert C.c_void_p.from_address(notice_service).value==base+0x535cf0
+            C.c_void_p.from_buffer(host,0xc0).value=notice_service
+        elif dependency_retry:
             lock=C.addressof(config)+0x278
             C.CFUNCTYPE(None,C.c_void_p)(C.c_void_p.from_address(base+0x51e170).value)(lock)
         C.c_void_p.from_buffer(host,0xc8).value=C.addressof(config)
@@ -57,6 +72,10 @@ def input_context(base, dependency_retry=False, dependency_cycle=False):
             visit(C.c_void_p.from_address(sentinel+8).value)
             return values
         def snapshot(entities=None):
+            nonlocal registry
+            if dependency_flush:
+                # Successful outer flush destroys/recreates this registry.
+                registry=C.c_void_p.from_buffer(service,0x10).value
             transaction=C.CFUNCTYPE(C.c_void_p)(base+0x199d90)()
             result=dict(callback_depth=C.c_uint32.from_buffer(service,0x24).value,
                         transaction_count=C.c_uint32.from_address(transaction+0xc).value,
@@ -79,17 +98,32 @@ def input_context(base, dependency_retry=False, dependency_cycle=False):
                     result['scheduled_pairs']=sorted(pairs)
                     result['registry_work_count']=C.c_uint32.from_address(registry).value
             return result
+        if dependency_flush:
+            def flush_state():
+                begin=C.c_void_p.from_buffer(config,0x1e0).value or 0
+                end=C.c_void_p.from_buffer(config,0x1e8).value or 0
+                return dict(config_vtable=hex(C.c_void_p.from_buffer(config).value-base),
+                    notification_vtable=hex(C.c_void_p.from_address(notice_service).value-base),
+                    transaction_vtable=hex(C.c_void_p.from_address(base+0x62ad80).value-base),
+                    transaction_restored=C.c_void_p.from_buffer(config,0x250).value==base+0x62ad80,
+                    transaction_stack_size=(end-begin)//4,
+                    running=C.c_uint8.from_buffer(service,0x60).value,
+                    callback_depth=C.c_uint32.from_buffer(service,0x24).value)
+            snapshot.flush_state=flush_state
         if dependency_retry:
             def retry(model):
                 assert C.c_uint64.from_buffer(service,0x48).value==0
-                assert C.c_void_p.from_buffer(config,0x250).value is None
+                initial_transaction=C.c_void_p.from_buffer(config,0x250).value
+                assert initial_transaction==(base+0x62ad80 if dependency_flush else None)
                 C.CFUNCTYPE(None,C.c_void_p)(base+0x1efe40)(model)
-                if dependency_cycle:
+                if dependency_flush:
+                    result=C.CFUNCTYPE(C.c_int,C.c_void_p)(base+0x1f1a90)(service)
+                elif dependency_cycle:
                     result=C.CFUNCTYPE(C.c_int,C.c_void_p)(base+0x1eb240)(registry)
                 else:
                     C.CFUNCTYPE(None,C.c_void_p)(base+0x1e9640)(registry)
                     result=None
-                assert C.c_void_p.from_buffer(config,0x250).value is None
+                assert C.c_void_p.from_buffer(config,0x250).value==initial_transaction
                 return result
             snapshot.retry=retry
         yield snapshot

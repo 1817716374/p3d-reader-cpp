@@ -4,6 +4,7 @@
 #include "dependency_retry_oracle.hpp"
 #include "dependency_cycle_oracle.hpp"
 #include "dependency_held_cycle_oracle.hpp"
+#include "dependency_flush_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -26,6 +27,9 @@ unsigned dependency_registration_tests() {
     const auto held_oracle=Json::parse(dependency_held_cycle_oracle);
     check(held_oracle.at("cases").size()==804,"all original constructed-model iterations are tested");
     for(const auto &row:held_oracle.at("cases"))cases.push_back(row);
+    const auto flush_oracle=Json::parse(dependency_flush_oracle);
+    check(flush_oracle.at("cases").size()==804,"all original outer flush observations are tested");
+    for(const auto &row:flush_oracle.at("cases"))cases.push_back(row);
     std::size_t case_index=0;
     for(const auto &row:cases) {
         const bool retry=row.contains("before_retry");
@@ -107,6 +111,14 @@ unsigned dependency_registration_tests() {
                 check(after.at("context").at("monitored_entities")==completed.monitored_entities,
                       "unresolved references remain monitored after pending work is consumed");
                 check(completed.scheduled_pairs.empty(),"complete iteration consumes scheduled pairs");
+                if(row.contains("flush_state")) {
+                    const auto &state=row.at("flush_state");
+                    check(state.at("config_vtable")=="0x52edf8" && state.at("notification_vtable")=="0x535cf0" &&
+                          state.at("transaction_vtable")=="0x52ec90","outer flush uses original config, host notification and default transaction objects");
+                    check(state.at("transaction_restored")==true && state.at("transaction_stack_size")==0 &&
+                          state.at("running")==0 && state.at("callback_depth")==0,
+                          "outer flush restores the transaction and balances configuration stack and execution state");
+                }
                 if(row.contains("native_after")) {
                     const auto &meta=row.at("native_after");
                     check(meta.at("file_vtable")=="0x52eef8" && meta.at("model_vtable")=="0x5333c8" &&
