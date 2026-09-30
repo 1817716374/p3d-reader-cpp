@@ -71,6 +71,14 @@ def main():
             rows.append(compact)
         fixture=dict(scope=result['scope'],dll_sha256=result['dll_sha256'],
                      native_case_count=len(result['cases']),source_catalog=catalog,cases=rows)
+        fixture['dependency_cases']=[]
+        for original in result['cases']:
+            row={k:original[k] for k in ('format','disabled','payload_hex','target_flags','owner_flags',
+                'owner_lookup_includes_deleted','block_profile','block_sources','path_program','path_owners','calls')}
+            if 'transform_case' in original:row['transform_case']=original['transform_case']
+            row['source_indices']=[indices[json.dumps(source,sort_keys=True,separators=(',',':'))]
+                                   for source in original['source_headers']]
+            fixture['dependency_cases'].append(row)
         args.fixture.write_text('#pragma once\n// Pure synthetic original type-62 collector observations.\n'
             'inline constexpr const char* dependency_blocks_oracle = R"oracle('
             +json.dumps(fixture,separators=(',',':'))+')oracle";\n',encoding='utf8')

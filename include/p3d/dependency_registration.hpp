@@ -29,6 +29,11 @@ struct NativeDependencyLoadEntity {
     // Also audited as a single terminal: no extra local transform and no
     // repeated path dispatch, even when its own path would fail expansion.
     std::optional<Bytes> standard_type47_root_source;
+    // Complete prepared type-62 root, including the physical prefix: native
+    // base 256 bytes, flags 0x20, ID and finite matrix/translation only. No
+    // parent, attributes or custom handler; mutually exclusive with profiles
+    // above. Matrix values are already prepared, so they are not repaired again.
+    std::optional<Bytes> standard_type62_root_source;
 };
 struct NativeDependencySystemTarget {
     std::uint64_t assigned_id = 0;
@@ -37,6 +42,7 @@ struct NativeDependencySystemTarget {
     bool standard_type13_identity_root_owner = false;
     std::optional<Bytes> standard_type13_root_source;
     std::optional<Bytes> standard_type47_root_source;
+    std::optional<Bytes> standard_type62_root_source;
 };
 struct NativeDependencyOwnerContext {
     // Neither field: current input model. Exactly one: another model in the

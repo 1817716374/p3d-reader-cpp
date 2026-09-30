@@ -12,6 +12,7 @@
 #include "dependency_reference_owners_oracle.hpp"
 #include "dependency_reference_affines_oracle.hpp"
 #include "dependency_type47_oracle.hpp"
+#include "dependency_blocks_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -258,7 +259,14 @@ unsigned dependency_registration_tests() {
         for(const auto &index:row.at("source_indices"))row["source_headers"].push_back(path_oracle.at("source_catalog").at(index.get<std::size_t>()));
         bound_cases.push_back(std::move(row));
     }
-    NativeDependencyLoadInput bound_sample,affine_sample,path_sample;
+    const auto block_oracle=Json::parse(dependency_blocks_oracle);
+    check(block_oracle.at("dependency_cases").size()==720,"all original type62 graph callbacks are tested");
+    for(auto row:block_oracle.at("dependency_cases")) {
+        row["source_headers"]=Json::array();
+        for(const auto &index:row.at("source_indices"))row["source_headers"].push_back(block_oracle.at("source_catalog").at(index.get<std::size_t>()));
+        bound_cases.push_back(std::move(row));
+    }
+    NativeDependencyLoadInput bound_sample,affine_sample,path_sample,block_sample,block_reference_sample;
     for(const auto &row:bound_cases) {
         const bool affine=row.contains("transform_case");
         std::map<std::uint64_t,Bytes> affine_sources;
@@ -283,6 +291,8 @@ unsigned dependency_registration_tests() {
                 (id==41?row.at("target_flags").get<unsigned>():0);
             if(type==47)for(const auto &path:row.at("path_owners"))
                 if(path.at("id")==id)flags=path.at("runtime_flags").get<unsigned>();
+            if(type==62)for(const auto &block:row.at("block_sources"))
+                if(block.at("id")==id)flags=block.at("runtime_flags").get<unsigned>();
             if(model!=7) {
                 NativeDependencySystemTarget entity{id,flags,type==33,type==13 && !affine};
                 if(type==13 && affine)entity.standard_type13_root_source=affine_sources.at(id);
@@ -291,6 +301,10 @@ unsigned dependency_registration_tests() {
             else {
                 NativeDependencyLoadEntity entity{id,flags,{},type==33,type==13 && !affine};
                 if(type==13 && affine)entity.standard_type13_root_source=affine_sources.at(id);
+                if(type==62) {
+                    auto bytes=unhex(source.at("prepared_header_hex"));bytes.insert(bytes.begin(),4,0);
+                    entity.standard_type62_root_source=std::move(bytes);
+                }
                 if(type==47) {
                     auto bytes=unhex(source.at("header_hex"));bytes.insert(bytes.begin(),4,0);
                     entity.standard_type47_root_source=std::move(bytes);
@@ -338,6 +352,11 @@ unsigned dependency_registration_tests() {
         if(bound_sample.entities.empty())bound_sample=input;
         if(affine && row.at("format")==4 && !row.at("disabled").get<bool>() && affine_sample.entities.empty())affine_sample=input;
         if(row.contains("path_program") && row.at("path_program")=="nested_reference" && row.at("format")==4 && path_sample.entities.empty())path_sample=input;
+        if(row.contains("block_profile") && row.at("block_profile")=="translation" && input.entities[3].runtime_flags_10==0) {
+            if(!affine && row.at("path_program")==Json{{"format",0},{"path",Json::array({51,50})}})block_sample=input;
+            if(affine && row.at("transform_case")=="rotation" &&
+               row.at("path_program")==Json{{"format",0},{"path",Json::array({42,50})}})block_reference_sample=input;
+        }
     }
     NativeDependencyLoadInput base;
     base.input_complete=base.system_registry_known_empty=base.file_fallback_disabled=base.monitored_entity_set_known_empty=true;
@@ -407,6 +426,89 @@ unsigned dependency_registration_tests() {
     auto deep_path=input;input.max_work_items=6000;rejected(input,"work_limit_exceeded");
     input=deep_path;put_path(*input.entities[1002].standard_type47_root_source,50,1000,8);
     rejected(input,"cyclic_owner_reference_path");
+    check(!block_sample.entities.empty() && !block_reference_sample.entities.empty(),
+          "original block callbacks provide local and referenced source guard samples");
+    {
+        auto set_number=[](Bytes &bytes,std::size_t offset,double value) {
+            std::uint64_t bits;std::memcpy(&bits,&value,8);
+            for(unsigned i=0;i<8;++i)bytes.at(offset+i)=std::uint8_t(bits>>(i*8));
+        };
+        const auto maximum_block=std::numeric_limits<double>::max();
+        input=block_sample;input.entities[3].standard_type62_root_source.reset();
+        rejected(input,"dependency_owner_path_requires_context");
+        input=block_sample;input.entities[3].standard_type33_root_owner=true;rejected(input,"contradictory_owner_profile");
+        input=block_sample;input.entities[3].standard_type62_root_source->at(20)=99;rejected(input,"owner_block_source_id_mismatch");
+        input=block_sample;input.entities[3].standard_type62_root_source->resize(259);rejected(input,"owner_block_source_profile_required");
+        for(auto offset:{6u,8u,12u,16u,28u,160u}) {
+            input=block_sample;input.entities[3].standard_type62_root_source->at(offset)^=1;
+            rejected(input,"owner_block_source_profile_required");
+        }
+        input=block_sample;set_number(*input.entities[3].standard_type62_root_source,164,std::numeric_limits<double>::infinity());
+        rejected(input,"owner_block_source_nonfinite");
+        input=block_sample;set_number(*input.entities[3].standard_type62_root_source,252,std::numeric_limits<double>::quiet_NaN());
+        rejected(input,"owner_block_source_nonfinite");
+        input=block_sample;input.entities[3].runtime_flags_10=8;input.entities[3].standard_type62_root_source->at(28)=1;
+        check(project_native_dependency_load(input).resolved,"deleted block lookup rejects before reading an unused source profile");
+        input=block_sample;
+        set_number(*input.entities[3].standard_type62_root_source,164,maximum_block);
+        set_number(*input.entities[4].standard_type62_root_source,164,2);
+        rejected(input,"owner_path_transform_unresolved: reference linear product overflow");
+        const auto path_only=unhex("10270400001801000200000000000000000000000000000029000000000000002c00000000000000");
+        for(auto i:{0u,7u})input.entities[i].dependency_payloads={path_only};
+        check(project_native_dependency_load(input).resolved,"path-only model transition does not evaluate overflowing local block products");
+        input=block_reference_sample;
+        set_number(*input.entities[3].standard_type62_root_source,164,maximum_block);
+        rejected(input,"owner_path_transform_unresolved: reference linear product overflow");
+        for(auto i:{0u,7u})input.entities[i].dependency_payloads={path_only};
+        auto block_result=project_native_dependency_load(input);
+        check(block_result.resolved && block_result.file_dependents[0][0]==std::vector<std::size_t>{7},
+              "path-only reference transition preserves target identity without composing block and reference matrices");
+        input=block_sample;
+        const auto block_source=input.entities[3].standard_type62_root_source;
+        input.entities[3].assigned_id=500;put_path(*input.entities[3].standard_type62_root_source,20,500,8);
+        NativeDependencySystemTarget system_block{50,0};system_block.standard_type62_root_source=block_source;
+        input.system_registry=std::vector<NativeDependencySystemTarget>{system_block};
+        input.system_registry_known_empty=false;
+        block_result=project_native_dependency_load(input);
+        check(block_result.resolved && block_result.dependents[2]==std::vector<std::size_t>{7},
+              "standard system block contributes a local matrix while retaining the lookup caller's model");
+        input.system_registry->front().standard_type62_root_source.reset();
+        rejected(input,"dependency_owner_path_requires_context");
+        input=block_reference_sample;
+        input.file_context->models[0].entities.push_back(system_block);
+        put_path(*input.entities[5].standard_type47_root_source,50,50,8);
+        put_path(*input.entities[5].standard_type47_root_source,58,42,8);
+        block_result=project_native_dependency_load(input);
+        check(block_result.resolved && block_result.file_dependents[0][0]==std::vector<std::size_t>{7},
+              "resident block collected after an owner transition keeps the actual reference context");
+        input=block_sample;
+        for(auto i:{0u,7u})put_path(input.entities[i].dependency_payloads[0],16,50,8);
+        block_result=project_native_dependency_load(input);
+        check(block_result.resolved && block_result.dependents[2]==std::vector<std::size_t>{7} &&
+              block_result.dependents[3]==std::vector<std::size_t>{7},
+              "a block itself can serve as the paired selector's owner without a type47 wrapper");
+        input=block_sample;
+        for(unsigned index=3;index<=4;++index) {
+            auto &source=*input.entities[index].standard_type62_root_source;
+            for(unsigned r=0;r<3;++r)for(unsigned c=0;c<3;++c)set_number(source,164+24*r+8*c,r==c?1.:0.);
+            for(unsigned r=0;r<3;++r)set_number(source,236+8*r,0.);
+        }
+        set_number(*input.entities[3].standard_type62_root_source,164,0.5);
+        set_number(*input.entities[3].standard_type62_root_source,236,maximum_block/2);
+        set_number(*input.entities[4].standard_type62_root_source,236,maximum_block);
+        check(project_native_dependency_load(input).resolved,
+              "local block order preserves a finite scaled translation before the owner chain");
+        put_path(*input.entities[5].standard_type47_root_source,50,50,8);
+        put_path(*input.entities[5].standard_type47_root_source,58,51,8);
+        rejected(input,"owner_path_transform_unresolved: reference translation product overflow");
+        input=block_sample;
+        set_number(*input.entities[3].standard_type62_root_source,236,maximum_block/2);
+        auto repeated=unhex("1027040001000300");repeated.resize(32);
+        for(unsigned i=0;i<3;++i)put_path(repeated,8+8*i,50,8);
+        input.entities[5].standard_type47_root_source=make_path_record(44,repeated);
+        input.entities[5].dependency_payloads={repeated};
+        rejected(input,"owner_path_transform_unresolved: reference translation product overflow");
+    }
     check(!affine_sample.entities.empty(),"a native nonidentity paired selector supplies guard tests");
     input=affine_sample;input.entities[1].standard_type13_identity_root_owner=true;rejected(input,"contradictory_owner_profile");
     input=affine_sample;input.entities[1].standard_type13_root_source->pop_back();rejected(input,"owner_reference_source_profile_required");

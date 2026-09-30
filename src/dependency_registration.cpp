@@ -4,6 +4,21 @@
 
 namespace p3d {
 namespace {
+Matrix4 dependency_block_source(const Bytes &source,std::uint64_t id) {
+    require(source.size()==260 && Reader(source,4).u16()==62 && Reader(source,6).u16()==0x20 &&
+            Reader(source,8).u32()==128 && Reader(source,12).u32()==128 && Reader(source,16).u32()==0,
+            "owner_block_source_profile_required");
+    require(Reader(source,20).u64()==id,"owner_block_source_id_mismatch");
+    for(std::size_t at=28;at<164;++at)require(source[at]==0,"owner_block_source_profile_required");
+    Matrix4 matrix{{{1,0,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,1}}};
+    Reader values(source,164);
+    for(unsigned row=0;row<3;++row)for(unsigned column=0;column<3;++column)
+        matrix[row][column]=values.f64();
+    for(unsigned row=0;row<3;++row)matrix[row][3]=values.f64();
+    for(const auto &row:matrix)for(auto value:row)
+        require(std::isfinite(value),"owner_block_source_nonfinite");
+    return matrix; // Actual prepared snapshot, not persisted-source repair.
+}
 void dependency_path_header(const Bytes &source,std::uint64_t id) {
     require(source.size()>=38 && Reader(source,4).u16()==47 && Reader(source,6).u16()==4 &&
             Reader(source,12).u32()==17 && std::uint64_t(Reader(source,8).u32())*2+4==source.size(),
@@ -238,30 +253,39 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 for(auto index:chain)state[index]=2;
             }
         }
-        struct OwnerProfile {unsigned type;const Bytes *source=nullptr;};
+        struct OwnerProfile {unsigned type;const Bytes *source=nullptr;std::optional<Matrix4> block=std::nullopt;};
         auto owner_profile=[&](const Target &owner) {
             bool plain=false,reference=false;
-            const std::optional<Bytes> *source=nullptr,*path=nullptr;
+            const std::optional<Bytes> *source=nullptr,*path=nullptr,*block=nullptr;
             std::uint64_t id=0;
             if(owner.scope==0) {
                 const auto &entity=input.entities[owner.index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
                 source=&entity.standard_type13_root_source;path=&entity.standard_type47_root_source;id=entity.assigned_id;
+                block=&entity.standard_type62_root_source;
             } else {
                 const auto &entity=owner.scope==1?input.system_registry->at(owner.index):
                     input.file_context->models[owner.model].entities[owner.index];
                 plain=entity.standard_type33_root_owner;reference=entity.standard_type13_identity_root_owner;
                 source=&entity.standard_type13_root_source;path=&entity.standard_type47_root_source;id=entity.assigned_id;
+                block=&entity.standard_type62_root_source;
             }
-            require(unsigned(plain)+unsigned(reference)+unsigned(source->has_value())+unsigned(path->has_value())<=1,
+            require(unsigned(plain)+unsigned(reference)+unsigned(source->has_value())+unsigned(path->has_value())+
+                    unsigned(block->has_value())<=1,
                     "contradictory_owner_profile");
+            if(*block) {tick();return OwnerProfile{62,&**block,dependency_block_source(**block,id)};}
             if(*path) {tick();dependency_path_header(**path,id);return OwnerProfile{47,&**path};}
             if(*source) {tick();dependency_owner_source(**source,id);reference=true;}
             if(plain)return OwnerProfile{33};
             require(reference,"dependency_owner_path_requires_context");
             return OwnerProfile{13};
         };
-        auto owner_path_context=[&](std::uint64_t id,const OwnerContext &initial)->std::optional<OwnerContext> {
+        auto owner_path_context=[&](std::uint64_t id,const OwnerContext &initial,Json *blocks=nullptr)->std::optional<OwnerContext> {
+            auto append=[&](const OwnerProfile &profile) {
+                if(blocks && profile.block)blocks->push_back({{"element_type",62},{"block_transform",
+                    {{"reader_profile","bimbase_2025_block_transform_input"},{"status","resolved"},
+                     {"matrix",*profile.block}}}});
+            };
             auto find_owner=[&](std::uint64_t target_id,const std::optional<OwnerContext> &context,bool outer)->std::optional<Target> {
                 if(!context)return {};
                 const auto owner=model_lookup(target_id,context->scope,context->model);
@@ -297,7 +321,8 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 initial_step=false;auto &frame=stack.back();
                 if(!frame.entered) {
                     const auto profile=owner_profile(frame.target);
-                    if(profile.type==33) {
+                    if(profile.type==33 || profile.type==62) {
+                        append(profile);
                         if(frame.caller)collected_owner=frame.caller;
                         stack.pop_back();continue;
                     }
@@ -341,14 +366,14 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                     const auto terminal=find_owner(frame.program.ids.front(),frame.caller,false);
                     if(!terminal)return {};
                     // Audit the appended terminal; type-13/47 is not expanded.
-                    owner_profile(*terminal);
+                    append(owner_profile(*terminal));
                 }
                 active.erase(frame.key);stack.pop_back();
             }
-            // All audited collected roots are non-block, parent-free records.
-            // A single standard type-33/13/47 has no custom local transform;
-            // a type-47 terminal is not expanded again by its transform query.
-            // The remaining transform is the selected reference parent chain.
+            // Parent-free append leaves the native terminal at the last entry,
+            // so 101dc0 includes every collected block, even the final one.
+            // Non-block roots contribute no local matrix; retaining only block
+            // occurrences preserves their order and avoids copying whole records.
             return collected_owner;
         };
         auto owner_transition=[&](std::uint64_t id,const OwnerContext &context)->std::optional<OwnerContext> {
@@ -425,7 +450,8 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                             // 1f14a0 returns a null target but preserves the ID;
                             // a nonzero missing ID still queues this dependent.
                         } else if(entry.contains("owner_reference_id") && entry.at("owner_reference_id")!=0) {
-                            if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{})) {
+                            Json blocks=Json::array();
+                            if(auto context=owner_path_context(entry.at("owner_reference_id").get<std::uint64_t>(),OwnerContext{},&blocks)) {
                                 // 1f14a0 also evaluates the selected reference
                                 // and its ancestors before looking up the ID.
                                 auto ancestor=context->reference;
@@ -450,9 +476,19 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                                     }
                                     ancestor=ref.parent.reference_index;
                                 }
-                                const auto chain=compose_owner_reference_chain_transforms(transforms);
-                                require(chain.value("status","")=="computed",
-                                        "owner_reference_chain_unresolved: "+chain.value("reason",std::string()));
+                                if(blocks.empty()) {
+                                    const auto chain=compose_owner_reference_chain_transforms(transforms);
+                                    require(chain.value("status","")=="computed",
+                                            "owner_reference_chain_unresolved: "+chain.value("reason",std::string()));
+                                } else {
+                                    for(std::size_t i=0;i<blocks.size();++i)tick();
+                                    OwnerReferencePathTransformContext transform_context;
+                                    transform_context.owner_kind=context->reference?2:1;
+                                    transform_context.terminal_index=static_cast<std::int64_t>(blocks.size())-1;
+                                    const auto transform=owner_reference_path_transform(blocks,transforms,transform_context);
+                                    require(transform.value("status","")=="computed",
+                                            "owner_path_transform_unresolved: "+transform.value("reason",std::string()));
+                                }
                                 target=model_lookup(id,context->scope,context->model);
                             }
                         } else if(entry.value("lookup_profile",std::string())=="owner_system")target=model_lookup(id,0,0);
