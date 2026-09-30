@@ -15,6 +15,20 @@ struct NativeDependencySystemTarget {
     std::uint64_t assigned_id = 0;
     std::optional<std::uint32_t> runtime_flags_10;
 };
+struct NativeDependencyFileModel {
+    std::int32_t model_id = 0;
+    std::vector<NativeDependencySystemTarget> entities;
+    std::optional<bool> file_fallback_enabled;
+};
+struct NativeDependencyFileContext {
+    // Complete resident nonnull ordinary-model registry, excluding the current
+    // model and the separately supplied system model. Does not load disk models.
+    bool complete = false;
+    std::int32_t current_model_id = 0;
+    std::vector<NativeDependencyFileModel> models;
+    std::optional<bool> current_file_fallback_enabled;
+    std::optional<bool> system_file_fallback_enabled;
+};
 struct NativeDependencyLoadInput {
     std::vector<NativeDependencyLoadEntity> entities;
     // Each batch is one accepted root subtree in recursive input order. All
@@ -24,7 +38,8 @@ struct NativeDependencyLoadInput {
     bool input_complete = false;
     // Used after a local miss when no complete system_registry is supplied.
     bool system_registry_known_empty = false;
-    // Required only when both current-model and system lookup miss.
+    // Legacy current-model guarantee, needed after both lookups miss unless
+    // file_context supplies the current model's actual fallback policy.
     bool file_fallback_disabled = false;
     bool monitored_entity_set_known_empty = false;
     std::size_t max_work_items = 1000000;
@@ -33,10 +48,18 @@ struct NativeDependencyLoadInput {
     // Vector positions are system occurrence identities; ID 0 is unregistered.
     // Targets/flags remain fixed throughout this model's input batches.
     std::optional<std::vector<NativeDependencySystemTarget>> system_registry;
+    // Format 8's model selection and 129a00 file-wide fallback. Other models'
+    // entities/flags must remain fixed while current-model batches register.
+    std::optional<NativeDependencyFileContext> file_context;
 };
 struct NativeDependencyEdge {
     std::size_t target_entity = 0;
     std::size_t dependent_entity = 0;
+};
+struct NativeDependencyFileEdge {
+    std::size_t model_index = 0; // index into file_context.models
+    std::size_t target_entity = 0;
+    std::size_t dependent_entity = 0; // current-model occurrence
 };
 struct NativeDependencyLoadBatchResult {
     // Original callback order. Each edge prepends the dependent to the target's
@@ -45,6 +68,7 @@ struct NativeDependencyLoadBatchResult {
     std::vector<std::size_t> newly_pending_entities;
     // target_entity indexes system_registry, dependent_entity indexes entities.
     std::vector<NativeDependencyEdge> added_system_edges;
+    std::vector<NativeDependencyFileEdge> added_file_edges;
 };
 struct NativeDependencyLoadResult {
     bool resolved = false;
@@ -60,11 +84,14 @@ struct NativeDependencyLoadResult {
     // Qualify them with the current model identity before prepending each
     // prefix to any pre-existing system reverse list spanning other models.
     std::vector<std::vector<std::size_t>> system_dependents;
+    // Like system_dependents, but indexed by file_context.models then target.
+    std::vector<std::vector<std::vector<std::size_t>>> file_dependents;
 };
 // R1.18 initial file callbacks (mode 1), fresh current-model ID registry, empty
 // service monitored set. Local lookup precedes the supplied system registry;
 // file fallback context is required only if both miss. Resolves
-// direct IDs in formats 0/1; format 0 owner=10000/relation=4 is a separate path
+// direct IDs in formats 0/1 and model-qualified IDs in format 8. Format 0
+// owner=10000/relation=4 is a separate path
 // program and remains unsupported. Disabled/empty/out-of-range formats skip.
 // This does not run later pending-resolution passes, cross-model callbacks,
 // typed-handler work queues or geometry regeneration. Failure publishes no

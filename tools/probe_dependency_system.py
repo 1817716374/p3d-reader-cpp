@@ -88,7 +88,7 @@ def probe(root, inputs):
                         assert fn(0x1a5cc0, C.c_int, V, V, C.c_bool, C.c_bool, C.c_bool)(listing, node, True, False, False) == 0
                         rc = fn(0x1a5da0, C.c_int, V, V, V, C.c_bool, C.c_bool, C.c_bool, C.c_double, C.c_bool)(listing, node, None, False, True, False, 0., False)
                     else:
-                        rc = fn(0x199e40, C.c_int, V, V, V, C.c_double, C.c_bool)(model, node, model + 0x140, 0., False)
+                        rc = fn(0x199e40, C.c_int, V, V, V, C.c_double, C.c_bool)(target_model, node, target_model + 0x140, 0., False)
                     assert rc == 0
                     entity = ptr(node + 0x28)
                     assert entity and C.c_uint64.from_address(ptr(entity + 0x40) + 16).value == id_
@@ -112,6 +112,25 @@ def probe(root, inputs):
                     entity, _ = insert(system, id_, [])
                     C.c_uint32.from_address(entity + 0x10).value = case['system_flags']
                     system_entities.append(entity)
+                file_entities = []
+                for extra in case.get('file_models', []):
+                    extra_model = fn(0x4ef808, V, C.c_size_t)(0x7f8)
+                    assert extra_model
+                    C.memset(extra_model, 0, 0x7f8)
+                    assert fn(0x19d0f0, V, V, V, C.c_int)(extra_model, file, extra['model_id']) == extra_model
+                    assert fn(0x1223e0, C.c_int, V, V, C.c_bool)(file, extra_model, False) == 0
+                    assert fn(0x199330, C.c_int, V)(extra_model) == 1
+                    assert ptr(ptr(extra_model) + 0xe8) == base + 0x8a90
+                    registered = []
+                    for id_ in extra['ids']:
+                        entity, _ = insert(extra_model, id_, [])
+                        C.c_uint32.from_address(entity + 0x10).value = extra['flags']
+                        registered.append(entity)
+                    file_entities.append(registered)
+                if 'file_models' in case:
+                    assert ptr(ptr(system) + 0xe8) == base + 0x37770
+                    assert fn(0x37770, C.c_bool, V)(system)
+                    assert C.c_uint64.from_address(file + 0x6b0).value == len(file_entities) + 1
                 calls, headers = [], []
                 for id_, links in zip(case['ids'], case['dependency_payloads']):
                     entity, header = insert(model, id_, links)
@@ -125,6 +144,10 @@ def probe(root, inputs):
                     assert state['monitored_entities'] == state['scheduled_pairs'] == []
                     calls.append(dict(dependents=reverse(local_entities), system_dependents=reverse(system_entities),
                                       pending_entities=state['pending_entities']))
+                    if 'file_models' in case:
+                        assert all(u32(e + 0x10) == extra['flags']
+                                   for extra, group in zip(case['file_models'], file_entities) for e in group)
+                        calls[-1]['file_dependents'] = [reverse(group) for group in file_entities]
                 lookups = []
                 for id_ in case['system_ids'] + [0, 77, 78, 500]:
                     target = fn(0x19a8f0, V, V, C.c_uint64)(model, id_)
@@ -136,8 +159,12 @@ def probe(root, inputs):
                     elif target in system_entities: identity = ['system', system_entities.index(target)]
                     else: assert target is None
                     lookups.append(dict(id=id_, target=identity))
+                native = metadata() if 'file_models' not in case else dict(
+                    current_model_id=u32(model + 0x1b8),
+                    resident_models=C.c_uint64.from_address(file + 0x6b0).value,
+                    system_file_fallback=True, ordinary_file_fallback=False)
                 rows.append(dict(case, source_headers=headers, calls=calls, lookups=lookups,
-                                 runtime_flags=[u32(e + 0x10) for e in local_entities], native=metadata()))
+                                 runtime_flags=[u32(e + 0x10) for e in local_entities], native=native))
         return dict(scope='R1.18_local_file_callbacks_with_original_prepared_system_registry',
                     dll_sha256=HASHES, cases=rows)
     finally:

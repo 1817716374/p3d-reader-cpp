@@ -4,13 +4,13 @@
 
 namespace p3d {
 namespace {
-Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool honor_disabled=true) {
+Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool honor_disabled=true,bool model_indices=false) {
     require(payload.size()>=8,"truncated_dependency_header");
     Reader header(payload);
     const auto owner=header.u16(),relation=header.u16(),flags=header.u16(),count=header.u16();
     const auto format=(flags>>10)&15u;
     if(format>8 || (honor_disabled && (flags&1)) || count==0)return Json::array();
-    require(format<=1,"dependency_format_requires_context");
+    require(format<=1 || (model_indices && format==8),"dependency_format_requires_context");
     require(!(format==0 && owner==10000 && relation==4),"dependency_owner_path_requires_context");
     require(count<=remaining,"work_limit_exceeded");
     const std::size_t needed=8+std::size_t(count)*(format==0?8:16);
@@ -19,13 +19,17 @@ Json direct_dependency_entries(const Bytes &payload,std::size_t remaining,bool h
     // second word, or a suffix; the direct-ID field is nevertheless known.
     auto decoded=native_dependency_link(slice(payload,0,needed));
     require(!decoded.contains("error") && decoded.at("entries").size()==count,"truncated_dependency_entries");
+    if(format==8)for(auto &entry:decoded.at("entries")) {
+        const auto reference=entry.at("references")[0];
+        entry["element_id"]=reference.at("element_id");entry["model_id"]=reference.at("model_index");
+    }
     return std::move(decoded.at("entries"));
 }
 }
 NativeDependencyLoadResult project_native_dependency_load(const NativeDependencyLoadInput &input) {
     NativeDependencyLoadResult out;
     auto fail=[&](const std::string &reason) {
-        out.reason=reason;out.dependents.clear();out.pending_entities.clear();out.batches.clear();out.system_dependents.clear();
+        out.reason=reason;out.dependents.clear();out.pending_entities.clear();out.batches.clear();out.system_dependents.clear();out.file_dependents.clear();
         return out;
     };
     if(!input.input_complete)return fail("incomplete_input");
@@ -45,6 +49,63 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
             }
         }
         std::unordered_map<std::uint64_t,std::size_t> registry;
+        std::vector<std::unordered_map<std::uint64_t,std::size_t>> file_registries;
+        std::map<std::int32_t,std::size_t> file_models;
+        if(input.file_context) {
+            const auto &context=*input.file_context;
+            require(context.complete,"file_model_registry_requires_context");
+            require(context.current_model_id!=-1,"current_model_must_be_ordinary");
+            require(!input.file_fallback_disabled || !context.current_file_fallback_enabled.value_or(false),"contradictory_file_fallback");
+            require(context.models.size()<=remaining,"work_limit_exceeded");
+            file_registries.resize(context.models.size());out.file_dependents.resize(context.models.size());
+            for(std::size_t m=0;m<context.models.size();++m) {
+                tick();const auto &model=context.models[m];
+                require(model.model_id!=-1 && model.model_id!=context.current_model_id && file_models.emplace(model.model_id,m).second,
+                        "file_model_id_collision");
+                require(model.entities.size()<=remaining,"work_limit_exceeded");
+                out.file_dependents[m].resize(model.entities.size());
+                for(std::size_t i=0;i<model.entities.size();++i) {
+                    tick();const auto id=model.entities[i].assigned_id;
+                    if(id)require(file_registries[m].emplace(id,i).second,"file_assigned_id_collision");
+                }
+            }
+            file_models.emplace(context.current_model_id,context.models.size());
+        }
+        struct Target {unsigned scope;std::size_t model,index;}; // 0 current, 1 system, 2 file model
+        auto system_lookup=[&](std::uint64_t id)->std::optional<Target> {
+            require(input.system_registry.has_value() || input.system_registry_known_empty,"system_registry_requires_context");
+            const auto found=system_registry.find(id);
+            if(found==system_registry.end())return {};
+            return Target{1,0,found->second};
+        };
+        auto model_lookup=[&](std::uint64_t id,unsigned scope,std::size_t model)->std::optional<Target> {
+            if(scope==1)return system_lookup(id);
+            const auto &index=scope==0?registry:file_registries.at(model);
+            const auto found=index.find(id);
+            if(found!=index.end())return Target{scope,model,found->second};
+            return system_lookup(id);
+        };
+        auto lookup=[&](std::uint64_t id,unsigned scope,std::size_t model)->std::optional<Target> {
+            if(auto target=model_lookup(id,scope,model))return target;
+            std::optional<bool> fallback;
+            if(input.file_context) {
+                const auto &context=*input.file_context;
+                fallback=scope==0?context.current_file_fallback_enabled:
+                    scope==1?context.system_file_fallback_enabled:context.models.at(model).file_fallback_enabled;
+            }
+            if(scope==0 && input.file_fallback_disabled)fallback=false;
+            require(fallback.has_value(),"file_fallback_requires_context");
+            if(!*fallback)return {};
+            require(input.file_context.has_value(),"file_model_registry_requires_context");
+            // 129a00 searches the system once, then resident models in signed
+            // int32 key order. It calls 19a8f0, not recursive file fallback.
+            if(auto target=system_lookup(id))return target;
+            for(const auto &[key,m]:file_models) {
+                tick();
+                if(auto target=model_lookup(id,m==file_registries.size()?0:2,m==file_registries.size()?0:m))return target;
+            }
+            return {};
+        };
         std::vector<bool> registered(input.entities.size()),pending(input.entities.size());
         out.dependents.resize(input.entities.size());
         for(std::size_t batch_index=0;batch_index<input.batches.size();++batch_index) {
@@ -63,37 +124,44 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
                 out.failed_entity=index;
                 for(const auto &payload:input.entities[index].dependency_payloads) {
                     tick();
-                    for(const auto &entry:direct_dependency_entries(payload,remaining)) {
+                    for(const auto &entry:direct_dependency_entries(payload,remaining,true,true)) {
                         tick();const auto id=entry.at("element_id").get<std::uint64_t>();
-                        const auto found=registry.find(id);
-                        if(found==registry.end()) {
-                            // 19a8f0 searches the current model first; 1f12b0
-                            // reaches system/file lookup only after that miss.
-                            require(input.system_registry.has_value() || input.system_registry_known_empty,"system_registry_requires_context");
-                            const auto system_found=system_registry.find(id);
-                            if(system_found!=system_registry.end()) {
-                                const auto target=system_found->second;
-                                const auto flags=input.system_registry->at(target).runtime_flags_10;
-                                require(flags.has_value(),"system_target_runtime_flags_require_context");
-                                if(*flags&0x20008u)continue;
-                                out.system_dependents[target].push_back(index);
-                                result.added_system_edges.push_back({target,index});
-                                continue;
+                        std::optional<Target> target;
+                        if(!entry.contains("model_id"))target=lookup(id,0,0);
+                        else {
+                            const auto model_id=entry.at("model_id").get<std::int32_t>();
+                            if(model_id==-1)target=lookup(id,1,0);
+                            else {
+                                require(input.file_context.has_value(),"file_model_registry_requires_context");
+                                if(model_id==input.file_context->current_model_id)target=lookup(id,0,0);
+                                else if(const auto found=file_models.find(model_id);found!=file_models.end())
+                                    target=lookup(id,2,found->second);
+                                // Missing resident model passes null to 1f12b0;
+                                // it does not search the system or other models.
                             }
-                            require(input.file_fallback_disabled,"file_fallback_requires_context");
+                        }
+                        if(!target) {
                             if(id!=0 && !pending[index]) {
                                 pending[index]=true;result.newly_pending_entities.push_back(index);
                             }
                             continue;
                         }
-                        const auto target=found->second;
-                        const auto flags=input.entities[target].runtime_flags_10;
-                        require(flags.has_value(),"target_runtime_flags_require_context");
+                        const auto t=target->index,m=target->model;
+                        const auto flags=target->scope==0?input.entities[t].runtime_flags_10:
+                            target->scope==1?input.system_registry->at(t).runtime_flags_10:
+                            input.file_context->models[m].entities[t].runtime_flags_10;
+                        require(flags.has_value(),target->scope==0?"target_runtime_flags_require_context":
+                            target->scope==1?"system_target_runtime_flags_require_context":"file_target_runtime_flags_require_context");
                         // Mode 1 and a fresh service skip rejected targets. They
                         // are distinct from a missing nonzero ID, which queues.
                         if(*flags&0x20008u)continue;
-                        out.dependents[target].push_back(index);
-                        result.added_edges.push_back({target,index});
+                        if(target->scope==0) {
+                            out.dependents[t].push_back(index);result.added_edges.push_back({t,index});
+                        } else if(target->scope==1) {
+                            out.system_dependents[t].push_back(index);result.added_system_edges.push_back({t,index});
+                        } else {
+                            out.file_dependents[m][t].push_back(index);result.added_file_edges.push_back({m,t,index});
+                        }
                     }
                 }
             }
@@ -102,6 +170,7 @@ NativeDependencyLoadResult project_native_dependency_load(const NativeDependency
         require(std::all_of(registered.begin(),registered.end(),[](bool v){return v;}),"entity_not_registered");
         for(auto &list:out.dependents)std::reverse(list.begin(),list.end());
         for(auto &list:out.system_dependents)std::reverse(list.begin(),list.end());
+        for(auto &model:out.file_dependents)for(auto &list:model)std::reverse(list.begin(),list.end());
         for(std::size_t i=0;i<pending.size();++i)if(pending[i])out.pending_entities.push_back(i);
         out.failed_batch.reset();out.failed_entity.reset();out.resolved=true;
         return out;

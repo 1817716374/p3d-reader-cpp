@@ -6,6 +6,7 @@
 #include "dependency_held_cycle_oracle.hpp"
 #include "dependency_flush_oracle.hpp"
 #include "dependency_system_oracle.hpp"
+#include "dependency_models_oracle.hpp"
 
 using namespace p3d;
 unsigned dependency_registration_tests() {
@@ -162,12 +163,27 @@ unsigned dependency_registration_tests() {
     }
     const auto system_oracle=Json::parse(dependency_system_oracle);
     check(system_oracle.at("cases").size()==80,"all original populated-system experiments are tested");
-    for(const auto &row:system_oracle.at("cases")) {
+    const auto models_oracle=Json::parse(dependency_models_oracle);
+    check(models_oracle.at("cases").size()==72,"all original format-8 resident-model experiments are tested");
+    auto model_cases=system_oracle.at("cases");
+    for(const auto &row:models_oracle.at("cases"))model_cases.push_back(row);
+    for(const auto &row:model_cases) {
         NativeDependencyLoadInput input;
         input.input_complete=input.file_fallback_disabled=input.monitored_entity_set_known_empty=true;
         input.system_registry.emplace();
         for(const auto &id:row.at("system_ids"))
             input.system_registry->push_back({id.get<std::uint64_t>(),row.at("system_flags").get<std::uint32_t>()});
+        std::vector<std::vector<std::vector<std::size_t>>> file_lists;
+        if(row.contains("file_models")) {
+            input.file_context.emplace();auto &context=*input.file_context;
+            context.complete=true;context.current_model_id=7;
+            context.current_file_fallback_enabled=false;context.system_file_fallback_enabled=true;
+            for(const auto &model:row.at("file_models")) {
+                NativeDependencyFileModel m;m.model_id=model.at("model_id");m.file_fallback_enabled=false;
+                for(const auto &id:model.at("ids"))m.entities.push_back({id.get<std::uint64_t>(),model.at("flags").get<std::uint32_t>()});
+                file_lists.emplace_back(m.entities.size());context.models.push_back(std::move(m));
+            }
+        }
         for(std::size_t i=0;i<row.at("ids").size();++i) {
             NativeDependencyLoadEntity entity;
             entity.assigned_id=row.at("ids")[i];
@@ -186,15 +202,22 @@ unsigned dependency_registration_tests() {
                 local.at(edge.target_entity).insert(local.at(edge.target_entity).begin(),edge.dependent_entity);
             for(const auto &edge:result.batches[i].added_system_edges)
                 system.at(edge.target_entity).insert(system.at(edge.target_entity).begin(),edge.dependent_entity);
+            for(const auto &edge:result.batches[i].added_file_edges) {
+                auto &list=file_lists.at(edge.model_index).at(edge.target_entity);
+                list.insert(list.begin(),edge.dependent_entity);
+            }
             for(auto p:result.batches[i].newly_pending_entities)pending.insert(p);
             const auto &native=row.at("calls")[i];
             const std::vector<std::vector<std::size_t>> loaded(local.begin(),local.begin()+i+1);
             check(native.at("dependents")==loaded,"local targets take precedence over system targets only after registration");
             check(native.at("system_dependents")==system,"system reverse prefixes match original callbacks after every root");
+            if(row.contains("file_models"))
+                check(native.at("file_dependents")==file_lists,"format-8 selection and system file fallback match original cross-model edges");
             check(native.at("pending_entities")==std::vector<std::size_t>(pending.begin(),pending.end()),
                   "system hits and excluded targets do not spuriously queue missing-reference work");
         }
         check(result.dependents==local && result.system_dependents==system,"both target namespaces preserve native duplicate and prepend order");
+        if(row.contains("file_models"))check(result.file_dependents==file_lists,"other-model prefixes preserve target model identity and head order");
         check(result.pending_entities==std::vector<std::size_t>(pending.begin(),pending.end()),"final pending membership matches native system experiment");
         for(const auto &lookup:row.at("lookups")) {
             Json target;
@@ -210,7 +233,7 @@ unsigned dependency_registration_tests() {
     base.entities={{1,0,{}},{2,0,{unhex("e7030100000001000100000000000000")}}};base.batches={{0},{1}};
     auto rejected=[&](const NativeDependencyLoadInput &input,const char *reason){
         auto result=project_native_dependency_load(input);
-        check(!result.resolved && result.reason==reason && result.dependents.empty() && result.pending_entities.empty() && result.batches.empty() && result.system_dependents.empty(),
+        check(!result.resolved && result.reason==reason && result.dependents.empty() && result.pending_entities.empty() && result.batches.empty() && result.system_dependents.empty() && result.file_dependents.empty(),
               "unknown or invalid dependency input never publishes a partial graph");
     };
     auto input=base;input.input_complete=false;rejected(input,"incomplete_input");
@@ -260,6 +283,46 @@ unsigned dependency_registration_tests() {
     check(system_result.resolved && system_result.system_dependents==std::vector<std::vector<std::size_t>>{{}} && system_result.pending_entities.empty(),
           "zero ID is not a registered system target and does not create pending work");
     input=system_input;input.max_work_items=1;rejected(input,"work_limit_exceeded");
+    auto model_input=base;
+    model_input.entities[1].dependency_payloads={unhex("e70301000020010009000000000000002a00000000000000")};
+    rejected(model_input,"file_model_registry_requires_context");
+    model_input.file_context.emplace();auto &model_context=*model_input.file_context;
+    model_context.current_model_id=7;model_context.current_file_fallback_enabled=false;
+    model_context.models={{9,{{42,0}},false}};
+    rejected(model_input,"file_model_registry_requires_context");
+    model_context.complete=true;
+    auto model_result=project_native_dependency_load(model_input);
+    check(model_result.resolved && model_result.file_dependents==std::vector<std::vector<std::vector<std::size_t>>>{{{1}}},
+          "format 8 uses the supplied resident model and keeps its identity");
+    input=model_input;input.file_context->models[0].entities[0].runtime_flags_10.reset();
+    rejected(input,"file_target_runtime_flags_require_context");
+    input=model_input;input.file_context->models[0].model_id=-1;rejected(input,"file_model_id_collision");
+    input=model_input;input.file_context->models[0].model_id=7;rejected(input,"file_model_id_collision");
+    input=model_input;input.file_context->models.push_back(input.file_context->models[0]);rejected(input,"file_model_id_collision");
+    input=model_input;input.file_context->models[0].entities.push_back({42,0});rejected(input,"file_assigned_id_collision");
+    input=model_input;input.file_context->current_model_id=-1;rejected(input,"current_model_must_be_ordinary");
+    input=model_input;input.file_context->current_file_fallback_enabled=true;rejected(input,"contradictory_file_fallback");
+    input=model_input;input.file_context->models[0].file_fallback_enabled.reset();
+    input.entities[1].dependency_payloads.push_back(unhex("e70301000020010009000000000000002b00000000000000"));
+    rejected(input,"file_fallback_requires_context");
+    input=model_input;input.system_registry_known_empty=false;input.entities[1].dependency_payloads[0][8]=123;
+    model_result=project_native_dependency_load(input);
+    check(model_result.resolved && model_result.pending_entities==std::vector<std::size_t>{1} && model_result.file_dependents[0][0].empty(),
+          "missing model never consults an unknown system registry or falls back to another resident model");
+    input=model_input;input.system_registry_known_empty=false;
+    input.entities[1].dependency_payloads[0][16]=43;rejected(input,"system_registry_requires_context");
+    input=model_input;
+    for(unsigned i=8;i<12;++i)input.entities[1].dependency_payloads[0][i]=255;
+    rejected(input,"file_fallback_requires_context");
+    input.file_context->system_file_fallback_enabled=true;
+    model_result=project_native_dependency_load(input);
+    check(model_result.resolved && model_result.file_dependents[0][0]==std::vector<std::size_t>{1},
+          "explicit system model falls through to the complete resident-model registry");
+    input.file_context.reset();input.system_registry_known_empty=false;
+    input.system_registry=std::vector<NativeDependencySystemTarget>{{42,0}};
+    check(project_native_dependency_load(input).resolved,"system hit in format 8 needs no unrelated resident model registry");
+    input=model_input;input.max_work_items=2;
+    input.file_context->models[0].entities={{42,0},{43,0}};rejected(input,"work_limit_exceeded");
     input=base;input.entities[0].runtime_flags_10.reset();rejected(input,"target_runtime_flags_require_context");
     input=base;input.entities[1].assigned_id=1;rejected(input,"assigned_id_collision");
     input=base;input.batches={{0},{0,1}};rejected(input,"entity_registered_more_than_once");
@@ -273,7 +336,7 @@ unsigned dependency_registration_tests() {
     rejected(input,"dependency_owner_path_requires_context");
     for(unsigned format=2;format<=8;++format) {
         input=base;input.entities[1].dependency_payloads[0][5]=std::uint8_t(format<<2);
-        rejected(input,"dependency_format_requires_context");
+        rejected(input,format==8?"truncated_dependency_entries":"dependency_format_requires_context");
         input.entities[1].dependency_payloads[0][4]=1;input.entities[1].dependency_payloads[0].resize(8);
         check(project_native_dependency_load(input).resolved,"disabled unsupported formats do not access entries");
     }
