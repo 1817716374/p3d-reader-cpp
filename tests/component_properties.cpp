@@ -57,6 +57,93 @@ unsigned component_property_tests() {
         return decode_binary_field("ParaCmptProperty", b).at("decoded");
     };
     auto one = [&](const Bytes &v) { return decode(object({{string("value"), property(v)}})); };
+    ComponentMaterialContext saved_material_context;
+    saved_material_context.material_names = {u"wood", u"steel", u"wood", u""};
+    saved_material_context.material_list_complete = true;
+    // Deliberately conflicting manual state: the stored-state interface must use
+    // the decoded property source, not these two legacy context members.
+    saved_material_context.noumenon_material_known = true;
+    saved_material_context.noumenon_material_name = Bytes{'s', 't', 'e', 'e', 'l'};
+    auto material_instance = [](const Bytes &name) {
+        return Json{{"footer", {{"material_name_reference", {{"source_bytes", rawbytes(name)}}}}}};
+    };
+    const auto missing_material_instance = material_instance(Bytes{'x'});
+    auto material_properties = [&](const Bytes &v) {
+        return decode(object({{string("\x07_component_material"), property(v)}}));
+    };
+    const auto saved_wood = material_properties(string(std::string("wood\0suffix", 11)));
+    auto selected_material = resolve_stored_component_material_overrides(
+        missing_material_instance, saved_wood, saved_material_context);
+    check(selected_material.at("status") == "override_selected" &&
+              selected_material.at("material_index") == 0 &&
+              selected_material.at("noumenon_source").at("input").at("bytes") == 11 &&
+              selected_material.at("lookups")[0].at("lookup_name_bytes").at("bytes") == 4 &&
+              selected_material.at("active_graphics_selection") == "not_established",
+          "stored material override uses source bytes, NUL boundary and first loaded identity");
+    selected_material = resolve_stored_component_material_overrides(
+        material_instance(Bytes{'s', 't', 'e', 'e', 'l'}), saved_wood, saved_material_context);
+    check(selected_material.at("material_index") == 1 && selected_material.at("lookup_index") == 1,
+          "footer override remains later than saved Noumenon material");
+    for (const auto &saved :
+         {decode(object({})), material_properties(integer(2)),
+          decode(object({{string("\x07_component_material"), property(integer(2))},
+                         {string("\x07_component_material"), property(string("wood"))}})),
+          decode(object({{string("_component_material"), property(string("wood"))}}))}) {
+        const auto r = resolve_stored_component_material_overrides(missing_material_instance, saved,
+                                                                   saved_material_context);
+        check(r.at("status") == "preserve_entry_materials" &&
+                  r.at("noumenon_source").at("status") == "absent",
+              "saved lookup requires exact key and typed first member, with no manual-state "
+              "fallback");
+    }
+    selected_material = resolve_stored_component_material_overrides(
+        missing_material_instance,
+        decode(object({{string("\x07_component_material"), property(string("wood"))},
+                       {string("\x07_component_material"), property(string("steel"))}})),
+        saved_material_context);
+    check(selected_material.at("material_index") == 0, "first same-name Noumenon material wins");
+    check(resolve_stored_component_material_overrides(
+              missing_material_instance, material_properties(string("")), saved_material_context)
+                  .at("material_index") == 3,
+          "stored empty name still participates in component lookup");
+    auto incomplete_material_properties = saved_wood;
+    incomplete_material_properties["status"] = "partial";
+    for (const auto &saved : {Json::object(), incomplete_material_properties,
+                              material_properties(frame(0xdeadbeef, {1}))}) {
+        check(resolve_stored_component_material_overrides(missing_material_instance, saved,
+                                                          saved_material_context)
+                      .at("status") == "unresolved",
+              "incomplete property restoration cannot prove saved material absence");
+        check(resolve_stored_component_material_overrides(
+                  material_instance(Bytes{'w', 'o', 'o', 'd'}), saved, saved_material_context)
+                      .at("material_index") == 0,
+              "known footer hit can supersede unavailable saved Noumenon state");
+    }
+    auto damaged_material_source = saved_wood;
+    damaged_material_source["component_material_input"]["bytes"] = 1;
+    check(resolve_stored_component_material_overrides(
+              missing_material_instance, damaged_material_source, saved_material_context)
+                  .at("status") == "unresolved",
+          "mismatched saved name source length is not a lookup miss");
+    saved_material_context.material_list_complete = false;
+    check(resolve_stored_component_material_overrides(missing_material_instance, saved_wood,
+                                                      saved_material_context)
+                  .at("status") == "unresolved",
+          "unconfirmed footer miss suppresses saved inner hit");
+    saved_material_context.material_list_complete = true;
+    auto nonascii_material = material_properties(frame(S, {0xff}));
+    check(resolve_stored_component_material_overrides(missing_material_instance, nonascii_material,
+                                                      saved_material_context)
+                  .at("status") == "unresolved",
+          "stored non-ASCII material is not guessed");
+    saved_material_context.ansi_decoder = [](const Bytes &name) {
+        return name == Bytes{0xff} ? std::u16string(u"wood")
+                                   : std::u16string(name.begin(), name.end());
+    };
+    check(resolve_stored_component_material_overrides(missing_material_instance, nonascii_material,
+                                                      saved_material_context)
+                  .at("material_index") == 0,
+          "stored material conversion uses caller source encoding");
     auto value = [&](const Bytes &v) {
         return one(v).at("root").at("entries").at(0).at("value").at("value");
     };

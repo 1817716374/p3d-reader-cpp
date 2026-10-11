@@ -702,6 +702,13 @@ struct ComponentMaterialContext {
 // load materials, or associate serialized entry indices with rebuilt parts.
 Json resolve_component_material_overrides(const Json &component_instance,
                                           const ComponentMaterialContext &context);
+// Uses the decoded ParaCmptProperty's saved first exact material property instead
+// of context.noumenon_material_known/name. Material list and decoder still come
+// from context. Assumes this saved Noumenon is the state at the override call;
+// does not confirm callback selection, runtime mutations, or final part mapping.
+Json resolve_stored_component_material_overrides(const Json &component_instance,
+                                                 const Json &component_properties,
+                                                 const ComponentMaterialContext &context);
 // Query a catalog returned by Document::native_font_catalogs(). The lookup key
 // is explicit: native text callers use font_lookup_id, not the full source ID.
 // Returns the requested declaration/default family, before actual font loading,

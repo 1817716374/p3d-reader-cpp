@@ -1,8 +1,9 @@
 #include "internal.hpp"
 
 namespace p3d {
-Json resolve_component_material_overrides(const Json &instance,
-                                          const ComponentMaterialContext &context) {
+namespace {
+Json resolve_overrides(const Json &instance, const ComponentMaterialContext &context,
+                       bool noumenon_known, const std::optional<Bytes> &noumenon_name) {
     Json out = {{"reader_profile", "bimbase_2025_component_material_overrides"},
                 {"scope", "component_graphics_after_extraction_before_entity_part_overrides"},
                 {"applies_to", "all_rebuilt_graphics_entries"},
@@ -66,12 +67,12 @@ Json resolve_component_material_overrides(const Json &instance,
     };
     Json inner;
     try {
-        if (!context.noumenon_material_known)
+        if (!noumenon_known)
             inner = {{"status", "unresolved"}, {"reason", "noumenon_material_context_unavailable"}};
-        else if (!context.noumenon_material_name)
+        else if (!noumenon_name)
             inner = {{"status", "absent"}};
         else
-            inner = lookup(*context.noumenon_material_name);
+            inner = lookup(*noumenon_name);
     } catch (const std::exception &e) {
         inner = {{"status", "unresolved"}, {"reason", e.what()}};
     }
@@ -86,6 +87,50 @@ Json resolve_component_material_overrides(const Json &instance,
         outer = {{"status", "unresolved"}, {"reason", e.what()}};
     }
     apply(std::move(outer), "component_data_footer");
+    return out;
+}
+} // namespace
+
+Json resolve_component_material_overrides(const Json &instance,
+                                          const ComponentMaterialContext &context) {
+    return resolve_overrides(instance, context, context.noumenon_material_known,
+                             context.noumenon_material_name);
+}
+
+Json resolve_stored_component_material_overrides(const Json &instance, const Json &properties,
+                                                 const ComponentMaterialContext &context) {
+    bool known = false;
+    std::optional<Bytes> name;
+    Json source = {{"status", "not_evaluated"},
+                   {"state_assumption", "saved_noumenon_without_runtime_mutation"}};
+    try {
+        require(properties.at("scope") == "stored_component_properties" &&
+                    properties.at("status") == "decoded",
+                "complete_component_properties_required");
+        const auto &input = properties.at("component_material_input");
+        source["input"] = input;
+        const auto status = input.at("status");
+        if (status == "found") {
+            name = unbase64(input.at("bytes_base64").get<std::string>());
+            require(name->size() == input.at("bytes").get<std::size_t>(),
+                    "component_material_source_size_mismatch");
+            known = true;
+            source["status"] = "found";
+        } else if (status == "absent" || status == "wrong_value_type") {
+            // The native typed first-name guard rejects a wrong-type first value;
+            // it does not continue to a later same-name string.
+            known = true;
+            source["status"] = "absent";
+        } else {
+            source["reason"] = "component_material_source_not_established";
+        }
+    } catch (const std::exception &e) {
+        name.reset();
+        source["reason"] = e.what();
+    }
+    auto out = resolve_overrides(instance, context, known, name);
+    out["noumenon_source"] = std::move(source);
+    out["active_graphics_selection"] = "not_established";
     return out;
 }
 } // namespace p3d
