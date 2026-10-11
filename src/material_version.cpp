@@ -297,6 +297,102 @@ Json converted_maps(const Json &input, const Json &maps, const Json &bindings, c
         out["active_object_ids"].push_back(entry.second);
     return out;
 }
+Json pbr_readback(const Json &topology, const Json &containers, const Json &mapping_getters) {
+    Json out = {{"scope", "bpmaterial_pbr_map_enumeration_before_resource_results"},
+                {"status", "not_evaluated"},
+                {"sequence_status", "not_evaluated"},
+                {"native_order", "ascending_signed_map_type"},
+                {"source_assumption", "converted_map_state_without_runtime_replacement"},
+                {"resource_return_assumption", "normal_nonnull_resources_when_slots_exist"},
+                {"entries", Json::array()},
+                {"entry_count", nullptr},
+                {"shared_parameters", {{"status", "not_written_by_pbr_enumeration"}}}};
+    try {
+        require(topology.at("status") == "resolved", "resolved_map_topology_required");
+        std::map<std::size_t, const Json *> mappings;
+        for (const auto &entry : mapping_getters.at("entries"))
+            mappings.emplace(entry.at("object_id").get<std::size_t>(), &entry);
+        Json entries = Json::array();
+        Json shared = out.at("shared_parameters");
+        bool complete = true;
+        for (const auto &id : topology.at("active_object_ids")) {
+            const auto object_id = id.get<std::size_t>();
+            const auto &object = topology.at("objects").at(object_id);
+            const auto type = object.at("native_type_key").get<std::int64_t>();
+            if (type != 1 && (type < 31 || type > 35))
+                continue;
+            const auto owner = object.at("layer_container_owner_object_id").get<std::size_t>();
+            const auto &local = containers.at("containers").at(owner);
+            require(!local.at("layer_count").is_null() && !local.at("layers").empty(),
+                    "pbr_first_layer_not_established");
+            const auto &layer = local.at("layers")[0];
+            Json entry = {{"entry_index", entries.size()},
+                          {"object_id", object_id},
+                          {"source_map_index", object.at("source_map_index")},
+                          {"native_type_key", type},
+                          {"bpmaterial_map_type", type == 1 ? 31 : type},
+                          {"layer_container_owner_object_id", owner},
+                          {"layer_index", 0},
+                          {"filename_status", "not_evaluated"}};
+            const auto &resources = layer.at("resource_inputs");
+            if (resources.at("status") == "resolved" && resources.at("entries").empty()) {
+                entry["filename_status"] = "empty";
+                entry["filename"] = "";
+            } else {
+                complete = false;
+                // These are resource-service inputs, not the image provider's
+                // returned filename. Keep native ownership and slot provenance.
+                if (!resources.at("entries").empty())
+                    entry["first_resource_slot_index"] = 0;
+            }
+            shared = {{"status", "not_evaluated"},
+                      {"source_entry_index", entries.size()},
+                      {"source_object_id", object_id},
+                      {"has_map", object.at("enabled")},
+                      {"use_image_alpha_channel", layer.at("option_bit_1").at("value")}};
+            const auto found = mappings.find(object_id);
+            if (found != mappings.end() && found->second->contains("mapping")) {
+                const auto &parameters = found->second->at("mapping").at("parameters");
+                const auto &mode_value = parameters.at("pattern_mapping").at("value");
+                const auto &unit = parameters.at("pattern_scalemode").at("value");
+                const auto &scale = parameters.at("pattern_scale").at("value");
+                const auto &offset = parameters.at("pattern_offset").at("value");
+                const auto &angle = parameters.at("pattern_angle").at("value");
+                // The readback copies XY only. An unknown independent scale_z
+                // does not invalidate known XY values; nonfinite IEEE values
+                // are copied as their existing structured representation.
+                if (mode_value.is_number_integer() && unit.is_number_integer() &&
+                    scale.is_array() && scale.size() == 2 && offset.is_array() &&
+                    offset.size() >= 2 && !angle.is_null()) {
+                    const auto mode = mode_value.get<std::int32_t>();
+                    shared["map_mode"] =
+                        mode == 1 || mode == 2 || mode == 4 || mode == 5 || mode == 6 ? mode : 0;
+                    shared["map_unit"] = unit == 0 ? 0 : 3;
+                    shared["uv_scale"] = scale;
+                    shared["uv_offset"] = Json::array({offset.at(0), offset.at(1)});
+                    shared["rotation_degrees"] = angle;
+                    if (shared.at("has_map").is_boolean() &&
+                        shared.at("use_image_alpha_channel").is_boolean())
+                        shared["status"] = "resolved";
+                }
+            }
+            // Every accepted type writes shared fields before appending its
+            // filename, including disabled maps and empty resource lists.
+            entry["shared_parameters_write"] = shared;
+            if (shared.at("status") != "resolved")
+                complete = false;
+            entries.push_back(std::move(entry));
+        }
+        out["entry_count"] = entries.size();
+        out["entries"] = std::move(entries);
+        out["shared_parameters"] = std::move(shared);
+        out["sequence_status"] = "resolved";
+        out["status"] = complete ? "resolved" : "partial";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace
 
 Json material_version_conversion(const Json &input, const Json &maps, const Json &bindings,
@@ -305,6 +401,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
     auto layers = material_layer_containers(maps, topology);
     auto layer_mapping_getters = material_layer_mapping_getters(layers, topology);
     auto layer_resource_getters = material_layer_resource_getters(layers, topology);
+    auto texture_readback = pbr_readback(topology, layers, layer_mapping_getters);
     auto projection = material_projection_states(maps, topology);
     auto projection_getters = material_projection_getter_states(projection, topology);
     auto parameters = converted_roots(input, mode, topology.at("status") == "resolved");
@@ -318,6 +415,7 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
             {"layer_containers", std::move(layers)},
             {"layer_mapping_getters", std::move(layer_mapping_getters)},
             {"layer_resource_getters", std::move(layer_resource_getters)},
+            {"bpmaterial_pbr_readback", std::move(texture_readback)},
             {"local_projection_states", std::move(projection)},
             {"projection_getters", std::move(projection_getters)},
             {"map_topology", std::move(topology)}};

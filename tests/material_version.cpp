@@ -177,5 +177,124 @@ unsigned material_version_tests() {
               active(c, 30)["layer_container_owner_object_id"] == 29 &&
               c["map_topology"]["active_object_ids"].size() == 2048,
           "long linked tables resolve iteratively while preserving type 30 local ownership");
+    auto readback = [&](const Json &maps) {
+        return settings(Json::object(), maps, 9)
+            .at("version_conversion")
+            .at("bpmaterial_pbr_readback");
+    };
+    auto pbr = readback(Json::array());
+    check(pbr.at("status") == "resolved" && pbr.at("entry_count") == 0 &&
+              pbr.at("shared_parameters").at("status") == "not_written_by_pbr_enumeration",
+          "empty PBR enumeration does not invent constructor or earlier bump state");
+    pbr = readback(Json::array({{{"Type", "1"}, {"pattern_off", "1"}, {"PatternFlags", "1"}}}));
+    check(pbr.at("entry_count") == 1 && pbr.at("entries")[0].at("native_type_key") == 1 &&
+              pbr.at("entries")[0].at("bpmaterial_map_type") == 31 &&
+              pbr.at("entries")[0].at("filename") == "" &&
+              pbr.at("shared_parameters").at("has_map") == false &&
+              pbr.at("shared_parameters").at("use_image_alpha_channel") == true,
+          "disabled empty pattern still appends albedo and writes its local flags");
+    pbr = readback(Json::array({{{"Type", "35"},
+                                 {"pattern_off", "1"},
+                                 {"pattern_mapping", "6"},
+                                 {"pattern_scalemode", "-7"},
+                                 {"pattern_scale.x", "7"},
+                                 {"pattern_scale.y", "8"},
+                                 {"pattern_offset.x", "9"},
+                                 {"pattern_offset.y", "10"},
+                                 {"pattern_offset.z", "11"},
+                                 {"pattern_angle", "12"},
+                                 {"PatternFlags", "1"}},
+                                {{"Type", "1"}, {"pattern_mapping", "2"}, {"PatternFlags", "1"}},
+                                {{"Type", "31"}},
+                                {{"Type", "2"}}}));
+    check(pbr.at("entry_count") == 3 && pbr.at("entries")[0].at("native_type_key") == 1 &&
+              pbr.at("entries")[1].at("native_type_key") == 31 &&
+              pbr.at("entries")[2].at("native_type_key") == 35,
+          "readback uses signed native map order rather than XML order and excludes bump");
+    check(pbr.at("entries")[0].at("bpmaterial_map_type") == 31 &&
+              pbr.at("entries")[1].at("bpmaterial_map_type") == 31,
+          "pattern and native albedo both survive without invented channel deduplication");
+    const auto &last = pbr.at("shared_parameters");
+    check(last.at("status") == "resolved" && last.at("source_entry_index") == 2 &&
+              last.at("has_map") == false && last.at("use_image_alpha_channel") == false &&
+              last.at("map_mode") == 6 && last.at("map_unit") == 3 &&
+              last.at("uv_scale") == Json::array({7., 8.}) &&
+              last.at("uv_offset") == Json::array({9., 10.}) && last.at("rotation_degrees") == 12.,
+          "last PBR map overwrites shared mapping and flags even with empty filename and disabled "
+          "map");
+    check(pbr.at("entries")[0].at("shared_parameters_write").at("map_mode") == 2 &&
+              pbr.at("entries")[0].at("shared_parameters_write").at("use_image_alpha_channel") ==
+                  true,
+          "earlier shared writes remain available separately from the last writer");
+    pbr = readback(Json::array({{{"Type", "32"}, {"Filename", "normal.jpg"}},
+                                {{"Type", "34"}, {"Filename", "metal.jpg"}}}));
+    check(pbr.at("status") == "partial" && pbr.at("sequence_status") == "resolved" &&
+              pbr.at("entry_count") == 2 &&
+              pbr.at("entries")[0].at("filename_status") == "not_evaluated" &&
+              !pbr.at("entries")[0].contains("filename") &&
+              pbr.at("entries")[0].at("first_resource_slot_index") == 0 &&
+              pbr.at("shared_parameters").at("status") == "resolved",
+          "resource requests establish slots and mapping but never fake a provider-returned "
+          "filename");
+    pbr = readback(Json::array({{{"Type", "31"}, {"Filename", ""}}}));
+    check(pbr.at("entries")[0].at("filename_status") == "not_evaluated",
+          "empty resource request is different from no resource slots");
+    pbr = readback(Json::array({{{"Type", "1"}, {"M556", "a.jpg,b.jpg"}}}));
+    check(pbr.at("entry_count") == 1 && pbr.at("entries")[0].at("first_resource_slot_index") == 0,
+          "PBR filename getter uses only the first slot rather than expanding appended resources");
+    pbr = readback(Json::array({{{"Type", "31"}}, {{"Type", "31"}, {"pattern_off", "1"}}}));
+    check(pbr.at("entry_count") == 1,
+          "native replacement of a duplicate type occurs before PBR readback enumeration");
+    pbr = readback(
+        Json::array({{{"Type", "31"}, {"map_link", "35"}, {"pattern_off", "1"}},
+                     {{"Type", "35"}, {"pattern_scale.x", "4"}, {"pattern_scale.y", "5"}}}));
+    check(pbr.at("entries")[0].at("layer_container_owner_object_id") ==
+                  pbr.at("entries")[1].at("layer_container_owner_object_id") &&
+              pbr.at("entries")[0].at("shared_parameters_write").at("uv_scale") ==
+                  Json::array({4., 5.}) &&
+              pbr.at("entries")[0].at("shared_parameters_write").at("has_map") == false &&
+              pbr.at("shared_parameters").at("has_map") == true,
+          "linked maps reuse native layers but preserve per-map enabled state and separate PBR "
+          "entries");
+    pbr = readback(Json::array({{{"Type", "2"}}, {{"Type", "30"}}, {{"Type", "36"}}}));
+    check(pbr.at("entry_count") == 0,
+          "non-PBR map types do not become PBR entries or shared-field writers");
+    pbr = readback(
+        Json::array({{{"Type", "31"}, {"map_link", "32"}}, {{"Type", "32"}, {"map_link", "31"}}}));
+    check(pbr.at("status") == "not_evaluated" && pbr.at("entry_count").is_null() &&
+              pbr.at("entries").empty(),
+          "unresolved cyclic topology cannot be presented as an empty or complete PBR sequence");
+    for (const auto &mode : std::vector<std::pair<int, int>>{{-1, 0}, {3, 0}, {7, 0}, {5, 5}}) {
+        pbr = readback(
+            Json::array({{{"Type", "33"}, {"pattern_mapping", std::to_string(mode.first)}}}));
+        check(pbr.at("shared_parameters").at("map_mode") == mode.second,
+              "BPMaterial readback uses native mapping-mode switch rather than raw enum cast");
+    }
+    pbr = readback(Json::array(
+        {{{"Type", "31"}, {"scale_z", 5}, {"pattern_scale.x", "4"}, {"pattern_scale.y", "5"}}}));
+    check(pbr.at("status") == "resolved" &&
+              pbr.at("shared_parameters").at("uv_scale") == Json::array({4., 5.}),
+          "unknown unused scale Z does not invalidate copied XY");
+    pbr = readback(Json::array({{{"Type", "31"},
+                                 {"pattern_angle", "nan(snan)"},
+                                 {"pattern_scale.x", "inf"},
+                                 {"pattern_scale.y", "-0"}}}));
+    check(pbr.at("status") == "resolved" &&
+              pbr.at("shared_parameters").at("rotation_degrees").at("ieee754_hex") ==
+                  "7ff0000000000001" &&
+              pbr.at("shared_parameters").at("uv_scale")[0].at("floating_point") == "infinity" &&
+              std::signbit(pbr.at("shared_parameters").at("uv_scale")[1].get<double>()),
+          "direct parameter copies preserve nonfinite representations and signed zero");
+    pbr = readback(Json::array({{{"Type", "31"}, {"pattern_mapping", 1}}}));
+    check(pbr.at("status") == "partial" && pbr.at("sequence_status") == "resolved" &&
+              pbr.at("entry_count") == 1 &&
+              pbr.at("shared_parameters").at("status") == "not_evaluated",
+          "unknown used mapping value does not invent a mode or erase known entry sequence");
+    pbr = readback(Json::array({{{"Type", "31"}, {"pattern_mapping", 1}}, {{"Type", "35"}}}));
+    check(
+        pbr.at("status") == "partial" && pbr.at("entry_count") == 2 &&
+            pbr.at("shared_parameters").at("status") == "resolved" &&
+            pbr.at("shared_parameters").at("source_entry_index") == 1,
+        "later known writer replaces unknown shared fields while preserving partial earlier trace");
     return checks;
 }
