@@ -31,6 +31,11 @@ unsigned component_material_tests() {
     const auto instance = source(Bytes{'O', 'u', 't', 'e', 'r'});
     const auto original = instance.dump();
     auto result = resolve_component_material_overrides(instance, context);
+    check(result.at("status") == "unresolved" && result.at("lookups").empty() &&
+              result.at("reason") == "graphics_source_not_established",
+          "unselected graphics source cannot assume both material override stages");
+    context.graphics_source = ComponentGraphicsSource::parametric_extraction;
+    result = resolve_component_material_overrides(instance, context);
     check(result.at("status") == "override_selected" && result.at("material_index") == 0 &&
               result.at("lookup_index") == 1 && result.at("lookups")[0].at("material_index") == 1,
           "outer footer wins over inner material; first same-name material wins");
@@ -129,6 +134,35 @@ unsigned component_material_tests() {
     result = resolve_component_material_overrides(changed_display, context);
     check(result.at("material_index") == 0, "lookup uses source bytes rather than display text");
     check(instance.dump() == original, "resolution does not mutate source material or geometry");
+    auto branch_context = context;
+    branch_context.graphics_source = ComponentGraphicsSource::saved_component_graphics;
+    result = resolve_component_material_overrides(instance, branch_context);
+    check(result.at("material_index") == 1 && result.at("lookup_index") == 0 &&
+              result.at("lookups")[1].at("status") == "not_applied",
+          "nonempty saved component graphics returns before the outer footer override");
+    result = resolve_component_material_overrides(Json::object(), branch_context);
+    check(result.at("material_index") == 1,
+          "saved graphics path does not inspect an unused invalid footer");
+    branch_context.noumenon_material_known = false;
+    result = resolve_component_material_overrides(instance, branch_context);
+    check(result.at("status") == "unresolved" && !result.contains("material_index"),
+          "unused footer hit cannot resolve unknown saved-graphics Noumenon material");
+    for (auto selected :
+         {ComponentGraphicsSource::instance_cache, ComponentGraphicsSource::default_handler}) {
+        branch_context.graphics_source = selected;
+        result = resolve_component_material_overrides(instance, branch_context);
+        check(result.at("material_index") == 0 && result.at("lookup_index") == 1 &&
+                  result.at("lookups")[0].at("status") == "not_applied",
+              "cache and default entries receive only the final footer override");
+        result = resolve_component_material_overrides(miss, branch_context);
+        check(result.at("status") == "preserve_entry_materials",
+              "unknown unused Noumenon material does not poison cache or default entries");
+        branch_context.noumenon_material_known = true;
+        branch_context.noumenon_material_name = Bytes{0xff};
+        result = resolve_component_material_overrides(miss, branch_context);
+        check(result.at("status") == "preserve_entry_materials",
+              "unused Noumenon bytes do not trigger an encoding failure");
+    }
     const auto expected = resolve_component_material_overrides(instance, context);
     std::vector<std::future<Json>> tasks;
     for (unsigned i = 0; i < 4; ++i)

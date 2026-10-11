@@ -684,6 +684,13 @@ struct MaterialCatalogOptions {
     // Supply the relevant host-locale equality when reproducing another locale.
     std::function<bool(const std::string &, const std::string &)> case_equal;
 };
+enum class ComponentGraphicsSource {
+    unknown,
+    parametric_extraction,
+    saved_component_graphics,
+    instance_cache,
+    default_handler
+};
 struct ComponentMaterialContext {
     // Names of successfully loaded BPMaterials in native enumeration order.
     // This must be the full list or an ordered prefix, not arbitrary candidates.
@@ -696,9 +703,12 @@ struct ComponentMaterialContext {
     std::optional<Bytes> noumenon_material_name;
     // Converts NUL-excluded Windows ANSI bytes to UTF-16. Without it, ASCII only.
     std::function<std::u16string(const Bytes &)> ansi_decoder;
+    // The actual nonempty source returned by the built-in physical-graphics path.
+    // Property presence or a successfully decoded cache does not select this.
+    ComponentGraphicsSource graphics_source = ComponentGraphicsSource::unknown;
 };
-// Input: decoded ParaCmptInstance. Resolves the inner Noumenon override followed
-// by the outer footer override. Does not rebuild geometry, select a project,
+// Input: decoded ParaCmptInstance. Applies only the overrides reached for the
+// supplied graphics_source; an unknown source stays unresolved. Does not rebuild geometry, select a project,
 // load materials, or associate serialized entry indices with rebuilt parts.
 Json resolve_component_material_overrides(const Json &component_instance,
                                           const ComponentMaterialContext &context);

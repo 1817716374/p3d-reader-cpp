@@ -1,18 +1,22 @@
 #include "blob_internal.hpp"
 namespace p3d {
 static Json component_text(const Bytes &b, bool ansi = true);
-static Json component_cache_sequence(const Json &instances, const char *context) {
-    Json out = {{"status", "not_evaluated"},
-                {"scope", "component_instance_cache_fallback"},
-                {"selection_assumption", "cache_fallback_selected"},
-                {"model_context_assumption", "valid_target_model"},
-                {"allocation_assumption", "successful"},
-                {"service_return_assumption", "normal"},
-                {"destination_transform_enabled", false},
-                {"source_container_transform", "not_applied"},
-                {"entries", Json::array()},
-                {"skipped_containers", Json::array()},
-                {"skipped_entries", Json::array()}};
+static Json component_cache_sequence(const Json &instances, const char *context,
+                                     bool transform_enabled) {
+    Json out = {
+        {"status", "not_evaluated"},
+        {"scope", "component_instance_cache_fallback"},
+        {"selection_assumption", "cache_fallback_selected"},
+        {"model_context_assumption", "valid_target_model"},
+        {"allocation_assumption", "successful"},
+        {"service_return_assumption", "normal"},
+        {"destination_transform_enabled", transform_enabled},
+        {"destination_transform_assumption", transform_enabled ? "identity_enabled" : "disabled"},
+        {"material_override_path", "component_data_footer_only"},
+        {"source_container_transform", "not_applied"},
+        {"entries", Json::array()},
+        {"skipped_containers", Json::array()},
+        {"skipped_entries", Json::array()}};
     Json sequence = Json::array();
     for (std::size_t source = 0; source < instances.size(); ++source) {
         const auto &instance = instances.at(source);
@@ -36,7 +40,8 @@ static Json component_cache_sequence(const Json &instances, const char *context)
         for (const auto &index : restore.at("entry_indices")) {
             const auto &packet = packets.at(index.get<std::size_t>());
             const auto &input = packet.at("native_geometry_input").at(context);
-            const auto &append = input.at("parametric_append_input");
+            const auto &append = input.at(transform_enabled ? "transformed_append_count"
+                                                            : "parametric_append_input");
             Json item = {{"source_instance_index", source},
                          {"source_entry_index", index},
                          {"source_object_id", instance.at("object_id")},
@@ -1476,9 +1481,17 @@ Json complex_blob(const std::string &name, const Bytes &b) {
                {"note", "Reference list and serialized graphics entries retain their source order. "
                         "Cached payloads are not added again to the visible scene."}};
         out["cache_rebuild"] = {{"active_graphics_selection", "not_established"},
+                                {"destination_transform_selection", "not_established"},
                                 {"owning_element_part_mapping_status", "not_established"}};
-        for (const auto *context : {"with_project", "without_project"})
-            out["cache_rebuild"][context] = component_cache_sequence(out.at("instances"), context);
+        for (const auto *context : {"with_project", "without_project"}) {
+            out["cache_rebuild"][context] = {
+                {"status", "not_evaluated"},
+                {"reason", "destination_transform_not_selected"},
+                {"destination_variants",
+                 {{"disabled", component_cache_sequence(out.at("instances"), context, false)},
+                  {"identity_enabled",
+                   component_cache_sequence(out.at("instances"), context, true)}}}};
+        }
     } else
         throw std::runtime_error("unsupported complex field");
     r.finish();

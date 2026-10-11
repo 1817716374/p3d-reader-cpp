@@ -445,7 +445,10 @@ unsigned graphics_bytes_tests() {
     const auto repeated_source = graphics({sweep_entry, ignored, sweep_entry}, true, mat);
     const auto mapped = cache(
         {repeated_source, graphics({short_entry, sweep_entry}), graphics({}), repeated_source});
-    const auto &rebuild = mapped.at("cache_rebuild").at("with_project");
+    auto cache_variant = [](const Json &field, const char *mode = "disabled") -> const Json & {
+        return field.at("cache_rebuild").at("with_project").at("destination_variants").at(mode);
+    };
+    const auto &rebuild = cache_variant(mapped);
     check(rebuild.at("status") == "rebuilt" && rebuild.at("entries").size() == 4,
           "cache reconstruction skips rejected containers and unhandled types in source order");
     for (std::size_t i = 0; i < 4; ++i) {
@@ -471,13 +474,13 @@ unsigned graphics_bytes_tests() {
           "cache branch provenance does not choose visible geometry or silently apply source "
           "placement");
     const auto uncertain = cache({repeated_source, graphics({entry()}), repeated_source});
-    const auto &unknown = uncertain.at("cache_rebuild").at("with_project");
+    const auto &unknown = cache_variant(uncertain);
     check(unknown.at("status") == "not_evaluated" && unknown.at("entries").empty() &&
               unknown.at("stopping_instance_index") == 1,
           "unknown source restore never publishes a partial or guessed rebuilt index list");
     const auto empty_cache = cache({graphics({ignored}), graphics({short_entry}), graphics({})});
-    check(empty_cache.at("cache_rebuild").at("with_project").at("status") == "rebuilt" &&
-              empty_cache.at("cache_rebuild").at("with_project").at("entries").empty(),
+    check(cache_variant(empty_cache).at("status") == "rebuilt" &&
+              cache_variant(empty_cache).at("entries").empty(),
           "known empty merged output differs from unknown reconstruction");
     // Valid empty curve-vector object: a nonempty Entry vector must not be
     // filtered by whether the emitted geometry contains points or triangles.
@@ -488,11 +491,30 @@ unsigned graphics_bytes_tests() {
     auto empty_group_entry = entry({}, empty_group);
     empty_group_entry[4] = 2;
     const auto with_empty_group = cache({graphics({empty_group_entry, sweep_entry})});
-    const auto &empty_group_order = with_empty_group.at("cache_rebuild").at("with_project");
+    const auto &empty_group_order = cache_variant(with_empty_group);
     check(empty_group_order.at("status") == "rebuilt" &&
               empty_group_order.at("entries").size() == 2 &&
               empty_group_order.at("entries").at(1).at("rebuilt_entry_index") == 1 &&
               empty_group_order.at("skipped_containers").empty(),
           "an empty but constructed curve group occupies its native rebuilt Entry slot");
+    check(mapped.at("cache_rebuild").at("with_project").at("status") == "not_evaluated" &&
+              !mapped.at("cache_rebuild").at("with_project").contains("entries") &&
+              mapped.at("cache_rebuild").at("destination_transform_selection") == "not_established",
+          "cache source alone cannot establish the target transform inherited from getGraphics");
+    const auto &transformed_rebuild = cache_variant(mapped, "identity_enabled");
+    check(
+        transformed_rebuild.at("status") == "rebuilt" &&
+            transformed_rebuild.at("entries") == rebuild.at("entries") &&
+            transformed_rebuild.at("destination_transform_enabled") == true &&
+            rebuild.at("destination_transform_enabled") == false &&
+            transformed_rebuild.at("material_override_path") == "component_data_footer_only",
+        "identity-enabled cache append preserves repeated entries under its separate assumptions");
+    check(cache_variant(uncertain, "identity_enabled").at("status") == "not_evaluated" &&
+              cache_variant(uncertain, "identity_enabled").at("entries").empty(),
+          "enabled transform does not make unknown source restoration successful");
+    check(cache_variant(with_empty_group, "identity_enabled").at("entries").size() == 2 &&
+              cache_variant(empty_cache, "identity_enabled").at("entries").empty(),
+          "transformed cache still counts constructed empty curve groups and skips unhandled "
+          "entries");
     return checks + graphics_native_tests() + text_bytes_tests() + swept_binary_tests();
 }

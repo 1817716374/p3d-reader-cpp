@@ -11,8 +11,34 @@ Json resolve_overrides(const Json &instance, const ComponentMaterialContext &con
                 {"duplicate_name_rule", "first_loaded_material_wins"},
                 {"material_list_complete", context.material_list_complete},
                 {"project_selection", "caller_supplied"},
+                {"active_graphics_selection", "not_established"},
                 {"lookups", Json::array()},
                 {"status", "preserve_entry_materials"}};
+    bool use_noumenon = false, use_footer = false;
+    switch (context.graphics_source) {
+    case ComponentGraphicsSource::parametric_extraction:
+        out["graphics_source"] = "parametric_extraction";
+        use_noumenon = use_footer = true;
+        break;
+    case ComponentGraphicsSource::saved_component_graphics:
+        out["graphics_source"] = "saved_component_graphics";
+        use_noumenon = true;
+        break;
+    case ComponentGraphicsSource::instance_cache:
+        out["graphics_source"] = "instance_cache";
+        use_footer = true;
+        break;
+    case ComponentGraphicsSource::default_handler:
+        out["graphics_source"] = "default_handler";
+        use_footer = true;
+        break;
+    default:
+        out["graphics_source"] = "unknown";
+        out["status"] = "unresolved";
+        out["reason"] = "graphics_source_not_established";
+        return out;
+    }
+    out["active_graphics_selection"] = "caller_supplied";
     // Native getMaterialList inserts loaded materials into a case-sensitive
     // PString map without replacing an existing name. Retain source indices.
     std::map<std::u16string, std::size_t> names;
@@ -67,7 +93,10 @@ Json resolve_overrides(const Json &instance, const ComponentMaterialContext &con
     };
     Json inner;
     try {
-        if (!noumenon_known)
+        if (!use_noumenon)
+            inner = {{"status", "not_applied"},
+                     {"reason", "source_entries_created_after_noumenon_override"}};
+        else if (!noumenon_known)
             inner = {{"status", "unresolved"}, {"reason", "noumenon_material_context_unavailable"}};
         else if (!noumenon_name)
             inner = {{"status", "absent"}};
@@ -79,10 +108,15 @@ Json resolve_overrides(const Json &instance, const ComponentMaterialContext &con
     apply(std::move(inner), "noumenon_component_material");
     Json outer;
     try {
-        const auto &reference = instance.at("footer").at("material_name_reference");
-        // Re-read the preserved source bytes rather than trusting a display name
-        // or a previously decoded name from a different Windows code page.
-        outer = lookup(bytesof(reference.at("source_bytes")));
+        if (!use_footer) {
+            outer = {{"status", "not_applied"},
+                     {"reason", "nonempty_saved_graphics_returns_before_footer_override"}};
+        } else {
+            const auto &reference = instance.at("footer").at("material_name_reference");
+            // Re-read the preserved source bytes rather than trusting a display name
+            // or a previously decoded name from a different Windows code page.
+            outer = lookup(bytesof(reference.at("source_bytes")));
+        }
     } catch (const std::exception &e) {
         outer = {{"status", "unresolved"}, {"reason", e.what()}};
     }
@@ -130,7 +164,6 @@ Json resolve_stored_component_material_overrides(const Json &instance, const Jso
     }
     auto out = resolve_overrides(instance, context, known, name);
     out["noumenon_source"] = std::move(source);
-    out["active_graphics_selection"] = "not_established";
     return out;
 }
 } // namespace p3d

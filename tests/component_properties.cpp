@@ -58,6 +58,7 @@ unsigned component_property_tests() {
     };
     auto one = [&](const Bytes &v) { return decode(object({{string("value"), property(v)}})); };
     ComponentMaterialContext saved_material_context;
+    saved_material_context.graphics_source = ComponentGraphicsSource::parametric_extraction;
     saved_material_context.material_names = {u"wood", u"steel", u"wood", u""};
     saved_material_context.material_list_complete = true;
     // Deliberately conflicting manual state: the stored-state interface must use
@@ -78,7 +79,7 @@ unsigned component_property_tests() {
               selected_material.at("material_index") == 0 &&
               selected_material.at("noumenon_source").at("input").at("bytes") == 11 &&
               selected_material.at("lookups")[0].at("lookup_name_bytes").at("bytes") == 4 &&
-              selected_material.at("active_graphics_selection") == "not_established",
+              selected_material.at("active_graphics_selection") == "caller_supplied",
           "stored material override uses source bytes, NUL boundary and first loaded identity");
     selected_material = resolve_stored_component_material_overrides(
         material_instance(Bytes{'s', 't', 'e', 'e', 'l'}), saved_wood, saved_material_context);
@@ -144,6 +145,22 @@ unsigned component_property_tests() {
                                                       saved_material_context)
                   .at("material_index") == 0,
           "stored material conversion uses caller source encoding");
+    auto saved_branch_context = saved_material_context;
+    saved_branch_context.graphics_source = ComponentGraphicsSource::unknown;
+    check(resolve_stored_component_material_overrides(missing_material_instance, saved_wood,
+                                                      saved_branch_context)
+                  .at("status") == "unresolved",
+          "stored property presence cannot select the active graphics source");
+    saved_branch_context.graphics_source = ComponentGraphicsSource::instance_cache;
+    check(resolve_stored_component_material_overrides(missing_material_instance, saved_wood,
+                                                      saved_branch_context)
+                  .at("status") == "preserve_entry_materials",
+          "saved Noumenon material is not applied to subsequently appended cache entries");
+    saved_branch_context.graphics_source = ComponentGraphicsSource::saved_component_graphics;
+    check(resolve_stored_component_material_overrides(
+              material_instance(Bytes{'s', 't', 'e', 'e', 'l'}), saved_wood, saved_branch_context)
+                  .at("material_index") == 0,
+          "saved componentGraphics material is not overwritten by the unused footer stage");
     auto value = [&](const Bytes &v) {
         return one(v).at("root").at("entries").at(0).at("value").at("value");
     };
