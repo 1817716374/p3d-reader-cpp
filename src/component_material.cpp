@@ -1,9 +1,11 @@
 #include "internal.hpp"
+#include <p3d/component_graphics.hpp>
 
 namespace p3d {
 namespace {
 Json resolve_overrides(const Json &instance, const ComponentMaterialContext &context,
-                       bool noumenon_known, const std::optional<Bytes> &noumenon_name) {
+                       bool noumenon_known, const std::optional<Bytes> &noumenon_name,
+                       ComponentGraphicsSource graphics_source) {
     Json out = {{"reader_profile", "bimbase_2025_component_material_overrides"},
                 {"scope", "component_graphics_after_extraction_before_entity_part_overrides"},
                 {"applies_to", "all_rebuilt_graphics_entries"},
@@ -15,7 +17,7 @@ Json resolve_overrides(const Json &instance, const ComponentMaterialContext &con
                 {"lookups", Json::array()},
                 {"status", "preserve_entry_materials"}};
     bool use_noumenon = false, use_footer = false;
-    switch (context.graphics_source) {
+    switch (graphics_source) {
     case ComponentGraphicsSource::parametric_extraction:
         out["graphics_source"] = "parametric_extraction";
         use_noumenon = use_footer = true;
@@ -123,16 +125,9 @@ Json resolve_overrides(const Json &instance, const ComponentMaterialContext &con
     apply(std::move(outer), "component_data_footer");
     return out;
 }
-} // namespace
-
-Json resolve_component_material_overrides(const Json &instance,
-                                          const ComponentMaterialContext &context) {
-    return resolve_overrides(instance, context, context.noumenon_material_known,
-                             context.noumenon_material_name);
-}
-
-Json resolve_stored_component_material_overrides(const Json &instance, const Json &properties,
-                                                 const ComponentMaterialContext &context) {
+Json resolve_stored_overrides(const Json &instance, const Json &properties,
+                              const ComponentMaterialContext &context,
+                              ComponentGraphicsSource graphics_source) {
     bool known = false;
     std::optional<Bytes> name;
     Json source = {{"status", "not_evaluated"},
@@ -162,8 +157,65 @@ Json resolve_stored_component_material_overrides(const Json &instance, const Jso
         name.reset();
         source["reason"] = e.what();
     }
-    auto out = resolve_overrides(instance, context, known, name);
+    auto out = resolve_overrides(instance, context, known, name, graphics_source);
     out["noumenon_source"] = std::move(source);
+    return out;
+}
+} // namespace
+
+Json resolve_component_material_overrides(const Json &instance,
+                                          const ComponentMaterialContext &context) {
+    return resolve_overrides(instance, context, context.noumenon_material_known,
+                             context.noumenon_material_name, context.graphics_source);
+}
+
+Json resolve_stored_component_material_overrides(const Json &instance, const Json &properties,
+                                                 const ComponentMaterialContext &context) {
+    return resolve_stored_overrides(instance, properties, context, context.graphics_source);
+}
+
+Json resolve_stored_component_materials(const Json &properties, const Json &instance,
+                                        const ComponentMaterialContext &context) {
+    Json out = {{"scope", "stored_component_graphics_material_overrides"},
+                {"status", "not_evaluated"},
+                {"entries", Json::array()},
+                {"owning_element_part_mapping_status", "not_established"},
+                {"final_draw_material_status", "not_evaluated"}};
+    auto choice = resolve_stored_component_graphics(properties, instance);
+    out["graphics_selection"] = choice;
+    // An explicit context source must never bypass an unknown earlier extraction
+    // or manufacture the default handler's output. Do not invoke name decoders.
+    if (choice.at("status") != "selected") {
+        out["reason"] = "graphics_source_not_selected";
+        return out;
+    }
+    const auto &name = choice.at("graphics_source");
+    const auto source =
+        name == "parametric_extraction"      ? ComponentGraphicsSource::parametric_extraction
+        : name == "saved_component_graphics" ? ComponentGraphicsSource::saved_component_graphics
+        : name == "instance_cache"           ? ComponentGraphicsSource::instance_cache
+                                             : ComponentGraphicsSource::unknown;
+    auto overrides = resolve_stored_overrides(instance, properties, context, source);
+    overrides["active_graphics_selection"] = "stored_state_selection";
+    const auto &status = overrides.at("status");
+    out["status"] = status;
+    auto entries = std::move(choice.at("entries"));
+    for (auto &entry : entries) {
+        Json material = {{"status", status}};
+        if (status == "override_selected") {
+            material["material_index"] = overrides.at("material_index");
+            material["lookup_index"] = overrides.at("lookup_index");
+            // Native Entry::setMaterial copies the selected object per Entry.
+            // A common loaded-list index is provenance, not shared ownership.
+            material["native_material_ownership"] = "independent_entry_copy";
+        } else if (status == "preserve_entry_materials") {
+            material["identity_status"] = "not_evaluated";
+            material["reason"] = "original_entry_material_not_replaced_by_uniform_override";
+        }
+        entry["material_override"] = std::move(material);
+    }
+    out["entries"] = std::move(entries);
+    out["material_overrides"] = std::move(overrides);
     return out;
 }
 } // namespace p3d

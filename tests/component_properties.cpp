@@ -1300,6 +1300,99 @@ unsigned component_property_tests() {
     check(resolve_stored_component_graphics(Json::object(), repeated_cache).at("status") ==
               "not_evaluated",
           "unavailable component properties are not a known empty Noumenon");
+    const auto saved_wood_line =
+        decode(object({{string("componentGraphics"), property(frame(B, single_line))},
+                       {string("\x07_component_material"), property(string("wood"))}}));
+    auto automatic_material_context = saved_material_context;
+    automatic_material_context.graphics_source = ComponentGraphicsSource::unknown;
+    unsigned decoded_names = 0;
+    automatic_material_context.ansi_decoder = [&](const Bytes &bytes) {
+        ++decoded_names;
+        return std::u16string(bytes.begin(), bytes.end());
+    };
+    const auto steel_footer = material_instance(Bytes{'s', 't', 'e', 'e', 'l'});
+    auto combined = resolve_stored_component_materials(saved_wood_line, steel_footer,
+                                                       automatic_material_context);
+    check(combined.at("status") == "override_selected" && decoded_names == 1 &&
+              combined.at("entries")[0].at("material_override").at("material_index") == 0 &&
+              combined.at("material_overrides").at("active_graphics_selection") ==
+                  "stored_state_selection" &&
+              combined.at("material_overrides").at("lookups")[1].at("status") == "not_applied",
+          "automatic saved graphics selection applies only the saved wood name, not steel footer");
+    check(combined.at("entries")[0].at("material_override").at("native_material_ownership") ==
+                  "independent_entry_copy" &&
+              combined.at("final_draw_material_status") == "not_evaluated" &&
+              combined.at("owning_element_part_mapping_status") == "not_established",
+          "loaded material identity does not claim native sharing or final draw part binding");
+    auto agent_wood_members = agent_members();
+    agent_wood_members[5].second = property(frame(B, single_line));
+    agent_wood_members.emplace_back(string("\x07_component_material"), property(string("wood")));
+    decoded_names = 0;
+    combined = resolve_stored_component_materials(decode(object(agent_wood_members)), steel_footer,
+                                                  automatic_material_context);
+    check(combined.at("status") == "override_selected" && decoded_names == 2 &&
+              combined.at("entries")[0].at("material_override").at("material_index") == 1 &&
+              combined.at("entries")[0].at("material_override").at("lookup_index") == 1,
+          "automatic Agent selection applies Noumenon then footer material");
+    auto steel_cache = repeated_cache;
+    steel_cache["footer"] = steel_footer.at("footer");
+    automatic_material_context.graphics_source = ComponentGraphicsSource::saved_component_graphics;
+    decoded_names = 0;
+    combined =
+        resolve_stored_component_materials(saved_wood, steel_cache, automatic_material_context);
+    check(combined.at("status") == "override_selected" && decoded_names == 1 &&
+              combined.at("entries").size() == 2 &&
+              combined.at("material_overrides").at("lookups")[0].at("status") == "not_applied",
+          "automatic cache selection ignores conflicting manual source and skips Noumenon lookup");
+    check(combined.at("entries")[0].at("source_instance_index") == 0 &&
+              combined.at("entries")[1].at("source_instance_index") == 1 &&
+              combined.at("entries")[0].at("material_override").at("material_index") == 1 &&
+              combined.at("entries")[1].at("material_override").at("material_index") == 1,
+          "same-material repeated cache entries remain separate source identities");
+    auto missing_material_cache = repeated_cache;
+    missing_material_cache["footer"] = missing_material_instance.at("footer");
+    combined = resolve_stored_component_materials(saved_wood, missing_material_cache,
+                                                  automatic_material_context);
+    check(combined.at("status") == "preserve_entry_materials" &&
+              combined.at("entries")[0].at("material_override").at("identity_status") ==
+                  "not_evaluated" &&
+              !combined.at("entries")[0].at("material_override").contains("material_index"),
+          "cache miss preserves entry material uncertainty, not earlier Noumenon wood");
+    automatic_material_context.material_list_complete = false;
+    combined = resolve_stored_component_materials(saved_wood, missing_material_cache,
+                                                  automatic_material_context);
+    check(combined.at("status") == "unresolved" && combined.at("entries").size() == 2 &&
+              combined.at("entries")[1].at("material_override").at("status") == "unresolved",
+          "incomplete loaded list prevents treating cache material lookup as a confirmed miss");
+    automatic_material_context.material_list_complete = true;
+    decoded_names = 0;
+    for (const auto &props : {Json::object(), stored_graphics({1}), agent_result({1}),
+                              decode(object(repeated_children))}) {
+        combined =
+            resolve_stored_component_materials(props, steel_cache, automatic_material_context);
+        check(combined.at("status") == "not_evaluated" && combined.at("entries").empty() &&
+                  !combined.contains("material_overrides") && decoded_names == 0,
+              "unknown source never runs name callbacks or trusts explicit context source");
+    }
+    combined = resolve_stored_component_materials(decode(object({})), no_cache,
+                                                  automatic_material_context);
+    check(combined.at("graphics_selection").at("status") == "default_handler_required" &&
+              combined.at("status") == "not_evaluated" && decoded_names == 0,
+          "default handler requirement does not become a known material or empty final object");
+    combined = resolve_stored_component_materials(stored_graphics(graphics), steel_cache,
+                                                  automatic_material_context);
+    check(combined.at("graphics_selection").at("cache_destination_transform") ==
+                  "identity_enabled" &&
+              combined.at("entries").size() == 2 && combined.at("status") == "override_selected",
+          "material integration retains identity-enabled cache target selection");
+    automatic_material_context.ansi_decoder = [](const Bytes &) -> std::u16string {
+        throw std::runtime_error("decoder unavailable");
+    };
+    combined = resolve_stored_component_materials(saved_wood_line, steel_footer,
+                                                  automatic_material_context);
+    check(combined.at("status") == "unresolved" &&
+              !combined.at("entries")[0].at("material_override").contains("material_index"),
+          "material decoder failure retains known graphics without fabricating a material");
     check(unit(frame(TRANS, short_matrix)).at("status") == "invalid",
           "all twelve matrix coefficients required");
     Bytes long_matrix{1};
