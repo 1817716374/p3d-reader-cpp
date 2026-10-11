@@ -140,6 +140,82 @@ unsigned graphics_bytes_tests() {
           "entry material and external texture reference decoded");
     check(j["inline_material"]["parameters"] == p["inline_material"]["parameters"],
           "graphics and entry material independently decoded");
+    const auto &core_transfer = p.at("inline_material").at("project_core_parameter_transfer");
+    check(core_transfer.at("status") == "decoded" && core_transfer.at("parameters").size() == 11 &&
+              core_transfer.at("project_registration") == "not_performed" &&
+              core_transfer.at("current_project_material_selection") == "not_evaluated",
+          "inline core transfer is conditional and does not claim actual project registration");
+    auto parameter_named = [](const Json &parameters, const char *name) -> const Json & {
+        for (const auto &parameter : parameters)
+            if (parameter.at("kind") == name)
+                return parameter;
+        throw std::runtime_error("missing fixture material parameter");
+    };
+    auto changed_flags = mat;
+    changed_flags.at(mat.size() - 54) = 0; // glow_factor flag
+    changed_flags.at(mat.size() - 45) = 0; // ambient_factor flag
+    changed_flags.at(mat.size() - 27) = 0; // roughness_factor flag
+    const auto flag_source = decode_inline_material(changed_flags);
+    for (const auto *name : {"glow_factor", "ambient_factor"}) {
+        check(
+            !parameter_named(flag_source.at("parameters"), name).at("enabled").get<bool>() &&
+                parameter_named(flag_source.at("project_core_parameter_transfer").at("parameters"),
+                                name)
+                        .at("enabled") == true,
+            "source-disabled glow and ambient flags are kept but forced on in conditional reload");
+    }
+    check(parameter_named(flag_source.at("project_core_parameter_transfer").at("parameters"),
+                          "roughness_factor")
+                  .at("enabled") == false,
+          "other disabled flags survive registration and reload");
+    for (const auto &test : std::vector<std::pair<double, double>>{{-5.0, 0.0},
+                                                                   {0.0, 0.0},
+                                                                   {-0.0, -0.0},
+                                                                   {0.5, 0.5},
+                                                                   {6.0, 6.0},
+                                                                   {100.0, 100.0},
+                                                                   {101.0, 100.0}}) {
+        auto bytes = changed_flags;
+        std::memcpy(bytes.data() + bytes.size() - 26, &test.first, sizeof(double));
+        const auto material = decode_inline_material(bytes);
+        const auto source_value = parameter_named(material.at("parameters"), "roughness_factor")
+                                      .at("value")
+                                      .get<double>();
+        const auto effective_value =
+            parameter_named(material.at("project_core_parameter_transfer").at("parameters"),
+                            "roughness_factor")
+                .at("value")
+                .get<double>();
+        check(source_value == test.first && effective_value == test.second &&
+                  std::signbit(effective_value) == std::signbit(test.second),
+              "native roughness limits are 0..100 even when disabled; source and signed zero "
+              "survive");
+    }
+    for (const auto &parameter : core_transfer.at("parameters")) {
+        const auto name = parameter.at("kind").get<std::string>();
+        if (name == "roughness_factor")
+            continue;
+        check(
+            parameter.at("value") ==
+                parameter_named(p.at("inline_material").at("parameters"), name.c_str()).at("value"),
+            "other core values, including values over one, are transferred without clamping");
+    }
+    auto invalid_source = mat;
+    invalid_source[0] = 0;
+    const auto invalid_transfer =
+        decode_inline_material(invalid_source).at("project_core_parameter_transfer");
+    check(invalid_transfer.at("status") == "not_applied" &&
+              invalid_transfer.at("parameters").empty(),
+          "invalid source does not claim new registration, independently of later existing lookup");
+    for (double nonfinite :
+         {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        auto bytes = mat;
+        std::memcpy(bytes.data() + bytes.size() - 26, &nonfinite, sizeof(double));
+        const auto transfer = decode_inline_material(bytes).at("project_core_parameter_transfer");
+        check(transfer.at("status") == "not_evaluated" && transfer.at("parameters").empty() &&
+                  transfer.at("stopping_parameter") == "roughness_factor",
+              "nonfinite parameters do not silently become a complete JSON null-valued transfer");
+    }
     check(p["line_style_scale"] == 2.5 && p["start_width"] == 3.5 && p["end_width"] == 4.5 &&
               p["layer_id"] == 0xfffffff1u,
           "entry footer fields retain unsigned layer ID");

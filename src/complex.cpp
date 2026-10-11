@@ -1076,6 +1076,52 @@ static Json cached(const Bytes &b) {
         throw std::runtime_error("cached geometry kind");
     return out;
 }
+static Json inline_material_core_transfer(const Json &source) {
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "core_parameters_after_new_project_registration_and_reload"},
+                {"selection_assumption", "reload_selects_the_same_newly_registered_material"},
+                {"service_return_assumption", "normal"},
+                {"project_registration", "not_performed"},
+                {"current_project_material_selection", "not_evaluated"},
+                {"texture_transfer", "not_evaluated"},
+                {"identity_transfer", "not_evaluated"},
+                {"parameters", Json::array()}};
+    if (!source.at("is_valid").get<bool>()) {
+        out["status"] = "not_applied";
+        out["reason"] = "invalid_source_skips_new_material_registration";
+        return out;
+    }
+    auto parameters = source.at("parameters");
+    for (auto &parameter : parameters) {
+        const auto kind = parameter.at("kind").get<std::string>();
+        const auto &value = parameter.at("value");
+        auto finite = [](const Json &v) { return std::isfinite(v.get<double>()); };
+        if (value.is_array() ? !std::all_of(value.begin(), value.end(), finite) : !finite(value)) {
+            out["reason"] = "non_finite_core_parameter";
+            out["stopping_parameter"] = kind;
+            return out;
+        }
+        parameter["value_rule"] = "copied";
+        parameter["flag_rule"] = "copied";
+        if (kind == "roughness_factor") {
+            // The native setter bounds this field by 100, despite the public
+            // SDK comment describing a 0..1 range. Preserve negative zero.
+            const auto number = value.get<double>();
+            parameter["value"] = number < 0.0 ? 0.0 : number > 100.0 ? 100.0 : number;
+            parameter["value_rule"] = "clamped_0_100";
+        }
+        if (kind == "glow_factor" || kind == "ambient_factor") {
+            // Registration ignores these source flags; conversion back to
+            // BPMaterial explicitly writes true, even when the value is zero.
+            parameter["flag"] = 1;
+            parameter["enabled"] = true;
+            parameter["flag_rule"] = "enabled_on_reload";
+        }
+    }
+    out["parameters"] = std::move(parameters);
+    out["status"] = "decoded";
+    return out;
+}
 Json decode_inline_material(const Bytes &b) {
     Reader r(b);
     auto string = [&]() {
@@ -1173,6 +1219,7 @@ Json decode_inline_material(const Bytes &b) {
     out["footer_hex"] = hex(slice(b, footer_start, b.size() - footer_start));
     out["note"] = "Source material flags and parameters; texture paths are references. "
                   "The encoding label is a library identifier, not a serialized version byte.";
+    out["project_core_parameter_transfer"] = inline_material_core_transfer(out);
     return out;
 }
 static std::uint32_t be32(Reader &r) {
