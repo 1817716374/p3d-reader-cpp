@@ -1010,7 +1010,97 @@ unsigned component_property_tests() {
           "root Agent branch excludes ordinary child traversal");
     check(call.at("effective_transform_status") == "not_established",
           "parent matrix is not advertised as the actual invocation transform");
+    auto agent_result = [&](const Bytes &saved) {
+        auto m = agent_members();
+        m[5].second = property(frame(B, saved));
+        return decode(object(m));
+    };
+    auto empty_agent = agent_result({});
+    check(empty_agent.at("agent_graphics_input").at("status") == "rebuilt" &&
+              empty_agent.at("agent_graphics_input").at("active_project_assumption") == "present" &&
+              empty_agent.at("agent_graphics_input").at("entries").empty() &&
+              empty_agent.at("active_graphics_selection") == "not_established",
+          "empty saved Agent bytes keep empty constructor graphics under explicit project "
+          "assumptions");
+    auto serialized_empty_agent = agent_result(graphics).at("agent_graphics_input");
+    check(serialized_empty_agent.at("status") == "rebuilt" &&
+              serialized_empty_agent.at("model_selection").at("initial_lookup_id") == 0xfffffffeu &&
+              serialized_empty_agent.at("model_selection").at("explicit_model") == "none",
+          "Agent factory uses saved-model sentinel and active-model fallback, not root explicit "
+          "model");
+    auto invalid_agent = agent_result({1});
+    check(invalid_agent.at("status") == "decoded" &&
+              invalid_agent.at("agent_graphics_input").at("status") == "not_evaluated" &&
+              invalid_agent.at("agent_graphics_input").contains("decode_error"),
+          "Agent graphics framing error stays separate from decoded property stack");
+    Bytes ignored_agent_graphics = graphics;
+    ignored_agent_graphics[134] = 1; // one Entry in the model-less graphics header
+    Bytes ignored_agent_entry(36, 0);
+    ignored_agent_entry[4] = 8;
+    qword(ignored_agent_graphics, ignored_agent_entry.size());
+    ignored_agent_graphics.insert(ignored_agent_graphics.end(), ignored_agent_entry.begin(),
+                                  ignored_agent_entry.end());
+    auto ignored_agent = agent_result(ignored_agent_graphics).at("agent_graphics_input");
+    check(ignored_agent.at("status") == "rebuilt" && ignored_agent.at("entries").empty() &&
+              ignored_agent.at("skipped_entry_indices") == Json::array({0}),
+          "retained unhandled source Entry is skipped only during Agent append");
+    ignored_agent_graphics[142 + 8 + 4] = 7;
+    auto unread_agent = agent_result(ignored_agent_graphics).at("agent_graphics_input");
+    check(unread_agent.at("status") == "not_evaluated" && unread_agent.at("entries").empty(),
+          "unread text geometry prevents publishing Agent rebuilt indices");
     Bytes short_matrix(matrix_wire.begin(), matrix_wire.end() - 24);
+    auto write_word = [](Bytes &b, std::size_t offset, std::uint64_t value, unsigned width) {
+        for (unsigned i = 0; i < width; ++i)
+            b.at(offset + i) = static_cast<std::uint8_t>(value >> (8 * i));
+    };
+    Bytes line_packet(104, 0);
+    const Bytes signature{'b', 'g', '0', '0', '0', '1', 'f', 'b'};
+    std::copy(signature.begin(), signature.end(), line_packet.begin());
+    for (const auto &field : std::vector<std::pair<std::size_t, unsigned>>{
+             {12, 8}, {14, 12}, {16, 4}, {18, 8}, {40, 6}, {42, 56}, {44, 8}})
+        write_word(line_packet, field.first, field.second, 2);
+    write_word(line_packet, 8, 12, 4);
+    write_word(line_packet, 20, 8, 4);
+    line_packet[24] = 1;
+    write_word(line_packet, 28, 20, 4);
+    write_word(line_packet, 48, 8, 4);
+    Bytes line_entry(36, 0);
+    line_entry[4] = 1;
+    write_word(line_entry, 28, line_packet.size(), 8);
+    append(line_entry, line_packet);
+    auto saved_entries = [&](const std::vector<Bytes> &entries) {
+        Bytes saved = graphics;
+        write_word(saved, 134, entries.size(), 8);
+        for (const auto &entry : entries) {
+            qword(saved, entry.size());
+            append(saved, entry);
+        }
+        return saved;
+    };
+    const auto repeated_agent =
+        agent_result(saved_entries({line_entry, ignored_agent_entry, line_entry}))
+            .at("agent_graphics_input");
+    check(repeated_agent.at("status") == "rebuilt" && repeated_agent.at("entries").size() == 2 &&
+              repeated_agent.at("entries")[0].at("source_entry_index") == 0 &&
+              repeated_agent.at("entries")[1].at("source_entry_index") == 2 &&
+              repeated_agent.at("entries")[1].at("rebuilt_entry_index") == 1 &&
+              repeated_agent.at("entries")[1].at("entry_material_input") == "none" &&
+              repeated_agent.at("skipped_entry_indices") == Json::array({1}),
+          "Agent preserves repeated supported entries and skips unhandled source types in order");
+    auto text_entry = ignored_agent_entry;
+    text_entry[4] = 7;
+    const auto partial_agent =
+        agent_result(saved_entries({line_entry, text_entry})).at("agent_graphics_input");
+    check(partial_agent.at("status") == "not_evaluated" && partial_agent.at("entries").empty(),
+          "unknown later Agent source prevents publishing a partial rebuilt sequence");
+    auto model_graphics = graphics;
+    model_graphics.insert(model_graphics.begin() + 9, {123, 0, 0, 0});
+    model_graphics[8] = 1;
+    check(agent_result(model_graphics)
+                  .at("agent_graphics_input")
+                  .at("model_selection")
+                  .at("initial_lookup_id") == 123,
+          "Agent factory preserves saved initial model lookup ID");
     check(unit(frame(TRANS, short_matrix)).at("status") == "invalid",
           "all twelve matrix coefficients required");
     Bytes long_matrix{1};

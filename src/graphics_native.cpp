@@ -1097,6 +1097,45 @@ Json parametric_append_input(const Json &input) {
     return out;
 }
 
+Json transformed_append_count(const Json &input) {
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "single_entry_append_count_with_destination_transform"},
+                {"destination_assumption", "valid_unfinished_graphics_with_transform"},
+                {"allocation_assumption", "successful"},
+                {"service_return_assumption", "normal"},
+                {"transformed_geometry", "not_evaluated"}};
+    if (input.at("entry_restore").at("status") != "retained") {
+        out["reason"] = "source_entry_not_retained";
+        return out;
+    }
+    const auto type = input.at("entry_geometry_type").get<std::int32_t>();
+    if (!((type >= 1 && type <= 7) || type == 10)) {
+        out.update({{"status", "skipped"}, {"output_count", 0}});
+        return out;
+    }
+    if (input.at("status") != "geometry_constructed") {
+        out["reason"] = "source_geometry_not_constructed";
+        return out;
+    }
+    // Raw B-spline transformed-copy factories return their allocated wrapper even
+    // when the storage-copy status is nonzero. Other supported add routines clone
+    // first, then transform without using the transform return value as a filter.
+    if (type == 4 || type == 5) {
+        out["copy_rule"] = "allocated_bspline_wrapper_survives_copy_status";
+    } else if (type >= 1 && type <= 6 &&
+               input.at("parametric_append_input").at("status") == "appended") {
+        out["copy_rule"] = "parametric_append_input";
+    } else {
+        out["reason"] = "transformed_append_copy_not_established";
+        return out;
+    }
+    out["status"] = "appended";
+    out["output_count"] = 1;
+    out["entry_material_input"] =
+        (type == 2 || type == 3 || type == 6) ? "source_entry_material" : "none";
+    return out;
+}
+
 Json native_input(const Bytes &entry, bool model_has_project) {
     const std::size_t geometry_start = model_has_project ? 36 : 32;
     Json out = {{"status", "not_evaluated"},
@@ -1316,6 +1355,7 @@ Json graphics_entry_native_input(const Bytes &entry) {
     for (const auto *context : {"with_project", "without_project"}) {
         out[context]["entry_restore"] = entry_restore(entry, out.at(context));
         out[context]["parametric_append_input"] = parametric_append_input(out.at(context));
+        out[context]["transformed_append_count"] = transformed_append_count(out.at(context));
     }
     const auto &with = out.at("with_project").at("status");
     const auto &without = out.at("without_project").at("status");

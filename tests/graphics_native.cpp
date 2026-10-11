@@ -363,7 +363,8 @@ unsigned graphics_native_tests() {
     const auto polyline = point_curve(4, 6, 6);
     for (const auto &other : {line, ellipse, polyline, point_curve(18, 6, 6)}) {
         const auto raw = with_project(packet(4, other));
-        check(raw.at("status") == "rejected" && raw.at("reason") == "native_bspline_pointer_missing" &&
+        check(raw.at("status") == "rejected" &&
+                  raw.at("reason") == "native_bspline_pointer_missing" &&
                   raw.at("bspline_pointer_extraction").at("status") == "null" &&
                   raw.at("bspline_pointer_extraction").at("native_result") == 1 &&
                   raw.at("entry_restore").at("status") == "rejected" &&
@@ -876,5 +877,26 @@ unsigned graphics_native_tests() {
     unsafe_tail.push_back(3);
     check(with_project(unsafe_tail).at("parametric_append_input").at("status") == "not_evaluated",
           "successful geometry copy cannot bypass an unconfirmed source Entry footer");
+    for (const auto &item : std::vector<std::pair<int, Bytes>>{{1, line},
+                                                               {1, ellipse},
+                                                               {2, empty_group},
+                                                               {2, nested_group},
+                                                               {3, polyface()},
+                                                               {6, scalar_solid(7, 120)}}) {
+        const auto transformed =
+            with_project(packet(item.first, item.second)).at("transformed_append_count");
+        check(transformed.at("status") == "appended" && transformed.at("output_count") == 1 &&
+                  transformed.at("transformed_geometry") == "not_evaluated",
+              "enabled destination transform preserves Entry count without claiming coordinates");
+        check(transformed.at("entry_material_input") ==
+                  (item.first == 1 ? "none" : "source_entry_material"),
+              "curve primitive append omits material while collection mesh solid pass it");
+    }
+    for (int type : {1, 2, 3, 4, 5, 6, 7, 10})
+        check(with_project(packet(type, {})).at("transformed_append_count").at("status") ==
+                  "not_evaluated",
+              "enabled transform does not turn unread geometry into a confirmed append");
+    check(with_project(packet(8, {})).at("transformed_append_count").at("status") == "skipped",
+          "PPC transformed append skips unhandled retained Entry types");
     return checks;
 }

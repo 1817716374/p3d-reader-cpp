@@ -782,6 +782,11 @@ unsigned swept_binary_tests() {
                     "B-spline wrapper clone copies constructed storage without regenerating knots");
                 for (bool project : {false, true}) {
                     const auto raw = native_curve(b, 4, project);
+                    check(raw.at("transformed_append_count").at("status") == "appended" &&
+                              raw.at("transformed_append_count").at("output_count") == 1 &&
+                              raw.at("transformed_append_count").at("entry_material_input") ==
+                                  "none",
+                          "transformed raw B-spline copy retains one allocated wrapper");
                     check(raw.at("status") == "geometry_constructed" &&
                               raw.at("bspline_pointer_extraction").at("stored_object_reused") ==
                                   true &&
@@ -979,6 +984,10 @@ unsigned swept_binary_tests() {
               "native PointString conversion is skipped while actual curve members are sampled");
         const auto &append = result.at("parametric_append_input");
         const auto &copied = append.at("boundary_storage_copy");
+        check(result.at("transformed_append_count").at("status") == "appended" &&
+                  result.at("transformed_append_count").at("output_count") == 1 &&
+                  result.at("transformed_append_count").at("entry_material_input") == "none",
+              "transformed surface-copy factory retains its allocated wrapper and omits material");
         check(append.at("status") == "appended" &&
                   copied.at("loop_count") == (tag == 18 ? 0u : 1u) &&
                   copied.at("curve_count") == (tag == 18 ? 0u : 1u) &&

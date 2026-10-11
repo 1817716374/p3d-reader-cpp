@@ -849,6 +849,76 @@ Json component_extraction_input(const Json &stack) {
     }
     return out;
 }
+
+Json agent_graphics_input(const Bytes &bytes, const Json &source) {
+    Json out = {{"scope", "root_agent_graphics_restore_and_append"},
+                {"status", "not_evaluated"},
+                {"source", source},
+                {"active_project_assumption", "present"},
+                {"target_model_assumption", "valid"},
+                {"allocation_assumption", "successful"},
+                {"service_return_assumption", "normal"},
+                {"destination_transform", "identity_enabled"},
+                {"source_container_transform", "not_applied"},
+                {"transformed_geometry", "not_evaluated"},
+                {"owning_element_part_mapping_status", "not_established"},
+                {"entries", Json::array()},
+                {"skipped_entry_indices", Json::array()}};
+    if (source.at("bytes") == 0) {
+        // Agent imitation leaves its constructor's empty graphics in place.
+        out["status"] = "rebuilt";
+        out["reason"] = "empty_saved_graphics";
+        return out;
+    }
+    try {
+        out["graphics"] = decode_graphics_bytes(slice(bytes, source.at("offset").get<std::size_t>(),
+                                                      source.at("bytes").get<std::size_t>()));
+    } catch (const std::exception &e) {
+        out["reason"] = "graphics_decode_not_established";
+        out["decode_error"] = e.what();
+        return out;
+    }
+    const auto &graphics = out.at("graphics");
+    out["model_selection"] = {{"explicit_model", "none"},
+                              {"initial_lookup_id", graphics.at("includes_model_id").get<bool>()
+                                                        ? graphics.at("model_id")
+                                                        : Json(std::uint32_t(0xfffffffeu))},
+                              {"fallback", "active_model_id_if_initial_lookup_fails"},
+                              {"assumption", "factory_resolves_model_with_project"}};
+    const auto &restore = graphics.at("native_entry_restore").at("with_project");
+    if (restore.at("status") == "rejected") {
+        out["status"] = "rebuilt";
+        out["reason"] = "source_restoration_returned_null";
+        return out;
+    }
+    if (restore.at("status") != "restored") {
+        out["reason"] = "source_restoration_not_established";
+        return out;
+    }
+    Json entries = Json::array();
+    for (const auto &index : restore.at("entry_indices")) {
+        const auto &input = graphics.at("geometry_packets")
+                                .at(index.get<std::size_t>())
+                                .at("native_geometry_input")
+                                .at("with_project");
+        const auto &append = input.at("transformed_append_count");
+        if (append.at("status") == "skipped") {
+            out["skipped_entry_indices"].push_back(index);
+        } else if (append.at("status") == "appended") {
+            entries.push_back({{"source_entry_index", index},
+                               {"rebuilt_entry_index", entries.size()},
+                               {"entry_geometry_type", input.at("entry_geometry_type")},
+                               {"entry_material_input", append.at("entry_material_input")}});
+        } else {
+            out["stopping_entry_index"] = index;
+            out["reason"] = "transformed_append_not_established";
+            return out;
+        }
+    }
+    out["entries"] = std::move(entries);
+    out["status"] = "rebuilt";
+    return out;
+}
 } // namespace
 
 static Json decode_stack(const Bytes &bytes, std::uint64_t expected, const char *scope) {
@@ -901,6 +971,10 @@ Json decode_component_properties(const Bytes &bytes) {
         out["active_graphics_selection"] = "not_established";
         out["runtime_property_restoration"] = "not_evaluated";
         out["parametric_extraction_input"] = component_extraction_input(out);
+        const auto &extraction = out.at("parametric_extraction_input");
+        if (extraction.value("branch", "") == "agent")
+            out["agent_graphics_input"] =
+                agent_graphics_input(bytes, extraction.at("graphics_source"));
     } catch (const std::exception &e) {
         out["status"] = "invalid";
         out["decode_error"] = e.what();
