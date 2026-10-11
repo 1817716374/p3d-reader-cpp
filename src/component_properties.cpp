@@ -850,6 +850,45 @@ Json component_extraction_input(const Json &stack) {
     return out;
 }
 
+Json saved_graphics_sequence(const Json &graphics) {
+    Json out = {{"status", "not_evaluated"},
+                {"entries", Json::array()},
+                {"skipped_entry_indices", Json::array()}};
+    const auto &restore = graphics.at("native_entry_restore").at("with_project");
+    if (restore.at("status") == "rejected") {
+        out["status"] = "rebuilt";
+        out["reason"] = "source_restoration_returned_null";
+        return out;
+    }
+    if (restore.at("status") != "restored") {
+        out["reason"] = "source_restoration_not_established";
+        return out;
+    }
+    Json entries = Json::array();
+    for (const auto &index : restore.at("entry_indices")) {
+        const auto &input = graphics.at("geometry_packets")
+                                .at(index.get<std::size_t>())
+                                .at("native_geometry_input")
+                                .at("with_project");
+        const auto &append = input.at("transformed_append_count");
+        if (append.at("status") == "skipped") {
+            out["skipped_entry_indices"].push_back(index);
+        } else if (append.at("status") == "appended") {
+            entries.push_back({{"source_entry_index", index},
+                               {"rebuilt_entry_index", entries.size()},
+                               {"entry_geometry_type", input.at("entry_geometry_type")},
+                               {"entry_material_input", append.at("entry_material_input")}});
+        } else {
+            out["stopping_entry_index"] = index;
+            out["reason"] = "transformed_append_not_established";
+            return out;
+        }
+    }
+    out["entries"] = std::move(entries);
+    out["status"] = "rebuilt";
+    return out;
+}
+
 Json agent_graphics_input(const Bytes &bytes, const Json &source) {
     Json out = {{"scope", "root_agent_graphics_restore_and_append"},
                 {"status", "not_evaluated"},
@@ -885,38 +924,50 @@ Json agent_graphics_input(const Bytes &bytes, const Json &source) {
                                                         : Json(std::uint32_t(0xfffffffeu))},
                               {"fallback", "active_model_id_if_initial_lookup_fails"},
                               {"assumption", "factory_resolves_model_with_project"}};
-    const auto &restore = graphics.at("native_entry_restore").at("with_project");
-    if (restore.at("status") == "rejected") {
+    out.update(saved_graphics_sequence(graphics));
+    return out;
+}
+
+Json component_graphics_fallback_input(const Json &properties) {
+    Json out = {{"scope", "builtin_get_graphics_from_saved_properties"},
+                {"status", "not_evaluated"},
+                {"input_target_assumption", "empty_new_graphics"},
+                {"project_and_model_assumption", "valid_requested_model_and_active_project"},
+                {"editing_assumption", "input_is_not_current_edit_key"},
+                {"property_state_assumption", "saved_noumenon_without_runtime_mutation"},
+                {"allocation_assumption", "successful"},
+                {"service_return_assumption", "normal"},
+                {"source_graphics_path", "component_graphics_input.graphics"},
+                {"destination_transform", "not_established"},
+                {"next_stage", "not_established"},
+                {"entries", Json::array()}};
+    if (properties.at("status") != "decoded") {
+        out["reason"] = "incomplete_property_stack";
+        return out;
+    }
+    const auto &input = properties.at("component_graphics_input");
+    const auto status = input.at("status");
+    if (status == "absent" || status == "wrong_value_type" ||
+        (status == "found" && input.at("bytes") == 0)) {
         out["status"] = "rebuilt";
-        out["reason"] = "source_restoration_returned_null";
+        out["reason"] = "saved_graphics_not_replaced";
+        out["destination_transform"] = "disabled";
+        out["next_stage"] = "instance_cache";
         return out;
     }
-    if (restore.at("status") != "restored") {
-        out["reason"] = "source_restoration_not_established";
+    if (status != "found" || !input.contains("graphics")) {
+        out["reason"] = "saved_graphics_decode_not_established";
         return out;
     }
-    Json entries = Json::array();
-    for (const auto &index : restore.at("entry_indices")) {
-        const auto &input = graphics.at("geometry_packets")
-                                .at(index.get<std::size_t>())
-                                .at("native_geometry_input")
-                                .at("with_project");
-        const auto &append = input.at("transformed_append_count");
-        if (append.at("status") == "skipped") {
-            out["skipped_entry_indices"].push_back(index);
-        } else if (append.at("status") == "appended") {
-            entries.push_back({{"source_entry_index", index},
-                               {"rebuilt_entry_index", entries.size()},
-                               {"entry_geometry_type", input.at("entry_geometry_type")},
-                               {"entry_material_input", append.at("entry_material_input")}});
-        } else {
-            out["stopping_entry_index"] = index;
-            out["reason"] = "transformed_append_not_established";
-            return out;
-        }
+    out["source"] = {{"property_index", input.at("property_index")},
+                     {"offset", input.at("value_offset")},
+                     {"bytes", input.at("bytes")}};
+    out["factory_model"] = "explicit_valid_requested_model";
+    out.update(saved_graphics_sequence(input.at("graphics")));
+    if (out.at("status") == "rebuilt") {
+        out["destination_transform"] = "identity_enabled";
+        out["next_stage"] = out.at("entries").empty() ? "instance_cache" : "return_saved_graphics";
     }
-    out["entries"] = std::move(entries);
-    out["status"] = "rebuilt";
     return out;
 }
 } // namespace
@@ -971,6 +1022,7 @@ Json decode_component_properties(const Bytes &bytes) {
         out["active_graphics_selection"] = "not_established";
         out["runtime_property_restoration"] = "not_evaluated";
         out["parametric_extraction_input"] = component_extraction_input(out);
+        out["component_graphics_fallback_input"] = component_graphics_fallback_input(out);
         const auto &extraction = out.at("parametric_extraction_input");
         if (extraction.value("branch", "") == "agent")
             out["agent_graphics_input"] =

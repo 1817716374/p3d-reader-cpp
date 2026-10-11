@@ -1,6 +1,7 @@
 #include "component_properties.hpp"
 #include "geometry.hpp"
 #include <p3d/persistent_data.hpp>
+#include <p3d/component_graphics.hpp>
 #include <cstring>
 
 unsigned component_property_tests() {
@@ -1205,6 +1206,100 @@ unsigned component_property_tests() {
                   .at("model_selection")
                   .at("initial_lookup_id") == 123,
           "Agent factory preserves saved initial model lookup ID");
+    auto stored_graphics = [&](const Bytes &saved) {
+        return decode(object({{string("componentGraphics"), property(frame(B, saved))}}));
+    };
+    auto cache_instance = [&](const std::vector<Bytes> &containers) {
+        Bytes bytes(11, 0);
+        auto u32 = [&](std::uint32_t v) {
+            for (unsigned i = 0; i < 4; ++i)
+                bytes.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        };
+        u32(static_cast<std::uint32_t>(containers.size()));
+        for (const auto &container : containers) {
+            bytes.insert(bytes.end(), {0x7c, 0x23, 0x40});
+            qword(bytes, 42);
+            u32(static_cast<std::uint32_t>(container.size()));
+            append(bytes, container);
+        }
+        bytes.insert(bytes.end(), 25, 0);
+        return decode_binary_field("ParaCmptInstance", bytes).at("decoded");
+    };
+    const auto single_line = saved_entries({line_entry});
+    const auto repeated_cache = cache_instance({single_line, single_line});
+    const auto no_cache = cache_instance({});
+    const auto saved_line = stored_graphics(single_line);
+    const auto &saved_plan = saved_line.at("component_graphics_fallback_input");
+    check(saved_plan.at("status") == "rebuilt" && saved_plan.at("entries").size() == 1 &&
+              saved_plan.at("destination_transform") == "identity_enabled" &&
+              saved_plan.at("next_stage") == "return_saved_graphics" &&
+              saved_plan.at("factory_model") == "explicit_valid_requested_model",
+          "saved componentGraphics restores with explicit target model and enabled identity "
+          "transform");
+    auto selection = resolve_stored_component_graphics(saved_line, Json::object());
+    check(selection.at("status") == "selected" &&
+              selection.at("graphics_source") == "saved_component_graphics" &&
+              selection.at("entries").size() == 1 && selection.at("stages").size() == 2,
+          "nonempty saved graphics returns without reading later instance cache");
+    for (const auto &props :
+         {decode(object({})), stored_graphics({}),
+          decode(object({{string("componentGraphics"), property(integer(1))},
+                         {string("componentGraphics"), property(frame(B, single_line))}}))}) {
+        selection = resolve_stored_component_graphics(props, repeated_cache);
+        check(selection.at("status") == "selected" &&
+                  selection.at("graphics_source") == "instance_cache" &&
+                  selection.at("cache_destination_transform") == "disabled" &&
+                  selection.at("entries").size() == 2 &&
+                  selection.at("entries")[1].at("source_instance_index") == 1,
+              "missing empty or wrong-type-first saved graphics keeps initial cache target and "
+              "repeated sources");
+    }
+    for (const auto &saved :
+         {graphics, saved_entries({ignored_agent_entry}), saved_entries({Bytes{1}})}) {
+        selection = resolve_stored_component_graphics(stored_graphics(saved), repeated_cache);
+        check(selection.at("status") == "selected" &&
+                  selection.at("graphics_source") == "instance_cache" &&
+                  selection.at("cache_destination_transform") == "identity_enabled" &&
+                  selection.at("entries").size() == 2,
+              "nonempty saved bytes yielding no entries still replace the cache target with "
+              "enabled identity");
+    }
+    selection = resolve_stored_component_graphics(stored_graphics({1}), repeated_cache);
+    check(selection.at("status") == "not_evaluated" && selection.at("entries").empty() &&
+              selection.at("reason") == "saved_graphics_not_established",
+          "saved decode error cannot be treated as an empty source or cache fallback");
+    selection =
+        resolve_stored_component_graphics(decode(object(repeated_children)), repeated_cache);
+    check(selection.at("status") == "not_evaluated" && selection.at("entries").empty() &&
+              selection.at("reason") == "parametric_extraction_not_established",
+          "unknown earlier module output blocks automatic fallback selection");
+    selection = resolve_stored_component_graphics(agent_result(single_line), Json::object());
+    check(selection.at("status") == "selected" &&
+              selection.at("graphics_source") == "parametric_extraction" &&
+              selection.at("entries").size() == 1 && selection.at("stages").size() == 1,
+          "known nonempty root Agent output precedes saved graphics and instance cache");
+    selection = resolve_stored_component_graphics(agent_result({}), repeated_cache);
+    check(selection.at("status") == "selected" &&
+              selection.at("graphics_source") == "instance_cache" &&
+              selection.at("cache_destination_transform") == "disabled",
+          "empty Agent does not transfer its own enabled transform to the newly created fallback "
+          "target");
+    selection = resolve_stored_component_graphics(agent_result({1}), repeated_cache);
+    check(selection.at("status") == "not_evaluated" &&
+              selection.at("reason") == "agent_graphics_not_established",
+          "unknown Agent restoration does not authorize later cache fallback");
+    selection = resolve_stored_component_graphics(decode(object({})), no_cache);
+    check(selection.at("status") == "default_handler_required" && selection.at("entries").empty() &&
+              !selection.contains("graphics_source"),
+          "all confirmed empty sources require default handler, not an invented empty final model");
+    selection = resolve_stored_component_graphics(decode(object({})),
+                                                  cache_instance({saved_entries({text_entry})}));
+    check(selection.at("status") == "not_evaluated" &&
+              selection.at("reason") == "cache_sequence_not_established",
+          "unknown cache cannot be skipped in favor of default handler");
+    check(resolve_stored_component_graphics(Json::object(), repeated_cache).at("status") ==
+              "not_evaluated",
+          "unavailable component properties are not a known empty Noumenon");
     check(unit(frame(TRANS, short_matrix)).at("status") == "invalid",
           "all twelve matrix coefficients required");
     Bytes long_matrix{1};
