@@ -117,6 +117,112 @@ unsigned component_property_tests() {
     check(prop.at("value").at("entries")[0].at("key").at("text") == "inside",
           "nested Noumenon preserved");
 
+    auto boolean = [&](bool b) { return frame(0x1580142273520992ULL, {std::uint8_t(b)}); };
+    auto restored = value(property(
+        object({}), {{string("show"),
+                      property(boolean(false),
+                               {{string("unit"), property(string("m"))},
+                                {string("group"),
+                                 property(integer(1), {{string("old"), property(integer(10))}})}})},
+                     {string("show"),
+                      property(boolean(true),
+                               {{string("group"),
+                                 property(integer(2), {{string("new"), property(integer(20))}})}})},
+                     {string("other"), property(integer(3))}}));
+    const auto &attrs = restored.at("native_attributes");
+    check(attrs.at("status") == "indexed" && attrs.at("entries").size() == 2,
+          "duplicate attribute slots indexed without dropping stored input");
+    check(restored.at("attributes").size() == 3, "raw duplicate attributes remain intact");
+    const auto &show = attrs.at("entries")[1];
+    check(show.at("key_source_offset") == restored.at("attributes")[0].at("key").at("offset"),
+          "map key provenance stays at first insertion");
+    check(show.at("property_source_offset") ==
+                  restored.at("attributes")[1].at("value").at("offset") &&
+              show.at("value_source_offset") ==
+                  restored.at("attributes")[1].at("value").at("value").at("offset"),
+          "duplicate main value replaced with later source");
+    const auto &merged = show.at("attributes");
+    check(
+        merged.size() == 2 &&
+            merged[1].at("key_source_offset") ==
+                restored.at("attributes")[0].at("value").at("attributes")[0].at("key").at("offset"),
+        "later missing attribute does not clear earlier unit");
+    check(merged[0].at("value_source_offset") == restored.at("attributes")[1]
+                                                     .at("value")
+                                                     .at("attributes")[0]
+                                                     .at("value")
+                                                     .at("value")
+                                                     .at("offset") &&
+              merged[0].at("attributes").size() == 2,
+          "nested duplicate replaces main value and retains old and new grandchildren");
+    check(restored.at("ordinary_graphics_filter").at("status") == "passed" &&
+              restored.at("ordinary_graphics_filter").at("show_value_source_offset") ==
+                  show.at("value_source_offset"),
+          "ordinary graphics show filter uses restored attribute value");
+    for (const auto &later : {boolean(false), string("true"), integer(1)}) {
+        auto p = value(property(object({}), {{string("show"), property(boolean(true))},
+                                             {string("show"), property(later)}}));
+        check(p.at("ordinary_graphics_filter").at("status") == "skipped",
+              "later false or non-bool show overrides earlier true");
+    }
+    check(value(property(integer(7), {{string("show"), property(boolean(true))}}))
+                  .at("ordinary_graphics_filter")
+                  .at("reason") == "value_is_not_noumenon",
+          "show alone cannot turn a scalar into geometry input");
+    for (const auto &key : {std::string("Show"), std::string("show\0", 5), std::string("xshow")}) {
+        check(value(property(object({}), {{string(key), property(boolean(true))}}))
+                      .at("ordinary_graphics_filter")
+                      .at("reason") == "show_absent",
+              "show lookup respects exact bytes and length");
+    }
+    auto byte_keys =
+        value(property(integer(0), {{frame(S, {0xff}), property(integer(1))},
+                                    {string(std::string("a\0", 2)), property(integer(2))},
+                                    {string("a"), property(integer(3))},
+                                    {string(""), property(integer(4))},
+                                    {frame(S, {0xff}), property(integer(5))}}));
+    const auto &ordered = byte_keys.at("native_attributes").at("entries");
+    const auto &raw_attrs = byte_keys.at("attributes");
+    check(ordered.size() == 4 && ordered[0].at("key_bytes") == 0 &&
+              ordered[1].at("key_source_offset") == raw_attrs[2].at("key").at("offset") &&
+              ordered[2].at("key_source_offset") == raw_attrs[1].at("key").at("offset") &&
+              ordered[3].at("key_source_offset") == raw_attrs[0].at("key").at("offset") &&
+              ordered[3].at("value_source_offset") ==
+                  raw_attrs[4].at("value").at("value").at("offset"),
+          "attribute ordering is unsigned byte lexical including NUL and high bytes");
+    auto unknown_attr =
+        value(property(object({}), {{string("show"), property(frame(0xdeadbeef, {1}))},
+                                    {string("show"), property(boolean(true))}}));
+    check(unknown_attr.at("native_attributes").at("status") == "not_evaluated" &&
+              unknown_attr.at("native_attributes").at("entries").empty() &&
+              unknown_attr.at("ordinary_graphics_filter").at("status") == "not_evaluated",
+          "later valid write cannot erase unknown earlier restoration");
+    auto noumenon_duplicates = decode(
+        object({{string("same"), property(integer(1), {{string("a"), property(integer(2))}})},
+                {string("same"), property(integer(3), {{string("b"), property(integer(4))}})}}));
+    check(noumenon_duplicates.at("root").at("entries").size() == 2 &&
+              noumenon_duplicates.at("root")
+                      .at("entries")[1]
+                      .at("value")
+                      .at("native_attributes")
+                      .at("entries")
+                      .size() == 1,
+          "attribute merge rule does not merge duplicate Noumenon entries");
+    auto shared_start = value(property(
+        integer(0),
+        {{string("array"),
+          property(frame(V, stack({integer(1), frame(V, stack({integer(1), integer(9)}))})))}}));
+    const auto &outer_array = shared_start.at("attributes")[0].at("value").at("value");
+    const auto &inner_array = outer_array.at("entries")[0];
+    const auto &array_source = shared_start.at("native_attributes").at("entries")[0];
+    check(outer_array.at("offset") == inner_array.at("offset") &&
+              outer_array.at("bytes") != inner_array.at("bytes") &&
+              array_source.at("value_source_offset") == outer_array.at("offset") &&
+              array_source.at("value_source_bytes") == outer_array.at("bytes") &&
+              array_source.at("property_source_bytes") ==
+                  shared_start.at("attributes")[0].at("value").at("bytes"),
+          "source spans distinguish nested same-type frames sharing a starting offset");
+
     // Folders are unframed recursion inside the DependentFile payload. True denotes folder.
     auto files =
         frame(F, stack({integer(2), string("dir"), frame(0x1580142273520992ULL, {1}), integer(1),

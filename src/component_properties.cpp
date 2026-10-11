@@ -46,6 +46,124 @@ struct StackDecoder {
     std::size_t visits = 0;
     std::size_t incomplete_values = 0;
     bool complete = true;
+    std::size_t attribute_index_visits = 0;
+
+    struct AttributeSource {
+        std::size_t key_offset = 0, key_bytes = 0;
+        std::size_t property_offset = 0, value_offset = 0;
+        std::size_t property_bytes = 0, value_bytes = 0;
+        std::uint64_t value_type = 0;
+        std::map<Bytes, AttributeSource> attributes;
+    };
+    void merge_attribute_sources(std::map<Bytes, AttributeSource> &target, const Json &entries) {
+        for (const auto &entry : entries) {
+            write_attribute_source(target, entry.at("key_source_offset").get<std::size_t>(),
+                                   entry.at("key_bytes").get<std::size_t>(),
+                                   entry.at("property_source_offset").get<std::size_t>(),
+                                   entry.at("property_source_bytes").get<std::size_t>(),
+                                   entry.at("value_source_offset").get<std::size_t>(),
+                                   entry.at("value_source_bytes").get<std::size_t>(),
+                                   entry.at("value_type_id").get<std::uint64_t>(),
+                                   entry.at("attributes"));
+        }
+    }
+    void write_attribute_source(std::map<Bytes, AttributeSource> &target, std::size_t key_offset,
+                                std::size_t key_bytes, std::size_t property_offset,
+                                std::size_t property_bytes, std::size_t value_offset,
+                                std::size_t value_bytes, std::uint64_t value_type,
+                                const Json &attributes) {
+        require(++attribute_index_visits <= 1000000, "attribute source index limit");
+        auto inserted = target.try_emplace(slice(source, key_offset, key_bytes));
+        auto &slot = inserted.first->second;
+        // The map retains its first key; Property replaces its Gnrc but merges attributes.
+        if (inserted.second) {
+            slot.key_offset = key_offset;
+            slot.key_bytes = key_bytes;
+        }
+        slot.property_offset = property_offset;
+        slot.property_bytes = property_bytes;
+        slot.value_offset = value_offset;
+        slot.value_bytes = value_bytes;
+        slot.value_type = value_type;
+        merge_attribute_sources(slot.attributes, attributes);
+    }
+    Json attribute_sources_json(const std::map<Bytes, AttributeSource> &entries) {
+        Json out = Json::array();
+        for (const auto &entry : entries) {
+            const auto &v = entry.second;
+            out.push_back({{"key_source_offset", v.key_offset},
+                           {"key_bytes", v.key_bytes},
+                           {"property_source_offset", v.property_offset},
+                           {"property_source_bytes", v.property_bytes},
+                           {"value_source_offset", v.value_offset},
+                           {"value_source_bytes", v.value_bytes},
+                           {"value_type_id", v.value_type},
+                           {"attributes", attribute_sources_json(v.attributes)}});
+        }
+        return out;
+    }
+    Json attribute_sources(const Json &property) {
+        Json result = {{"scope", "native_property_write_sources"},
+                       {"status", "not_evaluated"},
+                       {"entries", Json::array()}};
+        if (property.at("status") != "decoded")
+            return result;
+        std::map<Bytes, AttributeSource> selected;
+        try {
+            for (const auto &entry : property.at("attributes")) {
+                const auto &p = entry.at("value");
+                if (!p.contains("native_attributes") ||
+                    p.at("native_attributes").at("status") != "indexed")
+                    return result;
+                const auto &v = p.at("value");
+                if (v.at("status") != "decoded")
+                    return result;
+                const auto &key = entry.at("key");
+                write_attribute_source(
+                    selected, key.at("offset").get<std::size_t>(),
+                    key.at("bytes").get<std::size_t>(), p.at("offset").get<std::size_t>(),
+                    p.at("bytes").get<std::size_t>(), v.at("offset").get<std::size_t>(),
+                    v.at("bytes").get<std::size_t>(), v.at("type_id").get<std::uint64_t>(),
+                    p.at("native_attributes").at("entries"));
+            }
+            result["entries"] = attribute_sources_json(selected);
+            result["status"] = "indexed";
+            result["key_order"] = "unsigned_byte_lexicographic";
+            result["main_value_rule"] = "replace";
+            result["nested_attributes_rule"] = "merge_recursively";
+        } catch (const std::runtime_error &e) {
+            result["reason"] = e.what();
+        }
+        return result;
+    }
+    Json ordinary_graphics_filter(const Json &property) const {
+        Json out = {{"scope", "ordinary_property_show_and_value_filter"},
+                    {"status", "not_evaluated"}};
+        if (property.at("native_attributes").at("status") != "indexed")
+            return out;
+        out["status"] = "skipped";
+        for (const auto &entry : property.at("native_attributes").at("entries")) {
+            if (entry.at("key_bytes") != 4 ||
+                std::memcmp(source.data() + entry.at("key_source_offset").get<std::size_t>(),
+                            "show", 4) != 0)
+                continue;
+            out["show_value_source_offset"] = entry.at("value_source_offset");
+            if (entry.at("value_type_id") != bool_id) {
+                out["reason"] = "show_wrong_type";
+            } else if (source.at(entry.at("value_source_offset").get<std::size_t>()) == 0) {
+                out["reason"] = "show_false";
+            } else if (property.at("value").at("type_id") != noumenon_id) {
+                out["reason"] = "value_is_not_noumenon";
+            } else {
+                out["status"] = "passed";
+                out["value_source_offset"] = property.at("value").at("offset");
+                out["value_source_bytes"] = property.at("value").at("bytes");
+            }
+            return out;
+        }
+        out["reason"] = "show_absent";
+        return out;
+    }
 
     void budget(unsigned depth) {
         require(depth <= 80, "component property nesting limit");
@@ -448,6 +566,7 @@ struct StackDecoder {
                 finish();
             } else if (id == property_id) {
                 out["kind"] = "property";
+                const auto before = incomplete_values;
                 out["value"] = child();
                 const auto n = count();
                 out["attributes"] = Json::array();
@@ -459,6 +578,13 @@ struct StackDecoder {
                 }
                 out["attribute_duplicate_rule"] = "read_into_existing_property";
                 finish();
+                if (incomplete_values == before)
+                    out["native_attributes"] = attribute_sources(out);
+                else
+                    out["native_attributes"] = {{"scope", "native_property_write_sources"},
+                                                {"status", "not_evaluated"},
+                                                {"entries", Json::array()}};
+                out["ordinary_graphics_filter"] = ordinary_graphics_filter(out);
             } else if (id == function_id) {
                 out["kind"] = "unified_function";
                 out["module_name"] = child(string_id);
