@@ -728,6 +728,127 @@ Json source_input(const Json &root, const std::string &key, const std::string &k
     }
     return {{"status", "absent"}};
 }
+
+// Noumenon name lookup selects its first matching member, unlike Property attributes.
+const Json *component_value(const Json &root, const char *key, std::uint64_t type) {
+    for (const auto &entry : root.at("entries")) {
+        if (entry.at("key").value("text", "") != key)
+            continue;
+        const auto &v = entry.at("value").at("value");
+        return v.at("type_id") == type && v.at("status") == "decoded" ? &v : nullptr;
+    }
+    return nullptr;
+}
+
+struct RepresentationMatches {
+    bool graphics = false, primitives = false, component = false, agent = false;
+    Json json() const {
+        return {{"graphics", graphics},
+                {"primitives", primitives},
+                {"component", component},
+                {"agent", agent}};
+    }
+};
+RepresentationMatches representation_matches(const Json &root) {
+    RepresentationMatches out;
+    out.graphics = component_value(root, "\x07_representation", string_id) &&
+                   component_value(root, "\x07_transformation", transform_id) &&
+                   component_value(root, "\x07_taiji", bool_id);
+    if (!out.graphics)
+        return out;
+    const auto *function = component_value(root, "\x07_extract_graphics", function_id);
+    out.primitives = component_value(root, "\x07_material", noumenon_id) && function;
+    out.component = component_value(root, "\x07_schema_name", string_id) &&
+                    component_value(root, "\x07_class_name", string_id) &&
+                    component_value(root, "\x07_source", string_id);
+    out.agent = out.primitives && component_value(root, "graphics", bytes_id) &&
+                function->at("module_name").value("text", "") == "BPParametricComponent" &&
+                function->at("operator_name").value("text", "") == "\x07_agent_to_graphics";
+    return out;
+}
+Json source_span(const Json &value) {
+    return {{"offset", value.at("offset")},
+            {"bytes", value.at("bytes")},
+            {"type_id", value.at("type_id")}};
+}
+
+Json component_extraction_input(const Json &stack) {
+    Json out = {{"scope", "builtin_extract_component_graphics_input"},
+                {"execution_context", "valid_model_and_normal_allocation"},
+                {"status", "not_evaluated"},
+                {"property_results", Json::array()}};
+    if (stack.at("status") != "decoded") {
+        out["reason"] = "incomplete_property_stack";
+        return out;
+    }
+    const auto &root = stack.at("root");
+    const auto matches = representation_matches(root);
+    out["representation_matches"] = matches.json();
+    if (matches.agent) {
+        out["branch"] = "agent";
+        out["graphics_source"] = source_span(*component_value(root, "graphics", bytes_id));
+        out["reason"] = "agent_active_project_and_graphics_restoration_required";
+        return out;
+    }
+    out["branch"] = "ordinary_properties";
+    out["input_order"] = "stored_properties_without_executing_functions";
+    std::size_t filtered = 0;
+    bool unresolved = false;
+    const auto &entries = root.at("entries");
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const auto &property = entries[i].at("value");
+        const auto &filter = property.at("ordinary_graphics_filter");
+        if (filter.at("status") == "skipped") {
+            ++filtered;
+            continue;
+        }
+        Json result = {{"property_index", i}, {"property_source", source_span(property)}};
+        if (filter.at("status") != "passed") {
+            result["status"] = "not_evaluated";
+            result["reason"] = "property_filter_not_evaluated";
+            unresolved = true;
+        } else if (!matches.graphics) {
+            // The native loop reads the parent's representation before testing the child.
+            result["status"] = "not_evaluated";
+            result["reason"] = "parent_graphics_imitation_not_established";
+            unresolved = true;
+        } else {
+            const auto &child = property.at("value");
+            const auto child_matches = representation_matches(child);
+            result["representation_matches"] = child_matches.json();
+            if (child_matches.component) {
+                result["status"] = "skipped";
+                result["reason"] = "component_child_excluded";
+            } else if (child_matches.primitives && !child_matches.agent) {
+                const auto &function =
+                    *component_value(child, "\x07_extract_graphics", function_id);
+                result["status"] = "not_evaluated";
+                result["reason"] = "unified_function_result_required";
+                result["function_source"] = source_span(function);
+                result["module_name"] = function.at("module_name");
+                result["operator_name"] = function.at("operator_name");
+                result["noumenon_source"] = source_span(child);
+                result["parent_transform_source"] =
+                    source_span(*component_value(root, "\x07_transformation", transform_id));
+                result["transform_rule"] = "parent_unless_explicit_override";
+                result["effective_transform_status"] = "not_established";
+                unresolved = true;
+            } else {
+                result["status"] = "empty";
+                result["reason"] = "raw_extractor_has_no_matching_branch";
+            }
+        }
+        out["property_results"].push_back(std::move(result));
+        if (!matches.graphics && filter.at("status") == "passed")
+            break;
+    }
+    out["filtered_property_count"] = filtered;
+    if (!unresolved) {
+        out["status"] = "empty";
+        out["reason"] = "no_geometry_emitted_by_builtin_extractor";
+    }
+    return out;
+}
 } // namespace
 
 static Json decode_stack(const Bytes &bytes, std::uint64_t expected, const char *scope) {
@@ -779,6 +900,7 @@ Json decode_component_properties(const Bytes &bytes) {
         }
         out["active_graphics_selection"] = "not_established";
         out["runtime_property_restoration"] = "not_evaluated";
+        out["parametric_extraction_input"] = component_extraction_input(out);
     } catch (const std::exception &e) {
         out["status"] = "invalid";
         out["decode_error"] = e.what();

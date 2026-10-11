@@ -886,6 +886,130 @@ unsigned component_property_tests() {
           "column");
     check(one(frame(TRANS, matrix_wire)).at("status") == "decoded",
           "matrix is a general property value");
+    using Members = std::vector<std::pair<Bytes, Bytes>>;
+    auto graphics_members = [&]() -> Members {
+        return {{string("\x07_representation"), property(string("custom name"))},
+                {string("\x07_transformation"), property(frame(TRANS, matrix_wire))},
+                {string("\x07_taiji"), property(boolean(false))}};
+    };
+    auto function_value = [&](std::string module, std::string op) {
+        return frame(0x4827000104282422ULL, stack({string(module), string(op)}));
+    };
+    auto primitive_members = [&]() {
+        auto m = graphics_members();
+        m.emplace_back(string("\x07_material"), property(object({})));
+        m.emplace_back(string("\x07_extract_graphics"),
+                       property(function_value("custom-module", "custom-operator")));
+        return m;
+    };
+    auto component_members = [&]() {
+        auto m = graphics_members();
+        for (const auto *k : {"\x07_schema_name", "\x07_class_name", "\x07_source"})
+            m.emplace_back(string(k), property(string("")));
+        return m;
+    };
+    auto agent_members = [&]() {
+        auto m = primitive_members();
+        m[4].second = property(function_value("BPParametricComponent", "\x07_agent_to_graphics"));
+        m.emplace_back(string("graphics"), property(frame(B, {})));
+        return m;
+    };
+    auto plan = [&](const Members &m) {
+        return decode(object(m)).at("parametric_extraction_input");
+    };
+    check(plan({}).at("status") == "empty", "empty ordinary input cannot emit geometry");
+    auto plain_graphics = plan(graphics_members());
+    check(plain_graphics.at("representation_matches").at("graphics") == true &&
+              plain_graphics.at("status") == "empty",
+          "representation text and taiji false do not prevent typed graphics recognition");
+    for (std::size_t missing = 0; missing < 3; ++missing) {
+        auto m = graphics_members();
+        m.erase(m.begin() + std::ptrdiff_t(missing));
+        check(plan(m).at("representation_matches").at("graphics") == false,
+              "every required graphics representation field is checked");
+    }
+    auto duplicate_rep = graphics_members();
+    duplicate_rep.insert(duplicate_rep.begin(),
+                         {string("\x07_representation"), property(integer(1))});
+    check(plan(duplicate_rep).at("representation_matches").at("graphics") == false,
+          "first wrong-type representation is not rescued by later duplicate");
+    auto primitive_root = plan(primitive_members());
+    check(primitive_root.at("representation_matches").at("primitives") == true &&
+              primitive_root.at("branch") == "ordinary_properties" &&
+              primitive_root.at("status") == "empty",
+          "root primitive function is not implicitly invoked by ordinary property loop");
+    auto agent = plan(agent_members());
+    check(agent.at("branch") == "agent" && agent.at("status") == "not_evaluated" &&
+              agent.at("graphics_source").at("bytes") == 0,
+          "root Agent selects separate active-project restoration path even for empty bytes");
+    for (const auto &function :
+         {function_value("BPParametricComponent", "agent_to_graphics"),
+          function_value("other", "\x07_agent_to_graphics"),
+          function_value(std::string("BPParametricComponent\0", 22), "\x07_agent_to_graphics")}) {
+        auto m = agent_members();
+        m[4].second = property(function);
+        check(plan(m).at("branch") == "ordinary_properties",
+              "Agent function identity compares both strings including embedded NUL");
+    }
+    auto with_child = [&](Members child, bool show_child = true) {
+        auto m = graphics_members();
+        m.emplace_back(string("child"),
+                       property(object(child), {{string("show"), property(boolean(show_child))}}));
+        return m;
+    };
+    auto component_child = plan(with_child(component_members()));
+    check(component_child.at("status") == "empty" &&
+              component_child.at("property_results")[0].at("reason") == "component_child_excluded",
+          "child component is not recursively expanded by root extractor");
+    auto combined_child = primitive_members();
+    for (const auto *k : {"\x07_schema_name", "\x07_class_name", "\x07_source"})
+        combined_child.emplace_back(string(k), property(string("")));
+    check(plan(with_child(combined_child)).at("property_results")[0].at("reason") ==
+              "component_child_excluded",
+          "component exclusion precedes primitive function invocation");
+    auto visible_primitive = plan(with_child(primitive_members()));
+    const auto &call = visible_primitive.at("property_results")[0];
+    check(visible_primitive.at("status") == "not_evaluated" &&
+              call.at("reason") == "unified_function_result_required" &&
+              call.at("module_name").at("text") == "custom-module" &&
+              call.at("operator_name").at("text") == "custom-operator" &&
+              call.at("property_index") == 3,
+          "visible primitive identifies its function without guessing its output");
+    auto visible_decoded = decode(object(with_child(primitive_members())));
+    check(
+        call.at("parent_transform_source").at("offset") ==
+                visible_decoded.at("root").at("entries")[1].at("value").at("value").at("offset") &&
+            visible_decoded.at("active_graphics_selection") == "not_established",
+        "stored parent transform leaves effective transform and active source undecided");
+    check(plan(with_child(primitive_members(), false)).at("status") == "empty",
+          "hidden primitive does not require executing its function");
+    check(plan(with_child(agent_members())).at("property_results")[0].at("reason") ==
+              "raw_extractor_has_no_matching_branch",
+          "nested Agent is not restored using the root Agent path");
+    auto no_parent_graphics = with_child(component_members());
+    no_parent_graphics.erase(no_parent_graphics.begin());
+    check(plan(no_parent_graphics).at("property_results")[0].at("reason") ==
+              "parent_graphics_imitation_not_established",
+          "parent imitation must precede child component exclusion");
+    auto unknown_plan = decode(object({{string("unknown"), property(frame(0xdeadbeef, {1}))}}));
+    check(unknown_plan.at("parametric_extraction_input").at("reason") ==
+                  "incomplete_property_stack" &&
+              unknown_plan.at("parametric_extraction_input").at("property_results").empty(),
+          "incomplete source cannot prove empty extraction");
+    auto repeated_children = with_child(primitive_members());
+    repeated_children.push_back(repeated_children.back());
+    auto repeated_plan = plan(repeated_children);
+    check(repeated_plan.at("property_results").size() == 2 &&
+              repeated_plan.at("property_results")[0].at("property_index") == 3 &&
+              repeated_plan.at("property_results")[1].at("property_index") == 4,
+          "ordinary traversal preserves duplicate member names as separate calls");
+    auto agent_with_child = agent_members();
+    agent_with_child.push_back(repeated_children.back());
+    check(plan(agent_with_child).at("branch") == "agent" &&
+              plan(agent_with_child).at("property_results").empty(),
+          "root Agent branch excludes ordinary child traversal");
+    check(call.at("effective_transform_status") == "not_established",
+          "parent matrix is not advertised as the actual invocation transform");
     Bytes short_matrix(matrix_wire.begin(), matrix_wire.end() - 24);
     check(unit(frame(TRANS, short_matrix)).at("status") == "invalid",
           "all twelve matrix coefficients required");
