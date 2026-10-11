@@ -12,7 +12,8 @@ template <class T> void put(Bytes &b, T v) {
     auto p = reinterpret_cast<const std::uint8_t *>(&v);
     b.insert(b.end(), p, p + sizeof(v));
 }
-Bytes material_fixture() {
+Bytes material_fixture(std::u16string pattern = u"relative/texture.jpg",
+                       std::u16string bump = u"") {
     Bytes b{1};
     auto text = [&](std::u16string s) {
         put<std::uint64_t>(b, s.size() * 2);
@@ -28,10 +29,10 @@ Bytes material_fixture() {
     b.push_back(1);
     put<std::int32_t>(b, 3);
     put<std::int32_t>(b, 2);
-    text(u"relative/texture.jpg");
+    text(pattern);
     for (double x : {1., 2., 3., 4., 5.})
         put(b, x);
-    text(u"");
+    text(bump);
     put(b, 0.);
     for (unsigned i = 0; i < 9; ++i) {
         b.push_back(1);
@@ -215,6 +216,125 @@ unsigned graphics_bytes_tests() {
         check(transfer.at("status") == "not_evaluated" && transfer.at("parameters").empty() &&
                   transfer.at("stopping_parameter") == "roughness_factor",
               "nonfinite parameters do not silently become a complete JSON null-valued transfer");
+    }
+    auto texture_input = [&](const Bytes &bytes) {
+        return decode_inline_material(bytes).at("project_texture_registration_input");
+    };
+    auto texture_source = material_fixture(u"pattern.jpg", u"bump.jpg");
+    Reader texture_offsets(texture_source);
+    texture_offsets.u8();
+    texture_offsets.take(texture_offsets.u64());
+    texture_offsets.take(25);
+    const auto transparency_offset = texture_offsets.p;
+    texture_offsets.take(9);
+    const auto has_map_offset = texture_offsets.p++;
+    const auto unit_offset = texture_offsets.p;
+    texture_offsets.take(8);
+    texture_offsets.take(texture_offsets.u64());
+    const auto scale_offset = texture_offsets.p;
+    texture_offsets.take(40);
+    texture_offsets.take(texture_offsets.u64());
+    const auto bump_factor_offset = texture_offsets.p;
+    const auto initial_texture_input = texture_input(texture_source);
+    check(initial_texture_input.at("status") == "decoded" &&
+              initial_texture_input.at("maps").size() == 2 &&
+              initial_texture_input.at("resource_resolution") == "not_performed" &&
+              initial_texture_input.at("readback") == "not_evaluated",
+          "texture inputs do not claim resource resolution or material readback");
+    const auto &pattern_map = initial_texture_input.at("maps")[0];
+    const auto &bump_map = initial_texture_input.at("maps")[1];
+    check(pattern_map.at("map_type") == 1 && pattern_map.at("weight") == 1.0 &&
+              bump_map.at("map_type") == 2 && bump_map.at("weight") == 0.0 &&
+              bump_map.at("enabled") == true,
+          "pattern weight is one while zero-strength bump creates an enabled map");
+    check(pattern_map.at("layer").at("scale") == Json::array({1., 2., 1.}) &&
+              pattern_map.at("layer").at("offset") == Json::array({3., 4., 1.}) &&
+              pattern_map.at("layer").at("rotation_degrees") == 5.0 &&
+              pattern_map.at("layer").at("use_image_alpha_channel") == false,
+          "fresh inline layer receives source XY, Z one, degree rotation and default alpha");
+    check(pattern_map.at("layer").at("opacity_input").at("value") == 1.0 - 0.4 &&
+              bump_map.at("layer").at("opacity_input").at("value") == 1.0 - 0.4,
+          "enabled transparency sets both layer opacities");
+    texture_source.at(has_map_offset) = 0;
+    auto texture_plan = texture_input(texture_source);
+    check(texture_plan.at("maps").size() == 2 &&
+              texture_plan.at("maps")[0].at("enabled") == false &&
+              texture_plan.at("maps")[1].at("enabled") == true,
+          "disabled pattern remains a map request and does not suppress bump");
+    texture_source.at(transparency_offset) = 0;
+    texture_plan = texture_input(texture_source);
+    check(texture_plan.at("maps")[0].at("layer").at("opacity_input").at("status") == "not_set" &&
+              !texture_plan.at("maps")[1].at("layer").at("opacity_input").contains("value"),
+          "disabled transparency does not invent a layer opacity default");
+    const double high_transparency = 2.0;
+    texture_source.at(transparency_offset) = 1;
+    std::memcpy(texture_source.data() + transparency_offset + 1, &high_transparency,
+                sizeof(double));
+    texture_plan = texture_input(texture_source);
+    check(texture_plan.at("maps")[0].at("layer").at("opacity_input").at("value") == -1.0,
+          "native opacity input is not clamped to a generic rendering range");
+    for (const auto &mode : std::vector<std::pair<std::int32_t, int>>{{INT32_MIN, 0},
+                                                                      {-1, 0},
+                                                                      {0, 0},
+                                                                      {1, 1},
+                                                                      {2, 2},
+                                                                      {3, 0},
+                                                                      {4, 4},
+                                                                      {5, 5},
+                                                                      {6, 6},
+                                                                      {7, 0},
+                                                                      {INT32_MAX, 0}}) {
+        auto bytes = texture_source;
+        std::memcpy(bytes.data() + unit_offset + 4, &mode.first, sizeof(std::int32_t));
+        const auto decoded = decode_inline_material(bytes);
+        check(decoded.at("map_mode") == mode.first &&
+                  decoded.at("project_texture_registration_input")
+                          .at("maps")[0]
+                          .at("layer")
+                          .at("map_mode") == mode.second,
+              "native mode switch preserves six named modes without altering source enum");
+    }
+    for (std::int32_t unit : {-1, 0, 3, 7}) {
+        auto bytes = texture_source;
+        std::memcpy(bytes.data() + unit_offset, &unit, sizeof(unit));
+        const auto decoded = decode_inline_material(bytes);
+        check(decoded.at("map_unit") == unit && decoded.at("project_texture_registration_input")
+                                                        .at("maps")[1]
+                                                        .at("layer")
+                                                        .at("map_unit") == (unit == 0 ? 0 : 3),
+              "any nonzero unit becomes absolute while the saved enum remains intact");
+    }
+    texture_plan = texture_input(material_fixture(u"", u"bump.jpg"));
+    check(texture_plan.at("maps").size() == 1 &&
+              texture_plan.at("maps")[0].at("source_reference_index") == 1,
+          "empty pattern does not lose bump source identity");
+    check(texture_input(material_fixture(u"", u"")).at("maps").empty(),
+          "empty filenames produce no map requests even with hasMap true");
+    const auto nul_texture_source = decode_inline_material(
+        material_fixture(std::u16string(u"a.jpg\0hidden", 12), std::u16string(u"\0hidden", 7)));
+    check(nul_texture_source.at("texture_references")[0].at("filename").get<std::string>().size() ==
+                  12 &&
+              nul_texture_source.at("project_texture_registration_input").at("maps").size() == 1 &&
+              nul_texture_source.at("project_texture_registration_input")
+                      .at("maps")[0]
+                      .at("layer")
+                      .at("filename_request") == "a.jpg",
+          "registration consumes C-string prefixes while complete source filenames survive");
+    texture_plan = texture_input(material_fixture(u"same.jpg", u"same.jpg"));
+    check(texture_plan.at("maps").size() == 2 && texture_plan.at("maps")[0].at("map_type") == 1 &&
+              texture_plan.at("maps")[1].at("map_type") == 2,
+          "same texture filename does not merge map roles");
+    auto invalid_texture_source = texture_source;
+    invalid_texture_source[0] = 0;
+    check(texture_input(invalid_texture_source).at("status") == "not_applied",
+          "invalid inline material does not claim new texture registration");
+    for (const auto offset : {scale_offset, bump_factor_offset}) {
+        auto bytes = texture_source;
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        std::memcpy(bytes.data() + offset, &nan, sizeof(nan));
+        texture_plan = texture_input(bytes);
+        check(texture_plan.at("status") == "not_evaluated" && texture_plan.at("maps").empty(),
+              "unknown numeric input does not publish a partial complete texture sequence");
     }
     check(p["line_style_scale"] == 2.5 && p["start_width"] == 3.5 && p["end_width"] == 4.5 &&
               p["layer_id"] == 0xfffffff1u,

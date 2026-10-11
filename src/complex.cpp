@@ -1122,6 +1122,79 @@ static Json inline_material_core_transfer(const Json &source) {
     out["status"] = "decoded";
     return out;
 }
+static Json inline_material_texture_input(const Json &source) {
+    Json out = {{"status", "not_evaluated"},
+                {"scope", "new_project_material_texture_registration_inputs"},
+                {"source_state_assumption", "fresh_inline_reader_before_project_material_lookup"},
+                {"factory_assumption", "map_and_layer_creation_succeeds"},
+                {"project_registration", "not_performed"},
+                {"resource_resolution", "not_performed"},
+                {"readback", "not_evaluated"},
+                {"maps", Json::array()}};
+    if (!source.at("is_valid").get<bool>()) {
+        out["status"] = "not_applied";
+        out["reason"] = "invalid_source_skips_new_material_registration";
+        return out;
+    }
+    Json maps = Json::array();
+    const auto &references = source.at("texture_references");
+    for (std::size_t i = 0; i < references.size(); ++i) {
+        const auto &reference = references.at(i);
+        auto filename = reference.at("filename").get<std::string>();
+        filename.resize(filename.find('\0') == std::string::npos ? filename.size()
+                                                                 : filename.find('\0'));
+        // Native tests the C-string filename before the hasMap flag. The freshly
+        // restored inline format has no PBR vector and useImageAlphaChannel=false.
+        if (filename.empty())
+            continue;
+        const bool bump = reference.at("role") == "bump";
+        const double weight = bump ? source.at("bump_factor").get<double>() : 1.0;
+        const auto &scale = source.at("uv_scale");
+        const auto &offset = source.at("uv_offset");
+        const double rotation = source.at("rotation_degrees").get<double>();
+        auto finite = [](const Json &value) { return std::isfinite(value.get<double>()); };
+        if (!std::isfinite(weight) || !std::isfinite(rotation) ||
+            !std::all_of(scale.begin(), scale.end(), finite) ||
+            !std::all_of(offset.begin(), offset.end(), finite)) {
+            out["reason"] = "non_finite_texture_parameter";
+            out["stopping_source_reference_index"] = i;
+            return out;
+        }
+        Json opacity = {{"status", "not_set"}};
+        const auto &transparency = source.at("parameters").at(1);
+        if (transparency.at("enabled").get<bool>()) {
+            const double value = 1.0 - transparency.at("value").get<double>();
+            if (!std::isfinite(value)) {
+                out["reason"] = "non_finite_texture_opacity";
+                out["stopping_source_reference_index"] = i;
+                return out;
+            }
+            opacity = {{"status", "set"}, {"value", value}};
+        }
+        const auto source_mode = source.at("map_mode").get<std::int32_t>();
+        const auto mode = source_mode == 1 || source_mode == 2 || source_mode == 4 ||
+                                  source_mode == 5 || source_mode == 6
+                              ? source_mode
+                              : 0;
+        maps.push_back({{"source_reference_index", i},
+                        {"role", reference.at("role")},
+                        {"map_type", bump ? 2 : 1},
+                        {"enabled", bump || source.at("has_map").get<bool>()},
+                        {"weight", weight},
+                        {"layer",
+                         {{"filename_request", filename},
+                          {"map_mode", mode},
+                          {"map_unit", source.at("map_unit") == 0 ? 0 : 3},
+                          {"scale", Json::array({scale.at(0), scale.at(1), 1.0})},
+                          {"offset", Json::array({offset.at(0), offset.at(1), 1.0})},
+                          {"rotation_degrees", rotation},
+                          {"use_image_alpha_channel", false},
+                          {"opacity_input", std::move(opacity)}}}});
+    }
+    out["maps"] = std::move(maps);
+    out["status"] = "decoded";
+    return out;
+}
 Json decode_inline_material(const Bytes &b) {
     Reader r(b);
     auto string = [&]() {
@@ -1220,6 +1293,7 @@ Json decode_inline_material(const Bytes &b) {
     out["note"] = "Source material flags and parameters; texture paths are references. "
                   "The encoding label is a library identifier, not a serialized version byte.";
     out["project_core_parameter_transfer"] = inline_material_core_transfer(out);
+    out["project_texture_registration_input"] = inline_material_texture_input(out);
     return out;
 }
 static std::uint32_t be32(Reader &r) {
