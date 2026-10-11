@@ -150,5 +150,167 @@ unsigned material_lookup_tests() {
               resolved.at("entries")[0].at("material_index") == 10 &&
               loaded == std::vector<std::size_t>{0, 1},
           "part selects first result while full native query loads all candidates");
+
+    NativeGraphicsMaterialNameContext project;
+    project.catalog.catalog_complete = true;
+    project.catalog.names = {u"A", u"B", u"a"};
+    auto ascii_compare = [](std::u16string a, std::u16string b) -> std::optional<int> {
+        for (auto *s : {&a, &b})
+            for (auto &c : *s)
+                if (c >= u'A' && c <= u'Z')
+                    c += 32;
+        return a.compare(b);
+    };
+    project.catalog.compare = ascii_compare;
+    project.catalog.load = [&](std::size_t i) {
+        events.push_back("load" + std::to_string(i));
+        return GraphicsMaterialResult{true, i + 10};
+    };
+    project.display_name = [&](std::size_t i) -> std::optional<std::u16string> {
+        events.push_back("display" + std::to_string(i));
+        return u"ALIAS";
+    };
+    auto graphics_query = [&](const std::u16string &name) {
+        return lookup_native_graphics_material_name(name, project);
+    };
+    events.clear();
+    result = graphics_query(u"a");
+    check(result.at("status") == "matched" && result.at("matched_by") == "catalog_name" &&
+              result.at("material_index") == 10 &&
+              events == std::vector<std::string>{"load0", "load2"},
+          "graphics primary lookup loads all duplicates without consulting display names");
+    events.clear();
+    result = graphics_query(u"alias");
+    check(result.at("status") == "matched" && result.at("matched_by") == "display_name" &&
+              result.at("material_index") == 10 && result.at("catalog_index") == 0 &&
+              events == std::vector<std::string>{"load0", "load1", "load2", "display10"},
+          "graphics fallback loads whole catalog before checking first display match");
+    check(result.at("fallback_loads").size() == 3 && result.at("display_comparisons").size() == 1,
+          "display-name match stops comparisons but not the preceding enumeration loads");
+    events.clear();
+    result = graphics_query(u"missing");
+    check(result.at("status") == "not_found" && result.at("display_comparisons").size() == 3 &&
+              !result.contains("material_index"),
+          "confirmed display miss requires every loaded material's comparison");
+    unsigned attempt = 0;
+    project.catalog.names = {u"A", u"B"};
+    project.catalog.load = [&](std::size_t i) {
+        events.push_back("load" + std::to_string(i));
+        return GraphicsMaterialResult{true, ++attempt == 1 ? std::optional<std::size_t>{}
+                                                           : std::optional<std::size_t>{i + 10}};
+    };
+    project.display_name = [&](std::size_t i) -> std::optional<std::u16string> {
+        events.push_back("display" + std::to_string(i));
+        return u"a";
+    };
+    events.clear();
+    result = graphics_query(u"A");
+    check(result.at("catalog_name_lookup").at("status") == "load_failed" &&
+              result.at("matched_by") == "display_name" &&
+              events == std::vector<std::string>{"load0", "load0", "load1", "display10"},
+          "failed primary load does not suppress reloading the same descriptor during fallback");
+    project.catalog.load = [&](std::size_t i) {
+        events.push_back("load" + std::to_string(i));
+        return GraphicsMaterialResult{true, i == 0 ? std::optional<std::size_t>{}
+                                                   : std::optional<std::size_t>{0}};
+    };
+    result = graphics_query(u"alias");
+    check(result.at("status") == "not_found" && result.at("display_comparisons").size() == 1,
+          "null materials from full enumeration are not display-name candidates");
+    project.display_name = [](std::size_t) -> std::optional<std::u16string> { return u"alias"; };
+    result = graphics_query(u"alias");
+    check(result.at("material_index") == 0 && result.at("catalog_index") == 1,
+          "loaded identity zero is retained separately from its descriptor index");
+    project.catalog.names = {u"internal"};
+    project.catalog.load = [](std::size_t) { return GraphicsMaterialResult{true, 42}; };
+    project.display_name = [](std::size_t) -> std::optional<std::u16string> {
+        return std::u16string(u"\0suffix", 7);
+    };
+    unsigned primary_comparisons = 0;
+    project.catalog.compare = [&](const auto &a, const auto &b) -> std::optional<int> {
+        ++primary_comparisons;
+        return a.compare(b);
+    };
+    result = graphics_query(std::u16string(u"\0query", 6));
+    check(result.at("status") == "matched" && result.at("matched_by") == "display_name" &&
+              primary_comparisons == 1 && result.at("catalog_name_lookup").at("loads").empty(),
+          "empty name skips primary search but can match an empty display name");
+    project.display_name = [](std::size_t) -> std::optional<std::u16string> {
+        return std::u16string(u"Alias\0hidden", 12);
+    };
+    std::vector<std::pair<std::u16string, std::u16string>> compared_names;
+    project.catalog.compare = [&](const auto &a, const auto &b) -> std::optional<int> {
+        compared_names.emplace_back(a, b);
+        return ascii_compare(a, b);
+    };
+    result = graphics_query(std::u16string(u"alias\0hidden", 12));
+    check(result.at("status") == "matched" && compared_names.size() == 2 &&
+              compared_names[0] ==
+                  std::make_pair(std::u16string(u"internal"), std::u16string(u"alias")) &&
+              compared_names[1] ==
+                  std::make_pair(std::u16string(u"alias"), std::u16string(u"Alias")),
+          "primary compares catalog/query while fallback compares NUL-trimmed query/display");
+    project.catalog.catalog_complete = false;
+    check(graphics_query(u"").at("status") == "unresolved",
+          "empty query still requires complete catalog before the display fallback");
+    project.catalog.catalog_complete = true;
+    project.catalog.names.clear();
+    project.catalog.compare = {};
+    project.catalog.load = {};
+    project.display_name = {};
+    check(graphics_query(u"alias").at("status") == "not_found",
+          "empty complete catalog needs no loaders, display names or comparison callbacks");
+    project.catalog.names = {u"A", u"B"};
+    project.catalog.compare = ascii_compare;
+    unsigned display_calls = 0;
+    project.display_name = [&](std::size_t) -> std::optional<std::u16string> {
+        ++display_calls;
+        return u"alias";
+    };
+    project.catalog.load = [](std::size_t i) {
+        return i == 0 ? GraphicsMaterialResult{true, 10} : GraphicsMaterialResult{};
+    };
+    result = graphics_query(u"alias");
+    check(result.at("status") == "unresolved" && display_calls == 0 &&
+              result.at("unresolved_phase") == "full_catalog_loading" &&
+              !result.contains("material_index"),
+          "later unknown enumeration load prevents any display comparison despite earlier success");
+    project.catalog.names = {u"A", u"a"};
+    result = graphics_query(u"a");
+    check(
+        result.at("reason") == "primary_name_lookup_unresolved" &&
+            result.at("fallback_loads").empty() && display_calls == 0,
+        "unknown later primary load does not authorize display fallback or publish first identity");
+    project.catalog.names = {u"A", u"B"};
+    project.catalog.load = [](std::size_t) { return GraphicsMaterialResult{true, 10}; };
+    project.display_name = [](std::size_t) -> std::optional<std::u16string> { return {}; };
+    result = graphics_query(u"alias");
+    check(result.at("status") == "unresolved" &&
+              result.at("reason") == "loaded_material_display_name_unknown",
+          "unknown display name is not silently replaced with a catalog name or empty string");
+    project.display_name = [](std::size_t) -> std::optional<std::u16string> { return u"other"; };
+    result = graphics_query(u"alias");
+    check(
+        result.at("display_comparisons").size() == 2 && result.at("fallback_loads").size() == 2,
+        "duplicate loaded identities are not deduplicated during full enumeration or comparisons");
+    project.catalog.compare = [](const auto &a, const auto &) -> std::optional<int> {
+        if (a == u"alias")
+            return {};
+        return 1;
+    };
+    check(graphics_query(u"alias").at("reason") == "native_material_name_comparison_unknown",
+          "unknown display comparison retains uncertainty");
+    project.catalog.compare = ascii_compare;
+    project.display_name = [](std::size_t) -> std::optional<std::u16string> {
+        throw std::runtime_error("display unavailable");
+    };
+    check(graphics_query(u"alias").at("reason") == "display unavailable",
+          "display callback exception is reported without publishing a candidate");
+    project.catalog.load = [](std::size_t) { return GraphicsMaterialResult{false, 10}; };
+    check(graphics_query(u"alias").at("reason") == "unknown_material_has_identity",
+          "inconsistent fallback loader results cannot establish an identity");
+    project.catalog.load = {};
+    check(graphics_query(u"alias").at("reason") == "native_material_loader_required",
+          "full enumeration cannot infer loaded results from available catalog names");
     return checks;
 }
