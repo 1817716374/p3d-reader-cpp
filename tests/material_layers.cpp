@@ -154,5 +154,22 @@ unsigned material_layers_tests() {
               s["maps"][0]["initial_layer_state"]["layer_count"].is_null() &&
               s["maps"][0]["initial_layer_state"]["layers"].size() == 2,
           "unknown layer-reader behavior preserves a known prefix without claiming a final count");
+    check(s["version_conversion"]["bpmaterial_texture_readback"]["status"] == "not_evaluated" &&
+              !s["version_conversion"]["bpmaterial_texture_readback"].contains("shared_parameters"),
+          "unknown classic layer sequence prevents claiming final texture readback");
+    s = one(attrs, Json::array({image}));
+    auto texture = s.at("version_conversion").at("bpmaterial_texture_readback");
+    check(texture.at("shared_parameters").at("status") == "resolved" &&
+              texture.at("shared_parameters").at("use_image_alpha_channel") == true &&
+              texture.at("shared_parameters").at("has_map") == false &&
+              texture.at("shared_parameters").at("alpha_source_stage") == "classic_bump",
+          "bump-only layer alpha overwrites constructor despite disabled map and unknown filename");
+    s = settings(
+        Json::array({node("Map", attrs, Json::array({image})), node("Map", {{"Type", "31"}})}));
+    texture = s.at("version_conversion").at("bpmaterial_texture_readback");
+    check(texture.at("classic_bump").at("use_image_alpha_channel") == true &&
+              texture.at("shared_parameters").at("use_image_alpha_channel") == false &&
+              texture.at("shared_parameters").at("source_stage") == "pbr_enumeration",
+          "PBR last write replaces bump layer alpha and records its own source");
     return checks;
 }

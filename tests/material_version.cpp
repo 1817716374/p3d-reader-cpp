@@ -296,5 +296,87 @@ unsigned material_version_tests() {
             pbr.at("shared_parameters").at("status") == "resolved" &&
             pbr.at("shared_parameters").at("source_entry_index") == 1,
         "later known writer replaces unknown shared fields while preserving partial earlier trace");
+    auto textures = [&](const Json &maps) {
+        return settings(Json::object(), maps, 9)
+            .at("version_conversion")
+            .at("bpmaterial_texture_readback");
+    };
+    auto tex = textures(Json::array());
+    check(
+        tex.at("status") == "resolved" && !tex.at("classic_pattern").at("present").get<bool>() &&
+            !tex.at("classic_bump").at("present").get<bool>() &&
+            tex.at("bump_factor").at("value") == 0. &&
+            tex.at("shared_parameters").at("has_map") == false &&
+            tex.at("shared_parameters").at("map_unit") == 3 &&
+            tex.at("shared_parameters").at("map_mode") == 0 &&
+            tex.at("shared_parameters").at("uv_scale") == Json::array({1., 1.}) &&
+            tex.at("shared_parameters").at("uv_offset") == Json::array({0., 0.}) &&
+            tex.at("shared_parameters").at("rotation_degrees") == 0.,
+        "no maps preserves texture constructor values except the explicit no-pattern enable reset");
+    tex = textures(Json::array({{{"Type", "2"}, {"bump_map_scale", "7"}, {"BumpFlags", "1"}}}));
+    check(tex.at("status") == "resolved" && tex.at("classic_bump").at("present") == true &&
+              tex.at("bump_factor").at("value") == 0. &&
+              tex.at("shared_parameters").at("use_image_alpha_channel") == false,
+          "empty bump filename skips weight assignment and BumpFlags does not set image alpha");
+    tex = textures(Json::array({{{"Type", "2"},
+                                 {"bump_map_scale", "-7"},
+                                 {"Filename", "bump.jpg"},
+                                 {"pattern_off", "1"}}}));
+    check(tex.at("status") == "partial" && tex.at("classic_bump").at("map_enabled") == false &&
+              tex.at("bump_factor").at("status") == "conditional_on_returned_filename" &&
+              tex.at("bump_factor").at("if_true").at("value") == -7. &&
+              tex.at("bump_factor").at("if_false").at("value") == 0. &&
+              tex.at("shared_parameters").at("has_map") == false,
+          "disabled bump still reads local weight when the provider returns a nonempty filename");
+    tex = textures(Json::array({{{"Type", "2"}, {"Filename", ""}}}));
+    check(tex.at("bump_factor").at("status") == "conditional_on_returned_filename" &&
+              tex.at("bump_factor").at("if_true").at("value") == 1.,
+          "empty bump source request cannot decide returned filename or constructor map weight");
+    tex = textures(Json::array({{{"Type", "2"}, {"Filename", "bump.jpg"}, {"bump_map_scale", 7}}}));
+    check(tex.at("bump_factor").at("if_true").at("status") == "not_evaluated" &&
+              tex.at("bump_factor").at("if_false").at("status") == "resolved",
+          "unknown map weight does not erase the known empty-filename branch");
+    tex = textures(Json::array({{{"Type", "2"}, {"map_link", "3"}, {"bump_map_scale", "8"}},
+                                {{"Type", "3"}, {"Filename", "shared.jpg"}}}));
+    check(tex.at("classic_bump").at("layer_container_owner_object_id") == 1 &&
+              tex.at("bump_factor").at("source_object_id") == 0 &&
+              tex.at("bump_factor").at("if_true").at("value") == 8.,
+          "linked bump reads shared resource but its own weight");
+    tex = textures(Json::array({{{"Type", "1"},
+                                 {"PatternFlags", "1"},
+                                 {"pattern_off", "1"},
+                                 {"pattern_mapping", "5"},
+                                 {"pattern_scale.x", "6"},
+                                 {"pattern_scale.y", "7"}}}));
+    check(tex.at("status") == "resolved" && tex.at("classic_pattern").at("filename") == "" &&
+              tex.at("shared_parameters").at("source_stage") == "pbr_enumeration" &&
+              tex.at("shared_parameters").at("uv_scale") == Json::array({6., 7.}) &&
+              tex.at("shared_parameters").at("map_mode") == 5 &&
+              tex.at("shared_parameters").at("has_map") == false &&
+              tex.at("shared_parameters").at("use_image_alpha_channel") == true,
+          "PBR pattern write overrides the classic empty-filename mapping skip");
+    tex = textures(Json::array({{{"Type", "1"}, {"PatternFlags", "1"}}, {{"Type", "2"}}}));
+    check(tex.at("classic_bump").at("use_image_alpha_channel") == false &&
+              tex.at("shared_parameters").at("use_image_alpha_channel") == true,
+          "PBR enumeration restores pattern alpha after the intervening bump alpha write");
+    tex = textures(Json::array({{{"Type", "1"}, {"PatternFlags", "1"}}, {{"Type", "35"}}}));
+    check(tex.at("shared_parameters").at("source_object_id") == 1 &&
+              tex.at("shared_parameters").at("use_image_alpha_channel") == false,
+          "last accepted PBR map wins over pattern and bump stages");
+    tex = textures(Json::array({{{"Type", "1"}, {"Filename", "pattern.jpg"}}}));
+    check(tex.at("status") == "partial" &&
+              tex.at("classic_pattern").at("filename_status") == "not_evaluated" &&
+              !tex.at("classic_pattern").contains("filename") &&
+              tex.at("shared_parameters").at("status") == "resolved",
+          "unknown classic filename does not hide unconditional final PBR mapping");
+    tex = textures(
+        Json::array({{{"Type", "2"}, {"map_link", "3"}}, {{"Type", "3"}, {"map_link", "2"}}}));
+    check(tex.at("status") == "not_evaluated" && !tex.contains("shared_parameters"),
+          "cyclic texture graph does not publish constructor values as final readback");
+    tex = convert({{"displacement_distance", "2"}},
+                  Json::array({{{"Type", "2"}, {"Filename", "bump.jpg"}}}), 3)
+              .at("bpmaterial_texture_readback");
+    check(tex.at("status") == "resolved" && tex.at("classic_bump").at("present") == false,
+          "readback uses the converted table after legacy bump-to-displacement migration");
     return checks;
 }

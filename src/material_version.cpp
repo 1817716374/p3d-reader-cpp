@@ -393,6 +393,107 @@ Json pbr_readback(const Json &topology, const Json &containers, const Json &mapp
     }
     return out;
 }
+Json texture_readback(const Json &topology, const Json &containers, const Json &projection,
+                      const Json &pbr) {
+    Json out = {{"scope", "bpmaterial_texture_fields_after_classic_and_pbr_readback"},
+                {"status", "not_evaluated"},
+                {"source_assumption", "converted_map_state_without_runtime_replacement"},
+                {"resource_return_assumption", "normal_nonnull_resources_when_slots_exist"},
+                {"pbr_entries_source", "bpmaterial_pbr_readback.entries"}};
+    try {
+        require(topology.at("status") == "resolved" && pbr.at("sequence_status") == "resolved",
+                "resolved_texture_readback_sequence_required");
+        auto classic = [&](int type) {
+            Json result = {{"present", false},
+                           {"status", "resolved"},
+                           {"filename_status", "empty"},
+                           {"filename", ""}};
+            for (const auto &id : topology.at("active_object_ids")) {
+                const auto object_id = id.get<std::size_t>();
+                const auto &object = topology.at("objects").at(object_id);
+                if (object.at("native_type_key") != type)
+                    continue;
+                const auto owner = object.at("layer_container_owner_object_id").get<std::size_t>();
+                const auto &container = containers.at("containers").at(owner);
+                require(!container.at("layer_count").is_null() && !container.at("layers").empty(),
+                        "classic_first_layer_not_established");
+                const auto &layer = container.at("layers")[0];
+                result.update({{"present", true},
+                               {"object_id", object_id},
+                               {"source_map_index", object.at("source_map_index")},
+                               {"layer_container_owner_object_id", owner},
+                               {"layer_index", 0},
+                               {"map_enabled", object.at("enabled")},
+                               {"use_image_alpha_channel", layer.at("option_bit_1").at("value")}});
+                const auto &resources = layer.at("resource_inputs");
+                if (resources.at("status") != "resolved" || !resources.at("entries").empty()) {
+                    result["status"] = "partial";
+                    result["filename_status"] = "not_evaluated";
+                    result.erase("filename");
+                    if (!resources.at("entries").empty())
+                        result["first_resource_slot_index"] = 0;
+                }
+                return result;
+            }
+            return result;
+        };
+        auto pattern = classic(1), bump = classic(2);
+        Json factor = {{"status", "resolved"}, {"value", 0.}, {"source", "bpmaterial_constructor"}};
+        if (bump.at("filename_status") != "empty") {
+            const auto id = bump.at("object_id").get<std::size_t>();
+            Json weight;
+            if (id < projection.at("objects").size())
+                weight = projection.at("objects")[id].at("parameters").at("weight").at("value");
+            // The filename predicate reads the provider's UTF-16 C string.
+            // The map's own weight is used even when its layers are linked
+            // or the map is disabled; a source request cannot settle the branch.
+            factor = {
+                {"status", "conditional_on_returned_filename"},
+                {"source_object_id", id},
+                {"condition", "classic_bump_returned_filename_c_prefix_nonempty"},
+                {"if_true",
+                 {{"status", weight.is_null() ? "not_evaluated" : "resolved"}, {"value", weight}}},
+                {"if_false", {{"status", "resolved"}, {"value", 0.}}}};
+        }
+        Json shared = {{"status", "resolved"},
+                       {"source_stage", "constructor_and_no_pattern"},
+                       {"has_map", false},
+                       {"use_image_alpha_channel", false},
+                       {"map_mode", 0},
+                       {"map_unit", 3},
+                       {"uv_scale", Json::array({1., 1.})},
+                       {"uv_offset", Json::array({0., 0.})},
+                       {"rotation_degrees", 0.}};
+        if (bump.at("present") == true) {
+            shared["use_image_alpha_channel"] = bump.at("use_image_alpha_channel");
+            shared["alpha_source_stage"] = "classic_bump";
+            shared["alpha_source_object_id"] = bump.at("object_id");
+            if (!shared.at("use_image_alpha_channel").is_boolean())
+                shared["status"] = "not_evaluated";
+        }
+        if (!pbr.at("entries").empty()) {
+            // Every pattern map is also enumerated by PBR. Its unconditional
+            // later write supersedes both the conditional classic pattern UV
+            // write and the intervening bump alpha write.
+            shared = pbr.at("shared_parameters");
+            shared["source_stage"] = "pbr_enumeration";
+        } else {
+            require(pattern.at("present") == false, "pattern_missing_from_pbr_sequence");
+        }
+        const bool resolved = pattern.at("status") == "resolved" &&
+                              bump.at("status") == "resolved" &&
+                              factor.at("status") == "resolved" &&
+                              shared.at("status") == "resolved" && pbr.at("status") == "resolved";
+        out.update({{"status", resolved ? "resolved" : "partial"},
+                    {"classic_pattern", std::move(pattern)},
+                    {"classic_bump", std::move(bump)},
+                    {"bump_factor", std::move(factor)},
+                    {"shared_parameters", std::move(shared)}});
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 } // namespace
 
 Json material_version_conversion(const Json &input, const Json &maps, const Json &bindings,
@@ -401,9 +502,10 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
     auto layers = material_layer_containers(maps, topology);
     auto layer_mapping_getters = material_layer_mapping_getters(layers, topology);
     auto layer_resource_getters = material_layer_resource_getters(layers, topology);
-    auto texture_readback = pbr_readback(topology, layers, layer_mapping_getters);
+    auto pbr = pbr_readback(topology, layers, layer_mapping_getters);
     auto projection = material_projection_states(maps, topology);
     auto projection_getters = material_projection_getter_states(projection, topology);
+    auto textures = texture_readback(topology, layers, projection, pbr);
     auto parameters = converted_roots(input, mode, topology.at("status") == "resolved");
     const bool resolved =
         topology.at("status") == "resolved" && parameters.at("status") == "resolved";
@@ -415,7 +517,8 @@ Json material_version_conversion(const Json &input, const Json &maps, const Json
             {"layer_containers", std::move(layers)},
             {"layer_mapping_getters", std::move(layer_mapping_getters)},
             {"layer_resource_getters", std::move(layer_resource_getters)},
-            {"bpmaterial_pbr_readback", std::move(texture_readback)},
+            {"bpmaterial_pbr_readback", std::move(pbr)},
+            {"bpmaterial_texture_readback", std::move(textures)},
             {"local_projection_states", std::move(projection)},
             {"projection_getters", std::move(projection_getters)},
             {"map_topology", std::move(topology)}};
