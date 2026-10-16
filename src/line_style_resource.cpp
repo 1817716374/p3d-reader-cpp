@@ -184,11 +184,14 @@ Json decode_native_line_style_resource(const Bytes &b) {
             out["unassigned_ranges"] = Json::array({range(b, 36, 34), range(b, 206, 2)});
             if (kind == 3)
                 out["line_code"] = line_code(b);
+            else if (kind == 2)
+                out["compound"] = decode_native_compound_line_style(b);
             else
                 out["component_payload"] = {{"status", "unresolved"},
                                             {"reason", "line_style_component_kind_not_decoded"},
                                             {"source", range(b, 208, b.size() - 208)}};
-            out["status"] = kind == 3 && out["line_code"].at("status") == "decoded" &&
+            out["status"] = ((kind == 3 && out["line_code"].at("status") == "decoded") ||
+                             (kind == 2 && out["compound"].at("status") == "decoded")) &&
                                     out["name"].at("status") == "decoded"
                                 ? "decoded"
                                 : "partial";
