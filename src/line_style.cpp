@@ -371,4 +371,45 @@ Json native_layer_line_style_input(const Json &links) {
     }
     return out;
 }
+Json native_layer_line_style_slots(const Json &inputs, std::int32_t primary_style,
+                                   std::int32_t by_layer_style) {
+    Json out = {{"status", "decoded"},
+                {"scope", "fresh_layer_parameters_after_saved_style_cleanup"},
+                {"line_style_resource_loading", "not_evaluated"}};
+    const bool known = inputs.value("status", "") == "decoded";
+    for (auto item :
+         {std::make_pair("primary", primary_style), std::make_pair("by_layer", by_layer_style)}) {
+        Json slot = {{"status", known ? "decoded" : "not_evaluated"},
+                     {"saved_line_style", item.second},
+                     {"presence", known ? "empty" : "unknown"},
+                     {"state", nullptr},
+                     {"source_entry_index", nullptr},
+                     {"source_link_index", nullptr}};
+        if (!known) {
+            slot["reason"] = "layer_parameter_input_unknown";
+            out["status"] = "not_evaluated";
+        } else {
+            const auto &selected = inputs.at("selected_entries").at(item.first);
+            if (!selected.is_null()) {
+                const auto &entry = inputs.at("entries").at(selected.get<std::size_t>());
+                slot["source_entry_index"] = selected;
+                slot["source_link_index"] = entry.at("source_link_index");
+                slot["state"] = entry.at("parameters").at("state");
+                slot["presence"] = "present";
+            }
+            // The native test is signed and clears only positive saved styles.
+            // This precedes named resource resolution; a null slot is not a
+            // freshly allocated block containing default parameter values.
+            if (item.second > 0) {
+                slot["state"] = nullptr;
+                slot["presence"] = "empty";
+                slot["selection"] = "cleared_positive_line_style";
+            } else
+                slot["selection"] =
+                    selected.is_null() ? "constructor_default" : "saved_parameter_linkage";
+        }
+        out[item.first] = std::move(slot);
+    }
+    return out;
+}
 } // namespace p3d

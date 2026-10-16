@@ -2,6 +2,7 @@
 #include "blob_internal.hpp"
 #include "guided.hpp"
 #include "electrical_wire.hpp"
+#include "line_style_source.hpp"
 #include <iostream>
 #include <cstring>
 #include <lz4/lz4.h>
@@ -1182,6 +1183,9 @@ static void layer_group_state_tests() {
                 {"line_weight", value + 31}}},
               {"access_mode", value == 10 ? 1 : 2},
               {"display_priority", value == 10 ? -100 : 200},
+              {"line_style_parameter_slots",
+               native_layer_line_style_slots(native_layer_line_style_input(Json::array()),
+                                             -static_cast<std::int32_t>(value), value + 1)},
               {"material_reference",
                {{"status", "decoded"},
                 {"material_id", std::uint64_t(value)},
@@ -1368,6 +1372,93 @@ static void layer_group_state_tests() {
                                   state["layers"][1]["properties"]["primary_line_style"],
                           "only an active unresolved material source blocks its property");
                 }
+            }
+    auto parameter_layer = [&](std::int32_t primary, std::int32_t by_layer, double scale) {
+        Bytes raw(108, 0);
+        auto set = [](Bytes &b, std::size_t at, auto value) {
+            std::memcpy(b.data() + at, &value, sizeof(value));
+        };
+        set(raw, 4, std::uint16_t(49));
+        set(raw, 16, std::uint32_t(1));
+        set(raw, 36, std::uint32_t(2));
+        set(raw, 44, std::uint16_t(7));
+        set(raw, 52, primary);
+        set(raw, 68, by_layer);
+        Json links = Json::array();
+        for (auto role : {1u, 2u}) {
+            Bytes payload;
+            put(payload, std::uint32_t(0x881));
+            put(payload, scale + role);
+            put(payload, std::uint32_t(role));
+            links.push_back({{"app", 0x79f9},
+                             {"header", 0x1009},
+                             {"offset", 108 + links.size() * 20},
+                             {"payload", rawbytes(payload)}});
+        }
+        return decode_native_layer(raw, links);
+    };
+    auto parameter_graphics = [&](unsigned mode, unsigned mask) {
+        auto attrs = graphics(mode, 0);
+        Bytes payload;
+        put(payload, std::uint32_t(1));
+        put(payload, std::uint32_t(2));
+        put(payload, std::uint32_t(40));
+        payload.resize(12 + 40 * 2);
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto bit = i == 0 ? 7u : 12u;
+            if (mask & (1u << i))
+                payload[12 + bit / 8] |= 1u << (bit % 8);
+        }
+        attrs[0]["attributes"][0]["decoded"] = decode_layer_group_attribute(0, payload);
+        return attrs;
+    };
+    for (unsigned mode = 0; mode < 3; ++mode)
+        for (unsigned mask = 0; mask < 4; ++mask)
+            for (bool clear_file : {false, true}) {
+                auto input = records;
+                input[2]["layer_definition"] = parameter_layer(clear_file ? 1 : -1, -2, 10.);
+                input[5]["layer_definition"] = parameter_layer(-3, -4, 20.);
+                const auto snapshot = input;
+                const auto attrs = parameter_graphics(mode, mask);
+                const auto state = build_layer_tables(index, input, attrs)["group_states"][0];
+                for (unsigned role = 0; role < 2; ++role) {
+                    const bool file = mode == 2 || (mode == 0 && !(mask & (1u << role)));
+                    const auto source = file ? 2u : 5u;
+                    const auto name = role == 0 ? "primary_line_style" : "line_style";
+                    const auto slot = role == 0 ? "primary" : "by_layer";
+                    const auto &p = state["layers"][1]["properties"][name];
+                    check(state["status"] == "evaluated_supported_properties" &&
+                              p["native_record_index"] == source &&
+                              p["parameter_slot"] == input[source]["layer_definition"]
+                                                          ["line_style_parameter_slots"][slot] &&
+                              p["parameter_slot"]["presence"] ==
+                                  (role == 0 && file && clear_file ? "empty" : "present"),
+                          "independent style bits select whole loaded parameter slots including "
+                          "null");
+                    for (auto damaged_source : {2u, 5u}) {
+                        auto damaged = input;
+                        damaged[damaged_source]["layer_definition"]["line_style_parameter_slots"]
+                               [slot] = {{"status", "not_evaluated"},
+                                         {"presence", "unknown"},
+                                         {"state", nullptr}};
+                        const auto result =
+                            build_layer_tables(index, damaged, attrs)["group_states"][0];
+                        const bool selected = damaged_source == source;
+                        const auto &row = result["layers"][1];
+                        check(result["status"] == (selected ? "partially_evaluated"
+                                                            : "evaluated_supported_properties") &&
+                                  row["properties"].size() == 13 &&
+                                  row["properties"][name]["value"] == p["value"] &&
+                                  row["properties"][name]["parameter_slot"]["status"] ==
+                                      (selected ? "not_evaluated" : "decoded") &&
+                                  row["properties"]["material_id"] ==
+                                      state["layers"][1]["properties"]["material_id"],
+                              "only selected unknown slots affect partial status and never erase "
+                              "scalar values");
+                    }
+                }
+                check(input == snapshot,
+                      "group parameter synchronization does not mutate source layers");
             }
     check(records == original, "derived layer synchronization never mutates native records");
     auto attrs = graphics(0, 0);

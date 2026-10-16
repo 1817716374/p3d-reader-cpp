@@ -294,5 +294,51 @@ unsigned line_style_inputs_tests() {
     set(layer, 60, std::uint32_t(0x24));
     check(decode_native_layer(layer, Json::array())["primary_symbology"]["color_index"] == 0x24,
           "incompatible primary extended color preserves its original legacy index");
+    const auto parameter_links = Json::array({role(1, 2), role(2, 3), role(1, 4)});
+    const auto parameter_inputs = native_layer_line_style_input(parameter_links);
+    const std::array<std::int32_t, 6> styles{{INT32_MIN, -1, 0, 1, 7, INT32_MAX}};
+    for (unsigned version = 1; version <= 7; ++version)
+        for (const auto primary : styles)
+            for (const auto by_layer : styles) {
+                set(layer, 44, std::uint16_t(version));
+                set(layer, 52, primary);
+                set(layer, 68, by_layer);
+                const auto decoded = decode_native_layer(layer, parameter_links);
+                const auto &slots = decoded.at("line_style_parameter_slots");
+                check(slots["status"] == "decoded" &&
+                          slots["line_style_resource_loading"] == "not_evaluated" &&
+                          decoded["line_style_parameter_inputs"] == parameter_inputs,
+                      "slot cleanup preserves all saved parameter inputs for each supported layer "
+                      "version");
+                for (auto item :
+                     {std::make_pair("primary", primary), std::make_pair("by_layer", by_layer)}) {
+                    const auto &slot = slots.at(item.first);
+                    const auto index = item.first == std::string("primary") ? 2u : 1u;
+                    check(slot["saved_line_style"] == item.second &&
+                              slot["source_entry_index"] == index &&
+                              slot["source_link_index"] == index &&
+                              slot["presence"] == (item.second > 0 ? "empty" : "present") &&
+                              slot["state"] ==
+                                  (item.second > 0
+                                       ? Json()
+                                       : parameter_inputs["entries"][index]["parameters"]["state"]),
+                          "signed positive style cleanup retains zero and negative slots with all "
+                          "168 bytes");
+                }
+            }
+    auto empty_slots =
+        native_layer_line_style_slots(native_layer_line_style_input(Json::array()), 0, -1);
+    check(
+        empty_slots["primary"]["selection"] == "constructor_default" &&
+            empty_slots["primary"]["state"].is_null() &&
+            empty_slots["by_layer"]["presence"] == "empty",
+        "absent layer parameter pointers are empty rather than allocated default parameter blocks");
+    const auto unknown_inputs =
+        native_layer_line_style_input(Json::array({role(1, 2), link(short_payload)}));
+    const auto unknown_slots = native_layer_line_style_slots(unknown_inputs, 1, 7);
+    check(unknown_slots["status"] == "not_evaluated" &&
+              unknown_slots["primary"]["presence"] == "unknown" &&
+              unknown_slots["by_layer"]["presence"] == "unknown",
+          "unsafe linkage reads cannot be concealed by a later positive-style cleanup");
     return checks;
 }

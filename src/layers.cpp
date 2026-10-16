@@ -177,6 +177,8 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
             out["transparency_error"] = "nonfinite source value";
         out["material_reference"] = layer_material_reference(links);
         out["line_style_parameter_inputs"] = native_layer_line_style_input(links);
+        out["line_style_parameter_slots"] = native_layer_line_style_slots(
+            out["line_style_parameter_inputs"], r.at<std::int32_t>(52), r.at<std::int32_t>(68));
     } catch (const std::exception &e) {
         out["decode_error"] = e.what();
     }
@@ -396,7 +398,7 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                                      ["set_property_bits"];
                         require(mask->is_array(), "invalid layer override bitmap");
                     }
-                    bool material_unresolved = false;
+                    bool dependent_unresolved = false;
                     for (const auto &property : detail::layer_sync_properties) {
                         const bool override = mask && std::find(mask->begin(), mask->end(),
                                                                 property.bit) != mask->end();
@@ -429,7 +431,7 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                                      {"eligible_for_layer_fallback", id != 0 && id != UINT64_MAX}});
                             } else {
                                 result["error"] = "selected_layer_material_reference_unresolved";
-                                material_unresolved = true;
+                                dependent_unresolved = true;
                                 partial = true;
                             }
                             layer["properties"][property.result_name] = std::move(result);
@@ -444,14 +446,31 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                             {"selection", group_members.empty() ? "new_file_layer"
                                           : from_file           ? "file_sync"
                                                                 : "group_value"}};
+                        if (property.bit == 7 || property.bit == 12) {
+                            const auto name = property.bit == 7 ? "primary" : "by_layer";
+                            auto &parameters =
+                                layer["properties"][property.result_name]["parameter_slot"];
+                            const auto slots = value.find("line_style_parameter_slots");
+                            if (slots != value.end() && slots->contains(name))
+                                parameters = slots->at(name);
+                            else
+                                parameters = {{"status", "not_evaluated"},
+                                              {"presence", "unknown"},
+                                              {"state", nullptr},
+                                              {"reason", "selected_layer_parameter_slot_unknown"}};
+                            if (parameters.value("status", "") != "decoded") {
+                                dependent_unresolved = true;
+                                partial = true;
+                            }
+                        }
                         if (property.bit == 35 && value.contains("transparency_error")) {
                             layer["properties"][property.result_name]["error"] =
                                 value["transparency_error"];
                             partial = true;
                         }
                     }
-                    layer["status"] = material_unresolved ? "partially_evaluated"
-                                                          : "evaluated_supported_properties";
+                    layer["status"] = dependent_unresolved ? "partially_evaluated"
+                                                           : "evaluated_supported_properties";
                 } catch (const std::exception &e) {
                     layer["status"] = "not_evaluated";
                     layer["error"] = e.what();
