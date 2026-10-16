@@ -38,6 +38,31 @@ Json evaluate_native_layer_name_sync(const std::vector<NativeLayerNameCacheEntry
 // Returns source table indices and a separate name_synchronization result;
 // name evaluation is independent of the group's scalar synchronization mode.
 Json read_native_layer_group_names(const Document &, const NativeLayerNameContext &context = {});
+struct NativeLayerNameLoadContext {
+    NativeLayerNameContext text;
+    // Complete names already registered in the shared layer-name registry,
+    // before this table loads. Empty is known empty; nullopt is unavailable.
+    // Registration and lookup must use the same source text context.
+    // Native transient numeric keys are not needed or synthesized for callers.
+    std::optional<std::vector<std::u16string>> registered_names_before_load;
+};
+// Reconstruct one fresh writable local/group table's base name-loading phase,
+// without an old name-to-ID repair map. Includes missing-name generation and
+// the index actually captured while loading; it is not always a final rebuild.
+// Does not perform later group synchronization, invalidation or host callbacks.
+// State is owned and immutable after construction; const queries may share it
+// across threads when the source text callbacks are themselves thread safe.
+class NativeLayerNameCache {
+  public:
+    NativeLayerNameCache(const Json &native_records, std::size_t table_record_index,
+                         const NativeLayerNameLoadContext &context = {});
+    const Json &metadata() const noexcept;
+    Json lookup(const std::u16string &) const;
+
+  private:
+    struct Impl;
+    std::shared_ptr<const Impl> impl_;
+};
 // Reconstructs name lookup for a fresh local layer table after its saved records
 // have loaded. Uses raw record bodies/linkages, not decoded layer annotations.
 // Duplicate layer IDs load last; the native name index then visits unsigned IDs

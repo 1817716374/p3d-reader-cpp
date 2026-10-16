@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include <p3d/layer_lookup.hpp>
+#include <thread>
 
 using namespace p3d;
 namespace {
@@ -333,5 +334,239 @@ unsigned layer_lookup_tests() {
                     check(matches, "ordered sync matches independent canonical-resource oracle "
                                    "including lazy indexes and duplicate names");
                 }
+    NativeLayerNameLoadContext loading;
+    loading.text = text;
+    loading.registered_names_before_load = std::vector<std::u16string>();
+    auto loaded_names = [](const Json &metadata) {
+        std::map<unsigned, std::u16string> out;
+        for (const auto &row : metadata.at("loaded_layers")) {
+            const auto u = row.at("name_utf16").get<std::vector<std::uint16_t>>();
+            out[row.at("layer_id").get<unsigned>()] = std::u16string(u.begin(), u.end());
+        }
+        return out;
+    };
+    auto plain_input = records({layer(2, u"")});
+    const auto plain_before = plain_input;
+    NativeLayerNameCache generated(plain_input, 0, loading);
+    check(generated.metadata()["status"] == "resolved" &&
+              loaded_names(generated.metadata()).at(2) == u"2" &&
+              generated.metadata()["load_steps"][0]["candidate_query_count"] == 1 &&
+              generated.lookup(u"2")["layer_id"] == 2 && plain_input == plain_before,
+          "missing-name loading generates a decimal name without modifying source records");
+    NativeLayerNameCache collisions(records({layer(1, u"2"), layer(3, u"2-"), layer(2, u"")}), 0,
+                                    loading);
+    check(loaded_names(collisions.metadata()).at(2) == u"2--" &&
+              collisions.metadata()["load_steps"][2]["candidate_query_count"] == 3 &&
+              collisions.metadata()["load_steps"][2]["collision_layer_ids"] == Json({1, 3}) &&
+              collisions.lookup(u"2--")["status"] == "not_found" &&
+              collisions.lookup(u"2")["layer_id"] == 1,
+          "generation uses hyphens and preserves the index captured before inserting its new node");
+    NativeLayerNameCache default_prefix(records({layer(64, u"5"), layer(5, u"")}), 0, loading);
+    check(loaded_names(default_prefix.metadata()).at(64) == u"Default" &&
+              loaded_names(default_prefix.metadata()).at(5) == u"5" &&
+              default_prefix.lookup(u"Default")["layer_id"] == 64 &&
+              default_prefix.lookup(u"5")["status"] == "not_found",
+          "a name registered before Default repair can populate an index even after that name is "
+          "replaced");
+    auto multiple = records({layer(1, u"A"), layer(2, u"")});
+    const auto earlier = layer(2, u"2")["links"][0];
+    const auto extra = 4 + bytesof(earlier["payload"]).size();
+    multiple[2]["links"].insert(multiple[2]["links"].begin(), earlier);
+    multiple[2]["links"][1]["offset"] = 108 + extra;
+    auto multiple_body = bytesof(multiple[2]["data"]);
+    set(multiple_body, 8, Reader(multiple_body).at<std::uint32_t>(8) + std::uint32_t(extra / 2));
+    multiple[2]["data"] = rawbytes(multiple_body);
+    NativeLayerNameCache all_links(multiple, 0, loading);
+    check(loaded_names(all_links.metadata()).at(2) == u"2" &&
+              all_links.lookup(u"2")["status"] == "not_found" &&
+              all_links.metadata()["name_index_populated_during_load"] == true,
+          "every name linkage registers before loading, including a name overwritten by an empty "
+          "link");
+    NativeLayerNameCache aliases(records({layer(1, u"2"), layer(2, u""), layer(1, u"New")}), 0,
+                                 loading);
+    check(aliases.lookup(u"2")["layer_id"] == 1 &&
+              aliases.lookup(u"2")["native_record_index"] == 3 &&
+              aliases.lookup(u"2")["name_utf16"] == units(u"New") &&
+              aliases.lookup(u"New")["status"] == "not_found",
+          "a captured name key resolves the current payload of its ID even after that payload is "
+          "overwritten");
+    NativeLayerNameCache repeated(records({layer(7, u""), layer(7, u"")}), 0, loading);
+    check(
+        loaded_names(repeated.metadata()).at(7) == u"7-" &&
+            repeated.lookup(u"7")["native_record_index"] == 2 &&
+            repeated.lookup(u"7-")["status"] == "not_found",
+        "same-ID missing-name records use loading-time occupancy before replacing the prior node");
+    auto prior = loading;
+    prior.registered_names_before_load = std::vector<std::u16string>{u"2"};
+    const auto contextual_source = records({layer(1, u"A"), layer(2, u"")});
+    NativeLayerNameCache without_prefix(contextual_source, 0, loading),
+        with_prefix(contextual_source, 0, prior);
+    check(loaded_names(without_prefix.metadata()) == loaded_names(with_prefix.metadata()) &&
+              without_prefix.lookup(u"2")["status"] == "matched" &&
+              with_prefix.lookup(u"2")["status"] == "not_found",
+          "external registry presence changes index timing without necessarily changing a "
+          "generated name");
+    auto unavailable = loading;
+    unavailable.registered_names_before_load.reset();
+    NativeLayerNameCache unknown_generated(contextual_source, 0, unavailable);
+    check(unknown_generated.metadata()["status"] == "unresolved" &&
+              unknown_generated.metadata()["loaded_layers"].is_null() &&
+              unknown_generated.lookup(u"2")["status"] == "unresolved",
+          "an unavailable initial registry is not silently assumed to be empty during generation");
+    NativeLayerNameCache no_generation(records({layer(1, u"A"), layer(2, u"B")}), 0, unavailable);
+    check(no_generation.metadata()["status"] == "resolved" &&
+              no_generation.metadata()["registered_names_after_load"].is_null() &&
+              no_generation.lookup(u"B")["layer_id"] == 2,
+          "named-only loading can answer the final empty-index path without claiming a complete "
+          "registry");
+    for (auto id : {0x80000000u, UINT32_MAX - 1}) {
+        NativeLayerNameCache high(records({layer(id, u"")}), 0, loading);
+        const auto expected = std::to_string(std::int64_t(id) - 0x100000000ll);
+        check(loaded_names(high.metadata()).at(id) ==
+                  std::u16string(expected.begin(), expected.end()),
+              "generation formats high unsigned IDs with native signed decimal conversion");
+    }
+    NativeLayerNameCache rejected(
+        records({layer(0, u"5"), layer(UINT32_MAX, u"Unused"), layer(1, u"A"), layer(5, u"")}), 0,
+        loading);
+    check(rejected.metadata()["load_steps"][0]["native_return_code"] == 0x5c &&
+              rejected.metadata()["load_steps"][1]["status"] == "rejected" &&
+              loaded_names(rejected.metadata()).size() == 2 &&
+              rejected.lookup(u"5")["status"] == "not_found",
+          "rejected IDs still register their source names before later generation queries");
+    auto grouped = records({layer(1, u"A")});
+    auto group_body = bytesof(grouped[0]["data"]);
+    set(group_body, 44, std::uint64_t(UINT64_MAX - 3));
+    grouped[0]["data"] = rawbytes(group_body);
+    check(NativeLayerNameCache(grouped, 0, loading).lookup(u"A")["status"] == "matched",
+          "the same bounded base loader supports saved group tables before synchronization");
+    set(group_body, 44, std::uint64_t(17));
+    grouped[0]["data"] = rawbytes(group_body);
+    check(NativeLayerNameCache(grouped, 0, loading).metadata()["status"] == "unresolved",
+          "linked tables are not mistaken for standalone loaded name caches");
+    auto malformed = records({layer(1, u"A"), layer(2, u"B")});
+    malformed[2]["offset"] = 999;
+    NativeLayerNameCache broken(malformed, 0, loading);
+    check(broken.metadata()["loaded_layers"].is_null() &&
+              broken.lookup(u"A")["status"] == "unresolved" &&
+              broken.lookup(u"")["status"] == "not_found",
+          "invalid later members withhold a complete cache while empty-query short-circuit stays "
+          "independent");
+    auto forged = records({layer(1, u"Actual")});
+    forged[1]["layer_definition"] = {{"name", "Forged"}};
+    check(NativeLayerNameCache(forged, 0, loading).lookup(u"Actual")["layer_id"] == 1,
+          "loaded name reconstruction reads bounded bodies and links rather than replaceable "
+          "annotations");
+    // Independent oracle: canonical text keys model the registry and captured
+    // ID index directly, without the library's hash buckets or initial_name.
+    const std::array<std::pair<unsigned, std::u16string>, 8> choices{
+        {{1, u"A"}, {1, u""}, {2, u""}, {64, u"2"}, {0, u"2"}, {3, u"2"}, {3, u"2-"}, {64, u"0"}}};
+    for (bool external : {false, true})
+        for (const auto &a : choices)
+            for (const auto &b : choices)
+                for (const auto &c : choices) {
+                    const std::array<std::pair<unsigned, std::u16string>, 3> sequence{{a, b, c}};
+                    auto ctx = loading;
+                    if (external)
+                        ctx.registered_names_before_load = std::vector<std::u16string>{u"2", u"3"};
+                    Json children = Json::array();
+                    for (const auto &r : sequence)
+                        children.push_back(layer(r.first, r.second));
+                    std::set<std::u16string> pool;
+                    if (external) {
+                        pool.insert(u"2");
+                        pool.insert(u"3");
+                    }
+                    std::map<unsigned, std::pair<std::u16string, unsigned>> expected;
+                    std::map<std::u16string, unsigned> captured;
+                    auto canonical = [&](std::u16string n) {
+                        std::transform(n.begin(), n.end(), n.begin(), lower);
+                        return n;
+                    };
+                    auto rebuild_index = [&] {
+                        std::map<std::u16string, unsigned> result;
+                        for (const auto &[id, row] : expected)
+                            result[canonical(row.first)] = id;
+                        return result;
+                    };
+                    for (unsigned n = 0; n < sequence.size(); ++n) {
+                        auto id = sequence[n].first;
+                        auto value = sequence[n].second;
+                        if (!value.empty())
+                            pool.insert(canonical(value));
+                        if (!id || id == UINT32_MAX)
+                            continue;
+                        if (id == 64 && value != u"0")
+                            value = u"Default";
+                        if (value.empty()) {
+                            auto decimal = std::to_string(std::int64_t(id));
+                            std::u16string candidate(decimal.begin(), decimal.end());
+                            for (std::size_t tries = 0; tries <= expected.size(); ++tries) {
+                                bool occupied = false;
+                                if (pool.count(canonical(candidate))) {
+                                    if (captured.empty())
+                                        captured = rebuild_index();
+                                    occupied = captured.count(canonical(candidate));
+                                }
+                                if (!occupied) {
+                                    value = candidate;
+                                    break;
+                                }
+                                candidate += u"-";
+                            }
+                        }
+                        pool.insert(canonical(value));
+                        expected[id] = {value, n + 1};
+                    }
+                    NativeLayerNameCache actual(records(children), 0, ctx);
+                    bool correct = actual.metadata()["status"] == "resolved" &&
+                                   actual.metadata()["name_index_populated_during_load"] ==
+                                       !captured.empty() &&
+                                   actual.metadata()["loaded_layers"].size() == expected.size();
+                    for (const auto &row : actual.metadata()["loaded_layers"]) {
+                        auto id = row["layer_id"].get<unsigned>();
+                        correct = correct && row["name_utf16"] == units(expected.at(id).first) &&
+                                  row["native_record_index"] == expected.at(id).second;
+                    }
+                    const auto query_index = captured.empty() ? rebuild_index() : captured;
+                    for (const auto &q :
+                         {u"A", u"2", u"2-", u"2--", u"3", u"3-", u"Default", u"0", u"1", u"1-"}) {
+                        const auto match = query_index.find(canonical(q));
+                        const bool found = pool.count(canonical(q)) && match != query_index.end();
+                        const auto result = actual.lookup(q);
+                        correct = correct && result["status"] == (found ? "matched" : "not_found");
+                        if (found)
+                            correct =
+                                correct && result["layer_id"] == match->second &&
+                                result["native_record_index"] == expected.at(match->second).second;
+                    }
+                    check(correct, "base loading matches independent registry/index oracle across "
+                                   "defaults, generated names and rejected IDs");
+                }
+    auto pure_context = loading;
+    pure_context.text.compare = [lower](const std::u16string &a,
+                                        const std::u16string &b) -> std::optional<int> {
+        auto x = a, y = b;
+        std::transform(x.begin(), x.end(), x.begin(), lower);
+        std::transform(y.begin(), y.end(), y.begin(), lower);
+        return x.compare(y);
+    };
+    NativeLayerNameCache shared(records({layer(64, u"Default"), layer(2, u"")}), 0, pure_context);
+    const auto shared_before = shared.metadata();
+    std::array<bool, 4> ok{{true, true, true, true}};
+    std::array<std::thread, 4> workers;
+    for (unsigned n = 0; n < workers.size(); ++n)
+        workers[n] = std::thread([&, n] {
+            for (unsigned i = 0; i < 100; ++i)
+                if (shared.lookup(u"2")["layer_id"] != 2 ||
+                    shared.lookup(u"Default")["layer_id"] != 64)
+                    ok[n] = false;
+        });
+    for (auto &worker : workers)
+        worker.join();
+    check(std::all_of(ok.begin(), ok.end(), [](bool x) { return x; }) &&
+              shared.metadata() == shared_before,
+          "owned loaded state supports concurrent const queries after source temporaries are "
+          "released");
     return checks;
 }
