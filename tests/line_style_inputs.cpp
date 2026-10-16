@@ -31,6 +31,11 @@ unsigned line_style_inputs_tests() {
         Bytes b(116, 0);
         set(b, 4, std::uint16_t(type));
         set(b, 6, std::uint16_t(extended ? 0x20 : 0));
+        std::size_t size = b.size();
+        for (const auto &l : links)
+            size += 4 + bytesof(l.at("payload")).size();
+        set(b, 8, std::uint32_t((size - 4) / 2));
+        set(b, 12, std::uint32_t((b.size() - 4) / 2));
         set(b, 16, std::uint32_t(64));
         set(b, 36, std::uint16_t(dim3 ? 0x1000 : 0));
         set(b, 48, std::uint32_t(style));
@@ -141,9 +146,56 @@ unsigned line_style_inputs_tests() {
                   record(37, 9, Json::array({link(short_payload)}), false, false))["selection"] ==
                   "nonextended_header",
           "native header and built-in-style gates avoid reading unused malformed parameters");
+    auto multiline = record(63, 9, Json::array({link(good)}));
+    d = read_native_graphic_line_style_parameters(multiline);
+    check(d["status"] == "decoded" && d["parameter_reader"] == "multiline_default" &&
+              d["reader_return_code"] == 0 && d["state_write"] == "written" &&
+              d["state"]["scalars"]["scale"] == 5.,
+          "multiline default route selects a converted data-type-zero parameter");
+    auto multiline_role = [&](unsigned index, unsigned type, double scale) {
+        auto p = payload(0x1801);
+        append(p, scale);
+        append(p, std::uint32_t(index));
+        append(p, std::uint32_t(type));
+        return link(p);
+    };
+    multiline["links"] =
+        Json::array({multiline_role(1, 2, 7), multiline_role(99, 0, 8), multiline_role(0, 0, 9)});
+    d = read_native_graphic_line_style_parameters(multiline);
+    check(d["source_link_index"] == 1 && d["ignored_link_indices"] == Json({0}) &&
+              d["state"]["multiline_index"] == 99 && d["state"]["scalars"]["scale"] == 8.,
+          "multiline default mode skips nonzero data types, ignores the index, and stops at the "
+          "first match");
+    multiline["links"] = Json::array({link(invalid), link(good)});
+    d = read_native_graphic_line_style_parameters(multiline);
+    check(d["reader_return_code"] == 0 && d["source_link_index"] == 0 &&
+              d["linkage"]["reader_return_code"] == 1 && d["state"]["flags"] == 0 &&
+              d["state"]["scalars"]["scale"] == 1.,
+          "multiline selection tests the reset data type and ignores the inner loader failure");
+    multiline["links"] = Json::array({multiline_role(0, 4, 7)});
+    d = read_native_graphic_line_style_parameters(multiline);
+    check(d["status"] == "not_found" && d["reader_return_code"] == 1 &&
+              d["state_write"] == "written" && d["ignored_link_indices"] == Json({0}) &&
+              bytesof(d["state"]["storage"]) == Bytes(0xa8, 0),
+          "multiline known miss writes all zeros rather than the ordinary defaults");
+    check(bytesof(read_native_graphic_line_style_parameters(
+              record(63, 9, Json::array()))["state"]["storage"]) == Bytes(0xa8, 0),
+          "multiline empty linkage span also writes zero state");
+    auto gated = record(63, 7, Json::array());
+    d = read_native_graphic_line_style_parameters(gated);
+    check(d["state_write"] == "not_written" && !d.contains("state"),
+          "multiline built-in-style gate precedes destination clearing");
+    multiline["links"] = Json::array({link(short_payload), link(good)});
+    d = read_native_graphic_line_style_parameters(multiline);
+    check(d["status"] == "not_evaluated" && !d.contains("state") && d["source_link_index"] == 0,
+          "unsafe multiline input does not fall through or publish zero state as a known result");
     check(read_native_graphic_line_style_parameters(
-              record(63, 9, Json::array({link(good)})))["status"] == "not_evaluated",
-          "multiline record route is not replaced with the ordinary linkage reader");
+              record(63, 9, Json::array({link(long_payload)})))["status"] == "decoded",
+          "multiline iterator does not inherit the ordinary reader's 176-byte scratch limit");
+    d = read_native_graphic_line_style_parameters(record(63, 9, Json::array({link(orient)}), true));
+    check(d["three_dimensional"] == true &&
+              d["state"]["orientation_matrix"] == Json({{1., 0., 0.}, {0., 1., 0.}, {0., 0., 1.}}),
+          "multiline callback uses the source dimension flag for orientation");
     for (unsigned type : {27u, 38u, 41u, 52u})
         check(read_native_graphic_line_style_parameters(
                   record(type, 9, Json::array({ignored})))["state"]["flags"] == 0x80000000u,
@@ -194,6 +246,13 @@ unsigned line_style_inputs_tests() {
                 read_native_graphic_line_style_parameters(parsed) &&
             parsed["native_line_style_parameters"]["reader_return_code"] == 0,
         "native record parsing automatically publishes the same bounded graphic parameter result");
+    set(b, 4, std::uint16_t(63));
+    const auto parsed_multiline = parse_native(b)[0];
+    check(parsed_multiline["native_line_style_parameters"] ==
+                  read_native_graphic_line_style_parameters(parsed_multiline) &&
+              parsed_multiline["native_line_style_parameters"]["parameter_reader"] ==
+                  "multiline_default",
+          "native multiline records automatically use the dedicated default-parameter route");
     auto no_link = bytesof(record(37, 9, Json::array())["data"]);
     set(no_link, 8, std::uint32_t(56));
     set(no_link, 12, std::uint32_t(56));

@@ -244,7 +244,46 @@ Json native_graphic_line_style_input(const Bytes &body, const Json &links) {
         }
         const auto type = r.at<std::uint16_t>(4);
         if (type == 63) {
-            out["reason"] = "multiline_parameter_reader_required";
+            const bool dim3 = (r.at<std::uint16_t>(36) & 0x1000) != 0;
+            out["three_dimensional"] = dim3;
+            out["dimension_source_offset"] = 36;
+            out["parameter_reader"] = "multiline_default";
+            out["ignored_link_indices"] = Json::array();
+            // Unlike the ordinary reader, this route clears the destination
+            // before scanning. It ignores the inner loader's return code and
+            // stops at the first converted parameter whose data type is zero.
+            if (r.at<std::uint32_t>(8) > r.at<std::uint32_t>(12))
+                for (std::size_t i = 0; i < links.size(); ++i) {
+                    const auto &link = links.at(i);
+                    if (!(link.at("header").get<unsigned>() & 0x1000) || link.at("app") != 0x79f9)
+                        continue;
+                    auto loaded = load_native_line_style_parameter_link(link, dim3);
+                    if (loaded.at("status") != "decoded") {
+                        out["source_link_index"] = i;
+                        out["source_offset"] = link.at("offset");
+                        out["linkage"] = std::move(loaded);
+                        out["reason"] = out["linkage"].at("reason");
+                        return out;
+                    }
+                    if (loaded.at("state").at("multiline_data_type") != 0) {
+                        out["ignored_link_indices"].push_back(i);
+                        continue;
+                    }
+                    out.update({{"status", "decoded"},
+                                {"reader_return_code", 0},
+                                {"state_write", "written"},
+                                {"selection", "first_multiline_default_parameter"},
+                                {"source_link_index", i},
+                                {"source_offset", link.at("offset")},
+                                {"state", loaded.at("state")}});
+                    out["linkage"] = std::move(loaded);
+                    return out;
+                }
+            out.update({{"status", "not_found"},
+                        {"reader_return_code", 1},
+                        {"state_write", "written"},
+                        {"selection", "no_multiline_default_parameter"},
+                        {"state", state_json(Bytes(0xa8, 0))}});
             return out;
         }
         const bool dim3 = (r.at<std::uint16_t>(36) & 0x1000) != 0;
