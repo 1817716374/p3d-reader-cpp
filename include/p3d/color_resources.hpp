@@ -25,6 +25,25 @@ std::array<std::uint32_t, 3> native_color_hsv(const NativeRgb &);
 // Uses entries 0..254, source HSV distance, first ties and black fallback.
 // Entry 255 is not a candidate; no default palette is inferred.
 Json nearest_native_palette_color(const NativeRgb &, const NativeColorPalette &);
+struct NativeDrawColorContext {
+    // Loaded entries of the actual selected owning file, in original order.
+    // Unknown is distinct from a confirmed empty table. Do not concatenate files.
+    std::optional<std::vector<NativeRgb>> extended_colors;
+    // Actual ordinary drawing context's palette, which may differ from the
+    // source file's palette (for example a model palette override).
+    // Preserve the full native DWORD, including its unassigned high byte.
+    std::optional<std::array<std::uint32_t, 256>> draw_palette;
+    bool draw_palette_confirmed_absent = false;
+};
+// Convert both ordinary draw color channels after parent/layer inheritance.
+// Input is the native style's complete prefix through byte 55, not a file record
+// or serialized graphics command. Preserves all supplied bytes and source IDs.
+// Uses immutable prepared contexts; does not execute host callbacks, select an
+// owner, resolve inheritance or perform the later material assignment lookup.
+// Only a fully resolved result publishes prepared_state; unknown channels retain
+// their source bytes in partial_state and do not become a false palette miss.
+Json prepare_native_draw_colors(const Bytes &native_style,
+                                const NativeDrawColorContext &context = {});
 struct NativeColorRequest {
     NativeRgb rgb;
     // A present empty name differs from a null name pointer in the native cache.
