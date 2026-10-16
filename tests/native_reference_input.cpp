@@ -93,6 +93,15 @@ unsigned native_reference_input_tests() {
               "an upgraded reference is recognized as current and never upgraded twice");
         const auto original_rows = parse_native(old), converted_rows = parse_native(result.data);
         const auto &input = original_rows[0]["reference_input"];
+        const auto &priority = input.at("display_priority_input");
+        check(priority.at("value") == Reader(old).at<std::int32_t>(60) &&
+                  priority.at("source_offset") == 60 && priority.at("layout_offset") == 68 &&
+                  priority.at("value") ==
+                      converted_rows[0]["reference_input"]["display_priority_input"]["value"] &&
+                  converted_rows[0]["reference_input"]["display_priority_input"]["source_offset"] ==
+                      68,
+              "legacy priority contribution follows its relocated byte origin without confusing "
+              "source and converted offsets");
         auto relocated_links = original_rows[0]["links"];
         for (auto &link : relocated_links)
             link["offset"] = link["offset"].get<std::size_t>() + 24;
@@ -320,5 +329,19 @@ unsigned native_reference_input_tests() {
             clip["depths"]["local_interval"] ==
                 Json{{"status", "computed"}, {"lower", -2.}, {"upper", 9.}},
         "legacy clipping vertices, flags and depths use their own source offsets after conversion");
+    for (auto value :
+         {std::int32_t(0), std::int32_t(17), std::int32_t(-17), INT32_MIN, INT32_MAX}) {
+        auto current = wire(identity, 1.);
+        put(current, 68, std::uint32_t(value), 4);
+        const auto saved = current;
+        const auto decoded = native_reference_input(current);
+        const auto &priority = decoded.at("display_priority_input");
+        check(decoded.at("status") == "decoded" && priority.at("value") == value &&
+                  priority.at("source_offset") == 68 && priority.at("layout_offset") == 68 &&
+                  priority.at("source_offsets_include_stream_prefix") == true &&
+                  priority.at("combined_model_priority") == "not_evaluated" && current == saved,
+              "current reference preserves the signed raw contribution including INT32_MIN "
+              "without clamping, zero substitution or source mutation");
+    }
     return checks;
 }

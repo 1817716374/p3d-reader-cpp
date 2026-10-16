@@ -92,6 +92,11 @@ Json cached_reference_parameters(const Bytes &bytes) {
                 {"remaining_semantics", "other_packed_reference_fields"}};
     try {
         require(bytes.size() == 328, "cached_reference_parameters_require_328_bytes");
+        out["display_priority_input"] = {{"scope", "cached_missing_child_reference_contribution"},
+                                         {"value", Reader(bytes).at<std::int32_t>(280)},
+                                         {"source_offset", 280},
+                                         {"source_offsets_include_stream_prefix", false},
+                                         {"combined_model_priority", "not_evaluated"}};
         auto point = [&](std::size_t offset) {
             return Json{{"value", Json::array({source_number(bytes, offset),
                                                source_number(bytes, offset + 8),

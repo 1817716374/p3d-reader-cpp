@@ -585,5 +585,21 @@ unsigned model_edge_cache_tests() {
                   selected.at("source_storage") == attrs[ordinal].at("payload"),
               "association selection uses the complete collection across native sort thresholds");
     }
+    for (auto value :
+         {std::int32_t(0), std::int32_t(17), std::int32_t(-17), INT32_MIN, INT32_MAX}) {
+        Bytes priority_source(328, 0);
+        set(priority_source, 280, value);
+        const auto saved = priority_source;
+        const auto decoded = cached_reference_parameters(priority_source);
+        const auto &priority = decoded.at("display_priority_input");
+        check(decoded.at("status") == "decoded" && priority.at("value") == value &&
+                  priority.at("source_offset") == 280 &&
+                  priority.at("source_offsets_include_stream_prefix") == false &&
+                  decoded.at("native_use_condition") == "constructing_missing_child_reference" &&
+                  decoded.at("target_application_status") == "not_evaluated" &&
+                  priority_source == saved,
+              "cached priority is an unchanged missing-child construction input and is not "
+              "applied to the host or an already loaded reference");
+    }
     return checks;
 }
