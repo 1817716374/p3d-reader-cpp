@@ -22,6 +22,23 @@ Json prepare_native_line_style_symbol_parameters(const Json &native_record,
 // Unsupported records remain in the source view and produce unknown entries.
 Geometry reconstruct_native_line_style_symbol_buffer(const Json &native_record,
                                                      const Tessellation & = {});
+// Resolve the independent geometry ID in a fresh model registry, then its
+// file's system registry. The explicit counter has the same restrictions as
+// Document::native_model_id_assignments. Nodes preserve input occurrences,
+// parent order and source indices; no unrelated model or name search occurs.
+// This binds the saved source subtree, before runtime descriptor conversion,
+// callbacks, symbol placement or appearance. max_nodes limits the selected tree.
+Json read_native_line_style_symbol_geometry_source(const Document &,
+                                                   const StreamPath &model_storage,
+                                                   std::uint64_t initial_id_counter,
+                                                   const Json &native_record,
+                                                   std::size_t max_nodes = 100000);
+// Extract supported direct primitives from that source subtree. Composite
+// assembly and unsupported records produce unknown entries. Original source
+// coordinates/IDs and independent occurrence identities remain distinct.
+Geometry reconstruct_native_line_style_symbol_geometry_source(
+    const Document &, const StreamPath &model_storage, std::uint64_t initial_id_counter,
+    const Json &native_record, const Tessellation & = {}, std::size_t max_nodes = 100000);
 // Native fresh 0xa8 parameter initialization plus one user linkage 0x79f9.
 // Reconstructs the dimension-specific orientation and native rejected-flag
 // reset. Does not choose a graphical caller or load a line-style resource.

@@ -183,6 +183,19 @@ Json prepare_native_line_style_symbol_parameters(const Json &record,
     }
 }
 
+Geometry reconstruct_native_line_style_symbol_record(const Json &source,
+                                                     const Tessellation &policy) {
+    auto part = reconstruct_native(source, policy);
+    const auto type = source.at("element_type").get<unsigned>();
+    if (type == 97)
+        part.unknown.push_back({{"reason", "symbol_graphics_commands_require_companion_records"}});
+    if (type == 19 || type == 20 || type == 21)
+        part.unknown.push_back({{"reason", "symbol_composite_assembly_not_evaluated"}});
+    if (!part.texts.empty())
+        part.unknown.push_back({{"reason", "symbol_text_glyph_geometry_not_loaded"}});
+    return part;
+}
+
 Geometry reconstruct_native_line_style_symbol_buffer(const Json &record,
                                                      const Tessellation &policy) {
     Geometry result;
@@ -194,15 +207,7 @@ Geometry reconstruct_native_line_style_symbol_buffer(const Json &record,
                                       {"detail", embedded.value("reason", std::string())}});
         for (std::size_t i = 0; i < embedded.at("records").size(); ++i) {
             const auto &source = embedded.at("records")[i];
-            auto part = reconstruct_native(source, policy);
-            if (source.at("element_type") == 97)
-                part.unknown.push_back(
-                    {{"reason", "symbol_graphics_commands_require_companion_records"}});
-            if (source.at("element_type") == 19 || source.at("element_type") == 20 ||
-                source.at("element_type") == 21)
-                part.unknown.push_back({{"reason", "symbol_composite_assembly_not_evaluated"}});
-            if (!part.texts.empty())
-                part.unknown.push_back({{"reason", "symbol_text_glyph_geometry_not_loaded"}});
+            auto part = reconstruct_native_line_style_symbol_record(source, policy);
             for (auto &item : part.unknown)
                 item["symbol_record_index"] = i;
             for (auto &item : part.primitive_ranges)
