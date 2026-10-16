@@ -230,7 +230,7 @@ Json Document::native_material_catalog(const MaterialCatalogOptions &options) co
             }
         }
         result["initial_source_materials"] =
-            native_catalog_material_read(result, container, native_records(), options);
+            native_system_catalog_material_read(result, container, native_records(), options);
         out.push_back(std::move(result));
     }
     return out;

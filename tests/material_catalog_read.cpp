@@ -112,6 +112,48 @@ unsigned material_catalog_read_tests() {
           "missing resource string uses native current-context fallback");
     auto material = [&] { return run().at("entries")[0].at("material"); };
     auto identity = material().at("bpmaterial_identity_readback");
+    {
+        auto system_container = container;
+        system_container["kind"] = "P3D-SSYS";
+        auto system =
+            native_system_catalog_material_read(catalog, system_container, records, options);
+        const auto &id = system.at("entries")[0].at("material").at("bpmaterial_identity_readback");
+        check(system.at("owner_context").at("kind") == "fresh_system_owner" &&
+                  id.at("status") == "resolved" && id.at("model_id").at("value") == -1 &&
+                  id.at("model_id").at("source") == "fresh_system_owner_constructor" &&
+                  id.at("entity_id").at("value") == 777,
+              "initial system material readback automatically uses the proved fresh system owner");
+        check(id.at("native_entity_id_validity").at("value") == true &&
+                  id.at("native_packed_value").at("value") == INT64_C(-4294966519),
+              "fresh system owner yields a negative packed value without losing the complete "
+              "identity");
+        system["entries"][0]["material"]["bpmaterial_identity_readback"] = identity;
+        system.erase("owner_context");
+        check(system == run(),
+              "automatic owner does not change source choice or other material state");
+        auto custom = options;
+        custom.loaded_material_model_id = 0;
+        system = native_system_catalog_material_read(catalog, system_container, records, custom);
+        check(
+            system.at("owner_context").at("kind") == "caller_supplied_load_owner" &&
+                system.at("entries")[0]
+                        .at("material")
+                        .at("bpmaterial_identity_readback")
+                        .at("model_id")
+                        .at("value") == 0,
+            "explicit zero owner overrides the system profile rather than being treated as unset");
+        custom.loaded_material_model_id = -2;
+        system = native_system_catalog_material_read(catalog, system_container, records, custom);
+        check(system.at("entries")[0]
+                      .at("material")
+                      .at("bpmaterial_identity_readback")
+                      .at("native_entity_id_validity")
+                      .at("value") == false,
+              "explicit invalid owner is preserved and never silently replaced by system default");
+        check(native_system_catalog_material_read(catalog, container, records).at("status") ==
+                  "unresolved",
+              "automatic system ownership requires the actual system-container profile");
+    }
     check(identity.at("status") == "partial" && identity.at("model_id").at("value").is_null() &&
               identity.at("entity_id").at("value") == 777 &&
               identity.at("name").at("value") == "Catalog name",

@@ -685,7 +685,8 @@ struct MaterialCatalogOptions {
     std::function<bool(const std::string &, const std::string &)> case_equal;
     // Model-ID getter result for the owner passed to the initial material load.
     // This is runtime context, not the source record's storage/model ID.
-    // Unset keeps the model component of BPMaterial identity unknown.
+    // Document's initial system catalog uses its fresh system owner (-1)
+    // when unset. Generic low-level material reads keep an unset owner unknown.
     std::optional<std::int32_t> loaded_material_model_id;
 };
 enum class ComponentGraphicsSource {

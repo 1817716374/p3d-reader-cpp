@@ -301,4 +301,32 @@ Json native_catalog_material_read(const Json &catalog, const Json &container, co
     }
     return out;
 }
+Json native_system_catalog_material_read(const Json &catalog, const Json &container,
+                                         const Json &records,
+                                         const MaterialCatalogOptions &options) {
+    if (container.value("kind", Json()) != "P3D-SSYS")
+        return {{"status", "unresolved"},
+                {"reason", "initial_system_catalog_owner_required"},
+                {"entries", Json::array()},
+                {"decoded_entry_indices", Json::array()}};
+    auto read_options = options;
+    const bool system_owner = !read_options.loaded_material_model_id.has_value();
+    if (system_owner)
+        read_options.loaded_material_model_id = -1;
+    auto out = native_catalog_material_read(catalog, container, records, read_options);
+    out["owner_context"] = {
+        {"kind", system_owner ? "fresh_system_owner" : "caller_supplied_load_owner"},
+        {"model_id", *read_options.loaded_material_model_id},
+        {"source", system_owner ? "native_project_system_owner_constructor" : "caller"},
+        {"runtime_replacement", "not_evaluated"}};
+    for (auto &entry : out.at("entries")) {
+        if (entry.at("status") != "decoded")
+            continue;
+        auto &identity = entry.at("material").at("bpmaterial_identity_readback");
+        identity["owner_context_source"] = "initial_source_materials.owner_context";
+        if (system_owner)
+            identity["model_id"]["source"] = "fresh_system_owner_constructor";
+    }
+    return out;
+}
 } // namespace p3d
