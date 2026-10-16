@@ -378,5 +378,124 @@ unsigned material_version_tests() {
               .at("bpmaterial_texture_readback");
     check(tex.at("status") == "resolved" && tex.at("classic_bump").at("present") == false,
           "readback uses the converted table after legacy bump-to-displacement migration");
+    auto read_settings = [&](const Json &attributes, int version = 9) {
+        return settings(attributes, Json::array(), version).at("bpmaterial_readback");
+    };
+    auto material = read_settings(Json::object());
+    check(material.at("status") == "resolved" && material.at("parameters").size() == 11 &&
+              material.at("parameters").at("color").at("value") == Json::array({1., 1., 1.}) &&
+              material.at("parameters").at("color").at("enabled") == false &&
+              material.at("parameters").at("roughness_factor").at("value") == .05 &&
+              material.at("parameters").at("refract_factor").at("value") == 1.,
+          "BPMaterial settings readback uses native root defaults rather than only explicit XML");
+    material = read_settings({{"Flags", "0"},
+                              {"color.r", "2"},
+                              {"color.g", "-3"},
+                              {"color.b", "4"},
+                              {"transmit", "1.5"},
+                              {"glow", "8"},
+                              {"ambient", "-2"}});
+    check(material.at("parameters").at("color").at("value") == Json::array({2., -3., 4.}) &&
+              material.at("parameters").at("color").at("enabled") == false &&
+              material.at("parameters").at("transparency").at("value") == 1.5 &&
+              material.at("parameters").at("glow_factor").at("enabled") == true &&
+              material.at("parameters").at("glow_factor").at("value") == 8. &&
+              material.at("parameters").at("ambient_factor").at("enabled") == true &&
+              material.at("parameters").at("ambient_factor").at("value") == -2.,
+          "disabled fields retain native values while glow and ambient enable are unconditional");
+    const std::vector<std::pair<const char *, unsigned>> enabled_bits = {{"color", 2},
+                                                                         {"transparency", 6},
+                                                                         {"specular_color", 3},
+                                                                         {"specular_factor", 9},
+                                                                         {"glow_color", 21},
+                                                                         {"diffuse_factor", 7},
+                                                                         {"roughness_factor", 4},
+                                                                         {"reflect_factor", 5},
+                                                                         {"refract_factor", 8}};
+    for (const auto &selected : enabled_bits) {
+        material = read_settings({{"Flags", std::to_string(1u << selected.second)}});
+        unsigned enabled = 0;
+        for (const auto &entry : enabled_bits)
+            enabled += material.at("parameters").at(entry.first).at("enabled").get<bool>();
+        check(enabled == 1 && material.at("parameters").at(selected.first).at("enabled") == true,
+              "each converted enable bit selects its own BPMaterial field");
+    }
+    for (const auto &value : {"-7", "0.25", "101", "1000000"}) {
+        material = read_settings({{"finish", value}});
+        check(material.at("parameters").at("roughness_factor").at("value") == std::stod(value),
+              "reading stored roughness does not repeat the registration setter clamp");
+    }
+    material = read_settings({{"finish", "-0"}, {"transmit", "nan(snan)"}});
+    check(
+        std::signbit(material.at("parameters").at("roughness_factor").at("value").get<double>()) &&
+            material.at("parameters").at("transparency").at("value").at("ieee754_hex") ==
+                "7ff0000000000001",
+        "direct getter readback preserves negative zero and nonfinite bit representations");
+    for (int version : {0, 4, 5, 9}) {
+        material = read_settings({{"Flags", "2097152"},
+                                  {"color.r", "2"},
+                                  {"color.g", "3"},
+                                  {"color.b", "4"},
+                                  {"glow_color.r", "5"},
+                                  {"glow_color.g", "6"},
+                                  {"glow_color.b", "7"}},
+                                 version);
+        const auto &glow = material.at("parameters").at("glow_color");
+        check(glow.at("value") ==
+                      (version <= 4 ? Json::array({2., 3., 4.}) : Json::array({5., 6., 7.})) &&
+                  glow.at("source_parameter") == (version <= 4 ? "color" : "glow_color") &&
+                  glow.at("enabled") == (version > 4),
+              "version conversion changes both glow source and enable before readback");
+    }
+    material = read_settings({{"Flags", 1}});
+    check(material.at("parameters_status") == "partial" &&
+              material.at("parameters").at("color").at("value_status") == "resolved" &&
+              material.at("parameters").at("color").at("enabled_status") == "not_evaluated" &&
+              material.at("parameters").at("glow_factor").at("status") == "resolved",
+          "unknown flags do not erase values or unconditional enables");
+    material = read_settings({{"finish", 1}, {"scattering_distance", 4}});
+    check(material.at("parameters_status") == "partial" &&
+              material.at("parameters").at("roughness_factor").at("value").is_null() &&
+              material.at("parameters").at("color").at("status") == "resolved",
+          "unknown used parameter remains local to that field");
+    material = read_settings({{"scattering_distance", 4}});
+    check(material.at("parameters_status") == "resolved",
+          "unknown root parameter not read by BPMaterial does not invalidate confirmed getters");
+    material = read_settings({{"M311", "different-name"}, {"Name", "not-display-name"}});
+    check(
+        material.at("display_name").at("value") == "" &&
+            material.at("display_name").at("read_status") == "not_written" &&
+            material.at("extended_data_json_string").at("value") == "" &&
+            material.at("project_identity_status") == "not_evaluated" && !material.contains("name"),
+        "missing display and extended strings use constructors without inventing project identity");
+    for (int version : {0, 9}) {
+        material = read_settings({{"M319", u8"材质显示名"}, {"M320", "  not-json {  "}}, version);
+        check(material.at("display_name").at("value") == u8"材质显示名" &&
+                  material.at("display_name").at("source_attribute") == "M319" &&
+                  material.at("extended_data_json_string").at("value") == "  not-json {  " &&
+                  material.at("extended_data_json_string").at("status") == "resolved",
+              "hard-coded text keys do not shift with legacy numeric tables or require valid JSON");
+    }
+    const auto nul_text = std::string("Name\0after", 10);
+    const auto source_settings =
+        settings({{"M319", nul_text}, {"M320", nul_text}}, Json::array(), 9);
+    material = source_settings.at("bpmaterial_readback");
+    check(material.at("display_name").at("value") == "Name" &&
+              material.at("extended_data_json_string").at("value") == "Name" &&
+              source_settings.at("source_parameters").at("M320") == nul_text,
+          "native C-string text input truncates at NUL while original attributes stay intact");
+    material = read_settings({{"M319", 4}, {"M320", Json::object()}});
+    check(material.at("status") == "partial" &&
+              material.at("display_name").at("status") == "not_evaluated" &&
+              material.at("extended_data_json_string").at("value").is_null() &&
+              material.at("parameters_status") == "resolved",
+          "nontext synthetic XML input does not fabricate display or extra strings");
+    material =
+        settings({{"M319", "kept"}}, Json::array({{{"Type", "1"}, {"Filename", "a.jpg"}}}), 9)
+            .at("bpmaterial_readback");
+    check(material.at("status") == "partial" && material.at("parameters_status") == "resolved" &&
+              material.at("display_name").at("value") == "kept",
+          "unresolved resource return leaves settings fields usable without claiming complete "
+          "material");
     return checks;
 }

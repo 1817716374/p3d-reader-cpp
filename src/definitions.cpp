@@ -1,5 +1,81 @@
 #include "internal.hpp"
 namespace p3d {
+namespace {
+Json bpmaterial_settings_readback(const Json &attributes, const Json &converted) {
+    const auto &roots = converted.at("root_parameters");
+    const auto &flags = roots.at("flags");
+    Json parameters = Json::object();
+    bool core_resolved = true;
+    auto add = [&](const char *name, const char *root, int bit) {
+        const auto &source = roots.at("parameters").at(root);
+        Json enabled = bit < 0           ? Json(true)
+                       : flags.is_null() ? Json()
+                                         : Json(bool(flags.get<std::uint32_t>() & (1u << bit)));
+        const auto &value = source.at("value");
+        const bool resolved = !value.is_null() && enabled.is_boolean();
+        parameters[name] = {
+            {"status", resolved ? "resolved" : "partial"},
+            {"value", value},
+            {"enabled", enabled},
+            {"value_status", value.is_null() ? "not_evaluated" : "resolved"},
+            {"enabled_status", enabled.is_null() ? "not_evaluated" : "resolved"},
+            {"root_parameter", root},
+            {"source_parameter", source.at("source_parameter")},
+            {"enabled_source", bit < 0 ? "native_unconditional" : "converted_flags"}};
+        if (bit >= 0)
+            parameters[name]["flag_bit"] = bit;
+        core_resolved &= resolved;
+    };
+    add("color", "color", 2);
+    add("transparency", "transmit", 6);
+    add("specular_color", "specular_color", 3);
+    add("specular_factor", "specular", 9);
+    add("glow_color", "glow_color", 21);
+    add("glow_factor", "glow", -1);
+    add("ambient_factor", "ambient", -1);
+    add("diffuse_factor", "diffuse", 7);
+    add("roughness_factor", "finish", 4);
+    add("reflect_factor", "reflect", 5);
+    add("refract_factor", "refract", 8);
+    auto text = [&](const char *key) {
+        Json result = {{"status", "resolved"},
+                       {"source_attribute", key},
+                       {"source_present", attributes.contains(key)},
+                       {"read_status", "not_written"},
+                       {"value", ""}};
+        if (!attributes.contains(key))
+            return result;
+        if (!attributes.at(key).is_string()) {
+            result.update({{"status", "not_evaluated"},
+                           {"read_status", "unresolved"},
+                           {"value", nullptr},
+                           {"reason", "xml_attribute_text_required"}});
+            return result;
+        }
+        const auto source = attributes.at(key).get<std::string>();
+        const auto nul = source.find('\0');
+        result.update({{"read_status", "written"},
+                       {"value", source.substr(0, nul)},
+                       {"nul_terminated_input", nul != std::string::npos}});
+        return result;
+    };
+    auto display = text("M319"), extra = text("M320");
+    extra["content_policy"] = "verbatim_text_without_json_evaluation";
+    const bool resolved = core_resolved && display.at("status") == "resolved" &&
+                          extra.at("status") == "resolved" &&
+                          converted.at("bpmaterial_texture_readback").at("status") == "resolved";
+    return {{"scope", "bpmaterial_settings_readback_without_project_identity"},
+            {"status", resolved ? "resolved" : "partial"},
+            {"source_assumption", "converted_settings_without_runtime_replacement"},
+            {"parameters_status", core_resolved ? "resolved" : "partial"},
+            {"parameters", std::move(parameters)},
+            {"display_name", std::move(display)},
+            {"extended_data_json_string", std::move(extra)},
+            {"texture_fields_source", "version_conversion.bpmaterial_texture_readback"},
+            {"pbr_entries_source", "version_conversion.bpmaterial_pbr_readback.entries"},
+            {"project_identity_status", "not_evaluated"}};
+}
+} // namespace
 Json material_settings(const Json &tree) {
     auto fields = [](const Json &attrs) {
         Json o = Json::object();
@@ -89,7 +165,8 @@ Json material_settings(const Json &tree) {
     };
     for (std::size_t i = 0; i < maps.size(); ++i) {
         auto &map = maps[i];
-        map["initial_layer_state"] = material_layer_input(map, (*map_sources[i])["children"].size());
+        map["initial_layer_state"] =
+            material_layer_input(map, (*map_sources[i])["children"].size());
         map["initial_projection_state"] = material_projection_input(map);
         map["replicators"]["initial_state"] = material_replicator_input(map["replicators"]);
         auto dispatch = map["reader_path"].value("provider_dispatch", Json::object());
@@ -107,12 +184,14 @@ Json material_settings(const Json &tree) {
     auto initial = material_root_input(tree["attributes"], reader_profile["mode"]);
     auto bindings = material_map_bindings(maps);
     auto converted = material_version_conversion(initial, maps, bindings, reader_profile["mode"]);
+    auto readback = bpmaterial_settings_readback(tree["attributes"], converted);
     return {{"source_parameters", tree["attributes"]},
             {"numeric_parameters", fields(tree["attributes"])},
             {"semantics", material_parameter_semantics(tree["attributes"])},
             {"reader_profile", reader_profile},
             {"initial_parameters", std::move(initial)},
             {"version_conversion", std::move(converted)},
+            {"bpmaterial_readback", std::move(readback)},
             {"maps", maps},
             {"map_bindings", std::move(bindings)},
             {"shader_policy", "Native parameter flags and map roles; no conversion to another "
