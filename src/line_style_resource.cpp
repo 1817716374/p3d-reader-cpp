@@ -188,13 +188,16 @@ Json decode_native_line_style_resource(const Bytes &b) {
                 out["compound"] = decode_native_compound_line_style(b);
             else if (kind == 4)
                 out["line_point"] = decode_native_line_point_style(b);
+            else if (kind == 1)
+                out["point_symbol"] = decode_native_line_style_symbol(b);
             else
                 out["component_payload"] = {{"status", "unresolved"},
                                             {"reason", "line_style_component_kind_not_decoded"},
                                             {"source", range(b, 208, b.size() - 208)}};
             out["status"] = ((kind == 3 && out["line_code"].at("status") == "decoded") ||
                              (kind == 2 && out["compound"].at("status") == "decoded") ||
-                             (kind == 4 && out["line_point"].at("status") == "decoded")) &&
+                             (kind == 4 && out["line_point"].at("status") == "decoded") ||
+                             (kind == 1 && out["point_symbol"].at("status") == "decoded")) &&
                                     out["name"].at("status") == "decoded"
                                 ? "decoded"
                                 : "partial";
