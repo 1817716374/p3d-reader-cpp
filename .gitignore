@@ -92,6 +92,7 @@
 !/tests/block_layers.cpp
 !/tests/block_symbols.cpp
 !/tests/line_style_inputs.cpp
+!/tests/line_style_resource.cpp
 !/tests/display_priority.cpp
 !/tests/material_resource_inputs.cpp
 !/tests/graphics_native.cpp
