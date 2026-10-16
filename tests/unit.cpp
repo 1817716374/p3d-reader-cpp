@@ -1176,6 +1176,12 @@ static void layer_group_state_tests() {
               {"layer_id", id},
               {"by_layer_symbology",
                {{"color_index", value}, {"line_style", value + 1}, {"line_weight", value + 2}}},
+              {"primary_symbology",
+               {{"color_index", value + 30},
+                {"line_style", -static_cast<std::int32_t>(value)},
+                {"line_weight", value + 31}}},
+              {"access_mode", value == 10 ? 1 : 2},
+              {"display_priority", value == 10 ? -100 : 200},
               {"display", value == 10},
               {"print", value == 10},
               {"frozen", value == 10},
@@ -1237,6 +1243,52 @@ static void layer_group_state_tests() {
                           state["layers"][0]["properties"][names[i]]["selection"] ==
                               "new_file_layer",
                       "seven property choices follow sync mode and independent override bits");
+            }
+        }
+    const std::array<unsigned, 5> added_bits{{6, 7, 9, 20, 34}};
+    const std::array<const char *, 5> added_names{{"primary_color_index", "primary_line_style",
+                                                 "primary_line_weight", "access_mode",
+                                                 "display_priority"}};
+    const std::array<const char *, 5> override_names{{"primary_color", "primary_line_style",
+                                                    "primary_line_weight", "access_mode",
+                                                    "display_priority"}};
+    for (unsigned mode = 0; mode < 3; ++mode)
+        for (unsigned mask = 0; mask < 32; ++mask) {
+            Bytes payload;
+            put<std::uint32_t>(payload, 1);
+            put<std::uint32_t>(payload, 2);
+            put<std::uint32_t>(payload, 36);
+            payload.resize(12 + 36 * 2);
+            for (unsigned i = 0; i < added_bits.size(); ++i)
+                if (mask & (1u << i))
+                    payload[12 + added_bits[i] / 8] |= 1u << (added_bits[i] % 8);
+            auto source_attrs = graphics(mode, 0);
+            source_attrs[0]["attributes"][0]["decoded"] = decode_layer_group_attribute(0, payload);
+            const auto &bitmap = source_attrs[0]["attributes"][0]["decoded"]["entries"][0];
+            check(bitmap["unassigned_property_bits"].empty(),
+                  "confirmed primary, access and priority bits are removed from unknown bits");
+            const auto state = build_layer_tables(index, records, source_attrs)["group_states"][0];
+            check(state["status"] == "evaluated_supported_properties" &&
+                      state["layers"][1]["properties"]["color_index"]["native_record_index"] ==
+                          (mode == 1 ? 5 : 2),
+                  "primary overrides do not replace the independent by-layer color channel");
+            for (unsigned i = 0; i < added_bits.size(); ++i) {
+                const bool file = mode == 2 || (mode == 0 && !(mask & (1u << i)));
+                const auto source = file ? 2 : 5;
+                const auto &value = records[source]["layer_definition"];
+                const auto expected = i < 3
+                                          ? value["primary_symbology"]
+                                                 [i == 0 ? "color_index"
+                                                  : i == 1 ? "line_style" : "line_weight"]
+                                          : value[added_names[i]];
+                const auto &property = state["layers"][1]["properties"][added_names[i]];
+                check(bitmap["overrides"][override_names[i]] == bool(mask & (1u << i)) &&
+                          property["property_bit"] == added_bits[i] &&
+                          property["value"] == expected &&
+                          property["native_record_index"] == source &&
+                          state["layers"][0]["properties"][added_names[i]]["selection"] ==
+                              "new_file_layer",
+                      "new group properties preserve signed values, source and independent mode bits");
             }
         }
     check(records == original, "derived layer synchronization never mutates native records");

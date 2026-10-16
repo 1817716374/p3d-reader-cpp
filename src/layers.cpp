@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "line_style_source.hpp"
+#include "layer_sync_properties.hpp"
 #include <p3d/layer_lookup.hpp>
 namespace p3d {
 static Json layer_material_reference(const Json &links) {
@@ -286,9 +287,6 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
         if (!scope.is_null() && n["layer_table"].value("kind", "") == "local")
             file_tables[scope.dump()].push_back(i);
     }
-    const std::map<unsigned, const char *> properties = {
-        {11, "color_index"}, {12, "line_style"}, {14, "line_weight"}, {25, "display"},
-        {26, "print"},       {32, "frozen"},     {35, "transparency"}};
     for (std::size_t gi = 0; gi < tables.size(); ++gi) {
         const auto &table = tables[gi];
         const auto &header = native[table["native_record_index"].get<std::size_t>()]["layer_table"];
@@ -398,23 +396,23 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                                      ["set_property_bits"];
                         require(mask->is_array(), "invalid layer override bitmap");
                     }
-                    for (const auto &property : properties) {
+                    for (const auto &property : detail::layer_sync_properties) {
                         const bool override = mask && std::find(mask->begin(), mask->end(),
-                                                                property.first) != mask->end();
+                                                                property.bit) != mask->end();
                         const bool from_file =
                             group_members.empty() || mode == 2 || (mode == 0 && !override);
                         const auto &value = from_file ? file_layer : group_layer;
                         const auto &values =
-                            property.first <= 14 ? value.at("by_layer_symbology") : value;
-                        layer["properties"][property.second] = {
-                            {"property_bit", property.first},
-                            {"value", values.at(property.second)},
+                            property.source_container ? value.at(property.source_container) : value;
+                        layer["properties"][property.result_name] = {
+                            {"property_bit", property.bit},
+                            {"value", values.at(property.source_member)},
                             {"native_record_index", from_file ? source : target},
                             {"selection", group_members.empty() ? "new_file_layer"
                                           : from_file           ? "file_sync"
                                                                 : "group_value"}};
-                        if (property.first == 35 && value.contains("transparency_error")) {
-                            layer["properties"][property.second]["error"] =
+                        if (property.bit == 35 && value.contains("transparency_error")) {
+                            layer["properties"][property.result_name]["error"] =
                                 value["transparency_error"];
                             partial = true;
                         }

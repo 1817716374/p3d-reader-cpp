@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "layer_sync_properties.hpp"
 #include "material_json_name.hpp"
 #include <charconv>
 
@@ -23,8 +24,8 @@ void material_index_entries(Json &out, unsigned index) {
         return;
     auto add = [&](const std::string &key, const Json &source, const Json &name, bool reverse) {
         auto number = material_part_number(key);
-        const bool recognized = !number.is_null() &&
-                                (reverse ? source.is_string() && source == key : name.is_string());
+        const bool recognized =
+            !number.is_null() && (reverse ? source.is_string() && source == key : name.is_string());
         if (!recognized)
             out["index_shape_status"] = "unexpected_entries";
         Json entry = {{"source_key", key},
@@ -118,9 +119,6 @@ Json decode_layer_group_attribute(unsigned group, const Bytes &b) {
     auto count = r.u32();
     require(count <= r.left() / 8, "layer override entry count");
     Json entries = Json::array();
-    const std::map<unsigned, const char *> properties = {
-        {11, "color"}, {12, "line_style"}, {14, "line_weight"}, {25, "display"},
-        {26, "print"}, {32, "frozen"},     {35, "transparency"}};
     for (std::uint32_t i = 0; i < count; ++i) {
         auto offset = r.p;
         auto id = r.u32(), bits = r.u32();
@@ -138,14 +136,14 @@ Json decode_layer_group_attribute(unsigned group, const Bytes &b) {
                 if (word & (1u << k)) {
                     auto bit = unsigned(w * 16 + k);
                     set.push_back(bit);
-                    if (!properties.count(bit))
+                    if (!detail::layer_sync_property(bit))
                         unassigned.push_back(bit);
                 }
         }
         Json overrides = Json::object();
-        for (const auto &property : properties) {
-            auto bit = property.first;
-            overrides[property.second] =
+        for (const auto &property : detail::layer_sync_properties) {
+            auto bit = property.bit;
+            overrides[property.override_name] =
                 bit < bits && bool(words[bit / 16].get<unsigned>() & (1u << (bit % 16)));
         }
         entries.push_back({{"source_offset", offset},
