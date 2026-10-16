@@ -7,6 +7,7 @@
 #include <lz4/lz4.h>
 using namespace p3d;
 unsigned bspline_surface_tests();
+unsigned tree_entity_reference_tests();
 unsigned graphics_bytes_tests();
 unsigned csg_tests();
 unsigned csg_mesh_tests();
@@ -2889,6 +2890,7 @@ int main() {
         bgfb_native_tests();
         bspline_tests();
         checks += bspline_surface_tests();
+        checks += tree_entity_reference_tests();
         checks += graphics_bytes_tests();
         checks += csg_tests();
         checks += csg_mesh_tests();
@@ -3676,6 +3678,34 @@ int main() {
               "separate source trees");
         check(element_context(graph, 13, 99)["tree_nodes"] == Json({"1:101", "1:201"}),
               "element reachable through both source trees");
+        check(graph["hierarchy"]["nodes"][1]["entity_reference_input"]["reference_indices"] == Json::array({0}) &&
+                  graph["hierarchy"]["nodes"][3]["entity_reference_input"]["reference_indices"] == Json::array({1}),
+              "tree source decoding points to graph references without duplicating reference rows");
+        auto incomplete_tree = build_graph_records(
+            Json::array({object(1, 300, "BimBaseTreeNodeData",
+                                {{"NodeType", 11}, {"ResourceRefers", {"", "", "", "55834574947,"}}})}),
+            Json::array(), Json::array(), {13}, {"13:99"});
+        check(incomplete_tree["hierarchy"]["parent_edges"].empty() &&
+                  incomplete_tree["hierarchy"]["incomplete_nodes"] == Json::array({"1:300"}) &&
+                  element_context(incomplete_tree, 13, 99)["tree_nodes"] == Json::array({"1:300"}),
+              "missing logical tree identity does not hide independently known physical-node references");
+        auto signed_tree = build_graph_records(
+            Json::array({object(1, 301, "BimBaseTreeNodeData",
+                                {{"TreeId", 1}, {"ParentNodeId", 65534}, {"NodeType", 11},
+                                 {"ResourceRefers", {"", "", "", "-4294967295,"}}})}),
+            Json::array(), Json::array(), {UINT32_MAX}, {"4294967295:1"});
+        check(element_context(signed_tree, UINT32_MAX, 1)["tree_nodes"] == Json::array({"1:301"}) &&
+                  signed_tree["hierarchy"]["element_references"][0]["native_model_id"] == -1,
+              "signed tree identity reaches the unsigned native binding key");
+        auto group_tree = build_graph_records(
+            Json::array({object(1, 302, "BimBaseTreeNodeData",
+                                {{"TreeId", 1}, {"ParentNodeId", 65534}, {"NodeType", 15},
+                                 {"ResourceRefers", {"", "", "", "55834574947,"}}})}),
+            Json::array(), Json::array(), {13}, {"13:99"});
+        check(element_context(group_tree, 13, 99)["tree_nodes"] == Json::array({"1:302"}) &&
+                  group_tree["hierarchy"]["nodes"][0]["entity_reference_input"]["query_profile"] ==
+                      "native_project_tree_entity_ids",
+              "native project-tree self query consumes group resources without filtering NodeType");
         Json model_nodes = Json::array(
             {object(1, 1, "BPModelTreeSet",
                     {{"Name", "root"}, {"ModelSetChilds", {"Archi"}}, {"ModelItems", {"Archi"}}}),

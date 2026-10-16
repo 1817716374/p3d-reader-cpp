@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "tree_entity_refs.hpp"
 #include <deque>
 namespace p3d {
 static std::string key(const Json &a, const Json &b) {
@@ -203,58 +204,31 @@ Json build_graph_records(const Json &objects, const Json &bindings, const Json &
     }
     Json edges = Json::array(), roots = Json::array(), element_refs = Json::array();
     for (auto &node : tree_nodes) {
-        if (node["status"] != "identified")
-            continue;
         auto k = node["key"].get<std::string>();
         auto &row = catalog[first[k]];
         auto &f = node["fields"];
-        auto parent = f["ParentNodeId"];
-        auto candidates = tree_index.value(
-            Json::array({row["class_id"], f["TreeId"], parent}).dump(), Json::array());
-        if (candidates.empty() && parent == 65534)
-            roots.push_back({{"node", k}, {"basis", "observed_parent_sentinel_65534"}});
-        else {
-            auto edge = resolution(candidates);
-            edge.update({{"kind", "source_tree_parent"},
-                         {"child", k},
-                         {"parent_id", parent},
-                         {"tree_id", f["TreeId"]},
-                         {"basis", node["identity_basis"]}});
-            edges.push_back(edge);
-        }
-        auto resource = f.value("ResourceRefers", Json::array());
-        if (f.value("NodeType", Json()) == 11 && resource.is_array() && resource.size() > 3 &&
-            resource[3].is_string()) {
-            std::stringstream ss(resource[3].get<std::string>());
-            std::string token;
-            while (std::getline(ss, token, ',')) {
-                if (token.empty())
-                    continue;
-                bool valid = std::all_of(token.begin(), token.end(),
-                                         [](auto c) { return c >= '0' && c <= '9'; });
-                std::uint64_t packed = 0;
-                try {
-                    require(valid, "packed token");
-                    packed = std::stoull(token);
-                } catch (...) {
-                    element_refs.push_back({{"node", k},
-                                            {"raw_value", token},
-                                            {"status", "unsupported_reference"},
-                                            {"source_slot", 3}});
-                    continue;
-                }
-                auto ek = key(packed >> 32, packed & 0xffffffff);
-                element_refs.push_back({{"node", k},
-                                        {"raw_value", token},
-                                        {"source_slot", 3},
-                                        {"basis", "observed_packed_model_element_id"},
-                                        {"model_id", packed >> 32},
-                                        {"element_id", packed & 0xffffffff},
-                                        {"element_key", ek},
-                                        {"status", live.count(ek) ? "resolved" : "missing"},
-                                        {"bindings", binding_index.value(ek, Json::array())}});
+        if (node["status"] == "identified") {
+            auto parent = f["ParentNodeId"];
+            auto candidates = tree_index.value(
+                Json::array({row["class_id"], f["TreeId"], parent}).dump(), Json::array());
+            if (candidates.empty() && parent == 65534)
+                roots.push_back({{"node", k}, {"basis", "observed_parent_sentinel_65534"}});
+            else {
+                auto edge = resolution(candidates);
+                edge.update({{"kind", "source_tree_parent"},
+                             {"child", k},
+                             {"parent_id", parent},
+                             {"tree_id", f["TreeId"]},
+                             {"basis", node["identity_basis"]}});
+                edges.push_back(edge);
             }
         }
+        // Entity references are independent of an incomplete logical tree ID.
+        // Preserve their physical source node without inventing parent edges.
+        // The project-tree query reads self resources before traversing
+        // children, without filtering NodeType (groups can own references).
+        node["entity_reference_input"] = append_tree_entity_references(
+            f.value("ResourceRefers", Json::array()), k, live, binding_index, element_refs);
     }
     Json model_edges = Json::array();
     for (auto &node : model_nodes)
