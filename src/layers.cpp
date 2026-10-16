@@ -1,8 +1,47 @@
 #include "internal.hpp"
 #include "line_style_source.hpp"
 #include "layer_sync_properties.hpp"
+#include "layer_name_key.hpp"
 #include <p3d/layer_lookup.hpp>
 namespace p3d {
+static Json initial_layer_name(const Json &layer) {
+    Json out = {{"status", "not_evaluated"},
+                {"source_profile", "fresh_writable_layer_cache_without_id_repair"},
+                {"value", nullptr},
+                {"name_registered", nullptr}};
+    for (const auto &text : layer.at("strings"))
+        if (text.contains("decode_error")) {
+            out["reason"] = "layer_name_linkage_decode_unknown";
+            return out;
+        }
+    const auto id = layer.at("layer_id").get<std::uint32_t>();
+    if (id == 0 || id == UINT32_MAX) {
+        out["reason"] = "fresh_layer_id_requires_repair_or_is_rejected";
+        return out;
+    }
+    const auto saved = layer.value("name", std::string());
+    if (id == 64) {
+        out.update({{"status", "decoded"},
+                    {"value", saved == "0" ? "0" : "Default"},
+                    {"name_registered", true},
+                    {"selection", saved == "0" ? "preserved_zero_name" : "default_layer_name"}});
+    } else if (!saved.empty()) {
+        out.update({{"status", "decoded"},
+                    {"value", saved},
+                    {"name_registered", true},
+                    {"selection", "saved_name"}});
+    } else {
+        const auto signed_id =
+            id <= INT32_MAX ? std::int64_t(id) : std::int64_t(id) - 0x100000000ll;
+        out.update({{"reason", "layer_name_generation_requires_cache"},
+                    {"selection", "generated_name_required"},
+                    {"generation_rule",
+                     {{"initial_candidate", std::to_string(signed_id)},
+                      {"collision_suffix", "-"},
+                      {"maximum_queries", "loaded_layer_count_plus_one"}}}});
+    }
+    return out;
+}
 static std::array<Json, 2> layer_material_references(const Json &links) {
     auto initial = [](bool by_layer) {
         Json out = {{"encoding", by_layer ? "native_layer_material_reference"
@@ -203,6 +242,7 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
         out["line_style_parameter_inputs"] = native_layer_line_style_input(links);
         out["line_style_parameter_slots"] = native_layer_line_style_slots(
             out["line_style_parameter_inputs"], r.at<std::int32_t>(52), r.at<std::int32_t>(68));
+        out["initial_name"] = initial_layer_name(out);
     } catch (const std::exception &e) {
         out["decode_error"] = e.what();
     }
@@ -294,6 +334,53 @@ Json decode_native_layer_table(const Bytes &b, const Json &links) {
     return out;
 }
 
+static Json group_name_synchronization(const Json &native, const Json &group_table,
+                                       const Json &file_table,
+                                       const NativeLayerNameContext &context) {
+    Json out = {{"status", "not_evaluated"},
+                {"preparation_profile", "fresh_named_saved_layers_without_prior_name_queries"}};
+    try {
+        require(group_table.at("membership_status") == "resolved" &&
+                    file_table.at("membership_status") == "resolved",
+                "invalid_name_table_membership");
+        using NameSource = std::pair<std::size_t, std::u16string>;
+        auto read_names = [&](const Json &table) {
+            std::map<std::uint32_t, NameSource> names;
+            for (const auto &member : table.at("member_record_indices")) {
+                const auto source = member.get<std::size_t>();
+                const auto &layer = native.at(source).at("layer_definition");
+                const auto id = layer.at("layer_id").get<std::uint32_t>();
+                const auto &name = layer.at("initial_name");
+                // Every input matters, including overwritten or excluded nodes:
+                // generation during loading could populate the earlier index.
+                require(id != 0 && id != UINT32_MAX && name.at("status") == "decoded" &&
+                            name.at("name_registered") == true,
+                        "initial_layer_name_not_prepared");
+                names[id] = {source, detail::layer_name_wide(name.at("value").get<std::string>())};
+            }
+            return names;
+        };
+        const auto group = read_names(group_table), file = read_names(file_table);
+        std::vector<NativeLayerNameCacheEntry> names;
+        std::vector<NativeLayerNameSyncRequest> requests;
+        Json sources = Json::array();
+        for (const auto &[id, input] : file) {
+            const auto existing = group.find(id);
+            names.push_back(
+                {id, existing == group.end() ? input.second : existing->second.second, true});
+            requests.push_back({id, input.second});
+            sources.push_back({{"layer_id", id},
+                               {"file_record_index", input.first},
+                               {"group_record_index",
+                                existing == group.end() ? Json() : Json(existing->second.first)}});
+        }
+        out.update(evaluate_native_layer_name_sync(names, requests, false, context));
+        out["layer_sources"] = std::move(sources);
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+    }
+    return out;
+}
 static Json layer_group_states(const Json &index, const Json &native, const Json &graphics,
                                const Json &tables) {
     Json result = Json::array();
@@ -322,7 +409,7 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                     {"layers", Json::array()},
                     {"excluded_group_record_indices", Json::array()},
                     {"view_visibility", "not_evaluated"},
-                    {"name_synchronization", "not_evaluated"},
+                    {"name_synchronization", {{"status", "not_evaluated"}}},
                     {"other_properties", "not_evaluated"}};
         try {
             auto scope = table_scope(table, system);
@@ -336,6 +423,7 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
             require(table["membership_status"] == "resolved" &&
                         base["membership_status"] == "resolved",
                     "invalid group or file table membership");
+            out["name_synchronization"] = group_name_synchronization(native, table, base, {});
             require(table["attribute_status"] == "resolved" ||
                         table["attribute_status"] == "missing",
                     "ambiguous group attribute records");
@@ -515,6 +603,27 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
     return result;
 }
 
+Json read_native_layer_group_names(const Document &document,
+                                   const NativeLayerNameContext &context) {
+    const auto &catalog = document.layer_tables();
+    const auto &tables = catalog.at("tables");
+    Json out = Json::array();
+    for (const auto &group : catalog.at("group_states")) {
+        Json row = {{"group_table_index", group.at("group_table_index")},
+                    {"name_synchronization", {{"status", "not_evaluated"}}}};
+        if (group.contains("file_table_indices") && group.at("file_table_indices").size() == 1) {
+            const auto file = group.at("file_table_indices")[0].get<std::size_t>();
+            row["file_table_index"] = file;
+            row["name_synchronization"] = group_name_synchronization(
+                document.native_records(),
+                tables.at(group.at("group_table_index").get<std::size_t>()), tables.at(file),
+                context);
+        } else
+            row["name_synchronization"]["reason"] = "file_name_table_missing_or_ambiguous";
+        out.push_back(std::move(row));
+    }
+    return out;
+}
 Json build_layer_tables(const Json &index, const Json &native, const Json &graphics,
                         const Json &models) {
     Json tables = Json::array(), orphans = Json::array();

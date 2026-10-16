@@ -4,6 +4,7 @@
 
 namespace p3d::detail {
 using LayerNameKey = std::pair<std::uint32_t, std::uint32_t>;
+std::u16string layer_name_wide(const std::string &);
 inline std::u16string layer_name_prefix(std::u16string s) {
     s.resize(std::min(s.size(), s.find(u'\0')));
     return s;

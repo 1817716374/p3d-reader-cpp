@@ -32,6 +32,12 @@ Json evaluate_native_layer_name_sync(const std::vector<NativeLayerNameCacheEntry
                                      const std::vector<NativeLayerNameSyncRequest> &,
                                      bool initial_name_index_populated,
                                      const NativeLayerNameContext &context = {});
+// Prepare names from this document's validated saved tables, then evaluate
+// each group with the supplied source locale. Does not require a caller-made
+// cache. Generated/malformed initial names keep the affected group unresolved.
+// Returns source table indices and a separate name_synchronization result;
+// name evaluation is independent of the group's scalar synchronization mode.
+Json read_native_layer_group_names(const Document &, const NativeLayerNameContext &context = {});
 // Reconstructs name lookup for a fresh local layer table after its saved records
 // have loaded. Uses raw record bodies/linkages, not decoded layer annotations.
 // Duplicate layer IDs load last; the native name index then visits unsigned IDs

@@ -1222,6 +1222,10 @@ static void layer_group_state_tests() {
             {"layer_definition",
              {{"status", "decoded"},
               {"layer_id", id},
+              {"initial_name",
+               {{"status", "decoded"},
+                {"name_registered", true},
+                {"value", "Layer_" + std::to_string(id)}}},
               {"by_layer_symbology",
                {{"color_index", value}, {"line_style", value + 1}, {"line_weight", value + 2}}},
               {"primary_symbology",
@@ -1563,6 +1567,50 @@ static void layer_group_state_tests() {
                           "or symbols");
                 }
             }
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        auto input = records;
+        input[2]["layer_definition"]["initial_name"]["value"] = "Bad?";
+        input[5]["layer_definition"]["initial_name"]["value"] = "Group";
+        const auto state = build_layer_tables(index, input, graphics(mode, 0))["group_states"][0];
+        const auto &sync = state["name_synchronization"];
+        check(state["status"] == "evaluated_supported_properties" &&
+                  sync["status"] == "evaluated" &&
+                  sync["operations"][1]["native_return_code"] == 8 &&
+                  sync["layers"][1]["name_utf16"] == Json({71, 114, 111, 117, 112}) &&
+                  sync["layer_sources"][1]["file_record_index"] == 2 &&
+                  sync["layer_sources"][1]["group_record_index"] == 5,
+              "saved group names synchronize after properties independently of all three scalar "
+              "modes");
+        input[2]["layer_definition"]["initial_name"]["value"] = "File";
+        const auto unknown = build_layer_tables(index, input, graphics(mode, 0))["group_states"][0];
+        check(unknown["name_synchronization"]["status"] == "partially_evaluated" &&
+                  unknown["name_synchronization"]["layers"].is_null() &&
+                  unknown["layers"][1]["properties"].size() == 14,
+              "source locale required by changed names does not erase independently evaluated "
+              "symbols");
+        input[2]["layer_definition"]["initial_name"]["value"] = "Bad?";
+        const auto bad_mode = build_layer_tables(index, input, graphics(77, 0))["group_states"][0];
+        check(bad_mode["status"] == "not_evaluated" &&
+                  bad_mode["name_synchronization"]["status"] == "evaluated",
+              "unsupported scalar mode does not prevent independent name synchronization");
+    }
+    auto name_inputs = records;
+    name_inputs[6]["layer_definition"]["initial_name"] = {{"status", "not_evaluated"}};
+    check(build_layer_tables(index, name_inputs,
+                             graphics(1, 0))["group_states"][0]["name_synchronization"]["status"] ==
+              "not_evaluated",
+          "excluded unknown initial names cannot silently prove an empty loading-time name index");
+    name_inputs = records;
+    name_inputs[3]["layer_definition"]["layer_id"] = 2;
+    name_inputs[3]["layer_definition"]["initial_name"]["value"] = "Last";
+    name_inputs[5]["layer_definition"]["initial_name"]["value"] = "Last";
+    const auto duplicate_name =
+        build_layer_tables(index, name_inputs, graphics(1, 0))["group_states"][0];
+    check(duplicate_name["status"] == "partially_evaluated" &&
+              duplicate_name["name_synchronization"]["status"] == "evaluated" &&
+              duplicate_name["name_synchronization"]["layer_sources"][1]["file_record_index"] == 3,
+          "initial name loading follows same-ID last source independently of scalar ambiguity "
+          "reporting");
     check(records == original, "derived layer synchronization never mutates native records");
     auto attrs = graphics(0, 0);
     attrs[0]["attributes"] = Json::array();

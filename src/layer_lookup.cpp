@@ -6,16 +6,16 @@
 #include <locale>
 
 namespace p3d {
+std::u16string detail::layer_name_wide(const std::string &s) {
+    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> codec;
+    auto text = codec.from_bytes(s);
+    require(codec.converted() == s.size(), "layer_name_invalid_utf8");
+    return detail::layer_name_prefix(std::move(text));
+}
 namespace {
 using detail::layer_name_equal;
 using detail::layer_name_key;
 using detail::layer_name_prefix;
-std::u16string wide(const std::string &s) {
-    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> codec;
-    auto text = codec.from_bytes(s);
-    require(codec.converted() == s.size(), "layer_name_invalid_utf8");
-    return layer_name_prefix(std::move(text));
-}
 using Key = detail::LayerNameKey;
 struct Layer {
     std::size_t source;
@@ -41,8 +41,14 @@ Json lookup_native_layer_name(const Json &records, std::size_t table_index,
         auto source = detail::read_saved_local_layers(records, table_index);
         out["rejected_input_records"] = source.rejected;
         std::map<std::uint32_t, Layer> by_id;
-        for (const auto &[id, row] : source.by_id)
-            by_id[id] = {row.source, id, wide(row.layer.value("name", std::string())), {}};
+        for (const auto &[id, row] : source.by_id) {
+            const auto &initial = row.layer.at("initial_name");
+            require(initial.at("status") == "decoded", "layer_initial_name_requires_context");
+            by_id[id] = {row.source,
+                         id,
+                         detail::layer_name_wide(initial.at("value").get<std::string>()),
+                         {}};
+        }
         std::map<Key, std::vector<Layer>> names;
         for (auto &[id, layer] : by_id) {
             if (id == UINT32_MAX || layer.name.empty())

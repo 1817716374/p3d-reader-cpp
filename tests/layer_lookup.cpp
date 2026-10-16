@@ -149,6 +149,38 @@ unsigned layer_lookup_tests() {
     result = lookup_native_layer_name(source, 0, u"Rejected", text);
     check(result["status"] == "not_found" && result["rejected_input_records"].size() == 2,
           "fresh source input rejects sentinel IDs before building the name index");
+    for (const auto &saved : {std::u16string(), std::u16string(u"Custom"),
+                              std::u16string(u"dEfAuLt"), std::u16string(u"0")}) {
+        auto input = records({layer(64, saved)});
+        const auto &row = input[1];
+        const auto decoded = decode_native_layer(bytesof(row.at("data")), row.at("links"));
+        const auto expected = saved == u"0" ? "0" : "Default";
+        check(decoded["name"] == std::string(saved.begin(), saved.end()) &&
+                  decoded["initial_name"]["status"] == "decoded" &&
+                  decoded["initial_name"]["value"] == expected &&
+                  decoded["initial_name"]["name_registered"] == true &&
+                  lookup_native_layer_name(input, 0, saved == u"0" ? u"0" : u"Default",
+                                           text)["layer_id"] == 64,
+              "fresh default layer preserves only registered zero spelling and keeps saved names "
+              "separately");
+        if (!saved.empty() && saved != u"0" && saved != u"dEfAuLt")
+            check(lookup_native_layer_name(input, 0, saved, text)["status"] == "not_found",
+                  "a replaced default-layer name cannot remain in the initial lookup index");
+    }
+    for (auto id : {7u, 0x80000000u, UINT32_MAX - 1}) {
+        const auto row = layer(id, u"");
+        const auto decoded = decode_native_layer(bytesof(row.at("data")), row.at("links"));
+        const auto expected = id <= INT32_MAX ? std::int64_t(id) : std::int64_t(id) - 0x100000000ll;
+        check(
+            decoded["initial_name"]["status"] == "not_evaluated" &&
+                decoded["initial_name"]["value"].is_null() &&
+                decoded["initial_name"]["generation_rule"]["initial_candidate"] ==
+                    std::to_string(expected) &&
+                decoded["initial_name"]["generation_rule"]["collision_suffix"] == "-" &&
+                lookup_native_layer_name(records({row}), 0, u"anything", text)["status"] ==
+                    "unresolved",
+            "missing names expose signed decimal generation inputs rather than a false known miss");
+    }
     using Entry = NativeLayerNameCacheEntry;
     using Request = NativeLayerNameSyncRequest;
     auto units = [](const std::u16string &s) {
