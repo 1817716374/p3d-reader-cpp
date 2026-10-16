@@ -9,7 +9,7 @@ struct LayerSyncProperty {
     const char *source_container;
     const char *source_member;
 };
-inline constexpr std::array<LayerSyncProperty, 13> layer_sync_properties{{
+inline constexpr std::array<LayerSyncProperty, 14> layer_sync_properties{{
     {6, "primary_color", "primary_color_index", "primary_symbology", "color_index"},
     {7, "primary_line_style", "primary_line_style", "primary_symbology", "line_style"},
     {9, "primary_line_weight", "primary_line_weight", "primary_symbology", "line_weight"},
@@ -22,6 +22,8 @@ inline constexpr std::array<LayerSyncProperty, 13> layer_sync_properties{{
     {32, "frozen", "frozen", nullptr, "frozen"},
     {34, "display_priority", "display_priority", nullptr, "display_priority"},
     {35, "transparency", "transparency", nullptr, "transparency"},
+    {38, "primary_material_reference", "primary_material_id", "primary_material_reference",
+     "material_id"},
     {39, "material_reference", "material_id", "material_reference", "material_id"},
 }};
 inline const LayerSyncProperty *layer_sync_property(unsigned bit) {

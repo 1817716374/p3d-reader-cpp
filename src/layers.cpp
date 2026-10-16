@@ -3,27 +3,35 @@
 #include "layer_sync_properties.hpp"
 #include <p3d/layer_lookup.hpp>
 namespace p3d {
-static Json layer_material_reference(const Json &links) {
-    Json out = {{"encoding", "native_layer_material_reference"},
-                {"status", "decoded"},
-                {"material_id", UINT64_MAX},
-                {"source", "constructor_default"},
-                {"source_link_index", nullptr},
-                {"eligible_for_layer_fallback", false},
-                {"material_loading", "not_evaluated"},
-                {"entries", Json::array()}};
-    bool bounded = true;
+static std::array<Json, 2> layer_material_references(const Json &links) {
+    auto initial = [](bool by_layer) {
+        Json out = {{"encoding", by_layer ? "native_layer_material_reference"
+                                          : "native_layer_primary_material_reference"},
+                    {"status", "decoded"},
+                    {"material_id", UINT64_MAX},
+                    {"source", "constructor_default"},
+                    {"source_link_index", nullptr},
+                    {"material_loading", "not_evaluated"},
+                    {"entries", Json::array()}};
+        if (by_layer)
+            out["eligible_for_layer_fallback"] = false;
+        return out;
+    };
+    std::array<Json, 2> refs{{initial(false), initial(true)}};
+    std::array<bool, 2> bounded{{true, true}};
     for (std::size_t i = 0; i < links.size(); ++i) {
         const auto &link = links[i];
         if (link.at("app") != 0x41 || !(link.at("header").get<unsigned>() & 0x1000))
             continue;
         Json entry = {{"source_link_index", i}, {"source_offset", link.at("offset")}};
+        std::optional<unsigned> selected;
         try {
             const auto bytes = bytesof(link.at("payload"));
             Reader r(bytes);
             const auto key = r.u32();
-            if (key != 0x1000d)
+            if (key != 0x1000c && key != 0x1000d)
                 continue;
+            selected = key == 0x1000c ? 0 : 1;
             entry["key"] = key;
             const auto id = r.u64();
             entry.update({{"status", "decoded"},
@@ -32,26 +40,40 @@ static Json layer_material_reference(const Json &links) {
                           {"trailing_storage", rawbytes(r.take(r.left()))}});
             // This reader visits every linkage and assigns on every match.
             // It is distinct from the entity material getter's first match.
-            out.update({{"material_id", id},
-                        {"source", "saved_linkage"},
-                        {"source_link_index", i},
-                        {"eligible_for_layer_fallback", id != 0 && id != UINT64_MAX}});
+            auto &out = refs[*selected];
+            out.update(
+                {{"material_id", id}, {"source", "saved_linkage"}, {"source_link_index", i}});
+            if (*selected == 1)
+                out["eligible_for_layer_fallback"] = id != 0 && id != UINT64_MAX;
         } catch (const std::exception &e) {
-            bounded = false;
             entry.update({{"status", "unresolved"}, {"reason", e.what()}});
+            if (selected)
+                bounded[*selected] = false;
+            else {
+                // A truncated key can belong to either channel. An identified
+                // short ID affects only its own channel.
+                bounded = {{false, false}};
+                for (auto &out : refs)
+                    out["entries"].push_back(entry);
+                continue;
+            }
         }
-        out["entries"].push_back(std::move(entry));
+        refs[*selected]["entries"].push_back(std::move(entry));
     }
-    if (!bounded) {
+    for (unsigned channel = 0; channel < refs.size(); ++channel) {
+        if (bounded[channel])
+            continue;
+        auto &out = refs[channel];
         // Do not read into the following linkage to emulate an unchecked load.
         out.update({{"status", "unresolved"},
                     {"material_id", nullptr},
                     {"source", "unresolved_linkage"},
                     {"source_link_index", nullptr},
-                    {"eligible_for_layer_fallback", nullptr},
                     {"reason", "native_layer_material_read_outside_linkage"}});
+        if (channel == 1)
+            out["eligible_for_layer_fallback"] = nullptr;
     }
-    return out;
+    return refs;
 }
 static std::string layer_string(const Bytes &b) {
     // This linkage reader supplies native code page 1200: unmarked bytes are
@@ -175,7 +197,9 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
                                    {"data", rawbytes(slice(b, 100, b.size() - 100))}}})}});
         if (!std::isfinite(transparency))
             out["transparency_error"] = "nonfinite source value";
-        out["material_reference"] = layer_material_reference(links);
+        auto material_refs = layer_material_references(links);
+        out["primary_material_reference"] = std::move(material_refs[0]);
+        out["material_reference"] = std::move(material_refs[1]);
         out["line_style_parameter_inputs"] = native_layer_line_style_input(links);
         out["line_style_parameter_slots"] = native_layer_line_style_slots(
             out["line_style_parameter_inputs"], r.at<std::int32_t>(52), r.at<std::int32_t>(68));
@@ -405,7 +429,7 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                         const bool from_file =
                             group_members.empty() || mode == 2 || (mode == 0 && !override);
                         const auto &value = from_file ? file_layer : group_layer;
-                        if (property.bit == 39) {
+                        if (property.bit == 38 || property.bit == 39) {
                             // Group and file layers here belong to the same file.
                             // Native resource preparation leaves this ID unchanged;
                             // it does not prove that the material can be loaded.
@@ -417,7 +441,7 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                                                                                : "group_value"},
                                            {"status", "unresolved"},
                                            {"material_loading", "not_evaluated"}};
-                            const auto reference = value.find("material_reference");
+                            const auto reference = value.find(property.source_container);
                             if (reference != value.end() && reference->is_object() &&
                                 reference->value("status", "") == "decoded" &&
                                 reference->contains("material_id") &&
@@ -427,8 +451,10 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                                     {{"value", id},
                                      {"status", "decoded"},
                                      {"material_source", reference->at("source")},
-                                     {"source_link_index", reference->at("source_link_index")},
-                                     {"eligible_for_layer_fallback", id != 0 && id != UINT64_MAX}});
+                                     {"source_link_index", reference->at("source_link_index")}});
+                                if (property.bit == 39)
+                                    result["eligible_for_layer_fallback"] =
+                                        id != 0 && id != UINT64_MAX;
                             } else {
                                 result["error"] = "selected_layer_material_reference_unresolved";
                                 dependent_unresolved = true;

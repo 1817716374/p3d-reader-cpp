@@ -896,6 +896,40 @@ static void native_layer_material_tests() {
         set(raw, 44, std::uint16_t(version));
         check(decode(Json::array({link(21)}))["material_id"] == 21,
               "all supported layer versions use the shared material linkage reader");
+        for (auto id : {std::uint64_t(0), UINT64_MAX, UINT64_MAX - 1,
+                        std::uint64_t(0x8000000000000012ull), std::uint64_t(9)}) {
+            const auto both = decode_native_layer(
+                raw, Json::array({link(17, 0x1000c), link(18), link(id, 0x1000c), link(19)}));
+            const auto &primary = both.at("primary_material_reference");
+            check(
+                primary["status"] == "decoded" && primary["material_id"] == id &&
+                    primary["source_link_index"] == 2 && primary["entries"].size() == 2 &&
+                    !primary.contains("eligible_for_layer_fallback") &&
+                    both["material_reference"]["material_id"] == 19 &&
+                    both["material_reference"]["source_link_index"] == 3,
+                "primary and by-layer material channels retain independent last-write uint64 IDs");
+        }
+    }
+    const auto primary_default =
+        decode_native_layer(raw, Json::array()).at("primary_material_reference");
+    check(primary_default["material_id"] == UINT64_MAX &&
+              primary_default["source"] == "constructor_default" &&
+              primary_default["material_loading"] == "not_evaluated" &&
+              !primary_default.contains("eligible_for_layer_fallback"),
+          "primary material has its own all-ones default without claiming by-layer fallback "
+          "eligibility");
+    for (auto length : {0u, 2u, 4u, 10u}) {
+        auto truncated = link(9, 0x1000c);
+        truncated["payload"] = rawbytes(slice(bytesof(truncated["payload"]), 0, length));
+        const auto both =
+            decode_native_layer(raw, Json::array({truncated, link(10), link(11, 0x1000c)}));
+        check(both["primary_material_reference"]["status"] == "unresolved" &&
+                  both["primary_material_reference"]["material_id"].is_null() &&
+                  both["primary_material_reference"]["entries"].back()["material_id"] == 11 &&
+                  both["material_reference"]["status"] == (length < 4 ? "unresolved" : "decoded") &&
+                  both["material_reference"]["material_id"] ==
+                      (length < 4 ? Json() : Json(std::uint64_t(10))),
+              "short known primary IDs affect only primary while unknown keys block both channels");
     }
     auto wire = raw;
     for (auto id : {std::uint64_t(17), std::uint64_t(29)}) {
@@ -913,6 +947,19 @@ static void native_layer_material_tests() {
               bytesof(records[0]["links"][1]["payload"]) ==
                   slice(wire, raw.size() + 20, 12),
           "native record route automatically exposes layer material without altering saved bytes");
+    auto primary_wire = wire;
+    put(primary_wire, std::uint16_t(0x1007));
+    put(primary_wire, std::uint16_t(0x41));
+    put(primary_wire, std::uint32_t(0x1000c));
+    put(primary_wire, std::uint64_t(0xfedcba9876543210ull));
+    set(primary_wire, 8, std::uint32_t((primary_wire.size() - 4) / 2));
+    const auto primary_record = parse_native(primary_wire)[0];
+    check(
+        primary_record["layer_definition"]["primary_material_reference"]["material_id"] ==
+                std::uint64_t(0xfedcba9876543210ull) &&
+            primary_record["layer_definition"]["material_reference"]["material_id"] == 29 &&
+            primary_record["links"].size() == 3,
+        "native wire parsing exposes both material channels without changing existing references");
 }
 static void layer_group_tests() {
     // Three source entries: packed bits span several words, while the wire stores
@@ -1183,6 +1230,11 @@ static void layer_group_state_tests() {
                 {"line_weight", value + 31}}},
               {"access_mode", value == 10 ? 1 : 2},
               {"display_priority", value == 10 ? -100 : 200},
+              {"primary_material_reference",
+               {{"status", "decoded"},
+                {"material_id", std::uint64_t(value + 100)},
+                {"source", "saved_linkage"},
+                {"source_link_index", value == 10 ? 4 : 8}}},
               {"line_style_parameter_slots",
                native_layer_line_style_slots(native_layer_line_style_input(Json::array()),
                                              -static_cast<std::int32_t>(value), value + 1)},
@@ -1367,7 +1419,7 @@ static void layer_group_state_tests() {
                                                          : "evaluated_supported_properties") &&
                               material["status"] == (selected ? "unresolved" : "decoded") &&
                               material["value"] == (selected ? Json() : Json(chosen)) &&
-                              row["properties"].size() == 13 &&
+                              row["properties"].size() == 14 &&
                               row["properties"]["primary_line_style"] ==
                                   state["layers"][1]["properties"]["primary_line_style"],
                           "only an active unresolved material source blocks its property");
@@ -1447,7 +1499,7 @@ static void layer_group_state_tests() {
                         const auto &row = result["layers"][1];
                         check(result["status"] == (selected ? "partially_evaluated"
                                                             : "evaluated_supported_properties") &&
-                                  row["properties"].size() == 13 &&
+                                  row["properties"].size() == 14 &&
                                   row["properties"][name]["value"] == p["value"] &&
                                   row["properties"][name]["parameter_slot"]["status"] ==
                                       (selected ? "not_evaluated" : "decoded") &&
@@ -1459,6 +1511,57 @@ static void layer_group_state_tests() {
                 }
                 check(input == snapshot,
                       "group parameter synchronization does not mutate source layers");
+            }
+    for (unsigned mode = 0; mode < 3; ++mode)
+        for (unsigned mask = 0; mask < 4; ++mask)
+            for (const auto id : material_ids) {
+                auto input = records;
+                input[2]["layer_definition"]["primary_material_reference"]["material_id"] = id;
+                auto attrs = graphics(mode, 0);
+                Bytes payload;
+                put(payload, std::uint32_t(1));
+                put(payload, std::uint32_t(2));
+                put(payload, std::uint32_t(40));
+                payload.resize(12 + 40 * 2);
+                payload[12 + 38 / 8] =
+                    std::uint8_t((mask & 1 ? 1u << (38 % 8) : 0) | (mask & 2 ? 1u << (39 % 8) : 0));
+                attrs[0]["attributes"][0]["decoded"] = decode_layer_group_attribute(0, payload);
+                const auto &bitmap = attrs[0]["attributes"][0]["decoded"]["entries"][0];
+                const bool file = mode == 2 || (mode == 0 && !(mask & 1));
+                const auto source = file ? 2u : 5u;
+                const auto state = build_layer_tables(index, input, attrs)["group_states"][0];
+                const auto &p = state["layers"][1]["properties"]["primary_material_id"];
+                check(bitmap["overrides"]["primary_material_reference"] == bool(mask & 1) &&
+                          bitmap["overrides"]["material_reference"] == bool(mask & 2) &&
+                          bitmap["unassigned_property_bits"].empty() && p["property_bit"] == 38 &&
+                          p["native_record_index"] == source &&
+                          p["value"] == input[source]["layer_definition"]
+                                             ["primary_material_reference"]["material_id"] &&
+                          !p.contains("eligible_for_layer_fallback") &&
+                          state["layers"][1]["properties"]["material_id"]["native_record_index"] ==
+                              (mode == 2 || (mode == 0 && !(mask & 2)) ? 2 : 5) &&
+                          state["layers"][0]["properties"]["primary_material_id"]["selection"] ==
+                              "new_file_layer",
+                      "primary material bit38 and by-layer material bit39 choose independent "
+                      "sources");
+                for (auto bad_source : {2u, 5u}) {
+                    auto damaged = input;
+                    damaged[bad_source]["layer_definition"]["primary_material_reference"] = {
+                        {"status", "unresolved"}, {"material_id", nullptr}};
+                    const auto result =
+                        build_layer_tables(index, damaged, attrs)["group_states"][0];
+                    const bool selected = bad_source == source;
+                    const auto &row = result["layers"][1];
+                    check(result["status"] == (selected ? "partially_evaluated"
+                                                        : "evaluated_supported_properties") &&
+                              row["properties"]["primary_material_id"]["status"] ==
+                                  (selected ? "unresolved" : "decoded") &&
+                              row["properties"].size() == 14 &&
+                              row["properties"]["material_id"] ==
+                                  state["layers"][1]["properties"]["material_id"],
+                          "unselected primary material failures never erase independent material "
+                          "or symbols");
+                }
             }
     check(records == original, "derived layer synchronization never mutates native records");
     auto attrs = graphics(0, 0);
