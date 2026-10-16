@@ -44,6 +44,26 @@ struct NativeDrawColorContext {
 // their source bytes in partial_state and do not become a false palette miss.
 Json prepare_native_draw_colors(const Bytes &native_style,
                                 const NativeDrawColorContext &context = {});
+// Four signed native words, after ordered persisted reference links are read.
+struct NativeModelColorAdjustment {
+    std::int16_t value_reduction_percent = 0, saturation_reduction_percent = 0;
+    std::int16_t hue_degrees = 0, flags = 0;
+};
+// Re-read type-13 reference links from authoritative payloads. The result is
+// automatically available at reference_input.palette_adjustment. Does not
+// discover the referenced model or equate a saved reference with a live owner.
+Json read_native_reference_palette_adjustment(const Json &native_record);
+// Actual model-info ancestry, child first through a known null parent. Includes
+// the root's own state; do not infer it from a logical structure tree. The
+// source setting selects combined ancestry or root-only adjustments. Unknown
+// setting is sufficient for a complete single-model chain, or when every model
+// has no effective adjustment and both native setting branches share the base.
+// base_palette is the actual selected owning file's full DWORD palette.
+// This reconstructs initial palette building, not later edits or host callbacks.
+Json prepare_native_model_palette(const std::array<std::uint32_t, 256> &base_palette,
+                                  const std::vector<NativeModelColorAdjustment> &actual_model_chain,
+                                  std::optional<bool> combine_ancestor_adjustments,
+                                  bool ancestry_complete);
 struct NativeColorRequest {
     NativeRgb rgb;
     // A present empty name differs from a null name pointer in the native cache.

@@ -331,6 +331,8 @@ Json parse_native(const Bytes &b) {
             out.back()["application_record"] = native_application_record(slice(b, pos, attr - pos));
         if (type == 13) {
             out.back()["reference_input"] = native_reference_input(slice(b, pos, end - pos));
+            out.back()["reference_input"]["palette_adjustment"] =
+                read_native_reference_palette_adjustment(out.back());
             out.back()["reference_target"] =
                 native_reference_target(out.back()["reference_input"], out.back()["links"]);
         }
