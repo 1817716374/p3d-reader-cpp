@@ -168,6 +168,9 @@ Json state_json(const Bytes &b) {
         {"storage", rawbytes(b)}};
 }
 } // namespace
+Json native_default_line_style_parameter_state() {
+    return state_json(defaults());
+}
 Json load_native_line_style_parameter_link(const Json &link, bool dim3) {
     Json out = {{"status", "not_evaluated"},
                 {"scope", "fresh_native_line_style_linkage_parameters"},
