@@ -1,4 +1,5 @@
 #include "tree_entity_refs.hpp"
+#include "tree_resources.hpp"
 #include <limits>
 #include <stdexcept>
 
@@ -71,6 +72,10 @@ Integer integer(const std::string &text, unsigned bits = 64) {
 }
 } // namespace
 
+int native_tree_decimal_digit(unsigned value) {
+    return digit(value);
+}
+
 Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> &models) {
     Json out = {{"scope", "stored_node_resources_before_runtime_tree_and_project_evaluation"}};
     const auto type = fields.value("NodeType", Json());
@@ -94,12 +99,17 @@ Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> 
             return value;
         }
         const auto resources = fields.value("ResourceRefers", Json::array());
-        if (!resources.is_array() || (resources.size() > slot && !resources[slot].is_string())) {
+        std::string text;
+        if (!resources.is_array() ||
+            (resources.size() > slot && !native_tree_resource_text(resources[slot], text))) {
             value["reason"] = "resource_slot_text_required";
             return value;
         }
-        const auto text = resources.size() > slot ? resources[slot].get<std::string>() : "";
-        if (text.empty()) {
+        const auto nul = text.find('\0');
+        const auto prefix = text.substr(0, nul);
+        value["input_prefix_byte_count"] = prefix.size();
+        value["ignored_suffix_byte_count"] = text.size() - prefix.size();
+        if (prefix.empty()) {
             value["status"] = "empty";
             if (domain)
                 value["value"] = -1;
@@ -107,8 +117,6 @@ Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> 
                 value["native_return_value"] = false;
             return value;
         }
-        const auto nul = text.find('\0');
-        const auto prefix = text.substr(0, nul);
         try {
             (void)Json(prefix).dump();
         } catch (const std::exception &e) {
@@ -138,6 +146,9 @@ Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> 
     out["model_self"] = read("native_get_models_and_node_type_of_self", slot_zero || type == 9,
                              type == 9 ? 2 : 0, false);
     out["domain_self"] = read("native_get_domain_of_node_self", type == 17, 0, true);
+    out["property_bytes_self"] =
+        native_tree_property_bytes(fields.value("ResourceRefers", Json::array()));
+    out["visibility_self"] = native_tree_visibility(fields.value("ResourceRefers", Json::array()));
     return out;
 }
 
@@ -161,11 +172,11 @@ Json append_tree_entity_references(const Json &resources, const std::string &nod
         out["status"] = "absent";
         return out;
     }
-    if (!resources[3].is_string()) {
+    std::string text;
+    if (!native_tree_resource_text(resources[3], text)) {
         out["reason"] = "resource_slot_text_required";
         return out;
     }
-    const auto &text = resources[3].get_ref<const std::string &>();
     const auto nul = text.find('\0');
     const auto end = nul == std::string::npos ? text.size() : nul;
     try {

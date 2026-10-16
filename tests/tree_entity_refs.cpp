@@ -150,9 +150,9 @@ unsigned tree_entity_reference_tests() {
               query(7, {"garbage"})["model_self"]["native_return_value"] == true,
           "nonempty unconverted model text inserts zero rather than returning false");
     q = query(7, {std::string("\0ignored", 8)});
-    check(q["model_self"]["native_model_id"] == 0 &&
+    check(q["model_self"]["status"] == "empty" && q["model_self"]["native_return_value"] == false &&
               q["model_self"]["ignored_suffix_byte_count"] == 8,
-          "nonempty stored string with initial NUL still invokes native conversion");
+          "loaded node string is truncated before deciding whether to invoke conversion");
     check(query(17, {"\xe3\x80\x80-\xef\xbc\x91\xef\xbc\x92tail"})["domain_self"]["value"] == -12,
           "domain conversion uses the confirmed UCRT wide character tables");
     check(query(nullptr, {"12"})["model_self"]["status"] == "not_evaluated",

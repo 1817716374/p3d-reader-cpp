@@ -5,6 +5,7 @@
 /tests/*
 !/tests/unit.cpp
 !/tests/tree_entity_refs.cpp
+!/tests/tree_resources.cpp
 !/tests/native_polygon_projection.cpp
 !/tests/native_vu_graph.cpp
 !/tests/native_vu_cluster.cpp
