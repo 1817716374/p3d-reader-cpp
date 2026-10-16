@@ -341,8 +341,9 @@ Json parse_native(const Bytes &b) {
                 out.back()["block_transform"] = {{"status", "invalid"}, {"error", e.what()}};
             }
         }
-        static const std::set<unsigned> graphic_header_types = {19, 20, 21, 37, 40, 44, 52, 54, 62, 97};
-        if (graphic_header_types.count(type))
+        static const std::set<unsigned> graphic_header_types = {19, 20, 21, 37, 40,
+                                                                44, 52, 54, 62, 97};
+        if (graphic_header_types.count(type)) {
             out.back()["native_graphic_header"] = {
                 {"encoding", "stored_graphic_layer_header"},
                 {"status", "decoded"},
@@ -350,10 +351,22 @@ Json parse_native(const Bytes &b) {
                 {"layer_id", r.at<std::uint32_t>(pos + 16)},
                 {"entity_getter_policy", type == 21 ? "recursive_first_child" : "stored_header"},
                 {"draw_style_selection", "not_evaluated"}};
-        if ((graphic_header_types.count(type) || type == 27 || type == 38 || type == 41 || type == 63) &&
-            std::any_of(out.back()["links"].begin(), out.back()["links"].end(), [](const Json &link) {
-                return (link.at("header").get<unsigned>() & 0x1000) && link.at("app") == 0x79f9;
-            }))
+            if (flags & 0x20) {
+                Json priority = {{"status", "not_evaluated"}, {"source_offset", 44}};
+                if (attr - pos >= 48)
+                    priority.update(
+                        {{"status", "decoded"}, {"value", r.at<std::int32_t>(pos + 44)}});
+                else
+                    priority["reason"] = "extended_graphic_priority_outside_saved_header";
+                out.back()["native_graphic_header"]["display_priority"] = std::move(priority);
+            }
+        }
+        if ((graphic_header_types.count(type) || type == 27 || type == 38 || type == 41 ||
+             type == 63) &&
+            std::any_of(
+                out.back()["links"].begin(), out.back()["links"].end(), [](const Json &link) {
+                    return (link.at("header").get<unsigned>() & 0x1000) && link.at("app") == 0x79f9;
+                }))
             out.back()["native_line_style_parameters"] =
                 native_graphic_line_style_input(slice(b, pos, attr - pos), out.back()["links"]);
         if (type == 54) {

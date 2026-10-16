@@ -138,10 +138,11 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
         const auto saved_key = r.at<std::uint32_t>(96);
         const auto numeric_key = version == 1 ? (id == 64 ? 0u : id) : saved_key;
         out.update({{"status", "decoded"},
-                    {"numeric_key", {{"value", numeric_key},
-                                     {"source", version == 1 ? "legacy_layer_id" : "saved_field"},
-                                     {"source_offset", version == 1 ? 36 : 96},
-                                     {"saved_value", saved_key}}},
+                    {"numeric_key",
+                     {{"value", numeric_key},
+                      {"source", version == 1 ? "legacy_layer_id" : "saved_field"},
+                      {"source_offset", version == 1 ? 36 : 96},
+                      {"saved_value", saved_key}}},
                     {"state_flags", state},
                     {"display", bool(state & 0x20)},
                     {"print", bool(state & 0x40)},
@@ -163,12 +164,12 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
                       {"line_weight", r.at<std::uint32_t>(56)}}},
                     {"transparency", std::isfinite(transparency) ? Json(transparency) : Json()},
                     {"transparency_source_bits", r.at<std::uint32_t>(84)},
+                    {"display_priority", r.at<std::int32_t>(88)},
                     {"extended_flags", extra},
                     {"business_code", version >= 4 ? Json((extra >> 3) & 0xffff) : Json()},
                     {"unassigned_extended_bits", extra & ~(version >= 4 ? 0x7fff8u : 0u)},
                     {"unassigned_ranges",
                      Json::array({{{"source_offset", 48}, {"data", rawbytes(slice(b, 48, 4))}},
-                                  {{"source_offset", 88}, {"data", rawbytes(slice(b, 88, 4))}},
                                   {{"source_offset", 100},
                                    {"data", rawbytes(slice(b, 100, b.size() - 100))}}})}});
         if (!std::isfinite(transparency))

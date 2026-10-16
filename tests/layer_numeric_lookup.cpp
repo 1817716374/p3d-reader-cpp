@@ -50,8 +50,8 @@ unsigned layer_numeric_lookup_tests() {
     auto bytes = layer(8, 17);
     set(bytes, 100, std::uint64_t(0xfedcba9876543210ull));
     const auto decoded = decode_native_layer(bytes, Json::array());
-    check(decoded["unassigned_ranges"][2]["source_offset"] == 100 &&
-              bytesof(decoded["unassigned_ranges"][2]["data"]) == slice(bytes, 100, 8),
+    check(decoded["unassigned_ranges"][1]["source_offset"] == 100 &&
+              bytesof(decoded["unassigned_ranges"][1]["data"]) == slice(bytes, 100, 8),
           "explained numeric key is removed from unassigned ranges without consuming its neighbor");
     auto records = source({layer(20, 5), layer(3, 5), layer(9, 7)});
     const auto before = records;
