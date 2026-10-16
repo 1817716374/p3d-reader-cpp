@@ -107,17 +107,19 @@ Json native_tree_property_bytes(const Json &resources) {
                 {"encoding", "native_low_sextet_first_base64"}});
     return out;
 }
-Json native_tree_visibility(const Json &resources) {
-    Json out = {{"query_profile", "native_public_get_node_visibility"},
+namespace {
+Json boolean_resource(const Json &resources, const std::string &prefix, const char *profile) {
+    Json out = {{"query_profile", profile},
                 {"scope", "node_resource_query_before_view_composition"},
+                {"numeric_reader", "windows_ucrt_wcstol_one_utf16_code_unit"},
+                {"numeric_locale", "C"},
                 {"status", "not_evaluated"},
                 {"matches", Json::array()}};
     if (!resources.is_array()) {
         out["reason"] = "resource_array_required";
         return out;
     }
-    const std::vector<std::uint16_t> marker = {'T', 'r', 'e', 'e', 'N', 'o', 'd', 'e', '@',
-                                               'V', 'i', 's', 'i', 'b', 'l', 'e', ':'};
+    const std::vector<std::uint16_t> marker(prefix.begin(), prefix.end());
     bool visible = true;
     for (std::size_t slot = 0; slot < resources.size(); ++slot) {
         std::string text;
@@ -157,6 +159,77 @@ Json native_tree_visibility(const Json &resources) {
         {{"status", "decoded"},
          {"value", visible},
          {"basis", out["matches"].empty() ? "native_default_true" : "last_matching_resource"}});
+    return out;
+}
+} // namespace
+Json native_tree_visibility(const Json &resources) {
+    return boolean_resource(resources, "TreeNode@Visible:", "native_public_get_node_visibility");
+}
+Json native_tree_fold_input(const Json &resources) {
+    return boolean_resource(resources,
+                            "TreeNode@Fold:", "native_ui_fold_resource_input_if_stage_reached");
+}
+Json native_tree_ui_parameters(const Json &resources) {
+    Json out = {{"query_profile", "native_ui_icon_and_visibility_resource_input"},
+                {"scope", "resource_parameters_before_ui_creation_and_view_composition"},
+                {"numeric_reader", "windows_ucrt_wcstol_int32_suffix"},
+                {"numeric_locale", "C"},
+                {"status", "not_evaluated"},
+                {"matches", Json::array()}};
+    if (!resources.is_array()) {
+        out["reason"] = "resource_array_required";
+        return out;
+    }
+    std::int64_t image = -1;
+    bool visible = true;
+    for (std::size_t slot = 0; slot < resources.size(); ++slot) {
+        std::string text;
+        if (!native_tree_resource_text(resources[slot], text)) {
+            out["reason"] = "resource_slot_text_required";
+            out["source_slot"] = slot;
+            return out;
+        }
+        text = text.substr(0, text.find('\0'));
+        try {
+            (void)Json(text).dump();
+        } catch (const std::exception &e) {
+            out["reason"] = e.what();
+            out["source_slot"] = slot;
+            return out;
+        }
+        // The native helper parses the image first, then visibility, for
+        // each resource, regardless of the marker positions in that text.
+        for (const auto *prefix : {"TreeNode@ImgIdx:", "TreeNode@Visible:"}) {
+            const auto at = text.find(prefix);
+            if (at == std::string::npos)
+                continue;
+            const auto suffix = at + std::char_traits<char>::length(prefix);
+            const auto number = native_tree_integer32(text.substr(suffix));
+            Json match = {{"source_slot", slot},
+                          {"marker", prefix},
+                          {"marker_byte_offset", at},
+                          {"suffix_byte_offset", suffix}};
+            if (!number.digits || number.saturated) {
+                match["status"] = number.saturated ? "out_of_range" : "invalid_argument";
+                out["matches"].push_back(match);
+                out["status"] = "rejected";
+                out["native_exception"] =
+                    number.saturated ? "std::out_of_range" : "std::invalid_argument";
+                return out;
+            }
+            const bool is_image = prefix[9] == 'I';
+            if (is_image)
+                image = number.value;
+            else
+                visible = number.value != 0;
+            match.update({{"status", "decoded"}, {"parsed_integer", number.value}});
+            out["matches"].push_back(match);
+        }
+    }
+    out.update({{"status", "decoded"},
+                {"image_index", image},
+                {"visibility", visible},
+                {"basis", out["matches"].empty() ? "native_defaults" : "stored_resource_order"}});
     return out;
 }
 } // namespace p3d

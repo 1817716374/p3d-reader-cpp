@@ -32,10 +32,7 @@ bool space(unsigned value) {
            value == 0x2028 || value == 0x2029 || value == 0x202f || value == 0x205f ||
            value == 0x3000;
 }
-struct Integer {
-    std::int64_t value = 0;
-    bool digits = false, saturated = false;
-};
+using Integer = NativeTreeInteger;
 Integer integer(const std::string &text, unsigned bits = 64) {
     Integer result;
     std::size_t position = 0;
@@ -75,10 +72,16 @@ Integer integer(const std::string &text, unsigned bits = 64) {
 int native_tree_decimal_digit(unsigned value) {
     return digit(value);
 }
+NativeTreeInteger native_tree_integer32(const std::string &text) {
+    return integer(text, 32);
+}
 
 Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> &models) {
     Json out = {{"scope", "stored_node_resources_before_runtime_tree_and_project_evaluation"}};
     const auto type = fields.value("NodeType", Json());
+    const Json absent_resources = Json::array();
+    const Json &resources =
+        fields.contains("ResourceRefers") ? fields.at("ResourceRefers") : absent_resources;
     auto read = [&](const char *profile, bool applicable, unsigned slot, bool domain) {
         Json value = {{"query_profile", profile},
                       {"status", "not_evaluated"},
@@ -98,7 +101,6 @@ Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> 
                 value["native_return_value"] = true;
             return value;
         }
-        const auto resources = fields.value("ResourceRefers", Json::array());
         std::string text;
         if (!resources.is_array() ||
             (resources.size() > slot && !native_tree_resource_text(resources[slot], text))) {
@@ -146,9 +148,10 @@ Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> 
     out["model_self"] = read("native_get_models_and_node_type_of_self", slot_zero || type == 9,
                              type == 9 ? 2 : 0, false);
     out["domain_self"] = read("native_get_domain_of_node_self", type == 17, 0, true);
-    out["property_bytes_self"] =
-        native_tree_property_bytes(fields.value("ResourceRefers", Json::array()));
-    out["visibility_self"] = native_tree_visibility(fields.value("ResourceRefers", Json::array()));
+    out["property_bytes_self"] = native_tree_property_bytes(resources);
+    out["visibility_self"] = native_tree_visibility(resources);
+    out["ui_parameters_input"] = native_tree_ui_parameters(resources);
+    out["fold_resource_input"] = native_tree_fold_input(resources);
     return out;
 }
 
