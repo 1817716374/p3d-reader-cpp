@@ -140,10 +140,10 @@ unsigned line_style_resource_tests() {
     put(b, 412, std::uint32_t(0xffffffff));
     check(query(b).at("line_code").at("status") == "unresolved",
           "oversize stroke count is bounded");
-    put(b, 70, std::uint16_t(4));
+    put(b, 70, std::uint16_t(1));
     check(query(b).at("status") == "partial" &&
               query(b).at("component_payload").at("status") == "unresolved",
-          "point-symbol component is not silently interpreted as a line code");
+          "symbol-geometry component is not silently interpreted as a line code");
     for (std::size_t size : {0u, 35u, 36u, 70u, 100u, 207u, 227u}) {
         auto cut = record(49, 7, 228);
         cut.resize(size);

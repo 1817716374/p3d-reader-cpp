@@ -1,25 +1,9 @@
 #include "line_style_source.hpp"
+#include "line_style_resource_fields.hpp"
 
 namespace p3d {
 namespace {
 constexpr std::size_t payload = 208, header_size = 176, child_size = 56;
-std::uint32_t local_kind(std::uint32_t resource) {
-    switch (resource) {
-    case 0:
-        return 6;
-    case 2001:
-        return 2;
-    case 2002:
-        return 3;
-    case 2003:
-        return 4;
-    case 2004:
-    case 2005:
-        return 1;
-    default:
-        return resource;
-    }
-}
 Json source(const Bytes &b, std::size_t p, std::size_t n) {
     return {{"source_offset", p}, {"data", rawbytes(slice(b, p, n))}};
 }
@@ -74,7 +58,7 @@ Json copy_fields(const Bytes &b, std::uint32_t count, std::size_t references) {
                     throw std::runtime_error("compound_native_copy_fixup_out_of_bounds");
                 }
                 const auto saved = Reader(copy).at<std::uint32_t>(slot);
-                const auto kind = local_kind(saved), low_id = std::uint32_t(id);
+                const auto kind = native_line_style_local_kind(saved), low_id = std::uint32_t(id);
                 std::memcpy(copy.data() + slot, &kind, 4);
                 std::memcpy(copy.data() + slot + 4, &low_id, 4);
                 if (i < count)
@@ -122,7 +106,9 @@ Json object_children(const Bytes &b, const Json &children, std::size_t reference
                 {{"child_index", i},
                  {"reference_source_offset", p},
                  {"saved_reference_id", reference},
-                 {"kind", reference ? local_kind(c.at("resource_type").get<std::uint32_t>()) : 6},
+                 {"kind", reference ? native_line_style_local_kind(
+                                          c.at("resource_type").get<std::uint32_t>())
+                                    : 6},
                  {"resource_id",
                   reference ? reference : c.at("local_resource_id").get<std::uint64_t>()},
                  {"selection",

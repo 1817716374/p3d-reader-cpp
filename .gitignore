@@ -94,6 +94,7 @@
 !/tests/line_style_inputs.cpp
 !/tests/line_style_resource.cpp
 !/tests/line_style_compound.cpp
+!/tests/line_style_point.cpp
 !/tests/display_priority.cpp
 !/tests/material_resource_inputs.cpp
 !/tests/graphics_native.cpp

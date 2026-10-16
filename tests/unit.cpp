@@ -148,6 +148,7 @@ unsigned block_symbols_tests();
 unsigned line_style_inputs_tests();
 unsigned line_style_resource_tests();
 unsigned line_style_compound_tests();
+unsigned line_style_point_tests();
 unsigned display_priority_tests();
 unsigned entity_material_tests();
 unsigned proxy_cache_tests();
@@ -3584,6 +3585,7 @@ int main() {
         checks += line_style_inputs_tests();
         checks += line_style_resource_tests();
         checks += line_style_compound_tests();
+        checks += line_style_point_tests();
         checks += display_priority_tests();
         checks += entity_material_tests();
         checks += proxy_cache_tests();
