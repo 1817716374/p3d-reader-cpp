@@ -140,6 +140,7 @@ unsigned scene_layers_tests();
 unsigned native_group_layers_tests();
 unsigned layer_numeric_lookup_tests();
 unsigned block_layers_tests();
+unsigned line_style_inputs_tests();
 unsigned entity_material_tests();
 unsigned proxy_cache_tests();
 unsigned model_edge_cache_tests();
@@ -2693,7 +2694,8 @@ static void command_metadata_tests() {
     auto mod = decode_symbology(with_modifiers(modifiers))["line_style_modifiers"];
     check(mod["fields"].size() == 9 && mod["fields"][6]["float64_view"] == 7. &&
               mod["orientation_vector"] == Json({8., 9., 10.}) &&
-              mod["orientation_quaternion"] == Json({1., 0., 0., 0.}) &&
+              mod["orientation_data"] == Json({1., 0., 0., 0.}) &&
+              mod["orientation_encoding"] == "requires_dimension_context" &&
               mod["fields"][7]["storage_uint32"] == 0xffffffffu &&
               mod["fields"][8]["storage_uint32"] == 0x87654321u &&
               mod["consumed_bytes"] == modifiers.size() && mod["unassigned_flag_bits"] == 0x400u &&
@@ -2702,7 +2704,7 @@ static void command_metadata_tests() {
               mod["named_values"]["fraction_phase"] == 7. &&
               mod["named_values"]["multiline_index"] == 0xffffffffu &&
               mod["centered_shift"] == true,
-          "line modifier optional scalar, vector, quaternion and integer fields follow native "
+          "line modifier optional scalar, vector, dimension-dependent orientation and integer fields follow native "
           "layout");
     for (auto n : {4u, 60u, 84u, 116u, 120u, 123u})
         check(command_fields(28, with_modifiers(slice(modifiers, 0, n)))
@@ -3196,6 +3198,7 @@ int main() {
         checks += native_group_layers_tests();
         checks += layer_numeric_lookup_tests();
         checks += block_layers_tests();
+        checks += line_style_inputs_tests();
         checks += entity_material_tests();
         checks += proxy_cache_tests();
         checks += model_edge_cache_tests();

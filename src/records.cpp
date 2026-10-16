@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include "block_layer_inputs.hpp"
+#include "line_style_source.hpp"
 #include <p3d/csg.hpp>
 #include "text_bytes.hpp"
 #include "material_catalog_read.hpp"
@@ -349,6 +350,12 @@ Json parse_native(const Bytes &b) {
                 {"layer_id", r.at<std::uint32_t>(pos + 16)},
                 {"entity_getter_policy", type == 21 ? "recursive_first_child" : "stored_header"},
                 {"draw_style_selection", "not_evaluated"}};
+        if ((graphic_header_types.count(type) || type == 27 || type == 38 || type == 41 || type == 63) &&
+            std::any_of(out.back()["links"].begin(), out.back()["links"].end(), [](const Json &link) {
+                return (link.at("header").get<unsigned>() & 0x1000) && link.at("app") == 0x79f9;
+            }))
+            out.back()["native_line_style_parameters"] =
+                native_graphic_line_style_input(slice(b, pos, attr - pos), out.back()["links"]);
         if (type == 54) {
             out.back()["native_text_style"] =
                 decode_native_text_style(slice(b, pos, attr - pos), out.back()["links"]);
@@ -501,59 +508,8 @@ Json decode_symbology(const Bytes &b) {
         v["true_color_unassigned_high_byte"] = packed >> 24;
     }
     if (flags & 0x8000) {
-        auto n = r.u16();
-        require(n >= 4, "line modifier size");
-        auto raw = r.take(n);
-        Reader m(raw);
-        Json mod = {{"bytes", n}, {"flags", m.u32()}, {"raw_hex", hex(raw)}};
-        if ((n - 4) % 8 == 0)
-            mod["unassigned_doubles"] = Reader(raw, 4).doubles((n - 4) / 8);
-        auto bits = mod["flags"].get<std::uint32_t>();
-        Json fields = Json::array();
-        Json named = Json::object();
-        const char *scalar_names[] = {"scale",     "dash_scale", "gap_scale",     "start_width",
-                                      "end_width", "shift",      "fraction_phase"};
-        for (unsigned bit = 0; bit < 7; ++bit)
-            if (bits & (1u << bit)) {
-                auto offset = m.p;
-                auto storage = Reader(raw, offset).u64();
-                auto value = m.f64();
-                named[scalar_names[bit]] = value;
-                fields.push_back({{"flag_mask", 1u << bit},
-                                  {"source_offset", offset},
-                                  {"native_member_offset", 8u * (bit + 1)},
-                                  {"name", scalar_names[bit]},
-                                  {"storage_uint64", storage},
-                                  {"float64_view", value}});
-            }
-        if (bits & 0x100)
-            mod["orientation_vector"] = m.doubles(3);
-        if (bits & 0x200)
-            mod["orientation_quaternion"] = m.doubles(4);
-        for (auto pair : {std::make_pair(0x800u, 0x40u), std::make_pair(0x1000u, 0x44u)})
-            if (bits & pair.first) {
-                auto offset = m.p;
-                auto value = m.u32();
-                auto name = pair.first == 0x800 ? "multiline_index" : "multiline_data_type";
-                named[name] = value;
-                fields.push_back({{"flag_mask", pair.first},
-                                  {"source_offset", offset},
-                                  {"native_member_offset", pair.second},
-                                  {"name", name},
-                                  {"storage_uint32", value}});
-            }
-        mod["fields"] = std::move(fields);
-        mod["named_values"] = std::move(named);
-        mod["centered_shift"] = bool(bits & 0x80);
-        mod["true_scale"] = bool(bits & 0x2000);
-        mod["break_at_corners"] = bool(bits & 0x40000000u);
-        mod["run_through_corners"] = bool(bits & 0x80000000u);
-        mod["consumed_bytes"] = m.p;
-        mod["unassigned_flag_bits"] = bits & ~0xc0003bffu;
-        mod["trailing_bytes"] = rawbytes(m.take(m.left()));
-        mod["layout_status"] = "decoded";
-        mod["semantics_status"] = "named_fields_with_unassigned_extensions_preserved";
-        v["line_style_modifiers"] = mod;
+        const auto n = r.u16();
+        v["line_style_modifiers"] = decode_line_style_modifier_source(r.take(n));
     }
     r.finish();
     return v;

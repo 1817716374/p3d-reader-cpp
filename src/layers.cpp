@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "line_style_source.hpp"
 #include <p3d/layer_lookup.hpp>
 namespace p3d {
 static Json layer_material_reference(const Json &links) {
@@ -124,6 +125,13 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
         auto color = legacy;
         if (extended && (extended <= 0xfffffffdu ? (extended & 255) : extended) == legacy)
             color = extended;
+        const auto primary_legacy = r.at<std::uint32_t>(60);
+        const auto primary_extended = r.at<std::uint32_t>(64);
+        auto primary_color = primary_legacy;
+        if (primary_extended &&
+            (primary_extended <= 0xfffffffdu ? (primary_extended & 255) : primary_extended) ==
+                primary_legacy)
+            primary_color = primary_extended;
         float transparency = r.at<float>(84);
         // Version 1 predates the saved numeric-key field. Its default layer
         // uses zero; other layers use their ID. Later versions copy the word.
@@ -147,19 +155,26 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
                       {"extended_color_index", extended},
                       {"line_style", r.at<std::int32_t>(68)},
                       {"line_weight", r.at<std::uint32_t>(72)}}},
+                    {"primary_symbology",
+                     {{"color_index", primary_color},
+                      {"legacy_color_index", primary_legacy},
+                      {"extended_color_index", primary_extended},
+                      {"line_style", r.at<std::int32_t>(52)},
+                      {"line_weight", r.at<std::uint32_t>(56)}}},
                     {"transparency", std::isfinite(transparency) ? Json(transparency) : Json()},
                     {"transparency_source_bits", r.at<std::uint32_t>(84)},
                     {"extended_flags", extra},
                     {"business_code", version >= 4 ? Json((extra >> 3) & 0xffff) : Json()},
                     {"unassigned_extended_bits", extra & ~(version >= 4 ? 0x7fff8u : 0u)},
                     {"unassigned_ranges",
-                     Json::array({{{"source_offset", 48}, {"data", rawbytes(slice(b, 48, 20))}},
+                     Json::array({{{"source_offset", 48}, {"data", rawbytes(slice(b, 48, 4))}},
                                   {{"source_offset", 88}, {"data", rawbytes(slice(b, 88, 4))}},
                                   {{"source_offset", 100},
                                    {"data", rawbytes(slice(b, 100, b.size() - 100))}}})}});
         if (!std::isfinite(transparency))
             out["transparency_error"] = "nonfinite source value";
         out["material_reference"] = layer_material_reference(links);
+        out["line_style_parameter_inputs"] = native_layer_line_style_input(links);
     } catch (const std::exception &e) {
         out["decode_error"] = e.what();
     }
