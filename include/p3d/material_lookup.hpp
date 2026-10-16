@@ -58,4 +58,17 @@ struct NativeMaterialIdContext {
 // Symbolic current contexts refer to this catalog only, never another file.
 Json lookup_native_material_id(std::uint64_t id, const Json &registered_catalog,
                                const NativeMaterialIdContext &context = {});
+
+struct NativeMaterialReferenceNameContext {
+    // Unset selects this prepared catalog's current resource context.
+    // This is the context equality key, NOT the material ID index key.
+    std::optional<std::u16string> resource_comparison_key;
+    // Source catalog name/key first, query second; source _wcsicmp semantics.
+    std::function<std::optional<int>(const std::u16string &, const std::u16string &)> compare;
+};
+// Select the first name AND resource-context match in native catalog order.
+// Returns its full ID, including UINT64_MAX; no later entry is tried after a
+// match. Requires the catalog after native preparation, does not load material.
+Json lookup_native_material_reference_name(const std::u16string &, const Json &registered_catalog,
+                                           const NativeMaterialReferenceNameContext &context = {});
 } // namespace p3d

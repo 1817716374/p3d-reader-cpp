@@ -174,4 +174,91 @@ Json lookup_native_material_id(std::uint64_t id, const Json &catalog,
     }
     return out;
 }
+Json lookup_native_material_reference_name(const std::u16string &input, const Json &catalog,
+                                           const NativeMaterialReferenceNameContext &context) {
+    const auto query = input.substr(0, input.find(u'\0'));
+    Json out = {{"status", "unresolved"},
+                {"scope", "prepared_catalog_first_name_and_resource_context_reference"},
+                {"comparisons", Json::array()},
+                {"selected_catalog_index", nullptr},
+                {"material_id", nullptr},
+                {"material_loading", "not_performed"}};
+    std::optional<std::size_t> position;
+    try {
+        if (query.empty()) {
+            out["status"] = "not_found";
+            return out;
+        }
+        if (catalog.at("status") == "absent") {
+            out["status"] = "not_found";
+            return out;
+        }
+        require(catalog.at("status") == "resolved", "complete_prepared_material_catalog_required");
+        const auto &entries = catalog.at("entries");
+        require(entries.is_array(), "material_catalog_entries_must_be_array");
+        auto equal = [&](const std::u16string &a, const std::u16string &b) {
+            if (a == b)
+                return true;
+            require(bool(context.compare), "native_material_reference_comparator_required");
+            const auto result = context.compare(a, b);
+            require(result.has_value(), "native_material_reference_comparison_unknown");
+            return *result == 0;
+        };
+        bool current_read = false;
+        std::optional<std::u16string> current;
+        auto current_key = [&]() -> std::optional<std::u16string> {
+            if (!current_read) {
+                const auto &key = catalog.at("current_context");
+                if (key.at("kind") == "explicit_context_keys")
+                    current = context_key(key.at("comparison_key"));
+                else
+                    require(key.at("kind") == "current_resource_context",
+                            "material_catalog_current_context_unresolved");
+                current_read = true;
+            }
+            return current;
+        };
+        auto key = [&](const Json &source) -> std::optional<std::u16string> {
+            if (source.at("kind") == "current_resource_context")
+                return current_key();
+            require(source.at("kind") == "explicit_context_keys",
+                    "material_resource_context_unresolved");
+            return context_key(source.at("comparison_key"));
+        };
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            position = i;
+            const auto &entry = entries[i];
+            const bool name_matches = equal(context_key(entry.at("name")), query);
+            Json compared = {{"catalog_index", i}, {"name_matched", name_matches}};
+            if (!name_matches) {
+                out["comparisons"].push_back(std::move(compared));
+                continue;
+            }
+            const auto source = key(entry.at("resource").at("primary_context"));
+            auto requested = context.resource_comparison_key;
+            if (requested)
+                requested->resize(std::min(requested->size(), requested->find(u'\0')));
+            else
+                requested = current_key();
+            require(bool(source) == bool(requested),
+                    "current_resource_comparison_key_required_for_cross_context_query");
+            const bool matches = !source || equal(*source, *requested);
+            compared["resource_context_matched"] = matches;
+            out["comparisons"].push_back(std::move(compared));
+            if (!matches)
+                continue;
+            // The first matching declaration wins even for sentinel ID MAX.
+            out.update({{"status", "matched"},
+                        {"selected_catalog_index", i},
+                        {"material_id", catalog_id(entry.at("id"))}});
+            return out;
+        }
+        out["status"] = "not_found";
+    } catch (const std::exception &e) {
+        out["reason"] = e.what();
+        if (position)
+            out["unresolved_catalog_index"] = *position;
+    }
+    return out;
+}
 } // namespace p3d

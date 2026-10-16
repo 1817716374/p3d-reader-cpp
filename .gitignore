@@ -82,6 +82,7 @@
 !/tests/material_assignment_table.cpp
 !/tests/material_assignment_chain.cpp
 !/tests/layer_lookup.cpp
+!/tests/layer_resources.cpp
 !/tests/layer_selection.cpp
 !/tests/scene_layers.cpp
 !/tests/native_group_layers.cpp

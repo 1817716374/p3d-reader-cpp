@@ -2,6 +2,7 @@
 #include "line_style_source.hpp"
 #include "layer_sync_properties.hpp"
 #include "layer_name_key.hpp"
+#include "layer_resource_source.hpp"
 #include <p3d/layer_lookup.hpp>
 namespace p3d {
 static Json initial_layer_name(const Json &layer) {
@@ -165,6 +166,7 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
         strings.push_back(std::move(text));
     }
     out["strings"] = std::move(strings);
+    out["resource_name_inputs"] = native_layer_resource_name_inputs(out["strings"]);
     try {
         Reader r(b, 36);
         auto id = r.u32();
