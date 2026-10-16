@@ -58,6 +58,24 @@ Json NativeLayerNumericIndex::lookup(std::uint32_t key) const {
     out["status"] = "matched";
     return out;
 }
+Json NativeLayerNumericIndex::lookup_layer(std::uint32_t id) const {
+    Json out = {{"status", "unresolved"},
+                {"layer_id", id},
+                {"table_record_index", data_.at("table_record_index")}};
+    if (data_.at("status") != "resolved") {
+        out["reason"] = data_.at("reason");
+        return out;
+    }
+    const auto found = ids_.find(id);
+    if (found == ids_.end()) {
+        out["status"] = "not_found";
+        return out;
+    }
+    out.update({{"status", "matched"},
+                {"numeric_key", found->second.first},
+                {"native_record_index", found->second.second}});
+    return out;
+}
 Json NativeLayerNumericIndex::remap_offset(std::uint32_t id, std::uint32_t offset,
                                            std::optional<std::uint32_t> parent_layer_id) const {
     Json out = {{"status", "unresolved"},

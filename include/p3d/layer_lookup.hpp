@@ -32,6 +32,9 @@ class NativeLayerNumericIndex {
         return data_;
     }
     Json lookup(std::uint32_t numeric_key) const;
+    // Exact loaded layer-ID lookup, before numeric-key lookup and without a
+    // fallback definition. Returns its numeric key and source record index.
+    Json lookup_layer(std::uint32_t layer_id) const;
     // Offset branch of the native parent-layer query. Layer zero bypasses
     // lookup. Otherwise add offset to the source key with uint32 wrap; a
     // confirmed source/key miss yields layer 64, not a fabricated definition.

@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "block_layer_inputs.hpp"
 #include <p3d/csg.hpp>
 #include "text_bytes.hpp"
 #include "material_catalog_read.hpp"
@@ -332,6 +333,7 @@ Json parse_native(const Bytes &b) {
                 native_reference_target(out.back()["reference_input"], out.back()["links"]);
         }
         if (type == 62) {
+            out.back()["block_layer_inputs"] = native_block_layer_inputs(slice(b, pos, attr - pos));
             try {
                 out.back()["block_transform"] = native_block_transform(slice(b, pos, attr - pos));
             } catch (const std::exception &e) {
