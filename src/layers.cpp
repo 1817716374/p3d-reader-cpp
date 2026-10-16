@@ -540,13 +540,35 @@ Json build_layer_tables(const Json &index, const Json &native, const Json &graph
             orphans.push_back(i);
     Json model_references = Json::array();
     auto system = index.value("P3D-SSYS", std::string());
-    std::map<std::uint64_t, std::vector<std::size_t>> group_ids;
+    const auto model_container = index.value("P3D-SM", std::string());
+    const auto model_header = index.value("P3D~MMH", std::string());
+    const auto system_container = index.value("P3DSysD", std::string());
+    auto file_scope = [&](StreamPath path, bool model) -> Json {
+        if (model) {
+            if (model_container.empty() || model_header.empty() || system_container.empty() ||
+                system.empty() || path.size() < 3 || path[path.size() - 3] != model_container ||
+                path.back() != model_header)
+                return nullptr;
+            path.resize(path.size() - 3);
+        } else {
+            if (system.empty() || system_container.empty() || path.size() < 3 ||
+                path[path.size() - 2] != system || path[path.size() - 3] != system_container)
+                return nullptr;
+            path.resize(path.size() - 3);
+        }
+        return path;
+    };
+    std::map<std::string, std::vector<std::size_t>> group_ids, local_tables;
     for (std::size_t ti = 0; ti < tables.size(); ++ti) {
         const auto &record = native[tables[ti]["native_record_index"].get<std::size_t>()];
-        auto path = record["stream"].get<StreamPath>();
-        if (!system.empty() && std::find(path.begin(), path.end(), system) != path.end() &&
-            record["layer_table"].value("kind", "") == "layer_group")
-            group_ids[record["id"].get<std::uint64_t>()].push_back(ti);
+        const auto scope = file_scope(record.at("stream").get<StreamPath>(), false);
+        if (scope.is_null())
+            continue;
+        const auto kind = record["layer_table"].value("kind", "");
+        if (kind == "layer_group")
+            group_ids[key(scope, record.at("id"))].push_back(ti);
+        else if (kind == "local")
+            local_tables[scope.dump()].push_back(ti);
     }
     for (auto model = models.begin(); model != models.end(); ++model) {
         if (!model.value().contains("layer_group_references"))
@@ -557,22 +579,58 @@ Json build_layer_tables(const Json &index, const Json &native, const Json &graph
             Json row = {{"model_id", model.key()},
                         {"reference_index", ri},
                         {"table_indices", Json::array()}};
+            const auto scope = ref.contains("stream")
+                                   ? file_scope(ref.at("stream").get<StreamPath>(), true)
+                                   : Json();
+            row["file_scope"] = scope;
+            row["scope_status"] = scope.is_null() ? "unresolved" : "resolved";
             if (!ref.contains("table_id")) {
                 row["status"] = "unsupported_header";
             } else {
                 auto id = ref["table_id"].get<std::uint64_t>();
-                const auto found = group_ids.find(id);
-                auto candidates =
-                    id && found != group_ids.end() ? found->second : std::vector<std::size_t>();
+                const auto found = group_ids.find(key(scope, id));
+                auto candidates = id && !scope.is_null() && found != group_ids.end()
+                                      ? found->second
+                                      : std::vector<std::size_t>();
                 row["table_id"] = id;
                 row["table_indices"] = candidates;
                 row["status"] = !id                     ? "none"
+                                : scope.is_null()       ? "unresolved_scope"
                                 : candidates.empty()    ? "missing"
                                 : candidates.size() > 1 ? "ambiguous"
                                 : tables[candidates[0]]["membership_status"] == "resolved"
                                     ? "resolved"
                                     : "invalid_table";
             }
+            Json selection = {{"status", "unresolved"},
+                              {"source_profile", "fresh_physical_model_without_layer_group"},
+                              {"local_table_indices", Json::array()},
+                              {"runtime_changes", "not_evaluated"},
+                              {"material_loading", "not_evaluated"}};
+            if (scope.is_null())
+                selection["reason"] = "model_file_scope_unknown";
+            else if (!ref.contains("table_id"))
+                selection["reason"] = "model_layer_group_reference_unknown";
+            else {
+                const auto local = local_tables.find(scope.dump());
+                const auto candidates =
+                    local == local_tables.end() ? std::vector<std::size_t>() : local->second;
+                selection["local_table_indices"] = candidates;
+                if (ref.at("table_id") != 0)
+                    selection["reason"] = "referenced_group_cache_not_evaluated";
+                else if (candidates.size() != 1)
+                    selection["reason"] = "local_layer_table_missing_or_ambiguous";
+                else if (tables[candidates[0]]["membership_status"] != "resolved")
+                    selection["reason"] = "local_layer_table_membership_invalid";
+                else {
+                    selection.update(
+                        {{"status", "resolved"},
+                         {"table_index", candidates[0]},
+                         {"native_record_index", tables[candidates[0]]["native_record_index"]},
+                         {"selection", "file_local_table"}});
+                }
+            }
+            row["initial_layer_cache"] = std::move(selection);
             model_references.push_back(std::move(row));
         }
     }

@@ -135,6 +135,7 @@ unsigned material_id_lookup_tests();
 unsigned material_assignment_table_tests();
 unsigned material_assignment_chain_tests();
 unsigned layer_lookup_tests();
+unsigned layer_selection_tests();
 unsigned entity_material_tests();
 unsigned proxy_cache_tests();
 unsigned model_edge_cache_tests();
@@ -1034,6 +1035,11 @@ static void layer_table_tests() {
                                                   {{"table_id", 0}},
                                                   {{"table_id", 77}},
                                                   {{"status", "unsupported_header"}}})}}}};
+    index["P3D-SM"] = "MODELS";
+    index["P3D~MMH"] = "MMH";
+    index["P3DSysD"] = "ROOT";
+    for (auto &ref : models.begin().value()["layer_group_references"])
+        ref["stream"] = {"MODELS", "M1", "MMH"};
     auto mapped = build_layer_tables(index, records, graphics, models)["model_references"];
     check(
         mapped[0]["model_id"] == "18446744073709551615" &&
@@ -3181,6 +3187,7 @@ int main() {
         checks += material_assignment_table_tests();
         checks += material_assignment_chain_tests();
         checks += layer_lookup_tests();
+        checks += layer_selection_tests();
         checks += entity_material_tests();
         checks += proxy_cache_tests();
         checks += model_edge_cache_tests();
