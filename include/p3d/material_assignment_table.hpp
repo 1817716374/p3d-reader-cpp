@@ -58,4 +58,34 @@ struct NativeAssignmentMaterialContext {
 Json resolve_native_assignment_material(const Json &table, const NativeAssignmentQuery &query,
                                         const Json &registered_catalog,
                                         const NativeAssignmentMaterialContext &context);
+
+struct NativeAssignmentModelScope {
+    std::string source_key; // Caller identity; equal keys/tables are not deduplicated.
+    bool table_known = false;
+    std::optional<Json> table; // Known nullopt means this model has no selected table.
+    Json registered_catalog;   // Used only after this scope supplies the first matching rule.
+    NativeAssignmentMaterialContext material;
+};
+struct NativeAssignmentModelChainOptions {
+    // Actual BR_MATERIAL_MASTERMAT setting. Unknown is not treated as false.
+    std::optional<bool> use_master_material;
+    // Scopes are the actual native ancestry, child first, through a known null
+    // parent. Do not derive this chain from a logical model/structure tree.
+    bool ancestry_complete = false;
+    std::size_t max_scopes = 100000; // Visited tables; ancestry discovery is external.
+};
+// Ordinary color/layer assignment branch, before the later layer fallback and
+// draw-context cache. Each scope supplies its actual prepared model table.
+// Query layer_name/color remain those of the original prepared request.
+// Per model: exact rules before patterns; first match stops ancestry traversal
+// BEFORE loading. Master mode starts at the known root and skips descendants.
+Json lookup_native_material_assignment_model_chain(const std::vector<NativeAssignmentModelScope> &,
+                                                   const NativeAssignmentQuery &,
+                                                   const NativeAssignmentModelChainOptions & = {});
+// Loads only the selected scope's rule with its own catalog/resource contexts.
+// Failed, missing or unknown loads never resume parent TABLE search. No model
+// discovery, host-setting reads, cache updates or final view styling occur.
+Json resolve_native_assignment_material_model_chain(const std::vector<NativeAssignmentModelScope> &,
+                                                    const NativeAssignmentQuery &,
+                                                    const NativeAssignmentModelChainOptions & = {});
 } // namespace p3d

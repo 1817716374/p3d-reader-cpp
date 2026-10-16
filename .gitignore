@@ -80,6 +80,7 @@
 !/tests/material_lookup.cpp
 !/tests/material_id_lookup.cpp
 !/tests/material_assignment_table.cpp
+!/tests/material_assignment_chain.cpp
 !/tests/material_resource_inputs.cpp
 !/tests/graphics_native.cpp
 !/tests/text_bytes.cpp

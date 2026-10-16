@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "material_assignment_rule.hpp"
 #include <p3d/material_assignment_table.hpp>
 #include <pugixml/pugixml.hpp>
 #include <codecvt>
@@ -462,15 +463,13 @@ Json select_native_material_assignment_table(const Json &attributes,
     return out;
 }
 
-Json resolve_native_assignment_material(const Json &table, const NativeAssignmentQuery &query,
-                                        const Json &catalog,
-                                        const NativeAssignmentMaterialContext &context) {
+Json detail::resolve_selected_assignment_rule(const Json &rule, const Json &catalog,
+                                              const NativeAssignmentMaterialContext &context) {
     Json out = {{"status", "unresolved"},
                 {"scope", "selected_assignment_table_rule_loading"},
                 {"draw_material_status", "not_evaluated"},
                 {"loads", Json::array()}};
     try {
-        const auto rule = lookup_native_material_assignment(table, query);
         out["rule"] = rule;
         if (rule.at("status") == "not_found") {
             out["status"] = "rule_not_found";
@@ -517,5 +516,11 @@ Json resolve_native_assignment_material(const Json &table, const NativeAssignmen
         out["reason"] = e.what();
     }
     return out;
+}
+Json resolve_native_assignment_material(const Json &table, const NativeAssignmentQuery &query,
+                                        const Json &catalog,
+                                        const NativeAssignmentMaterialContext &context) {
+    return detail::resolve_selected_assignment_rule(lookup_native_material_assignment(table, query),
+                                                    catalog, context);
 }
 } // namespace p3d
