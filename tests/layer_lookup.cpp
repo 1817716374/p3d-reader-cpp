@@ -568,5 +568,280 @@ unsigned layer_lookup_tests() {
               shared.metadata() == shared_before,
           "owned loaded state supports concurrent const queries after source temporaries are "
           "released");
+    auto group_records = [&](Json children) {
+        auto out = records(std::move(children));
+        auto body = bytesof(out[0]["data"]);
+        set(body, 44, std::uint64_t(UINT64_MAX - 3));
+        out[0]["data"] = rawbytes(body);
+        return out;
+    };
+    NativeLayerNameCache alias_group(
+        group_records({layer(1, u"2"), layer(2, u""), layer(1, u"New")}), 0, loading);
+    NativeLayerNameCache alias_file(records({layer(1, u"2"), layer(2, u"Final")}), 0, loading);
+    const auto alias_before = alias_group.metadata(), file_before = alias_file.metadata();
+    const auto alias_sync = alias_group.synchronize_group_names(alias_file, true);
+    check(
+        alias_sync.metadata()["status"] == "resolved" &&
+            alias_sync.metadata()["group_synchronization"]["operations"][0]["native_return_code"] ==
+                9 &&
+            alias_sync.metadata()["group_synchronization"]["operations"][0]
+                                 ["conflicting_layer_id"] == 1 &&
+            alias_sync.lookup(u"2")["name_utf16"] == units(u"New") &&
+            alias_sync.lookup(u"Final")["layer_id"] == 2 &&
+            alias_group.metadata() == alias_before && alias_file.metadata() == file_before,
+        "a captured alias to the target itself is a native rename conflict; inputs stay owned "
+        "and unchanged");
+    const auto &alias_rows = alias_sync.metadata()["loaded_layers"];
+    check(alias_rows[0]["native_record_index"] == 3 &&
+              alias_rows[0]["name_source_record_index"] == 3 &&
+              alias_rows[1]["native_record_index"] == 2 &&
+              alias_rows[1]["name_source_record_index"] == 2,
+          "synchronization keeps node provenance independent of the assigned name provenance");
+    auto indexed_context = loading;
+    indexed_context.registered_names_before_load = std::vector<std::u16string>{u"2"};
+    NativeLayerNameCache dangling_group(
+        group_records({layer(9, u"Taken"), layer(2, u""), layer(1, u"A")}), 0, indexed_context);
+    NativeLayerNameCache dangling_file(records({layer(1, u"A"), layer(2, u"2")}), 0, loading);
+    const auto dangling = dangling_group.synchronize_group_names(dangling_file, true);
+    check(dangling.metadata()["status"] == "resolved" &&
+              dangling.metadata()["name_index_entries"][0]["layer_id"] == 9 &&
+              dangling.metadata()["name_index_entries"][0]["target_present"] == false &&
+              dangling.metadata()["name_index_entries"][0]["native_record_index"].is_null() &&
+              dangling.lookup(u"Taken")["status"] == "not_found" &&
+              dangling.lookup(u"A")["status"] == "not_found",
+          "membership removal retains a dangling index key and lookup treats its missing ID as "
+          "a miss without rebuilding");
+    NativeLayerNameCache reclaimed_file(records({layer(1, u"Taken"), layer(2, u"2")}), 0, loading);
+    const auto reclaimed = dangling_group.synchronize_group_names(reclaimed_file, true);
+    check(reclaimed.metadata()["group_synchronization"]["operations"][0]["native_return_code"] ==
+                  0 &&
+              reclaimed.lookup(u"Taken")["layer_id"] == 1 &&
+              reclaimed.metadata()["loaded_layers"][0]["native_record_index"] == 3 &&
+              reclaimed.metadata()["loaded_layers"][0]["name_source_record_index"] == 1,
+          "a dangling key does not conflict and a successful name assignment keeps group node "
+          "identity while recording the file name source");
+    NativeLayerNameCache additions_group(group_records({layer(1, u"A"), layer(2, u"")}), 0,
+                                         indexed_context);
+    NativeLayerNameCache additions_file(records({layer(1, u"A"), layer(3, u"C")}), 0, loading);
+    const auto additions = additions_group.synchronize_group_names(additions_file, true);
+    check(additions.metadata()["group_synchronization"]["added_layer_ids"] == Json::array({3}) &&
+              additions.metadata()["group_synchronization"]["removed_layer_ids"] ==
+                  Json::array({2}) &&
+              additions.metadata()["loaded_layers"][1]["name_utf16"] == units(u"C") &&
+              additions.lookup(u"A")["layer_id"] == 1 &&
+              additions.lookup(u"C")["status"] == "not_found",
+          "new file members register their names without populating a nonempty captured index");
+    NativeLayerNameCache takeover_group(
+        group_records({layer(1, u"A"), layer(9, u"a"), layer(2, u"")}), 0, indexed_context);
+    NativeLayerNameCache takeover_file(records({layer(9, u"a"), layer(2, u"2"), layer(1, u"a")}), 0,
+                                       loading);
+    const auto takeover = takeover_group.synchronize_group_names(takeover_file, true);
+    check(takeover.metadata()["group_synchronization"]["operations"][0]["native_return_code"] ==
+                  0 &&
+              takeover.lookup(u"A")["layer_id"] == 1,
+          "a case-only update bypasses conflict lookup and replaces another ID's same-key index "
+          "entry");
+    NativeLayerNameCache conflict_group(group_records({layer(1, u"A"), layer(2, u"B")}), 0,
+                                        loading);
+    NativeLayerNameCache conflict_file(records({layer(2, u"X"), layer(1, u"X")}), 0, loading);
+    const auto conflict = conflict_group.synchronize_group_names(conflict_file, true);
+    check(conflict.metadata()["group_synchronization"]["operations"][0]["native_return_code"] ==
+                  0 &&
+              conflict.metadata()["group_synchronization"]["operations"][1]["native_return_code"] ==
+                  9 &&
+              conflict.lookup(u"X")["layer_id"] == 1 && conflict.lookup(u"B")["layer_id"] == 2,
+          "name requests use unsigned file-ID order, preserving the earlier successful rename "
+          "when the later one conflicts");
+    NativeLayerNameCache invalid_file(records({layer(1, u"Bad/"), layer(2, u"B")}), 0, loading);
+    const auto invalid_sync = conflict_group.synchronize_group_names(invalid_file, true);
+    check(invalid_sync.metadata()["status"] == "resolved" &&
+              invalid_sync.metadata()["group_synchronization"]["operations"][0]
+                                     ["native_return_code"] == 8 &&
+              invalid_sync.lookup(u"A")["layer_id"] == 1,
+          "an invalid saved file name rejects its update without rejecting unrelated members");
+    NativeLayerNameCache invalid_group(group_records({layer(1, u"Bad/"), layer(2, u"B")}), 0,
+                                       loading);
+    check(invalid_group.synchronize_group_names(invalid_file, true)
+                  .metadata()["group_synchronization"]["operations"][0]["selection"] == "unchanged",
+          "exact equality precedes name validation even when the existing name is invalid");
+    check(conflict_group.synchronize_group_names(conflict_file, false).metadata()["status"] ==
+                  "unresolved" &&
+              conflict_file.synchronize_group_names(conflict_file, true)
+                  .metadata()["loaded_layers"]
+                  .is_null() &&
+              conflict.synchronize_group_names(conflict_file, true).metadata()["status"] ==
+                  "unresolved",
+          "group replay requires confirmed same-file ownership, correct table kinds and base "
+          "load snapshots");
+    NativeLayerNameLoadContext missing_compare = loading;
+    missing_compare.text.compare = {};
+    NativeLayerNameCache partial_group(group_records({layer(1, u"Keep"), layer(2, u"Aa")}), 0,
+                                       missing_compare);
+    NativeLayerNameCache partial_file(records({layer(1, u"Keep"), layer(2, u"B@")}), 0,
+                                      missing_compare);
+    const auto partial = partial_group.synchronize_group_names(partial_file, true);
+    check(partial.metadata()["status"] == "unresolved" &&
+              partial.metadata()["loaded_layers"].is_null() &&
+              partial.metadata()["name_index_entries"].is_null() &&
+              partial.metadata()["group_synchronization"]["operations"].size() == 1 &&
+              partial.metadata()["group_synchronization"]["failed_layer_id"] == 2 &&
+              partial.lookup(u"Keep")["status"] == "unresolved",
+          "an unknown same-hash comparison preserves the known operation prefix but withholds "
+          "the final group and query state");
+    NativeLayerNameCache observed_group(group_records({layer(1, u"A")}), 0, loading);
+    NativeLayerNameCache observed_file(records({layer(1, u"a")}), 0, loading);
+    observed_group.lookup(u"A");
+    const auto observed = observed_group.synchronize_group_names(observed_file, true);
+    check(observed.metadata()["name_index_entries"].empty() &&
+              observed.metadata()["lookup_index_source"] == "rebuilt_after_group_synchronization" &&
+              observed.lookup(u"A")["name_utf16"] == units(u"a"),
+          "const observation of a base snapshot does not change replay's native lazy-index state");
+
+    // Independent state-machine oracle uses canonical strings, no library
+    // registry/hash code, raw decoder annotations or public sync evaluator.
+    using InputName = std::pair<std::uint32_t, std::u16string>;
+    struct OracleNames {
+        std::set<std::u16string> registry;
+        std::map<std::uint32_t, std::pair<std::u16string, std::size_t>> nodes;
+        std::map<std::u16string, std::uint32_t> index;
+    };
+    auto canonical = [&](std::u16string name) {
+        std::transform(name.begin(), name.end(), name.begin(), lower);
+        return name;
+    };
+    auto oracle_index = [&](const OracleNames &state) {
+        std::map<std::u16string, std::uint32_t> out;
+        for (const auto &[id, row] : state.nodes)
+            out[canonical(row.first)] = id;
+        return out;
+    };
+    auto oracle_load = [&](const std::array<InputName, 2> &sequence, bool external) {
+        OracleNames state;
+        if (external)
+            state.registry.insert(u"2");
+        for (std::size_t position = 0; position < sequence.size(); ++position) {
+            auto [id, name] = sequence[position];
+            if (!name.empty())
+                state.registry.insert(canonical(name));
+            if (id == 0 || id == UINT32_MAX)
+                continue;
+            if (id == 64 && name != u"0")
+                name = u"Default";
+            if (name.empty()) {
+                const auto decimal = std::to_string(std::int64_t(id));
+                std::u16string candidate(decimal.begin(), decimal.end());
+                for (std::size_t n = 0; n <= state.nodes.size(); ++n) {
+                    bool occupied = false;
+                    if (state.registry.count(canonical(candidate))) {
+                        if (state.index.empty())
+                            state.index = oracle_index(state);
+                        const auto found = state.index.find(canonical(candidate));
+                        occupied = found != state.index.end() && state.nodes.count(found->second);
+                    }
+                    if (!occupied) {
+                        name = candidate;
+                        break;
+                    }
+                    candidate += u"-";
+                }
+            }
+            state.registry.insert(canonical(name));
+            state.nodes[id] = {name, position + 1};
+        }
+        return state;
+    };
+    const std::array<InputName, 8> group_choices{
+        {{1, u"A"}, {1, u"a"}, {2, u""}, {1, u"2"}, {3, u"A"}, {64, u"0"}, {0, u"2"}, {2, u"B"}}};
+    const std::array<InputName, 4> file_choices{{{1, u"a"}, {2, u"2"}, {3, u"X"}, {1, u"Bad/"}}};
+    for (bool external : {false, true})
+        for (const auto &g1 : group_choices)
+            for (const auto &g2 : group_choices)
+                for (const auto &f1 : file_choices)
+                    for (const auto &f2 : file_choices) {
+                        auto expected = oracle_load({{g1, g2}}, external);
+                        const auto file = oracle_load({{f1, f2}}, false);
+                        for (const auto &[id, source] : file.nodes)
+                            if (!expected.nodes.count(id)) {
+                                expected.registry.insert(canonical(source.first));
+                                expected.nodes[id] = source;
+                            }
+                        for (auto it = expected.nodes.begin(); it != expected.nodes.end();)
+                            if (!file.nodes.count(it->first))
+                                it = expected.nodes.erase(it);
+                            else
+                                ++it;
+                        std::vector<unsigned> codes;
+                        for (const auto &[id, source] : file.nodes) {
+                            auto &name = expected.nodes.at(id).first;
+                            const auto &requested = source.first;
+                            unsigned code = 0;
+                            if (name != requested) {
+                                if (requested.find_first_of(u"<>\\/\"?*|,=&\n\t") !=
+                                    std::u16string::npos) {
+                                    code = 8;
+                                } else {
+                                    const auto key = canonical(requested), old = canonical(name);
+                                    expected.registry.insert(key);
+                                    if (key != old) {
+                                        if (expected.index.empty())
+                                            expected.index = oracle_index(expected);
+                                        const auto found = expected.index.find(key);
+                                        if (found != expected.index.end() &&
+                                            expected.nodes.count(found->second))
+                                            code = 9;
+                                    }
+                                    if (!code) {
+                                        if (!expected.index.empty()) {
+                                            expected.index.erase(old);
+                                            expected.index[key] = id;
+                                        }
+                                        name = requested;
+                                    }
+                                }
+                            }
+                            codes.push_back(code);
+                        }
+                        auto context = loading;
+                        if (external)
+                            context.registered_names_before_load =
+                                std::vector<std::u16string>{u"2"};
+                        NativeLayerNameCache group_cache(
+                            group_records({layer(g1.first, g1.second), layer(g2.first, g2.second)}),
+                            0, context);
+                        NativeLayerNameCache file_cache(
+                            records({layer(f1.first, f1.second), layer(f2.first, f2.second)}), 0,
+                            loading);
+                        const auto result = group_cache.synchronize_group_names(file_cache, true);
+                        bool correct =
+                            result.metadata()["status"] == "resolved" &&
+                            result.metadata()["loaded_layers"].size() == expected.nodes.size() &&
+                            result.metadata()["name_index_entries"].size() == expected.index.size();
+                        for (const auto &row : result.metadata()["loaded_layers"])
+                            correct =
+                                correct &&
+                                row["name_utf16"] ==
+                                    units(expected.nodes.at(row["layer_id"].get<unsigned>()).first);
+                        const auto &operations =
+                            result.metadata()["group_synchronization"]["operations"];
+                        correct = correct && operations.size() == codes.size();
+                        for (std::size_t n = 0; n < codes.size(); ++n)
+                            correct = correct && operations[n]["native_return_code"] == codes[n];
+                        const auto index =
+                            expected.index.empty() ? oracle_index(expected) : expected.index;
+                        for (const auto &q : {u"A", u"2", u"2-", u"B", u"X", u"0", u"Default"}) {
+                            const auto found = index.find(canonical(q));
+                            const bool hit = expected.registry.count(canonical(q)) &&
+                                             found != index.end() &&
+                                             expected.nodes.count(found->second);
+                            const auto query = result.lookup(q);
+                            correct = correct && query["status"] == (hit ? "matched" : "not_found");
+                            if (hit)
+                                correct = correct && query["layer_id"] == found->second &&
+                                          query["name_utf16"] ==
+                                              units(expected.nodes.at(found->second).first);
+                        }
+                        check(correct, "loaded group synchronization matches independent "
+                                       "membership/registry/stale-index oracle");
+                    }
     return checks;
 }

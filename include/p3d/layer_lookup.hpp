@@ -46,6 +46,13 @@ struct NativeLayerNameLoadContext {
     // Native transient numeric keys are not needed or synthesized for callers.
     std::optional<std::vector<std::u16string>> registered_names_before_load;
 };
+struct NativeLayerGroupNameLoadContext {
+    NativeLayerNameContext text;
+    // Complete registry contents at each table's own loading time. Neither
+    // prefix can be inferred from the other table's final registry.
+    std::optional<std::vector<std::u16string>> file_registered_names_before_load;
+    std::optional<std::vector<std::u16string>> group_registered_names_before_load;
+};
 // Reconstruct one fresh writable local/group table's base name-loading phase,
 // without an old name-to-ID repair map. Includes missing-name generation and
 // the index actually captured while loading; it is not always a final rebuild.
@@ -58,9 +65,21 @@ class NativeLayerNameCache {
                          const NativeLayerNameLoadContext &context = {});
     const Json &metadata() const noexcept;
     Json lookup(const std::u16string &) const;
+    // Derive the group's membership/name phase from these base load snapshots.
+    // The caller must establish the same file owner and source text context.
+    // This preserves the actual captured index, including stale/dangling keys.
+    // Const lookups are observations, not replayed index-population operations.
+    NativeLayerNameCache synchronize_group_names(const NativeLayerNameCache &file,
+                                                 bool confirmed_same_file_owner) const;
+    // Select the unique same-owner local table from the document's catalog,
+    // load both tables, then evaluate membership/name synchronization.
+    // group_table_index indexes layer_tables().tables, not native_records().
+    static NativeLayerNameCache load_group(const Document &, std::size_t group_table_index,
+                                           const NativeLayerGroupNameLoadContext &context = {});
 
   private:
     struct Impl;
+    explicit NativeLayerNameCache(std::shared_ptr<const Impl>);
     std::shared_ptr<const Impl> impl_;
 };
 // Reconstructs name lookup for a fresh local layer table after its saved records
