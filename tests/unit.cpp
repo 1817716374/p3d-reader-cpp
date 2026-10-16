@@ -136,6 +136,7 @@ unsigned material_assignment_table_tests();
 unsigned material_assignment_chain_tests();
 unsigned layer_lookup_tests();
 unsigned layer_selection_tests();
+unsigned scene_layers_tests();
 unsigned entity_material_tests();
 unsigned proxy_cache_tests();
 unsigned model_edge_cache_tests();
@@ -3188,6 +3189,7 @@ int main() {
         checks += material_assignment_chain_tests();
         checks += layer_lookup_tests();
         checks += layer_selection_tests();
+        checks += scene_layers_tests();
         checks += entity_material_tests();
         checks += proxy_cache_tests();
         checks += model_edge_cache_tests();

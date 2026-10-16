@@ -338,6 +338,15 @@ Json parse_native(const Bytes &b) {
                 out.back()["block_transform"] = {{"status", "invalid"}, {"error", e.what()}};
             }
         }
+        static const std::set<unsigned> graphic_header_types = {19, 20, 21, 37, 40, 44, 52, 54, 62, 97};
+        if (graphic_header_types.count(type))
+            out.back()["native_graphic_header"] = {
+                {"encoding", "stored_graphic_layer_header"},
+                {"status", "decoded"},
+                {"source_offset", 16},
+                {"layer_id", r.at<std::uint32_t>(pos + 16)},
+                {"entity_getter_policy", type == 21 ? "recursive_first_child" : "stored_header"},
+                {"draw_style_selection", "not_evaluated"}};
         if (type == 54) {
             out.back()["native_text_style"] =
                 decode_native_text_style(slice(b, pos, attr - pos), out.back()["links"]);

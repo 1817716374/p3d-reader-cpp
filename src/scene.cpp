@@ -1,4 +1,5 @@
 #include "geometry.hpp"
+#include "scene_layers.hpp"
 #include <atomic>
 #include <thread>
 namespace p3d {
@@ -440,6 +441,7 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         binding_groups[k].push_back(b);
     }
     auto graph = doc.object_graph();
+    NativeSceneLayerCatalog layer_catalog(doc.native_records(), doc.layer_tables());
     for (auto np : live) {
         auto &n = *np;
         auto s = n["stream"].get<StreamPath>();
@@ -463,6 +465,10 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
             {"notes", Json::array()},
             {"block_references", Json::array()},
             {"instance_commands", Json::array()}};
+        if (n.contains("native_graphic_header"))
+            meta["native_graphic_header"] = n.at("native_graphic_header");
+        meta["stored_layer_reference"] = layer_catalog.bind(
+            model, n.value("native_graphic_header", Json()));
         auto matrix = identity();
         Json instance_style = Json::object(), terrain_children = Json::array(),
              terrain_attrs = Json::array();
@@ -689,6 +695,7 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         {"models", model_map},
         {"model_info", doc.models()},
         {"materials", std::move(mats)},
+        {"layers", std::move(layer_catalog.data)},
         {"color_tables", std::move(colors)},
         {"relationships", std::move(relations)},
         {"relationship_nodes", std::move(related)},

@@ -83,6 +83,7 @@
 !/tests/material_assignment_chain.cpp
 !/tests/layer_lookup.cpp
 !/tests/layer_selection.cpp
+!/tests/scene_layers.cpp
 !/tests/material_resource_inputs.cpp
 !/tests/graphics_native.cpp
 !/tests/text_bytes.cpp
