@@ -599,6 +599,61 @@ Json build_layer_tables(const Json &index, const Json &native, const Json &graph
         else if (kind == "local")
             local_tables[scope.dump()].push_back(ti);
     }
+    // A missing saved group can use the native null-result fallback only after
+    // the complete owner's source keys are known. Do not use a partial or
+    // annotation-only catalog as evidence that the registry has no such key.
+    std::map<std::string, Json> group_inventories;
+    auto group_inventory = [&](const Json &wanted_scope) -> const Json & {
+        const auto scope_key = wanted_scope.dump();
+        auto found = group_inventories.find(scope_key);
+        if (found != group_inventories.end())
+            return found->second;
+        Json inventory = {{"status", "decoded"}, {"groups", Json::array()}};
+        try {
+            for (std::size_t ti = 0; ti < tables.size(); ++ti) {
+                const auto &table = tables.at(ti);
+                const auto &record = native.at(table.at("native_record_index").get<std::size_t>());
+                const auto scope = file_scope(record.at("stream").get<StreamPath>(), false);
+                require(!scope.is_null(), "group_registry_table_scope_unknown");
+                if (scope != wanted_scope)
+                    continue;
+                const auto body = bytesof(record.at("data"));
+                Reader raw(body);
+                require(raw.at<std::uint16_t>(4) == 10 && raw.at<std::uint32_t>(16) == 1,
+                        "group_registry_source_type_mismatch");
+                require(raw.at<std::uint32_t>(8) >= raw.at<std::uint32_t>(12) &&
+                            body.size() == 4 + std::uint64_t(raw.at<std::uint32_t>(12)) * 2 &&
+                            record.at("length").get<std::uint64_t>() ==
+                                4 + std::uint64_t(raw.at<std::uint32_t>(8)) * 2,
+                        "group_registry_source_extent_unknown");
+                const auto header = decode_native_layer_table(body, record.at("links"));
+                require(!header.contains("decode_error") &&
+                            raw.at<std::uint64_t>(20) == record.at("id").get<std::uint64_t>(),
+                        "group_registry_source_header_unknown");
+                require(table.at("membership_status") == "resolved" &&
+                            table.at("member_record_indices").size() ==
+                                header.at("declared_child_count").get<std::uint32_t>(),
+                        "group_registry_source_membership_unknown");
+                for (const auto &member : table.at("member_record_indices")) {
+                    const auto &row = native.at(member.get<std::size_t>());
+                    const auto raw_layer = bytesof(row.at("data"));
+                    require(Reader(raw_layer).at<std::uint16_t>(4) == 49 &&
+                                Reader(raw_layer).at<std::uint32_t>(16) == 1,
+                            "group_registry_source_layer_type_unknown");
+                    const auto layer = decode_native_layer(raw_layer, row.at("links"));
+                    require(layer.at("status") == "decoded" && !layer.contains("decode_error"),
+                            "group_registry_source_layer_unknown");
+                }
+                if (header.at("selector") == UINT64_MAX - 3)
+                    inventory["groups"].push_back(
+                        {{"table_index", ti}, {"id", raw.at<std::uint64_t>(20)}});
+            }
+        } catch (const std::exception &e) {
+            inventory["status"] = "unresolved";
+            inventory["reason"] = e.what();
+        }
+        return group_inventories.emplace(scope_key, std::move(inventory)).first->second;
+    };
     for (auto model = models.begin(); model != models.end(); ++model) {
         if (!model.value().contains("layer_group_references"))
             continue;
@@ -645,18 +700,42 @@ Json build_layer_tables(const Json &index, const Json &native, const Json &graph
                 const auto candidates =
                     local == local_tables.end() ? std::vector<std::size_t>() : local->second;
                 selection["local_table_indices"] = candidates;
-                if (ref.at("table_id") != 0)
+                bool use_local = ref.at("table_id") == 0;
+                if (!use_local) {
+                    selection["source_profile"] = "fresh_physical_model_group_lookup";
                     selection["reason"] = "referenced_group_cache_not_evaluated";
-                else if (candidates.size() != 1)
+                    if (row.at("status") == "missing") {
+                        const auto &inventory = group_inventory(scope);
+                        Json lookup = {{"status", "unresolved"},
+                                       {"source_profile", "fresh_saved_system_group_registry"},
+                                       {"runtime_changes", "not_evaluated"}};
+                        if (inventory.at("status") == "decoded") {
+                            Json matches = Json::array();
+                            for (const auto &entry : inventory.at("groups"))
+                                if (entry.at("id") == ref.at("table_id"))
+                                    matches.push_back(entry.at("table_index"));
+                            lookup["source_group_count"] = inventory.at("groups").size();
+                            lookup["matching_table_indices"] = matches;
+                            lookup["status"] = matches.empty() ? "not_found" : "source_present";
+                            use_local = matches.empty();
+                        } else
+                            lookup["reason"] = inventory.at("reason");
+                        selection["group_lookup"] = std::move(lookup);
+                    }
+                }
+                if (use_local && candidates.size() != 1)
                     selection["reason"] = "local_layer_table_missing_or_ambiguous";
-                else if (tables[candidates[0]]["membership_status"] != "resolved")
+                else if (use_local && tables[candidates[0]]["membership_status"] != "resolved")
                     selection["reason"] = "local_layer_table_membership_invalid";
-                else {
+                else if (use_local) {
+                    selection.erase("reason");
                     selection.update(
                         {{"status", "resolved"},
                          {"table_index", candidates[0]},
                          {"native_record_index", tables[candidates[0]]["native_record_index"]},
-                         {"selection", "file_local_table"}});
+                         {"selection", ref.at("table_id") == 0
+                                           ? "file_local_table"
+                                           : "missing_group_file_local_fallback"}});
                 }
             }
             row["initial_layer_cache"] = std::move(selection);
