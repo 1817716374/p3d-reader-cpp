@@ -1,4 +1,4 @@
-#include "internal.hpp"
+#include "native_record_preparation.hpp"
 namespace p3d {
 Json native_record_input_filter(const Json &record, const Bytes &base) {
     const auto prefix = Reader(base).u32();
@@ -27,7 +27,7 @@ Json native_record_input_filter(const Json &record, const Bytes &base) {
             {"native_error_code", read_error ? Json(0x12005) : Json()},
             {"record_word_count", words}};
 }
-static Json native_record_input_child(const Json &n, const Bytes &base) {
+Json native_record_input_topology(const Json &n, const Bytes &base) {
     const auto type = n.at("element_type").get<unsigned>();
     const auto flags = n.at("element_flags").get<unsigned>();
     const bool compound =
@@ -107,7 +107,7 @@ Json native_record_input_subtree(std::size_t ni, const Json &records, std::uint3
             out["native_error_code"] = filter["native_error_code"];
             return out;
         }
-        const auto root = native_record_input_child(table, base);
+        const auto root = native_record_input_topology(table, base);
         out["root_topology"] = root;
         out["start_counter"] = counter;
         const auto target = std::uint32_t(counter + root["descendant_count"].get<std::uint32_t>());
@@ -143,7 +143,7 @@ Json native_record_input_subtree(std::size_t ni, const Json &records, std::uint3
                 // the counter again until an accepted complete child returns.
                 continue;
             }
-            const auto child = native_record_input_child(n, b);
+            const auto child = native_record_input_topology(n, b);
             if (child.contains("conversion")) {
                 auto conversion = child["conversion"];
                 conversion["native_record_index"] = current;

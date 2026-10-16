@@ -151,6 +151,7 @@ unsigned line_style_compound_tests();
 unsigned line_style_point_tests();
 unsigned line_style_symbol_tests();
 unsigned line_style_symbol_source_tests();
+unsigned native_record_preparation_tests();
 unsigned display_priority_tests();
 unsigned entity_material_tests();
 unsigned proxy_cache_tests();
@@ -3590,6 +3591,7 @@ int main() {
         checks += line_style_point_tests();
         checks += line_style_symbol_tests();
         checks += line_style_symbol_source_tests();
+        checks += native_record_preparation_tests();
         checks += display_priority_tests();
         checks += entity_material_tests();
         checks += proxy_cache_tests();

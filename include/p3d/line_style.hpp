@@ -33,6 +33,14 @@ Json read_native_line_style_symbol_geometry_source(const Document &,
                                                    std::uint64_t initial_id_counter,
                                                    const Json &native_record,
                                                    std::size_t max_nodes = 100000);
+// Continue a fresh source binding through known layout/header changes and ID
+// assignment. Prepared bytes include original linkage tails; source records
+// remain unchanged. This does not apply runtime rejection gates or placement.
+Json prepare_native_line_style_symbol_geometry_source(const Document &,
+                                                      const StreamPath &model_storage,
+                                                      std::uint64_t initial_id_counter,
+                                                      const Json &native_record,
+                                                      std::size_t max_nodes = 100000);
 // Extract supported direct primitives from that source subtree. Composite
 // assembly and unsupported records produce unknown entries. Original source
 // coordinates/IDs and independent occurrence identities remain distinct.

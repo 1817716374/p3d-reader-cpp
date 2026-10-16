@@ -1,6 +1,7 @@
 #include "geometry.hpp"
 #include "line_style_source.hpp"
 #include <p3d/line_style.hpp>
+#include <p3d/native_input.hpp>
 
 namespace p3d {
 namespace {
@@ -151,6 +152,71 @@ Json read_native_line_style_symbol_geometry_source(const Document &document,
     result["model_storage"] = model_storage;
     result["initial_id_counter"] = initial_id_counter;
     return result;
+}
+
+Json prepare_native_line_style_symbol_geometry_source(const Document &document,
+                                                      const StreamPath &model_storage,
+                                                      std::uint64_t initial_id_counter,
+                                                      const Json &record, std::size_t max_nodes) {
+    auto out = read_native_line_style_symbol_geometry_source(document, model_storage,
+                                                             initial_id_counter, record, max_nodes);
+    out["scope"] = "initial_symbol_geometry_source_record_preparation";
+    out["preparation_status"] = "not_evaluated";
+    out["prepared_nodes"] = Json::array();
+    if (out.at("status") == "not_requested") {
+        out["preparation_status"] = "not_requested";
+        return out;
+    }
+    if (out.at("status") != "selected")
+        return out;
+    try {
+        const auto &nodes = out.at("nodes");
+        std::vector<std::uint64_t> descendants(nodes.size(), 0);
+        for (std::size_t n = nodes.size(); n-- > 0;) {
+            const auto &parent = nodes[n].at("parent_node_index");
+            if (!parent.is_null()) {
+                const auto p = parent.get<std::size_t>();
+                require(p < n, "symbol_source_parent_order_invalid");
+                descendants[p] += descendants[n] + 1;
+            }
+        }
+        std::map<StreamPath, const Bytes *> streams;
+        for (const auto &stream : document.streams()) {
+            require(streams.emplace(stream.path, stream.decoded.get()).second,
+                    "ambiguous_native_record_stream");
+        }
+        bool all_decoded = true;
+        for (std::size_t n = 0; n < nodes.size(); ++n) {
+            const auto &node = nodes[n];
+            const auto &saved =
+                document.native_records().at(node.at("native_record_index").get<std::size_t>());
+            const auto found = streams.find(saved.at("stream").get<StreamPath>());
+            require(found != streams.end() && found->second, "native_source_stream_unavailable");
+            const auto full = slice(*found->second, saved.at("offset").get<std::size_t>(),
+                                    saved.at("length").get<std::size_t>());
+            require(descendants[n] <= UINT32_MAX, "symbol_source_descendant_count_overflow");
+            auto prepared = prepare_native_record_input(
+                full, node.at("assigned_id").get<std::uint64_t>(), std::uint32_t(descendants[n]),
+                !node.at("parent_input_occurrence_index").is_null(),
+                out.at("selected_scope") == "system");
+            require(prepared.at("status") == "prepared",
+                    prepared.value("reason", std::string("symbol_source_record_not_prepared")));
+            require(prepared.at("header_preparation").at("output_element_flags") ==
+                        node.at("prepared_element_flags"),
+                    "symbol_prepared_header_flags_mismatch");
+            all_decoded = all_decoded && prepared.at("decoded_status") == "decoded";
+            out["prepared_nodes"].push_back(
+                {{"source_node_index", n},
+                 {"native_record_index", node.at("native_record_index")},
+                 {"input_occurrence_index", node.at("input_occurrence_index")},
+                 {"preparation", std::move(prepared)}});
+        }
+        out["preparation_status"] = "prepared";
+        out["all_prepared_records_decoded"] = all_decoded;
+    } catch (const std::exception &e) {
+        out["preparation_reason"] = e.what();
+    }
+    return out;
 }
 
 Geometry reconstruct_native_line_style_symbol_geometry_source(
