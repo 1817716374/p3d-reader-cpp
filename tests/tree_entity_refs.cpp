@@ -109,5 +109,58 @@ unsigned tree_entity_reference_tests() {
         std::async(std::launch::async, [&] { return parse("55834574947,-4294967295,,"); });
     check(future.get() == expected,
           "integer parsing and graph reference emission have no mutable locale or shared state");
+    auto query = [](const Json &type, const Json &resources) {
+        return native_tree_node_queries({{"NodeType", type}, {"ResourceRefers", resources}},
+                                        {9, 12, UINT32_MAX});
+    };
+    for (int type : {3, 7, 35, 36, 38, 39}) {
+        auto q = query(type, {"12", "other", "9"});
+        check(q["model_self"]["native_model_id"] == 12 && q["model_self"]["source_slot"] == 0 &&
+                  q["model_self"]["model_storage_status"] == "present",
+              "native model node query selects slot zero for each supported node type");
+    }
+    auto q = query(9, {"12", "other", "9suffix"});
+    check(q["model_self"]["native_model_id"] == 9 && q["model_self"]["source_slot"] == 2,
+          "document node model query reads slot two and accepts decimal prefix");
+    q = query(17, {"42"});
+    check(q["domain_self"]["value"] == 42 && q["model_self"]["native_return_value"] == true &&
+              !q["model_self"].contains("model_id"),
+          "domain node slot zero is a domain code rather than a model identity");
+    q = query(11, {"12"});
+    check(q["domain_self"]["value"] == -1 && q["model_self"]["status"] == "not_applicable" &&
+              q["model_self"]["native_return_value"] == true,
+          "entity node query does not interpret arbitrary resources as model or domain");
+    q = query(7, Json::array());
+    check(q["model_self"]["status"] == "empty" && q["model_self"]["native_return_value"] == false &&
+              !q["model_self"].contains("model_id"),
+          "absent slot has an empty model query instead of a fabricated zero identity");
+    check(query(17, {""})["domain_self"]["value"] == -1,
+          "empty domain slot returns native minus one default");
+    check(query(7, {"-1"})["model_self"]["model_id"] == UINT32_MAX,
+          "negative model is retained as signed native value and unsigned storage identity");
+    check(query(7, {"-2"})["model_self"]["native_return_value"] == true,
+          "native model set query does not add an identity validity filter");
+    q = query(7, {"2147483648"});
+    check(q["model_self"]["native_model_id"] == INT32_MAX &&
+              q["model_self"]["conversion_status"] == "saturated",
+          "wtoi positive overflow saturates at signed 32 bits rather than wrapping");
+    check(query(7, {"-9223372036854775809"})["model_self"]["native_model_id"] == INT32_MIN,
+          "wtoi negative overflow saturates at signed 32 bits");
+    check(query(7, {"garbage"})["model_self"]["native_model_id"] == 0 &&
+              query(7, {"garbage"})["model_self"]["native_return_value"] == true,
+          "nonempty unconverted model text inserts zero rather than returning false");
+    q = query(7, {std::string("\0ignored", 8)});
+    check(q["model_self"]["native_model_id"] == 0 &&
+              q["model_self"]["ignored_suffix_byte_count"] == 8,
+          "nonempty stored string with initial NUL still invokes native conversion");
+    check(query(17, {"\xe3\x80\x80-\xef\xbc\x91\xef\xbc\x92tail"})["domain_self"]["value"] == -12,
+          "domain conversion uses the confirmed UCRT wide character tables");
+    check(query(nullptr, {"12"})["model_self"]["status"] == "not_evaluated",
+          "missing native node type does not fabricate a query branch");
+    check(query(7, {12})["model_self"]["status"] == "not_evaluated" &&
+              query(17, nullptr)["domain_self"]["status"] == "not_evaluated",
+          "malformed source resource types are retained as unevaluated");
+    check(query(7, {std::string("\xff", 1)})["model_self"]["status"] == "not_evaluated",
+          "invalid UTF8 source prefix is not converted through unchecked decoding");
     return checks;
 }

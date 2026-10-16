@@ -35,7 +35,7 @@ struct Integer {
     std::int64_t value = 0;
     bool digits = false, saturated = false;
 };
-Integer integer(const std::string &text) {
+Integer integer(const std::string &text, unsigned bits = 64) {
     Integer result;
     std::size_t position = 0;
     while (position < text.size()) {
@@ -47,7 +47,8 @@ Integer integer(const std::string &text) {
     bool negative = false;
     if (position < text.size() && (text[position] == '+' || text[position] == '-'))
         negative = text[position++] == '-';
-    const auto limit = negative ? UINT64_C(0x8000000000000000) : UINT64_C(0x7fffffffffffffff);
+    const auto sign = UINT64_C(1) << (bits - 1);
+    const auto limit = negative ? sign : sign - 1;
     std::uint64_t value = 0;
     while (position < text.size()) {
         const auto next = digit(codepoint(text, position));
@@ -69,6 +70,76 @@ Integer integer(const std::string &text) {
     return result;
 }
 } // namespace
+
+Json native_tree_node_queries(const Json &fields, const std::set<std::uint64_t> &models) {
+    Json out = {{"scope", "stored_node_resources_before_runtime_tree_and_project_evaluation"}};
+    const auto type = fields.value("NodeType", Json());
+    auto read = [&](const char *profile, bool applicable, unsigned slot, bool domain) {
+        Json value = {{"query_profile", profile},
+                      {"status", "not_evaluated"},
+                      {"source_slot", slot},
+                      {"numeric_reader", "windows_ucrt_wtoi"},
+                      {"numeric_locale", "C"}};
+        if (!type.is_number_integer()) {
+            value["reason"] = "integer_node_type_required";
+            return value;
+        }
+        if (!applicable) {
+            value["status"] = "not_applicable";
+            if (domain)
+                value["value"] = -1;
+            else
+                // Native success can mean no insertion for this node type.
+                value["native_return_value"] = true;
+            return value;
+        }
+        const auto resources = fields.value("ResourceRefers", Json::array());
+        if (!resources.is_array() || (resources.size() > slot && !resources[slot].is_string())) {
+            value["reason"] = "resource_slot_text_required";
+            return value;
+        }
+        const auto text = resources.size() > slot ? resources[slot].get<std::string>() : "";
+        if (text.empty()) {
+            value["status"] = "empty";
+            if (domain)
+                value["value"] = -1;
+            else
+                value["native_return_value"] = false;
+            return value;
+        }
+        const auto nul = text.find('\0');
+        const auto prefix = text.substr(0, nul);
+        try {
+            (void)Json(prefix).dump();
+        } catch (const std::exception &e) {
+            value["reason"] = e.what();
+            return value;
+        }
+        const auto number = integer(prefix, 32);
+        value.update({{"status", "decoded"},
+                      {"input_prefix_byte_count", prefix.size()},
+                      {"ignored_suffix_byte_count", text.size() - prefix.size()},
+                      {"conversion_status", number.saturated ? "saturated"
+                                            : number.digits  ? "converted"
+                                                             : "no_digits"}});
+        if (domain)
+            value["value"] = number.value;
+        else {
+            const auto storage = static_cast<std::uint32_t>(number.value);
+            value.update({{"native_return_value", true},
+                          {"native_model_id", number.value},
+                          {"model_id", storage},
+                          {"model_storage_status", models.count(storage) ? "present" : "missing"}});
+        }
+        return value;
+    };
+    const bool slot_zero =
+        type == 3 || type == 7 || type == 35 || type == 36 || type == 38 || type == 39;
+    out["model_self"] = read("native_get_models_and_node_type_of_self", slot_zero || type == 9,
+                             type == 9 ? 2 : 0, false);
+    out["domain_self"] = read("native_get_domain_of_node_self", type == 17, 0, true);
+    return out;
+}
 
 Json append_tree_entity_references(const Json &resources, const std::string &node,
                                    const std::set<std::string> &live, const Json &binding_index,

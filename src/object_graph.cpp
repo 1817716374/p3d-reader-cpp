@@ -229,6 +229,7 @@ Json build_graph_records(const Json &objects, const Json &bindings, const Json &
         // children, without filtering NodeType (groups can own references).
         node["entity_reference_input"] = append_tree_entity_references(
             f.value("ResourceRefers", Json::array()), k, live, binding_index, element_refs);
+        node["native_node_queries"] = native_tree_node_queries(f, models);
     }
     Json model_edges = Json::array();
     for (auto &node : model_nodes)
