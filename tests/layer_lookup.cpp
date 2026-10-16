@@ -144,9 +144,162 @@ unsigned layer_lookup_tests() {
     invalid[1]["links"][0]["payload"] = rawbytes(Bytes({1, 0}));
     check(lookup_native_layer_name(invalid, 0, u"A", text)["status"] == "unresolved",
           "malformed saved names do not fall through to later candidates");
-    source = records({layer(0, u"Rejected"), layer(UINT32_MAX, u"Rejected"), layer(64, u"Default")});
+    source =
+        records({layer(0, u"Rejected"), layer(UINT32_MAX, u"Rejected"), layer(64, u"Default")});
     result = lookup_native_layer_name(source, 0, u"Rejected", text);
     check(result["status"] == "not_found" && result["rejected_input_records"].size() == 2,
           "fresh source input rejects sentinel IDs before building the name index");
+    using Entry = NativeLayerNameCacheEntry;
+    using Request = NativeLayerNameSyncRequest;
+    auto units = [](const std::u16string &s) {
+        return Json(std::vector<std::uint16_t>(s.begin(), s.end()));
+    };
+    auto names = [&](const Json &j) {
+        std::map<std::uint32_t, std::u16string> out;
+        for (const auto &entry : j.at("layers")) {
+            const auto raw = entry.at("name_utf16").get<std::vector<std::uint16_t>>();
+            out[entry.at("layer_id").get<std::uint32_t>()] = std::u16string(raw.begin(), raw.end());
+        }
+        return out;
+    };
+    for (bool populated : {false, true}) {
+        const auto sync = evaluate_native_layer_name_sync(
+            {{1, u"A"}, {2, u"a"}, {3, u"B"}}, {{1, u"a"}, {2, u"B"}, {3, u"A"}}, populated, text);
+        check(sync["status"] == "evaluated" && sync["operations"][0]["native_return_code"] == 0 &&
+                  sync["operations"][0]["name_index_updated"] == populated &&
+                  sync["operations"][1]["native_return_code"] == 9 &&
+                  sync["operations"][2]["conflicting_layer_id"] == (populated ? 1 : 2) &&
+                  names(sync).at(1) == u"a" && names(sync).at(2) == u"a",
+              "case-only synchronization bypasses conflict and updates only a populated index");
+    }
+    const auto ordered = evaluate_native_layer_name_sync({{1, u"A"}, {2, u"B"}},
+                                                         {{1, u"C"}, {2, u"A"}}, false, text);
+    const auto reversed = evaluate_native_layer_name_sync({{1, u"A"}, {2, u"B"}},
+                                                          {{2, u"A"}, {1, u"C"}}, false, text);
+    check(names(ordered).at(2) == u"A" && names(reversed).at(2) == u"B" &&
+              reversed["operations"][0]["native_return_code"] == 9,
+          "name synchronization consumes actual operation order without sorting requests");
+    check(evaluate_native_layer_name_sync({{1, u"A", false}, {2, u"a"}}, {{1, u"a"}}, false,
+                                          text)["operations"][0]["native_return_code"] == 9,
+          "a saved string without a registered key does not enter the case-only bypass");
+    for (auto bad : std::u16string(u"<>\\/\"?*|,=&\n\t")) {
+        const auto sync = evaluate_native_layer_name_sync(
+            {{1, u"Old"}}, {{1, std::u16string(u"X") + bad + u"Y"}}, false);
+        check(sync["status"] == "evaluated" && sync["operations"][0]["native_return_code"] == 8 &&
+                  names(sync).at(1) == u"Old" && sync["name_index_populated"] == false,
+              "native forbidden characters reject before locale or name-index access");
+    }
+    for (auto same : {std::u16string(u"<invalid>"), std::u16string(513, u'X'), std::u16string()}) {
+        const auto sync =
+            evaluate_native_layer_name_sync({{1, same, !same.empty()}}, {{1, same}}, false);
+        check(sync["operations"][0]["selection"] == "unchanged" &&
+                  sync["operations"][0]["native_return_code"] == 0,
+              "exact unchanged names bypass validation including empty or oversized strings");
+    }
+    for (unsigned length : {512u, 513u}) {
+        const auto sync = evaluate_native_layer_name_sync(
+            {{1, u"Old"}}, {{1, std::u16string(length, u'X')}}, false, text);
+        check(sync["operations"][0]["native_return_code"] == (length == 512 ? 0 : 8),
+              "native name limit counts UTF16 units and accepts exactly 512");
+    }
+    std::u16string emoji;
+    for (unsigned i = 0; i < 256; ++i)
+        emoji += u"\U0001f600";
+    check(evaluate_native_layer_name_sync({{1, u"Old"}}, {{1, emoji}}, false,
+                                          text)["operations"][0]["native_return_code"] == 0,
+          "surrogate pairs contribute two UTF16 units rather than one Unicode scalar");
+    const auto c_prefix = evaluate_native_layer_name_sync(
+        {{1, std::u16string({u'A', 0, u'X'})}}, {{1, std::u16string({u'A', 0, u'Y'})}}, false);
+    check(c_prefix["operations"][0]["selection"] == "unchanged" && names(c_prefix).at(1) == u"A",
+          "prepared and requested names use their source C prefixes");
+    auto unknown_sync = evaluate_native_layer_name_sync({{1, u"A"}, {2, u"B"}},
+                                                        {{1, u"A"}, {2, u"C"}, {1, u"D"}}, false);
+    check(unknown_sync["status"] == "partially_evaluated" && unknown_sync["layers"].is_null() &&
+              unknown_sync["failed_request_index"] == 1 && unknown_sync["operations"].size() == 1,
+          "unknown locale stops a batch and withholds a final cache rather than publishing its "
+          "prefix");
+    auto collision_context = text;
+    collision_context.compare = {};
+    check(evaluate_native_layer_name_sync({{1, u"Aa"}, {2, u"B@"}}, {{1, u"Other"}}, false,
+                                          collision_context)["status"] == "not_evaluated",
+          "hash-and-length collisions require actual source comparison while building the index");
+    check(evaluate_native_layer_name_sync({{1, u"A"}, {1, u"B"}}, {}, false)["status"] ==
+                  "not_evaluated" &&
+              evaluate_native_layer_name_sync({{0, u"A"}}, {}, false)["status"] ==
+                  "not_evaluated" &&
+              evaluate_native_layer_name_sync({{1, u"A"}}, {{2, u"B"}}, false, text)["layers"]
+                  .is_null(),
+          "invalid prepared identities and absent actual targets remain unresolved");
+    // Independent oracle uses canonical resource names and an integer-ID map,
+    // not the implementation's hash/length buckets. All names here are ASCII.
+    const std::array<std::u16string, 8> pool{{u"A", u"a", u"B", u"C", u"Aa", u"B@", u"", u"?"}};
+    for (bool populated : {false, true})
+        for (const auto &x : pool)
+            for (const auto &y : pool)
+                for (const auto &z : pool) {
+                    const std::vector<Entry> input{{1, u"A"}, {2, u"a"}, {3, u"B@", false}};
+                    const std::vector<Request> requests{{1, x}, {2, y}, {3, z}};
+                    auto expected_layers = std::map<unsigned, std::pair<std::u16string, bool>>{
+                        {1, {u"A", true}}, {2, {u"a", true}}, {3, {u"B@", false}}};
+                    std::map<std::optional<std::u16string>, unsigned> registry;
+                    auto canonical = [&](std::u16string value) {
+                        std::transform(value.begin(), value.end(), value.begin(), lower);
+                        return value;
+                    };
+                    auto rebuild = [&] {
+                        for (const auto &[id, entry] : expected_layers)
+                            registry[entry.second
+                                         ? std::optional<std::u16string>(canonical(entry.first))
+                                         : std::nullopt] = id;
+                    };
+                    if (populated)
+                        rebuild();
+                    std::vector<unsigned> codes;
+                    for (const auto &r : requests) {
+                        auto &entry = expected_layers.at(r.layer_id);
+                        unsigned code = 0;
+                        if (entry.first != r.name) {
+                            if (r.name.empty() || r.name == u"?")
+                                code = 8;
+                            else {
+                                const std::optional<std::u16string> new_name = canonical(r.name);
+                                const auto old_name =
+                                    entry.second
+                                        ? std::optional<std::u16string>(canonical(entry.first))
+                                        : std::nullopt;
+                                if (new_name != old_name) {
+                                    if (registry.empty())
+                                        rebuild();
+                                    const auto match = registry.find(new_name);
+                                    if (match != registry.end() && match->second != r.layer_id)
+                                        code = 9;
+                                }
+                                if (!code) {
+                                    if (!registry.empty()) {
+                                        registry.erase(old_name);
+                                        registry[new_name] = r.layer_id;
+                                    }
+                                    entry = {r.name, true};
+                                }
+                            }
+                        }
+                        codes.push_back(code);
+                    }
+                    const auto actual =
+                        evaluate_native_layer_name_sync(input, requests, populated, text);
+                    bool matches = actual["status"] == "evaluated" &&
+                                   actual["name_index_populated"] == !registry.empty();
+                    for (unsigned i = 0; i < 3; ++i)
+                        matches =
+                            matches && actual["operations"][i]["native_return_code"] == codes[i];
+                    for (const auto &entry : actual["layers"]) {
+                        auto id = entry["layer_id"].get<unsigned>();
+                        matches = matches &&
+                                  entry["name_utf16"] == units(expected_layers.at(id).first) &&
+                                  entry["name_registered"] == expected_layers.at(id).second;
+                    }
+                    check(matches, "ordered sync matches independent canonical-resource oracle "
+                                   "including lazy indexes and duplicate names");
+                }
     return checks;
 }

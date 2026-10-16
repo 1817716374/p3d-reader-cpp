@@ -9,6 +9,29 @@ struct NativeLayerNameContext {
     std::function<std::optional<char16_t>(char16_t)> lowercase;
     std::function<std::optional<int>(const std::u16string &, const std::u16string &)> compare;
 };
+struct NativeLayerNameCacheEntry {
+    std::uint32_t layer_id;
+    std::u16string name;
+    // Whether the actual loaded node has a registered name key. This is
+    // independent of whether a saved name string is present.
+    bool name_registered = true;
+};
+struct NativeLayerNameSyncRequest {
+    std::uint32_t layer_id;
+    std::u16string name;
+};
+// Evaluate non-null name synchronization in the supplied actual order, against
+// a prepared cache after membership alignment. Inputs must already include
+// native loading/default-name repair; saved record strings alone do not prove
+// this state. A populated initial index must correspond to a fresh rebuild
+// from these nodes in unsigned ID order; arbitrary stale/live indexes are
+// outside this input profile. Empty and populated indexes behave differently.
+// Does not mutate inputs or perform native resource allocation/notifications.
+// Unknown context stops the sequence and withholds the final layers array.
+Json evaluate_native_layer_name_sync(const std::vector<NativeLayerNameCacheEntry> &,
+                                     const std::vector<NativeLayerNameSyncRequest> &,
+                                     bool initial_name_index_populated,
+                                     const NativeLayerNameContext &context = {});
 // Reconstructs name lookup for a fresh local layer table after its saved records
 // have loaded. Uses raw record bodies/linkages, not decoded layer annotations.
 // Duplicate layer IDs load last; the native name index then visits unsigned IDs
