@@ -1182,6 +1182,11 @@ static void layer_group_state_tests() {
                 {"line_weight", value + 31}}},
               {"access_mode", value == 10 ? 1 : 2},
               {"display_priority", value == 10 ? -100 : 200},
+              {"material_reference",
+               {{"status", "decoded"},
+                {"material_id", std::uint64_t(value)},
+                {"source", "saved_linkage"},
+                {"source_link_index", value == 10 ? 3 : 7}}},
               {"display", value == 10},
               {"print", value == 10},
               {"frozen", value == 10},
@@ -1291,6 +1296,79 @@ static void layer_group_state_tests() {
                       "new group properties preserve signed values, source and independent mode bits");
             }
         }
+    auto material_graphics = [&](unsigned mode, bool material_override, bool style_override) {
+        Bytes payload;
+        put<std::uint32_t>(payload, 1);
+        put<std::uint32_t>(payload, 2);
+        put<std::uint32_t>(payload, 40);
+        payload.resize(12 + 40 * 2);
+        for (auto bit : {39u, 7u})
+            if (bit == 39 ? material_override : style_override)
+                payload[12 + bit / 8] |= 1u << (bit % 8);
+        auto attrs = graphics(mode, 0);
+        attrs[0]["attributes"][0]["decoded"] = decode_layer_group_attribute(0, payload);
+        return attrs;
+    };
+    const std::array<std::uint64_t, 5> material_ids{
+        {0, UINT64_MAX, UINT64_MAX - 1, 0xfedcba9876543210ull, 19}};
+    for (unsigned mode = 0; mode < 3; ++mode)
+        for (unsigned mask = 0; mask < 4; ++mask)
+            for (const auto id : material_ids) {
+                auto input = records;
+                auto &file_ref = input[2]["layer_definition"]["material_reference"];
+                auto &group_ref = input[5]["layer_definition"]["material_reference"];
+                file_ref["material_id"] = id;
+                group_ref["material_id"] = std::uint64_t(0x123456789abcdef0ull);
+                if (id == UINT64_MAX) {
+                    file_ref["source"] = "constructor_default";
+                    file_ref["source_link_index"] = nullptr;
+                }
+                const auto attrs = material_graphics(mode, mask & 1, mask & 2);
+                const auto &bitmap = attrs[0]["attributes"][0]["decoded"]["entries"][0];
+                check(bitmap["overrides"]["material_reference"] == bool(mask & 1) &&
+                          bitmap["unassigned_property_bits"].empty(),
+                      "material override uses bit39 independently of primary line style");
+                const auto state = build_layer_tables(index, input, attrs)["group_states"][0];
+                const bool file = mode == 2 || (mode == 0 && !(mask & 1));
+                const auto &expected = file ? file_ref : group_ref;
+                const auto &p = state["layers"][1]["properties"]["material_id"];
+                const auto chosen = expected["material_id"].get<std::uint64_t>();
+                check(
+                    state["status"] == "evaluated_supported_properties" &&
+                        p["status"] == "decoded" && p["property_bit"] == 39 &&
+                        p["value"] == chosen && p["native_record_index"] == (file ? 2 : 5) &&
+                        p["material_source"] == expected["source"] &&
+                        p["source_link_index"] == expected["source_link_index"] &&
+                        p["eligible_for_layer_fallback"] == (chosen != 0 && chosen != UINT64_MAX) &&
+                        p["material_loading"] == "not_evaluated" &&
+                        state["layers"][0]["properties"]["material_id"]["selection"] ==
+                            "new_file_layer",
+                    "material synchronization preserves full IDs, sentinels and source provenance");
+                check(
+                    state["layers"][1]["properties"]["primary_line_style"]["native_record_index"] ==
+                        (mode == 2 || (mode == 0 && !(mask & 2)) ? 2 : 5),
+                    "material selection does not change the line style source");
+                for (auto bad_source : {2u, 5u}) {
+                    auto damaged = input;
+                    damaged[bad_source]["layer_definition"]["material_reference"] = {
+                        {"status", "unresolved"}, {"material_id", nullptr}};
+                    const auto result =
+                        build_layer_tables(index, damaged, attrs)["group_states"][0];
+                    const bool selected = bad_source == (file ? 2u : 5u);
+                    const auto &row = result["layers"][1];
+                    const auto &material = row["properties"]["material_id"];
+                    check(result["status"] == (selected ? "partially_evaluated"
+                                                        : "evaluated_supported_properties") &&
+                              row["status"] == (selected ? "partially_evaluated"
+                                                         : "evaluated_supported_properties") &&
+                              material["status"] == (selected ? "unresolved" : "decoded") &&
+                              material["value"] == (selected ? Json() : Json(chosen)) &&
+                              row["properties"].size() == 13 &&
+                              row["properties"]["primary_line_style"] ==
+                                  state["layers"][1]["properties"]["primary_line_style"],
+                          "only an active unresolved material source blocks its property");
+                }
+            }
     check(records == original, "derived layer synchronization never mutates native records");
     auto attrs = graphics(0, 0);
     attrs[0]["attributes"] = Json::array();

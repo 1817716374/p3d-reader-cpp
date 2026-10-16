@@ -396,12 +396,45 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                                      ["set_property_bits"];
                         require(mask->is_array(), "invalid layer override bitmap");
                     }
+                    bool material_unresolved = false;
                     for (const auto &property : detail::layer_sync_properties) {
                         const bool override = mask && std::find(mask->begin(), mask->end(),
                                                                 property.bit) != mask->end();
                         const bool from_file =
                             group_members.empty() || mode == 2 || (mode == 0 && !override);
                         const auto &value = from_file ? file_layer : group_layer;
+                        if (property.bit == 39) {
+                            // Group and file layers here belong to the same file.
+                            // Native resource preparation leaves this ID unchanged;
+                            // it does not prove that the material can be loaded.
+                            Json result = {{"property_bit", property.bit},
+                                           {"value", nullptr},
+                                           {"native_record_index", from_file ? source : target},
+                                           {"selection", group_members.empty() ? "new_file_layer"
+                                                         : from_file           ? "file_sync"
+                                                                               : "group_value"},
+                                           {"status", "unresolved"},
+                                           {"material_loading", "not_evaluated"}};
+                            const auto reference = value.find("material_reference");
+                            if (reference != value.end() && reference->is_object() &&
+                                reference->value("status", "") == "decoded" &&
+                                reference->contains("material_id") &&
+                                reference->at("material_id").is_number_unsigned()) {
+                                const auto id = reference->at("material_id").get<std::uint64_t>();
+                                result.update(
+                                    {{"value", id},
+                                     {"status", "decoded"},
+                                     {"material_source", reference->at("source")},
+                                     {"source_link_index", reference->at("source_link_index")},
+                                     {"eligible_for_layer_fallback", id != 0 && id != UINT64_MAX}});
+                            } else {
+                                result["error"] = "selected_layer_material_reference_unresolved";
+                                material_unresolved = true;
+                                partial = true;
+                            }
+                            layer["properties"][property.result_name] = std::move(result);
+                            continue;
+                        }
                         const auto &values =
                             property.source_container ? value.at(property.source_container) : value;
                         layer["properties"][property.result_name] = {
@@ -417,7 +450,8 @@ static Json layer_group_states(const Json &index, const Json &native, const Json
                             partial = true;
                         }
                     }
-                    layer["status"] = "evaluated_supported_properties";
+                    layer["status"] = material_unresolved ? "partially_evaluated"
+                                                          : "evaluated_supported_properties";
                 } catch (const std::exception &e) {
                     layer["status"] = "not_evaluated";
                     layer["error"] = e.what();
