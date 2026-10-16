@@ -64,6 +64,22 @@ Json supplementary_input(const Json &attachment) {
     }
     return inputs;
 }
+Json packed_material_identity(std::uint64_t entity_id,
+                              const std::optional<std::int32_t> &model_id) {
+    // BPEntityId::getValue rejects high entity bits before accessing model_id.
+    // Use unsigned packing and a defined signed conversion, rather than a
+    // signed left shift of a potentially negative model ID.
+    if (entity_id >> 32)
+        return {{"status", "resolved"}, {"result", "entity_id_exceeds_32_bits"}, {"value", -1}};
+    if (!model_id)
+        return {
+            {"status", "not_evaluated"}, {"result", "owner_model_id_required"}, {"value", nullptr}};
+    const auto bits = (std::uint64_t(static_cast<std::uint32_t>(*model_id)) << 32) | entity_id;
+    const auto value = bits <= std::uint64_t(std::numeric_limits<std::int64_t>::max())
+                           ? static_cast<std::int64_t>(bits)
+                           : -1 - static_cast<std::int64_t>(UINT64_MAX - bits);
+    return {{"status", "resolved"}, {"result", "packed"}, {"value", value}};
+}
 Json embedded_texture_input(const Json &attachment) {
     Json out = {{"reader_profile", "bimbase_2025_material_embedded_texture_input"},
                 {"scope", "selected_attributes_before_filesystem_checks"},
@@ -240,6 +256,34 @@ Json native_catalog_material_read(const Json &catalog, const Json &container, co
                 material["name_assignment"] = {{"initial_name", ""},
                                                {"limit_utf16_units", 30},
                                                {"steps", std::move(assignments)}};
+                // The constructor retains the load caller's owner; the outer
+                // catalog loader writes the final entity ID and attempts the
+                // final rename. Neither XML nor the resource record supplies
+                // the owner's model-ID getter result.
+                material["bpmaterial_identity_readback"] = {
+                    {"scope", "bpmaterial_identity_after_initial_default_provider_load"},
+                    {"status", options.loaded_material_model_id ? "resolved" : "partial"},
+                    {"source_assumption",
+                     "normal_default_provider_return_without_cached_replacement"},
+                    {"catalog_entry_index", i},
+                    {"entity_id",
+                     {{"status", "resolved"}, {"value", id}, {"source", "catalog_entry_id"}}},
+                    {"model_id",
+                     {{"status", options.loaded_material_model_id ? "resolved" : "not_evaluated"},
+                      {"value", options.loaded_material_model_id
+                                    ? Json(*options.loaded_material_model_id)
+                                    : Json()},
+                      {"source", "load_owner_model_id_getter"}}},
+                    {"name",
+                     {{"status", "resolved"}, {"value", final_name}, {"source", name_source}}},
+                    {"native_packed_value",
+                     packed_material_identity(id, options.loaded_material_model_id)},
+                    {"native_entity_id_validity",
+                     {{"status", options.loaded_material_model_id ? "resolved" : "not_evaluated"},
+                      {"value", options.loaded_material_model_id
+                                    ? Json(*options.loaded_material_model_id > -2)
+                                    : Json()}}},
+                    {"settings_readback_source", "settings.bpmaterial_readback"}};
                 material["supplementary_attributes"] = supplementary_input(attachment);
                 material["embedded_texture_inputs"] = embedded_texture_input(attachment);
                 material["texture_postprocessing"] = "not_performed";

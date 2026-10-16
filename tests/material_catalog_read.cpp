@@ -111,6 +111,91 @@ unsigned material_catalog_read_tests() {
               "missing_resource_reference",
           "missing resource string uses native current-context fallback");
     auto material = [&] { return run().at("entries")[0].at("material"); };
+    auto identity = material().at("bpmaterial_identity_readback");
+    check(identity.at("status") == "partial" && identity.at("model_id").at("value").is_null() &&
+              identity.at("entity_id").at("value") == 777 &&
+              identity.at("name").at("value") == "Catalog name",
+          "catalog readback establishes entity ID and final name without inventing owner model ID");
+    check(identity.at("native_packed_value").at("status") == "not_evaluated" &&
+              identity.at("native_entity_id_validity").at("value").is_null(),
+          "packing and validity do not guess an absent load model context");
+    for (const auto model_id : {std::numeric_limits<std::int32_t>::min(), -2, -1, 0, 123,
+                                std::numeric_limits<std::int32_t>::max()}) {
+        options.loaded_material_model_id = model_id;
+        identity = material().at("bpmaterial_identity_readback");
+        check(identity.at("status") == "resolved" &&
+                  identity.at("model_id").at("value") == model_id &&
+                  identity.at("entity_id").at("value") == 777 &&
+                  identity.at("model_id").at("source") == "load_owner_model_id_getter",
+              "owner getter result preserves signed extremes and sentinel values independently of "
+              "entity ID");
+        const auto packed = identity.at("native_packed_value").at("value").get<std::int64_t>();
+        check(identity.at("native_packed_value").at("result") == "packed" &&
+                  static_cast<std::uint32_t>(static_cast<std::uint64_t>(packed) >> 32) ==
+                      static_cast<std::uint32_t>(model_id) &&
+                  (static_cast<std::uint64_t>(packed) & UINT64_C(0xffffffff)) == 777 &&
+                  identity.at("native_entity_id_validity").at("value") == (model_id > -2),
+              "native packing preserves signed halves and entity-ID validity uses its own rule");
+    }
+    options.loaded_material_model_id.reset();
+    {
+        const std::uint64_t high_id = UINT64_C(0xfedcba9876543210);
+        auto high_catalog = catalog, high_container = container, high_target = target;
+        high_target["id"] = high_id;
+        high_catalog["entries"][0]["id"] = high_id;
+        high_container["system_id_assignments"]["registry"] = Json::array({high_target});
+        high_container["initial_attribute_input"]["attachments"] = Json::array({attachment(
+            Json::array({attribute(u"<Material material_version='9' M319='Display only'/>")}),
+            high_target)});
+        auto high_options = options;
+        high_options.loaded_material_model_id = 123;
+        const auto high =
+            native_catalog_material_read(high_catalog, high_container, records, high_options)
+                .at("entries")[0]
+                .at("material");
+        check(high.at("bpmaterial_identity_readback")
+                          .at("entity_id")
+                          .at("value")
+                          .get<std::uint64_t>() == high_id &&
+                  high.at("bpmaterial_identity_readback").at("model_id").at("value") == 123,
+              "64-bit assigned material ID is independent of signed model-ID context");
+        check(high.at("bpmaterial_identity_readback").at("native_packed_value").at("value") == -1 &&
+                  high.at("bpmaterial_identity_readback").at("native_packed_value").at("result") ==
+                      "entity_id_exceeds_32_bits" &&
+                  high.at("bpmaterial_identity_readback")
+                          .at("native_entity_id_validity")
+                          .at("value") == true,
+              "packing failure does not erase a valid full-width identity");
+        check(high.at("bpmaterial_identity_readback").at("name").at("value") == "Catalog name" &&
+                  high.at("settings").at("bpmaterial_readback").at("display_name").at("value") ==
+                      "Display only",
+              "catalog object identity and XML display name remain separate even in a complete "
+              "identity tuple");
+        high_options.loaded_material_model_id.reset();
+        const auto high_unknown =
+            native_catalog_material_read(high_catalog, high_container, records, high_options)
+                .at("entries")[0]
+                .at("material")
+                .at("bpmaterial_identity_readback");
+        check(high_unknown.at("status") == "partial" &&
+                  high_unknown.at("native_packed_value").at("value") == -1 &&
+                  high_unknown.at("native_packed_value").at("status") == "resolved",
+              "high entity bits decide packing failure before the model context is read");
+        high_target["id"] = UINT64_C(0xffffffff);
+        high_catalog["entries"][0]["id"] = high_target.at("id");
+        high_container["system_id_assignments"]["registry"] = Json::array({high_target});
+        high_container["initial_attribute_input"]["attachments"][0]["target"] = high_target;
+        high_options.loaded_material_model_id = -1;
+        const auto collision =
+            native_catalog_material_read(high_catalog, high_container, records, high_options)
+                .at("entries")[0]
+                .at("material")
+                .at("bpmaterial_identity_readback");
+        check(collision.at("native_packed_value").at("value") == -1 &&
+                  collision.at("native_packed_value").at("result") == "packed" &&
+                  collision.at("native_entity_id_validity").at("value") == true,
+              "a packed minus-one can be produced without the high-entity-bit failure branch");
+    }
     catalog["entries"][0]["name"] = std::string(30, 'c');
     auto named = material();
     check(named["name"] == std::string(30, 'c') && named["name_source"] == "catalog_entry" &&
@@ -122,6 +207,9 @@ unsigned material_catalog_read_tests() {
               named["id"] == 777 && named["catalog_name"] == std::string(31, 'c') &&
               named["name_assignment"]["steps"][1]["native_return_code"] == 1,
           "rejected catalog rename preserves object name but still assigns catalog ID");
+    check(named.at("bpmaterial_identity_readback").at("name").at("value") == "Object name" &&
+              named.at("bpmaterial_identity_readback").at("name").at("source") == "object_record",
+          "identity readback uses the accepted object name after a rejected catalog rename");
     records[1] = record(std::string(31, 'o'));
     named = material();
     check(named["name"] == "" && named["name_source"] == "constructor_default" &&
@@ -429,6 +517,22 @@ unsigned material_catalog_read_tests() {
           "repeated physical record uses each input occurrence's own attribute collection");
     check(result.at("entries")[1].at("material").at("name") == "Second load",
           "source parsing cache does not merge catalog identities");
+    check(result.at("entries")[0]
+                      .at("material")
+                      .at("bpmaterial_identity_readback")
+                      .at("entity_id")
+                      .at("value") == 777 &&
+              result.at("entries")[1]
+                      .at("material")
+                      .at("bpmaterial_identity_readback")
+                      .at("entity_id")
+                      .at("value") == 778 &&
+              result.at("entries")[1]
+                      .at("material")
+                      .at("bpmaterial_identity_readback")
+                      .at("catalog_entry_index") == 1,
+          "repeated physical source retains distinct assigned catalog identities and entry "
+          "provenance");
     check(result.at("entries")[0]
                       .at("material")
                       .at("embedded_texture_inputs")

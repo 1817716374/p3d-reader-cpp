@@ -683,6 +683,10 @@ struct MaterialCatalogOptions {
     // UTF-8 strings. Default: native CRT C-locale equality (ASCII case conversion).
     // Supply the relevant host-locale equality when reproducing another locale.
     std::function<bool(const std::string &, const std::string &)> case_equal;
+    // Model-ID getter result for the owner passed to the initial material load.
+    // This is runtime context, not the source record's storage/model ID.
+    // Unset keeps the model component of BPMaterial identity unknown.
+    std::optional<std::int32_t> loaded_material_model_id;
 };
 enum class ComponentGraphicsSource {
     unknown,
