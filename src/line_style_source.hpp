@@ -9,6 +9,8 @@ Json native_line_style_symbol_geometry_source(const Json &symbol, const Json &ow
                                               const Json &system_ids, const Json &records,
                                               std::size_t max_nodes = 100000);
 Geometry reconstruct_native_line_style_symbol_record(const Json &, const Tessellation &);
+Json native_line_style_symbol_initial_descriptor(Json prepared_source,
+                                                 std::size_t max_descriptor_bytes);
 Json decode_line_style_modifier_source(const Bytes &);
 Json native_graphic_line_style_input(const Bytes &, const Json &);
 Json native_layer_line_style_input(const Json &);

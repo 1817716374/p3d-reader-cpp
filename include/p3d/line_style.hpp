@@ -41,6 +41,15 @@ Json prepare_native_line_style_symbol_geometry_source(const Document &,
                                                       std::uint64_t initial_id_counter,
                                                       const Json &native_record,
                                                       std::size_t max_nodes = 100000);
+// Reconstruct the descriptor walk and the symbol's owned copy for ordinary
+// fresh input objects before host callbacks. Does not represent later runtime
+// modifications, cached/custom descriptors, placement or resolved appearance.
+// Copies complete native headers/linkages even when strict stream decoding
+// of a prepared header is unavailable; source links remain in the document.
+Json build_native_line_style_symbol_initial_descriptor(
+    const Document &, const StreamPath &model_storage, std::uint64_t initial_id_counter,
+    const Json &native_record, std::size_t max_nodes = 100000,
+    std::size_t max_descriptor_bytes = 256u * 1024 * 1024);
 // Extract supported direct primitives from that source subtree. Composite
 // assembly and unsupported records produce unknown entries. Original source
 // coordinates/IDs and independent occurrence identities remain distinct.
