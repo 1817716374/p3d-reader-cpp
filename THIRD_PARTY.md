@@ -70,7 +70,7 @@
 | miniz | 3.1.0，仅链接 tinfl | zlib 属性载荷解压 | [许可证](third_party/miniz/LICENSE) |
 | Bentley BGFB 模式 | 模式快照，来源见 `src/data.cpp` | BGFB 结构解码 | [Apache-2.0](third_party/BGFB_LICENSE.txt) |
 | Bentley 几何算法 | `2350843ad1580a751ee24cc552460644015b07dc` 的 [bspdsurf.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bspline/bspdsurf.cpp)、[bsputil.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bspline/bsputil.cpp)、[bspcurv.cpp](https://github.com/iTwin/imodel-native/blob/2350843ad1580a751ee24cc552460644015b07dc/iModelCore/GeomLibs/geom/src/bspline/bspcurv.cpp) | `src/native_tube.cpp` 的扫掠曲面片、截面朝向、控制线求交及曲面片拼接算法基础，以及 `src/native_curve_segment.cpp` 的子曲线截取与节点插入，按 P3D 行为改写 | [Apache-2.0](third_party/BENTLEY_GEOMETRY_LICENSE.md) |
-| GDAL DGN 默认颜色表 | v3.10.0 | 默认索引颜色 | [MIT 与原版权声明](third_party/GDAL_PALETTE_LICENSE.txt) |
+| GDAL DGN 颜色资料 | v3.10.0 | 颜色数据参考 | [MIT 与原版权声明](third_party/GDAL_PALETTE_LICENSE.txt) |
 | Manifold | `213b6557f28fd66f0e7fd44deb8531589fd288af`，3.5.1 源码快照 | 独立三角网格布尔求值 | [Apache-2.0](third_party/manifold/LICENSE)、[嵌入声明](third_party/manifold/LICENSE.EMBEDDED)、[NVIDIA BSD](third_party/manifold/LICENSE.NVIDIA)、[Clipper2 Boost](third_party/manifold/LICENSE.CLIPPER2) |
 
 依赖文件来源、字节数与 SHA-256 校验值见 [manifest.json](third_party/manifest.json)。BGFB 模式的源地址和快照校验值保存在 `src/data.cpp`。`miniz_export.h` 是本工程静态构建的导出宏配置；构建配置禁用未链接的 zlib 包装 API。

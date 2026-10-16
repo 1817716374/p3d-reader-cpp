@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "color_palette_source.hpp"
 
 namespace p3d {
 Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
@@ -21,6 +22,7 @@ Json native_file_header(const Bytes &index_stream, const Bytes &payload) {
     out["control_header_offset"] = 12;
     out["decoded_control_header"] = rawbytes(control);
     out["control_flags"] = flags;
+    out["initial_palette_selection"] = native_initial_palette_selection(payload, flags);
     out["unassigned_control_bytes"] = rawbytes(slice(control, 2, 18));
     out["default_model_id_header_offset"] = 0x124;
     if (payload.size() >= 0x128)
