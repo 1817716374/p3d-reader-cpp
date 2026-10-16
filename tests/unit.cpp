@@ -138,6 +138,7 @@ unsigned layer_lookup_tests();
 unsigned layer_selection_tests();
 unsigned scene_layers_tests();
 unsigned native_group_layers_tests();
+unsigned layer_numeric_lookup_tests();
 unsigned entity_material_tests();
 unsigned proxy_cache_tests();
 unsigned model_edge_cache_tests();
@@ -3192,6 +3193,7 @@ int main() {
         checks += layer_selection_tests();
         checks += scene_layers_tests();
         checks += native_group_layers_tests();
+        checks += layer_numeric_lookup_tests();
         checks += entity_material_tests();
         checks += proxy_cache_tests();
         checks += model_edge_cache_tests();

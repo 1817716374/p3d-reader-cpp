@@ -144,5 +144,9 @@ unsigned layer_lookup_tests() {
     invalid[1]["links"][0]["payload"] = rawbytes(Bytes({1, 0}));
     check(lookup_native_layer_name(invalid, 0, u"A", text)["status"] == "unresolved",
           "malformed saved names do not fall through to later candidates");
+    source = records({layer(0, u"Rejected"), layer(UINT32_MAX, u"Rejected"), layer(64, u"Default")});
+    result = lookup_native_layer_name(source, 0, u"Rejected", text);
+    check(result["status"] == "not_found" && result["rejected_input_records"].size() == 2,
+          "fresh source input rejects sentinel IDs before building the name index");
     return checks;
 }

@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include <p3d/layer_lookup.hpp>
 namespace p3d {
 static Json layer_material_reference(const Json &links) {
     Json out = {{"encoding", "native_layer_material_reference"},
@@ -124,7 +125,15 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
         if (extended && (extended <= 0xfffffffdu ? (extended & 255) : extended) == legacy)
             color = extended;
         float transparency = r.at<float>(84);
+        // Version 1 predates the saved numeric-key field. Its default layer
+        // uses zero; other layers use their ID. Later versions copy the word.
+        const auto saved_key = r.at<std::uint32_t>(96);
+        const auto numeric_key = version == 1 ? (id == 64 ? 0u : id) : saved_key;
         out.update({{"status", "decoded"},
+                    {"numeric_key", {{"value", numeric_key},
+                                     {"source", version == 1 ? "legacy_layer_id" : "saved_field"},
+                                     {"source_offset", version == 1 ? 36 : 96},
+                                     {"saved_value", saved_key}}},
                     {"state_flags", state},
                     {"display", bool(state & 0x20)},
                     {"print", bool(state & 0x40)},
@@ -146,8 +155,8 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
                     {"unassigned_ranges",
                      Json::array({{{"source_offset", 48}, {"data", rawbytes(slice(b, 48, 20))}},
                                   {{"source_offset", 88}, {"data", rawbytes(slice(b, 88, 4))}},
-                                  {{"source_offset", 96},
-                                   {"data", rawbytes(slice(b, 96, b.size() - 96))}}})}});
+                                  {{"source_offset", 100},
+                                   {"data", rawbytes(slice(b, 100, b.size() - 100))}}})}});
         if (!std::isfinite(transparency))
             out["transparency_error"] = "nonfinite source value";
         out["material_reference"] = layer_material_reference(links);
@@ -533,6 +542,10 @@ Json build_layer_tables(const Json &index, const Json &native, const Json &graph
         }
         table["override_bindings"] = std::move(bindings);
         table["sync_attributes"] = std::move(sync);
+        // Preserve every source member above; this separate initial cache
+        // index follows native loading and does not replace saved membership.
+        if (header.value("kind", "") == "local")
+            table["initial_numeric_index"] = NativeLayerNumericIndex(native, i).metadata();
         tables.push_back(std::move(table));
     }
     for (std::size_t i = 0; i < native.size(); ++i)

@@ -85,6 +85,7 @@
 !/tests/layer_selection.cpp
 !/tests/scene_layers.cpp
 !/tests/native_group_layers.cpp
+!/tests/layer_numeric_lookup.cpp
 !/tests/material_resource_inputs.cpp
 !/tests/graphics_native.cpp
 !/tests/text_bytes.cpp
