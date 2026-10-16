@@ -8,6 +8,7 @@
 #include <miniz/miniz_tinfl.h>
 #include <p3d/native_metadata.hpp>
 #include <p3d/material_assignment_table.hpp>
+#include <p3d/color_resources.hpp>
 namespace p3d {
 class Dex : public Reader {
   public:
@@ -951,6 +952,26 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         }
         return result;
     }
+    if (group == 0 && key == 22902) {
+        try {
+            auto text = utf16(decoded);
+            while (!text.empty() && text.back() == 0)
+                text.pop_back();
+            NativeExtendedColorCache cache(text);
+            result["native_extended_colors"] = cache.metadata();
+            // The enclosing decoded attribute already retains the source XML.
+            result["native_extended_colors"].erase("source_xml");
+            if (cache.metadata().at("status") == "resolved") {
+                result["color_entries"] = Json::array();
+                for (const auto &entry : cache.metadata().at("entries"))
+                    result["color_entries"].push_back({{"ordinal", entry.at("ordinal")},
+                                                       {"rgb", entry.at("rgb")},
+                                                       {"source_attributes", entry.at("source_attributes")}});
+            }
+        } catch (const std::exception &e) {
+            result["native_extended_colors"] = {{"status", "unresolved"}, {"reason", e.what()}};
+        }
+    }
     try {
         auto s = utf16(decoded);
         while (!s.empty() && s.back() == 0)
@@ -959,35 +980,6 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         result.update({{"encoding", stored ? "uncompressed_utf16_xml" : "compressed_utf16_xml"},
                        {"xml", s},
                        {"tree", tree}});
-        if (tree["tag"] == "ExtendedColors") {
-            Json colors = Json::array();
-            for (auto &c : tree["children"]) {
-                Json rgb = nullptr;
-                try {
-                    auto text = c["attributes"].value("Color", std::string());
-                    require(text.size() >= 2, "RGB");
-                    if (text.front() == '(')
-                        text = text.substr(1);
-                    if (text.back() == ')')
-                        text.pop_back();
-                    std::stringstream ss(text);
-                    std::string tok;
-                    Json arr = Json::array();
-                    while (std::getline(ss, tok, ',')) {
-                        int v = std::stoi(tok);
-                        require(v >= 0 && v <= 255, "RGB range");
-                        arr.push_back(v);
-                    }
-                    require(arr.size() == 3, "RGB channels");
-                    rgb = arr;
-                } catch (...) {
-                }
-                colors.push_back({{"ordinal", colors.size()},
-                                  {"rgb", rgb},
-                                  {"source_attributes", c["attributes"]}});
-            }
-            result["color_entries"] = colors;
-        }
     } catch (const std::exception &) {
     }
     return result;
