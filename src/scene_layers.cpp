@@ -40,7 +40,8 @@ NativeSceneLayerCatalog::NativeSceneLayerCatalog(const Json &native, const Json 
     for (std::size_t i = 0; i < refs.size(); ++i)
         models[refs.at(i).at("model_id").get<std::string>()].push_back(i);
 }
-Json NativeSceneLayerCatalog::bind(const Json &model, const Json &header) const {
+Json NativeSceneLayerCatalog::bind(const Json &model, const Json &header,
+                                   const Json &group_query) const {
     Json out = {{"status", "not_evaluated"},
                 {"scope", "stored_entity_header_in_initial_physical_model_layer_table"},
                 {"draw_style_selection", "not_evaluated"},
@@ -49,9 +50,22 @@ Json NativeSceneLayerCatalog::bind(const Json &model, const Json &header) const 
         require(header.is_object() && header.value("status", "") == "decoded",
                 "stored_graphic_header_unavailable");
         out["layer_id"] = header.at("layer_id");
-        require(header.at("entity_getter_policy") == "stored_header",
-                "entity_first_child_layer_query_required");
-        const auto id = header.at("layer_id").get<std::uint32_t>();
+        if (header.at("entity_getter_policy") != "stored_header") {
+            require(header.at("entity_getter_policy") == "recursive_first_child" &&
+                        group_query.is_object() && group_query.value("status", "") == "decoded",
+                    "entity_first_child_layer_query_required");
+            out["scope"] = "initial_entity_layer_getter_in_physical_model_layer_table";
+            out["saved_header_layer_id"] = header.at("layer_id");
+            out["layer_id"] = group_query.at("layer_id");
+            out["entity_layer_query_index"] = group_query.at("query_index");
+            if (group_query.at("empty_group_result") == true) {
+                out.update({{"status", "none"},
+                            {"selection", "empty_initial_group"},
+                            {"candidate_definition_indices", Json::array()}});
+                return out;
+            }
+        }
+        const auto id = out.at("layer_id").get<std::uint32_t>();
         require(id != UINT32_MAX && id != UINT32_MAX - 1, "layer_style_context_required");
         const auto found = models.find(model.dump());
         require(found != models.end() && found->second.size() == 1,

@@ -1,5 +1,6 @@
 #include "geometry.hpp"
 #include "scene_layers.hpp"
+#include "native_group_layers.hpp"
 #include <atomic>
 #include <thread>
 namespace p3d {
@@ -150,6 +151,7 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         system_attributes;
     std::map<StreamPath, std::vector<std::size_t>> system_records;
     std::vector<const Json *> live;
+    std::vector<std::size_t> group_records;
     const auto &native_records = doc.native_records();
     for (std::size_t ni = 0; ni < native_records.size(); ++ni) {
         const auto &n = native_records[ni];
@@ -157,8 +159,11 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         if (std::find(s.begin(), s.end(), canonical("P3D-SSYS")) != s.end())
             system_records[s].push_back(ni);
         if (s.size() == 4 && s[0] == canonical("P3D-SM") && s[2] == canonical("P3D-SMG") &&
-            model_ids.count(s[1]))
+            model_ids.count(s[1])) {
             live.push_back(&n);
+            if (n.at("element_type") == 21)
+                group_records.push_back(ni);
+        }
     }
     for (auto &g : doc.graphics_records()) {
         auto s = g["stream"].get<StreamPath>();
@@ -441,6 +446,26 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         binding_groups[k].push_back(b);
     }
     auto graph = doc.object_graph();
+    Json group_containers = Json::array();
+    if (!group_records.empty()) {
+        std::set<StreamPath> paths;
+        for (const auto ni : group_records) {
+            auto path = native_records.at(ni).at("stream").get<StreamPath>();
+            path.pop_back();
+            paths.insert(std::move(path));
+        }
+        std::vector<Stream> streams;
+        for (const auto &stream : doc.streams()) {
+            if (stream.path.empty())
+                continue;
+            auto path = stream.path;
+            path.pop_back();
+            if (paths.count(path))
+                streams.push_back(stream);
+        }
+        group_containers = p3d::native_input_containers(streams, doc.index(), native_records);
+    }
+    NativeGroupLayerQueries group_queries(native_records, group_containers, group_records);
     NativeSceneLayerCatalog layer_catalog(doc.native_records(), doc.layer_tables());
     for (auto np : live) {
         auto &n = *np;
@@ -467,8 +492,11 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
             {"instance_commands", Json::array()}};
         if (n.contains("native_graphic_header"))
             meta["native_graphic_header"] = n.at("native_graphic_header");
+        const auto group_query = group_queries.by_source.find(source_key(n));
         meta["stored_layer_reference"] = layer_catalog.bind(
-            model, n.value("native_graphic_header", Json()));
+            model, n.value("native_graphic_header", Json()),
+            group_query == group_queries.by_source.end()
+                ? Json() : group_queries.data.at("queries").at(group_query->second));
         auto matrix = identity();
         Json instance_style = Json::object(), terrain_children = Json::array(),
              terrain_attrs = Json::array();
@@ -691,6 +719,7 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                     graph["objects"][graph["record_index"][rk].get<std::size_t>()]["property_tree"];
             }
         }
+    layer_catalog.data["entity_layer_queries"] = std::move(group_queries.data);
     scene.metadata = {
         {"models", model_map},
         {"model_info", doc.models()},

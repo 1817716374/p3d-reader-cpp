@@ -11,6 +11,6 @@ struct NativeSceneLayerCatalog {
     std::map<std::size_t, Table> tables;
     std::map<std::string, std::vector<std::size_t>> models;
     NativeSceneLayerCatalog(const Json &native, const Json &table_catalog);
-    Json bind(const Json &model, const Json &header) const;
+    Json bind(const Json &model, const Json &header, const Json &group_query = Json()) const;
 };
 } // namespace p3d
