@@ -1,5 +1,55 @@
 #include "internal.hpp"
 namespace p3d {
+static Json layer_material_reference(const Json &links) {
+    Json out = {{"encoding", "native_layer_material_reference"},
+                {"status", "decoded"},
+                {"material_id", UINT64_MAX},
+                {"source", "constructor_default"},
+                {"source_link_index", nullptr},
+                {"eligible_for_layer_fallback", false},
+                {"material_loading", "not_evaluated"},
+                {"entries", Json::array()}};
+    bool bounded = true;
+    for (std::size_t i = 0; i < links.size(); ++i) {
+        const auto &link = links[i];
+        if (link.at("app") != 0x41 || !(link.at("header").get<unsigned>() & 0x1000))
+            continue;
+        Json entry = {{"source_link_index", i}, {"source_offset", link.at("offset")}};
+        try {
+            const auto bytes = bytesof(link.at("payload"));
+            Reader r(bytes);
+            const auto key = r.u32();
+            if (key != 0x1000d)
+                continue;
+            entry["key"] = key;
+            const auto id = r.u64();
+            entry.update({{"status", "decoded"},
+                          {"material_id", id},
+                          {"payload_byte_offset", 4},
+                          {"trailing_storage", rawbytes(r.take(r.left()))}});
+            // This reader visits every linkage and assigns on every match.
+            // It is distinct from the entity material getter's first match.
+            out.update({{"material_id", id},
+                        {"source", "saved_linkage"},
+                        {"source_link_index", i},
+                        {"eligible_for_layer_fallback", id != 0 && id != UINT64_MAX}});
+        } catch (const std::exception &e) {
+            bounded = false;
+            entry.update({{"status", "unresolved"}, {"reason", e.what()}});
+        }
+        out["entries"].push_back(std::move(entry));
+    }
+    if (!bounded) {
+        // Do not read into the following linkage to emulate an unchecked load.
+        out.update({{"status", "unresolved"},
+                    {"material_id", nullptr},
+                    {"source", "unresolved_linkage"},
+                    {"source_link_index", nullptr},
+                    {"eligible_for_layer_fallback", nullptr},
+                    {"reason", "native_layer_material_read_outside_linkage"}});
+    }
+    return out;
+}
 static std::string layer_string(const Bytes &b) {
     // This linkage reader supplies native code page 1200: unmarked bytes are
     // widened individually, and both FF FE and FF FD wide forms are UTF-16LE.
@@ -100,6 +150,7 @@ Json decode_native_layer(const Bytes &b, const Json &links) {
                                    {"data", rawbytes(slice(b, 96, b.size() - 96))}}})}});
         if (!std::isfinite(transparency))
             out["transparency_error"] = "nonfinite source value";
+        out["material_reference"] = layer_material_reference(links);
     } catch (const std::exception &e) {
         out["decode_error"] = e.what();
     }

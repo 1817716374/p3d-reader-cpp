@@ -809,6 +809,101 @@ static void native_layer_tests() {
               "malformed wide lengths and rejected byte orders are not recoded as narrow text");
     }
 }
+static void native_layer_material_tests() {
+    auto set = [](Bytes &b, std::size_t at, auto value) {
+        std::memcpy(b.data() + at, &value, sizeof(value));
+    };
+    Bytes raw(108, 0);
+    set(raw, 4, std::uint16_t(49));
+    set(raw, 8, std::uint32_t(52));
+    set(raw, 12, std::uint32_t(52));
+    set(raw, 16, std::uint32_t(1));
+    set(raw, 44, std::uint16_t(6));
+    auto link = [](std::uint64_t id, unsigned key = 0x1000d) {
+        Bytes payload;
+        put<std::uint32_t>(payload, key);
+        put<std::uint64_t>(payload, id);
+        return Json{{"app", 0x41},
+                    {"header", 0x1000},
+                    {"offset", 0x100000000ull},
+                    {"payload", rawbytes(payload)}};
+    };
+    auto decode = [&](const Json &links) {
+        return decode_native_layer(raw, links).at("material_reference");
+    };
+    auto ref = decode(Json::array());
+    check(ref["status"] == "decoded" && ref["material_id"] == UINT64_MAX &&
+              ref["source"] == "constructor_default" && ref["source_link_index"].is_null() &&
+              ref["eligible_for_layer_fallback"] == false,
+          "fresh layer without saved material link retains native all-ones default");
+    for (auto id : {std::uint64_t(0), UINT64_MAX, UINT64_MAX - 1,
+                    std::uint64_t(0x8000000000000012ull), std::uint64_t(9)}) {
+        auto links = Json::array({link(id)});
+        const auto before = links;
+        ref = decode(links);
+        check(ref["material_id"] == id && ref["source_link_index"] == 0 &&
+                  ref["eligible_for_layer_fallback"] == (id != 0 && id != UINT64_MAX) &&
+                  ref["material_loading"] == "not_evaluated" && links == before,
+              "layer material keeps unsigned source ID and only skips native zero/all-ones "
+              "sentinels");
+    }
+    auto unrelated = link(77, 0x1000c);
+    auto wrong_app = link(78);
+    wrong_app["app"] = 0x42;
+    auto non_user = link(79);
+    non_user["header"] = 0;
+    ref = decode(Json::array({link(8), unrelated, wrong_app, non_user, link(13)}));
+    check(ref["material_id"] == 13 && ref["source_link_index"] == 4 && ref["entries"].size() == 2 &&
+              ref["entries"][0]["material_id"] == 8,
+          "layer material reader applies last matching link and preserves earlier source entries");
+    ref = decode(Json::array({unrelated, wrong_app, non_user}));
+    check(ref["material_id"] == UINT64_MAX && ref["entries"].empty(),
+          "other app/key/header values never masquerade as layer material references");
+    ref = decode(Json::array({link(8), link(0)}));
+    check(ref["material_id"] == 0 && ref["eligible_for_layer_fallback"] == false,
+          "explicit zero later layer link clears an earlier eligible candidate");
+    auto suffix = link(19);
+    auto payload = bytesof(suffix["payload"]);
+    payload.push_back(0xa5);
+    payload.push_back(0x5a);
+    suffix["payload"] = rawbytes(payload);
+    ref = decode(Json::array({suffix}));
+    check(ref["status"] == "decoded" && ref["material_id"] == 19 &&
+              bytesof(ref["entries"][0]["trailing_storage"]) == Bytes({0xa5, 0x5a}) &&
+              ref["entries"][0]["source_offset"] == 0x100000000ull,
+          "layer reference does not discard suffix storage or truncate source offsets");
+    for (auto length : {0u, 2u, 4u, 10u}) {
+        auto truncated = link(9);
+        truncated["payload"] = rawbytes(slice(bytesof(truncated["payload"]), 0, length));
+        ref = decode(Json::array({truncated, link(10)}));
+        check(ref["status"] == "unresolved" && ref["material_id"].is_null() &&
+                  ref["eligible_for_layer_fallback"].is_null() &&
+                  ref["entries"][0]["status"] == "unresolved" &&
+                  ref["entries"].back()["material_id"] == 10,
+              "unbounded native reference reads remain unresolved despite a later valid link");
+    }
+    for (unsigned version = 1; version <= 7; ++version) {
+        set(raw, 44, std::uint16_t(version));
+        check(decode(Json::array({link(21)}))["material_id"] == 21,
+              "all supported layer versions use the shared material linkage reader");
+    }
+    auto wire = raw;
+    for (auto id : {std::uint64_t(17), std::uint64_t(29)}) {
+        put<std::uint16_t>(wire, 0x1007);
+        put<std::uint16_t>(wire, 0x41);
+        put<std::uint32_t>(wire, 0x1000d);
+        put<std::uint64_t>(wire, id);
+    }
+    set(wire, 8, std::uint32_t((wire.size() - 4) / 2));
+    const auto records = parse_native(wire);
+    check(records.size() == 1 && records[0]["links"].size() == 2 &&
+              records[0]["layer_definition"]["material_reference"]["material_id"] == 29 &&
+              records[0]["layer_definition"]["material_reference"]["source_link_index"] == 1 &&
+              bytesof(records[0]["data"]) == slice(wire, 0, raw.size()) &&
+              bytesof(records[0]["links"][1]["payload"]) ==
+                  slice(wire, raw.size() + 20, 12),
+          "native record route automatically exposes layer material without altering saved bytes");
+}
 static void layer_group_tests() {
     // Three source entries: packed bits span several words, while the wire stores
     // one WORD per bit. A nonzero unused word must not become an extra override.
@@ -2883,6 +2978,7 @@ int main() {
         layer_group_state_tests();
         view_link_sequence_tests();
         native_layer_tests();
+        native_layer_material_tests();
         material_index_tests();
         section_clip_tests();
         inline_material_tests();
