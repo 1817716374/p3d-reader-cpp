@@ -143,6 +143,7 @@ unsigned draw_colors_tests();
 unsigned model_palette_tests();
 unsigned material_sources_tests();
 unsigned property_block_tests();
+unsigned property_binary_value_tests();
 unsigned layer_selection_tests();
 unsigned scene_layers_tests();
 unsigned native_group_layers_tests();
@@ -3588,6 +3589,7 @@ int main() {
         checks += model_palette_tests();
         checks += material_sources_tests();
         checks += property_block_tests();
+        checks += property_binary_value_tests();
         checks += layer_selection_tests();
         checks += scene_layers_tests();
         checks += native_group_layers_tests();

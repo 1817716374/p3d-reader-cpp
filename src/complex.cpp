@@ -968,6 +968,9 @@ static Json bfa(const Bytes &b) {
                      "suffixes and some header semantics remain unassigned. Driven references "
                      "require component context; formula conversion and evaluation are separate."}};
 }
+static Json cached_symbology(Reader &r) {
+    return {{"serialized_rgb", r.uints(3)}, {"line_style", r.i32()}, {"line_weight", r.u32()}};
+}
 static Json cached(const Bytes &b) {
     Reader r(b);
     require(b.size() >= 80, "cached geometry length");
@@ -979,13 +982,46 @@ static Json cached(const Bytes &b) {
                 {"kind_code", kind},
                 {"display_header_hex", hex(slice(b, 16, 56))},
                 {"display_rgb", r.uints(3)}};
-    r.p = 72;
+    Reader entry_style(b, 16);
+    Json entry = cached_symbology(entry_style);
+    entry["transparency"] = entry_style.f64();
+    entry["line_style_scale"] = entry_style.f64();
+    entry["widths"] = entry_style.doubles(2);
+    entry["layer_id"] = entry_style.u32();
+    entry["source_offset"] = 16;
+    entry["source_byte_count"] = 56;
+    out["entry_style"] = std::move(entry);
+    r.p = entry_style.p;
+    auto container_style = [&] {
+        const auto start = r.p;
+        Json value = cached_symbology(r);
+        value["symbology_source"] = r.i32();
+        value["transparency"] = r.f64();
+        value["line_style_scale"] = r.f64();
+        value["source_offset"] = start;
+        value["source_byte_count"] = 40;
+        return value;
+    };
     if (kind == 3) {
         auto header = r.number("3IB");
         auto points = list(r, [&]() { return r.doubles(3); }, 24, 'I');
+        Json empty_channels = Json::array();
+        std::size_t channel_offset = r.p;
+        for (const auto *name :
+             {"parameters", "normals", "rgb_factors", "rgb_uints", "rgb_table", "rgb_floats"}) {
+            empty_channels.push_back(
+                {{"name", name}, {"count", 0}, {"source_offset", channel_offset}});
+            channel_offset += 4;
+        }
         require(r.take(24) == Bytes(24), "cached auxiliary channels");
         auto indices = list(r, [&]() { return Json(r.i32()); }, 4, 'I');
         require(r.left() == 68, "cached mesh footer");
+        channel_offset = r.p;
+        for (const auto *name : {"parameter_indices", "normal_indices", "rgb_indices"}) {
+            empty_channels.push_back(
+                {{"name", name}, {"count", 0}, {"source_offset", channel_offset}});
+            channel_offset += 4;
+        }
         require(r.take(12) == Bytes(12), "cached additional indices");
         Json polygons = Json::array(), face = Json::array();
         for (auto &index : indices) {
@@ -999,16 +1035,36 @@ static Json cached(const Bytes &b) {
             }
         }
         require(face.empty(), "cached polygon termination");
-        out.update(
-            {{"kind", "indexed_mesh"},
-             {"points", points},
-             {"indices", indices},
-             {"polygons", polygons},
-             {"mesh_header_fields", header},
-             {"empty_auxiliary_channels", 6},
-             {"empty_additional_indices", 3},
-             {"footer_hex", hex(r.take(r.left()))},
-             {"unassigned_regions", {"display_header_hex", "mesh_header_fields", "footer_hex"}}});
+        const auto footer_start = r.p;
+        const auto footer = hex(slice(b, footer_start, r.left()));
+        // This supported layout has the native CStringW empty-name marker,
+        // followed by empty face-index, face-data and edge-index vectors.
+        require(r.take(4) == Bytes({0xff, 0xfe, 0xff, 0}), "cached mesh Unicode tag name");
+        require(r.u32() == 0 && r.u32() == 0 && r.u32() == 0,
+                "cached mesh face and edge extension arrays");
+        out["mesh_layout"] = {{"mesh_style", header[0]},
+                              {"num_per_row", header[1]},
+                              {"num_per_face", header[2]},
+                              {"two_sided_stored_byte", header[3]},
+                              {"two_sided", header[3].get<unsigned>() != 0}};
+        out["empty_mesh_channels"] = std::move(empty_channels);
+        out["mesh_tail"] = {{"tag_name", ""},
+                            {"tag_name_encoding", "mfc_unicode_cstring"},
+                            {"face_indices", Json::array()},
+                            {"face_data", Json::array()},
+                            {"edge_indices", Json::array()},
+                            {"source_offset", footer_start},
+                            {"source_byte_count", 16}};
+        out["container_style"] = container_style();
+        out.update({{"kind", "indexed_mesh"},
+                    {"points", points},
+                    {"indices", indices},
+                    {"polygons", polygons},
+                    {"mesh_header_fields", header},
+                    {"empty_auxiliary_channels", 6},
+                    {"empty_additional_indices", 3},
+                    {"footer_hex", footer},
+                    {"unassigned_regions", Json::array()}});
     } else if (kind == 2) {
         auto boundary = r.u32();
         auto curves = list(
@@ -1026,15 +1082,16 @@ static Json cached(const Bytes &b) {
             4, 'I');
         require(r.left() == 40, "cached curve footer");
         auto footer = hex(slice(b, r.p, r.left()));
+        out["container_style"] = container_style();
         out.update({{"kind", "curve_collection"},
                     {"boundary_code", boundary},
                     {"curves", curves},
-                    {"footer_rgb", r.uints(3)},
+                    {"footer_rgb", out.at("container_style").at("serialized_rgb")},
                     {"footer_hex", footer},
-                    {"unassigned_regions", {"display_header_hex", "boundary_code", "footer_hex"}}});
-        r.skip(r.left());
+                    {"unassigned_regions", {"boundary_code"}}});
     } else
         throw std::runtime_error("cached geometry kind");
+    r.finish();
     return out;
 }
 static Json inline_material_core_transfer(const Json &source) {

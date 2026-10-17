@@ -1,5 +1,6 @@
 #include "blob_internal.hpp"
 #include "component_properties.hpp"
+#include "property_binary_values.hpp"
 namespace p3d {
 Json text_json(const Bytes &b) {
     auto first = std::find_if(
@@ -143,13 +144,64 @@ static Json extension(const Bytes &b) {
     r.finish();
     return out;
 }
+namespace detail {
+std::optional<PropertyBinaryContract> property_binary_contract(const std::string &scope,
+                                                               const std::string &name) {
+    if (scope == "PBM_CommonData") {
+        if (name == "ExtendProperty")
+            return PropertyBinaryContract{PropertyBinaryCodec::extension, "extension_variant_map"};
+        if (name == "ParaCmptInstance")
+            return PropertyBinaryContract{PropertyBinaryCodec::component_instances,
+                                          "component_instances_and_bgfb"};
+        if (name == "ParaCmptProperty")
+            return PropertyBinaryContract{PropertyBinaryCodec::component_properties,
+                                          "component_property_stack"};
+        if (name == "SecondaryDevelopmentProperty")
+            return PropertyBinaryContract{PropertyBinaryCodec::secondary_properties,
+                                          "secondary_application_properties"};
+    } else if (scope == "PBM_BimBase") {
+        if (name == "GraphicsGeom")
+            return PropertyBinaryContract{PropertyBinaryCodec::legacy_graphics,
+                                          "cached_geometry_3_1"};
+        if (name == "GraphicsVecExtend")
+            return PropertyBinaryContract{PropertyBinaryCodec::directed_mesh,
+                                          "directed_edge_polygon_mesh"};
+        if (name == "Profile" || name == "SectionVector")
+            return PropertyBinaryContract{PropertyBinaryCodec::analytic_profile,
+                                          "analytic_profile"};
+    }
+    return {};
+}
+Json decode_property_binary_value(PropertyBinaryCodec codec, const Bytes &bytes,
+                                  const std::string &root_class) {
+    switch (codec) {
+    case PropertyBinaryCodec::extension:
+        return extension(bytes);
+    case PropertyBinaryCodec::component_instances:
+        return complex_blob("ParaCmptInstance", bytes);
+    case PropertyBinaryCodec::component_properties:
+        return decode_component_properties(bytes);
+    case PropertyBinaryCodec::secondary_properties:
+        return application_blob("SecondaryDevelopmentProperty", bytes, root_class);
+    case PropertyBinaryCodec::legacy_graphics:
+        return complex_blob("GraphicsGeom", bytes);
+    case PropertyBinaryCodec::directed_mesh:
+        return complex_blob("GraphicsVecExtend", bytes);
+    case PropertyBinaryCodec::analytic_profile:
+        return profile(bytes);
+    }
+    throw std::runtime_error("unknown_property_binary_codec");
+}
+} // namespace detail
 Json decode_binary_field(const std::string &name, const Bytes &b, const std::string &cl,
                          const Json &roots) {
     Json out = {{"binary_base64", base64(b)}, {"bytes", b.size()}};
     if (name == "ParaCmptProperty" || name == "DataUnit") {
-        out["encoding"] = name == "DataUnit" ? "registered_value_stack" : "component_property_stack";
+        out["encoding"] =
+            name == "DataUnit" ? "registered_value_stack" : "component_property_stack";
         try {
-            out["decoded"] = name == "DataUnit" ? decode_data_unit(b) : decode_component_properties(b);
+            out["decoded"] =
+                name == "DataUnit" ? decode_data_unit(b) : decode_component_properties(b);
         } catch (const std::exception &e) {
             out["field_decode_error"] = e.what();
         }
@@ -164,8 +216,10 @@ Json decode_binary_field(const std::string &name, const Bytes &b, const std::str
         }
     };
     static const std::map<std::string, std::string> apps = {
-        {"Parameter", "grouped_design_parameters"}, {"GroupInfoBinary", "named_group_tree"},
-        {"ExtendPro", "appearance_extension_json"}, {"ModelIdMap", "model_id_map"},
+        {"Parameter", "grouped_design_parameters"},
+        {"GroupInfoBinary", "named_group_tree"},
+        {"ExtendPro", "appearance_extension_json"},
+        {"ModelIdMap", "model_id_map"},
         {"DataIdMap", "parameter_handle_data_ids"}};
     if (apps.count(name))
         apply(apps.at(name), [&]() { return application_blob(name, b, cl); });

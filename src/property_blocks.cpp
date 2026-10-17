@@ -1,4 +1,5 @@
 #include "internal.hpp"
+#include "property_binary_values.hpp"
 #include <p3d/property_blocks.hpp>
 
 namespace p3d {
@@ -7,6 +8,63 @@ struct BlockBudget {
     const PropertyBlockLimits &limits;
     std::size_t tokens = 0, fields = 0, elements = 0, bytes = 0;
 };
+Json binary_value_views(const Json &block, BlockBudget &budget) {
+    const auto &structure = block.at("property_structure"), &tokens = block.at("tokens");
+    Json out = {{"scope", "current_property_block_binary_fields"},
+                {"status", "partial"},
+                {"declarations_complete", structure.at("status") == "structured"},
+                {"active_geometry_selection", "not_performed"},
+                {"entries", Json::array()}};
+    bool complete = structure.at("status") == "structured";
+    for (const auto &field : structure.at("fields")) {
+        if (field.value("type_name", "") != "binary")
+            continue;
+        for (std::size_t vi = 0; vi < field.at("value_token_indices").size(); ++vi) {
+            const auto ti = field.at("value_token_indices")[vi].get<std::size_t>();
+            const auto &token = tokens.at(ti);
+            const auto count = token.at("bytes").get<std::size_t>();
+            Json view = {{"field_index", field.at("field_index")},
+                         {"value_token_index", ti},
+                         {"name", field.at("name")},
+                         {"namespace", field.at("namespace")},
+                         {"source_offset", token.at("offset").get<std::size_t>() + 8},
+                         {"source_byte_count", count},
+                         {"status", "not_interpreted"}};
+            if (field.at("is_array") == true)
+                view["array_index"] = vi;
+            const auto contract = detail::property_binary_contract(
+                field.at("namespace").get<std::string>(), field.at("name").get<std::string>());
+            if (contract)
+                view["encoding"] = contract->encoding;
+            if (!count)
+                view["status"] = "empty";
+            else if (!contract) {
+                view["reason"] = "native_property_binary_contract_not_known";
+                complete = false;
+            } else {
+                try {
+                    require(count <= budget.limits.max_decoded_bytes - budget.bytes,
+                            "property_binary_value_byte_budget");
+                    budget.bytes += count;
+                    const auto bytes = unbase64(token.at("binary_base64").get<std::string>());
+                    require(bytes.size() == count, "property_binary_value_size_mismatch");
+                    view["decoded"] = detail::decode_property_binary_value(
+                        contract->codec, bytes, block.at("class_name").get<std::string>());
+                    view["status"] = "parsed";
+                } catch (const std::bad_alloc &) {
+                    throw;
+                } catch (const std::exception &e) {
+                    view["status"] = "not_parsed";
+                    view["reason"] = e.what();
+                    complete = false;
+                }
+            }
+            out["entries"].push_back(std::move(view));
+        }
+    }
+    out["status"] = complete ? "parsed" : "partial";
+    return out;
+}
 Json read_block(const Bytes &bytes, BlockBudget &budget, std::size_t depth) {
     require(depth < budget.limits.max_depth, "property_block_depth_budget");
     require(bytes.size() <= budget.limits.max_decoded_bytes - budget.bytes,
@@ -228,6 +286,7 @@ Json read_block(const Bytes &bytes, BlockBudget &budget, std::size_t depth) {
     structure["remaining_token_count"] = ts.size() - cursor;
     structure["status"] = complete ? "structured" : "partial";
     out["property_structure"] = std::move(structure);
+    out["binary_value_views"] = binary_value_views(out, budget);
     return out;
 }
 } // namespace

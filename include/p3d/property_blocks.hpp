@@ -15,5 +15,9 @@ struct PropertyBlockLimits {
 // Invalid/truncated typed streams and exhausted token/byte budgets throw.
 // Unsupported/inconsistent field layouts retain tokens and report a partial
 // structure. Field value token indices always refer to that block's tokens.
+// Known native binary field contracts also produce binary_value_views, without
+// selecting active graphics or resolving entity references. Their parse status
+// is separate from the outer wire layout; unknown contracts retain raw values.
+// max_decoded_bytes also bounds bytes passed to these nested field decoders.
 Json decode_property_data_block(const Bytes &, const PropertyBlockLimits & = {});
 } // namespace p3d
