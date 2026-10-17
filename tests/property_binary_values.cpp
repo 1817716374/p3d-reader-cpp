@@ -246,6 +246,34 @@ unsigned property_binary_value_tests() {
               curve.at("container_style").at("symbology_source") == 1 &&
               curve.at("unassigned_regions") == Json::array({"boundary_code"}),
           "legacy curve footer metadata does not hide its still-unassigned boundary enum");
+    Bytes multiple;
+    append(multiple, 3.1);
+    append(multiple, std::uint32_t(2));
+    for (unsigned i = 0; i < 2; ++i)
+        multiple.insert(multiple.end(), legacy.begin() + 12, legacy.end() - 40);
+    stored_style(multiple, false);
+    auto multiple_block = header();
+    field(multiple_block, "PBM_BimBase", "GraphicsGeom", multiple);
+    const auto multiple_value =
+        decode_property_data_block(multiple_block).at("binary_value_views").at("entries")[0];
+    check(
+        multiple_value.at("status") == "parsed" &&
+            multiple_value.at("decoded").at("archive").at("entries").size() == 2 &&
+            !multiple_value.at("decoded").contains("points") &&
+            multiple_value.at("decoded").at("archive").at("entries")[0].at("source_offset") !=
+                multiple_value.at("decoded").at("archive").at("entries")[1].at("source_offset"),
+        "property decoder retains two equal independent legacy Entries without a merged flat mesh");
+    auto ambiguous = Bytes(legacy.begin(), legacy.end() - 44);
+    append(ambiguous, std::uint32_t(2));
+    for (unsigned v : {2, 1, 0, 1, 42, 7, 1, 0})
+        append(ambiguous, std::uint32_t(v));
+    stored_style(ambiguous, false);
+    auto ambiguous_block = header();
+    field(ambiguous_block, "PBM_BimBase", "GraphicsGeom", ambiguous);
+    const auto ambiguous_value =
+        decode_property_data_block(ambiguous_block).at("binary_value_views").at("entries")[0];
+    check(ambiguous_value.at("status") == "not_parsed" && !ambiguous_value.contains("decoded"),
+          "strict property view never publishes an ambiguous cache as a selected decoded archive");
     legacy[tag_offset] = 0;
     auto invalid_tag = header();
     field(invalid_tag, "PBM_BimBase", "GraphicsGeom", legacy);

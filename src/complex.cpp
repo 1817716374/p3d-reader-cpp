@@ -1,5 +1,6 @@
 #include "blob_internal.hpp"
 #include <p3d/property_blocks.hpp>
+#include <p3d/legacy_graphics.hpp>
 namespace p3d {
 static Json component_text(const Bytes &b, bool ansi = true);
 static Json component_cache_sequence(const Json &instances, const char *context,
@@ -968,130 +969,76 @@ static Json bfa(const Bytes &b) {
                      "suffixes and some header semantics remain unassigned. Driven references "
                      "require component context; formula conversion and evaluation are separate."}};
 }
-static Json cached_symbology(Reader &r) {
-    return {{"serialized_rgb", r.uints(3)}, {"line_style", r.i32()}, {"line_weight", r.u32()}};
-}
 static Json cached(const Bytes &b) {
-    Reader r(b);
-    require(b.size() >= 80, "cached geometry length");
-    auto version = r.f64();
-    auto count = r.u32(), kind = r.u32();
-    require(version == 3.1 && count == 1, "cached geometry version/count");
-    Json out = {{"version", version},
-                {"count", count},
-                {"kind_code", kind},
-                {"display_header_hex", hex(slice(b, 16, 56))},
-                {"display_rgb", r.uints(3)}};
-    Reader entry_style(b, 16);
-    Json entry = cached_symbology(entry_style);
-    entry["transparency"] = entry_style.f64();
-    entry["line_style_scale"] = entry_style.f64();
-    entry["widths"] = entry_style.doubles(2);
-    entry["layer_id"] = entry_style.u32();
-    entry["source_offset"] = 16;
-    entry["source_byte_count"] = 56;
-    out["entry_style"] = std::move(entry);
-    r.p = entry_style.p;
-    auto container_style = [&] {
-        const auto start = r.p;
-        Json value = cached_symbology(r);
-        value["symbology_source"] = r.i32();
-        value["transparency"] = r.f64();
-        value["line_style_scale"] = r.f64();
-        value["source_offset"] = start;
-        value["source_byte_count"] = 40;
-        return value;
-    };
-    if (kind == 3) {
-        auto header = r.number("3IB");
-        auto points = list(r, [&]() { return r.doubles(3); }, 24, 'I');
-        Json empty_channels = Json::array();
-        std::size_t channel_offset = r.p;
-        for (const auto *name :
-             {"parameters", "normals", "rgb_factors", "rgb_uints", "rgb_table", "rgb_floats"}) {
-            empty_channels.push_back(
-                {{"name", name}, {"count", 0}, {"source_offset", channel_offset}});
-            channel_offset += 4;
-        }
-        require(r.take(24) == Bytes(24), "cached auxiliary channels");
-        auto indices = list(r, [&]() { return Json(r.i32()); }, 4, 'I');
-        require(r.left() == 68, "cached mesh footer");
-        channel_offset = r.p;
-        for (const auto *name : {"parameter_indices", "normal_indices", "rgb_indices"}) {
-            empty_channels.push_back(
-                {{"name", name}, {"count", 0}, {"source_offset", channel_offset}});
-            channel_offset += 4;
-        }
-        require(r.take(12) == Bytes(12), "cached additional indices");
-        Json polygons = Json::array(), face = Json::array();
-        for (auto &index : indices) {
-            auto i = index.get<std::int64_t>();
-            require(std::llabs(i) <= static_cast<long long>(points.size()), "cached point index");
-            if (i)
-                face.push_back(i);
-            else if (!face.empty()) {
-                polygons.push_back(face);
-                face = Json::array();
+    auto archive = decode_legacy_graphics(b);
+    require(archive.at("status") == "parsed", "legacy graphics archive is not uniquely parsed");
+    // The ordered archive is authoritative. Flat aliases remain only for one
+    // Entry; multiple independent Entries are never merged or deduplicated.
+    Json out = {
+        {"version", archive.at("version")}, {"count", archive.at("count")}, {"archive", archive}};
+    const auto &entries = archive.at("entries");
+    if (entries.size() != 1)
+        return out;
+    const auto &entry = entries[0], &geometry = entry.at("geometry");
+    const auto style_offset = entry.at("style").at("source_offset").get<std::size_t>();
+    out["kind_code"] = entry.at("kind_code");
+    out["kind"] = geometry.at("kind");
+    out["entry_style"] = entry.at("style");
+    out["display_header_hex"] = hex(slice(b, style_offset, 56));
+    out["display_rgb"] = entry.at("style").at("serialized_rgb");
+    out["container_style"] = archive.at("container_style");
+    if (entry.at("kind_code") == 3) {
+        out["points"] = geometry.at("points").at("values");
+        out["indices"] = geometry.at("point_indices").at("values");
+        if (geometry.contains("polygons"))
+            out["polygons"] = geometry.at("polygons");
+        Json layout;
+        for (const auto *key :
+             {"mesh_style", "num_per_row", "num_per_face", "two_sided_stored_byte", "two_sided"})
+            layout[key] = geometry.at(key);
+        out["mesh_layout"] = std::move(layout);
+        out["mesh_header_fields"] = {geometry.at("mesh_style"), geometry.at("num_per_row"),
+                                     geometry.at("num_per_face"),
+                                     geometry.at("two_sided_stored_byte")};
+        Json empty = Json::array();
+        unsigned auxiliary = 0, additional = 0;
+        for (const auto *key :
+             {"parameters", "normals", "rgb_factors", "rgb_uints", "rgb_table", "rgb_floats",
+              "parameter_indices", "normal_indices", "rgb_indices"}) {
+            const auto &channel = geometry.at(key);
+            if (channel.at("count") == 0) {
+                empty.push_back(
+                    {{"name", key}, {"count", 0}, {"source_offset", channel.at("source_offset")}});
+                if (std::string(key).find("indices") == std::string::npos)
+                    ++auxiliary;
+                else
+                    ++additional;
             }
         }
-        require(face.empty(), "cached polygon termination");
-        const auto footer_start = r.p;
-        const auto footer = hex(slice(b, footer_start, r.left()));
-        // This supported layout has the native CStringW empty-name marker,
-        // followed by empty face-index, face-data and edge-index vectors.
-        require(r.take(4) == Bytes({0xff, 0xfe, 0xff, 0}), "cached mesh Unicode tag name");
-        require(r.u32() == 0 && r.u32() == 0 && r.u32() == 0,
-                "cached mesh face and edge extension arrays");
-        out["mesh_layout"] = {{"mesh_style", header[0]},
-                              {"num_per_row", header[1]},
-                              {"num_per_face", header[2]},
-                              {"two_sided_stored_byte", header[3]},
-                              {"two_sided", header[3].get<unsigned>() != 0}};
-        out["empty_mesh_channels"] = std::move(empty_channels);
-        out["mesh_tail"] = {{"tag_name", ""},
-                            {"tag_name_encoding", "mfc_unicode_cstring"},
-                            {"face_indices", Json::array()},
-                            {"face_data", Json::array()},
-                            {"edge_indices", Json::array()},
-                            {"source_offset", footer_start},
-                            {"source_byte_count", 16}};
-        out["container_style"] = container_style();
-        out.update({{"kind", "indexed_mesh"},
-                    {"points", points},
-                    {"indices", indices},
-                    {"polygons", polygons},
-                    {"mesh_header_fields", header},
-                    {"empty_auxiliary_channels", 6},
-                    {"empty_additional_indices", 3},
-                    {"footer_hex", footer},
-                    {"unassigned_regions", Json::array()}});
-    } else if (kind == 2) {
-        auto boundary = r.u32();
-        auto curves = list(
-            r,
-            [&]() {
-                auto op = r.u32();
-                if (op == 2)
-                    return Json{{"kind", "polyline"},
-                                {"points", list(r, [&]() { return r.doubles(3); }, 24, 'I')}};
-                require(op == 3, "cached curve opcode");
-                return Json{{"kind", "elliptical_arc"}, {"origin", r.doubles(3)},
-                            {"vector0", r.doubles(3)},  {"vector90", r.doubles(3)},
-                            {"start_angle", r.f64()},   {"sweep_angle", r.f64()}};
-            },
-            4, 'I');
-        require(r.left() == 40, "cached curve footer");
-        auto footer = hex(slice(b, r.p, r.left()));
-        out["container_style"] = container_style();
-        out.update({{"kind", "curve_collection"},
-                    {"boundary_code", boundary},
-                    {"curves", curves},
-                    {"footer_rgb", out.at("container_style").at("serialized_rgb")},
-                    {"footer_hex", footer},
-                    {"unassigned_regions", {"boundary_code"}}});
-    } else
-        throw std::runtime_error("cached geometry kind");
-    r.finish();
+        out["empty_mesh_channels"] = std::move(empty);
+        out["empty_auxiliary_channels"] = auxiliary;
+        out["empty_additional_indices"] = additional;
+        const auto offset = geometry.at("tail_source_offset").get<std::size_t>();
+        out["mesh_tail"] = {{"tag_name", geometry.at("tag_name").at("text")},
+                            {"tag_name_encoding", geometry.at("tag_name").at("encoding")},
+                            {"face_indices", geometry.at("face_indices").at("values")},
+                            {"face_data", geometry.at("face_data").at("values")},
+                            {"edge_indices", geometry.at("edge_chains")},
+                            {"source_offset", offset},
+                            {"source_byte_count", geometry.at("tail_source_byte_count")}};
+        out["footer_hex"] = hex(slice(b, offset, b.size() - offset));
+        out["unassigned_regions"] = Json::array();
+    } else if (entry.at("kind_code") == 2) {
+        out["boundary_code"] = geometry.at("boundary_code");
+        auto curves = geometry.at("curves");
+        for (auto &curve : curves)
+            for (const auto *key : {"type_code", "source_offset", "source_byte_count"})
+                curve.erase(key);
+        out["curves"] = std::move(curves);
+        out["footer_rgb"] = archive.at("container_style").at("serialized_rgb");
+        out["footer_hex"] = hex(slice(b, b.size() - 40, 40));
+        out["unassigned_regions"] = {"boundary_code"};
+    }
     return out;
 }
 static Json inline_material_core_transfer(const Json &source) {
