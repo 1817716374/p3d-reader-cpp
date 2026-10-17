@@ -1,4 +1,5 @@
 #include "blob_internal.hpp"
+#include <p3d/property_blocks.hpp>
 namespace p3d {
 static Json component_text(const Bytes &b, bool ansi = true);
 static Json component_cache_sequence(const Json &instances, const char *context,
@@ -80,47 +81,7 @@ static Json ref(Reader &r) {
         {"version", v}, {"document_guid", guid}, {"model_id", r.u32()}, {"element_id", r.u64()}};
 }
 static Json tokens(const Bytes &b) {
-    Reader r(b);
-    Json ts = Json::array();
-    while (r.left()) {
-        auto off = r.p;
-        auto kind = r.u32();
-        Json item = {{"offset", off}, {"type_code", kind}};
-        std::map<unsigned, std::pair<std::string, std::string>> fmt = {
-            {0, {"B", "unassigned_byte"}},
-            {1, {"i", "int32"}},
-            {2, {"d", "double"}},
-            {3, {"q", "int64"}},
-            {6, {"3d", "point3d"}}};
-        if (fmt.count(kind)) {
-            item["value"] = r.number(fmt[kind].first);
-            item["kind"] = fmt[kind].second;
-        } else if (kind == 4 || kind == 5) {
-            auto data = r.take(r.u32());
-            if (kind == 5)
-                item.update(
-                    {{"kind", "binary"}, {"binary_base64", base64(data)}, {"bytes", data.size()}});
-            else {
-                std::string text, enc = "utf8";
-                try {
-                    text = utf8(data);
-                } catch (...) {
-                    text = gb18030(data);
-                    enc = "gb18030";
-                }
-                item.update({{"kind", "string"}, {"value", text}, {"encoding", enc}});
-            }
-        } else
-            throw std::runtime_error("property token type");
-        ts.push_back(item);
-    }
-    require(ts.size() >= 2 && ts[0]["kind"] == "string" && ts[1]["kind"] == "string",
-            "property block namespace/class");
-    return {{"namespace", ts[0]["value"]},
-            {"class_name", ts[1]["value"]},
-            {"tokens", ts},
-            {"note", "Ordered typed values, including property names and declared types. Object "
-                     "scopes and type-0 byte semantics remain unassigned."}};
+    return decode_property_data_block(b);
 }
 static Json bfa_driven(const Bytes &payload) {
     Reader r(payload);

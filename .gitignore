@@ -88,6 +88,7 @@
 !/tests/draw_colors.cpp
 !/tests/model_palette.cpp
 !/tests/material_sources.cpp
+!/tests/property_blocks.cpp
 !/tests/layer_selection.cpp
 !/tests/scene_layers.cpp
 !/tests/native_group_layers.cpp

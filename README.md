@@ -94,6 +94,7 @@ p3d-inspect example.p3d --dump document.json --graph graph.json --scene scene.js
 ## 文档
 
 - [接入指南](docs/接入指南.md)：构建、几何、属性、结构树、材质和命令行用法。
+- [通用属性块](docs/属性块.md)：原始类型值、字段边界、数组及嵌套结构。
 - [格式说明](docs/格式说明.md)：文件结构与数据接口的对应关系。
 - [已知限制](docs/已知限制.md)：尚未支持的结构及数据使用注意事项。
 - [贡献指南](CONTRIBUTING.md)：问题反馈、代码和文档贡献方式。
