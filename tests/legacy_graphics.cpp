@@ -339,12 +339,11 @@ unsigned legacy_graphics_tests() {
     check(oversized.at("status") == "not_parsed" && !oversized.contains("source_storage"),
           "oversized input is rejected before copying source storage");
     auto unknown = header();
-    entry(unknown, 4);
+    entry(unknown, 1234);
     unknown = footer(unknown);
-    check(
-        decode_legacy_graphics(unknown).at("unsupported_branch_encountered") == true &&
-            decode_legacy_graphics(unknown).at("candidate_set_complete") == false,
-        "unsupported CSG archive bytes are not silently skipped or considered an exhausted search");
+    check(decode_legacy_graphics(unknown).at("unsupported_branch_encountered") == true &&
+              decode_legacy_graphics(unknown).at("candidate_set_complete") == false,
+          "unknown entry bytes are not silently skipped or considered an exhausted search");
     auto extra = full;
     extra.push_back(0);
     check(decode_legacy_graphics(extra).at("status") == "not_parsed",

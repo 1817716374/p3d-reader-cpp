@@ -1,10 +1,11 @@
 #include "internal.hpp"
+#include "decode_budget.hpp"
 #include <p3d/legacy_graphics.hpp>
 
 namespace p3d {
 namespace {
-struct Limit : std::runtime_error {
-    using std::runtime_error::runtime_error;
+struct Limit : DecodeBudgetExceeded {
+    using DecodeBudgetExceeded::DecodeBudgetExceeded;
 };
 struct Unsupported : std::runtime_error {
     using std::runtime_error::runtime_error;
@@ -206,6 +207,50 @@ class Decoder {
             j["vector90"] = doubles(r, 3);
             j["start_angle"] = number(r);
             j["sweep_angle"] = number(r);
+        } else if (type == 4) {
+            j["kind"] = "bspline_curve";
+            value_budget(10);
+            j["curve_type"] = r.i32();
+            const auto rational = r.i32();
+            j["rational_stored_int32"] = rational;
+            j["pole_coordinates"] = rational ? "weighted_xyz" : "cartesian_xyz";
+            j["curve_display"] = r.i32();
+            j["polygon_display"] = r.i32();
+            j["rules_by_length"] = r.i32();
+            const auto closed = r.i32();
+            j["closed_stored_int32"] = closed;
+            j["declared_num_knots"] = r.i32();
+            const auto poles = r.i32();
+            j["num_poles"] = poles;
+            j["num_rules"] = r.i32();
+            const auto order = r.i32();
+            j["order"] = order;
+            // Native bspknot_numberKnots uses DWORD arithmetic and signed loops,
+            // independently of the saved params.numKnots member.
+            const std::uint32_t wrapped = std::uint32_t(poles) +
+                                          std::uint32_t(order) * (closed ? 2u : 1u) -
+                                          (closed ? 1u : 0u);
+            std::int32_t knot_count;
+            std::memcpy(&knot_count, &wrapped, 4);
+            const auto np = poles > 0 ? std::size_t(poles) : 0;
+            const auto nk = knot_count > 0 ? std::size_t(knot_count) : 0;
+            require(np <= r.left() / 24, "legacy Bspline pole overrun");
+            value_budget(np);
+            j["poles"] = Json::array();
+            for (std::size_t i = 0; i < np; ++i)
+                j["poles"].push_back(doubles(r, 3));
+            require(nk <= r.left() / 8, "legacy Bspline knot overrun");
+            j["serialized_knot_count"] = nk;
+            j["knots"] = doubles(r, nk);
+            require(!rational || np <= r.left() / 8, "legacy Bspline weight overrun");
+            j["weights"] = rational ? doubles(r, np) : Json::array();
+        } else if (type == 5 || type == 6 || type == 9 || type == 10) {
+            j["kind"] = "curve_payload_not_serialized";
+            j["curve_kind"] = type == 5   ? "interpolation_curve"
+                              : type == 6 ? "akima_curve"
+                              : type == 9 ? "spiral"
+                                          : "proport_curve";
+            j["geometry_status"] = "not_serialized";
         } else if (type == 8) {
             j["kind"] = "child_curve_collection";
             j["collection"] = curves(r, depth + 1);
@@ -224,6 +269,182 @@ class Decoder {
         j["curves"] = Json::array();
         for (std::size_t i = 0; i < n; ++i)
             j["curves"].push_back(primitive(r, depth));
+        return j;
+    }
+    void byte_flag(Reader &r, Json &j, const std::string &name) {
+        value_budget(1);
+        const auto byte = r.u8();
+        j[name + "_stored_byte"] = byte;
+        j[name] = byte != 0;
+    }
+    Json solid(Reader &r) {
+        const auto start = r.p;
+        const auto type = r.u32();
+        Json j = {{"kind", "solid"}, {"solid_type_code", type}};
+        auto vectors = [&](std::initializer_list<const char *> names) {
+            for (const auto *name : names)
+                j[name] = doubles(r, 3);
+        };
+        auto scalars = [&](std::initializer_list<const char *> names) {
+            value_budget(names.size());
+            for (const auto *name : names)
+                j[name] = number(r);
+        };
+        switch (type) {
+        case 1:
+            j["solid_kind"] = "torus_pipe";
+            vectors({"center", "vector_x", "vector_y"});
+            scalars({"major_radius", "minor_radius", "sweep_angle"});
+            break;
+        case 2:
+            j["solid_kind"] = "cone";
+            vectors({"center_a", "center_b", "vector0", "vector90"});
+            // Runtime GeConeInfo stores B before A; this archive saves A first.
+            scalars({"radius_a", "radius_b"});
+            break;
+        case 3:
+            j["solid_kind"] = "box";
+            vectors({"bottom_origin", "top_origin", "vector_x", "vector_y"});
+            scalars({"bottom_x", "bottom_y", "top_x", "top_y"});
+            break;
+        case 4:
+            j["solid_kind"] = "sphere";
+            // Native 3x4 transform is rearranged as origin and three columns.
+            vectors({"origin", "vector_x", "vector_y", "vector_z"});
+            scalars({"start_latitude", "latitude_sweep"});
+            break;
+        case 5:
+            j["solid_kind"] = "extrusion";
+            j["base_curves"] = curves(r, 0);
+            vectors({"extrusion_vector"});
+            break;
+        case 6:
+            j["solid_kind"] = "rotational_sweep";
+            j["base_curves"] = curves(r, 0);
+            vectors({"axis_origin", "axis_direction"});
+            scalars({"sweep_angle"});
+            break;
+        case 7: {
+            j["solid_kind"] = "ruled_sweep";
+            const auto n = count(r, 8);
+            j["sections"] = Json::array();
+            for (std::size_t i = 0; i < n; ++i)
+                j["sections"].push_back(curves(r, 0));
+            break;
+        }
+        case 8:
+            j["solid_kind"] = "swept_body";
+            j["profile_curves"] = curves(r, 0);
+            j["path_curves"] = curves(r, 0);
+            break;
+        case 9:
+            j["solid_kind"] = "lofted_body";
+            j["bottom_curves"] = curves(r, 0);
+            j["top_curves"] = curves(r, 0);
+            // The native writer packages guide groups into a CurveVector;
+            // preserve this saved grouping instead of guessing correspondence.
+            j["guide_curves"] = curves(r, 0);
+            break;
+        default:
+            throw Unsupported("unsupported legacy solid type " + std::to_string(type));
+        }
+        byte_flag(r, j, "capped");
+        if (type == 6) {
+            value_budget(1);
+            j["num_v_rules_stored_uint32"] = r.u32();
+        }
+        j["source_offset"] = start;
+        j["source_byte_count"] = r.p - start;
+        return j;
+    }
+    Json text(Reader &r) {
+        const auto start = r.p;
+        Json j = {{"kind", "text"},
+                  {"origin", doubles(r, 3)},
+                  {"user_origin", doubles(r, 3)},
+                  {"rotation_matrix_rows", Json::array()}};
+        for (unsigned row = 0; row < 3; ++row)
+            j["rotation_matrix_rows"].push_back(doubles(r, 3));
+        j["string"] = string(r);
+        j["unapplied_fields"] = Json::array();
+        // These fields are consumed but not applied by the native reader.
+        // Keep typed values and exact ranges without inventing business names.
+        auto extra = [&](char type, unsigned n = 1) {
+            const auto pos = r.p;
+            Json value;
+            value_budget(n);
+            if (type == 'B')
+                value = r.u8();
+            else if (type == 'I')
+                value = r.u32();
+            else if (type == 'Q')
+                value = r.u64();
+            else if (type == 'd')
+                value = doubles(r, n);
+            else
+                throw std::runtime_error("legacy text extra type");
+            j["unapplied_fields"].push_back({{"type", std::string(1, type)},
+                                             {"value", std::move(value)},
+                                             {"source_offset", pos},
+                                             {"source_byte_count", r.p - pos}});
+        };
+        auto symbology = [&] {
+            const auto pos = r.p;
+            value_budget(5);
+            return Json{{"serialized_rgb", r.uints(3)},
+                        {"line_style", r.i32()},
+                        {"line_weight", r.u32()},
+                        {"source_offset", pos},
+                        {"source_byte_count", 20}};
+        };
+        byte_flag(r, j, "vertical");
+        extra('B');
+        extra('B');
+        extra('B');
+        value_budget(1);
+        j["justification_code"] = r.i32();
+        extra('I');
+        extra('I');
+        j["font_name"] = string(r);
+        value_budget(3);
+        j["font_type_code"] = r.i32();
+        j["big_font_name"] = string(r);
+        j["big_font_type_code"] = r.i32();
+        byte_flag(r, j, "bold");
+        byte_flag(r, j, "italic");
+        j["custom_slant_angle"] = number(r);
+        extra('B');
+        extra('B');
+        j["unapplied_symbologies"] = Json::array();
+        j["unapplied_symbologies"].push_back(symbology());
+        extra('Q');
+        extra('B');
+        extra('B');
+        j["unapplied_symbologies"].push_back(symbology());
+        extra('Q');
+        extra('I');
+        extra('Q');
+        extra('B');
+        j["unapplied_colors"] = Json::array();
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto pos = r.p;
+            value_budget(3);
+            j["unapplied_colors"].push_back({{"serialized_rgb", r.uints(3)},
+                                             {"source_offset", pos},
+                                             {"source_byte_count", 12}});
+        }
+        extra('I');
+        extra('I');
+        extra('d', 2);
+        extra('d', 2);
+        extra('B');
+        extra('B');
+        extra('B');
+        j["font_size"] = doubles(r, 2);
+        j["font_lookup"] = "not_performed";
+        j["unapplied_field_semantics"] = "unassigned";
+        j["source_offset"] = start;
+        j["source_byte_count"] = r.p - start;
         return j;
     }
     Geometry mesh(Reader &r) {
@@ -375,6 +596,37 @@ class Decoder {
             g.value = curves(r, 0);
         } else if (kind == 1) {
             g.value = primitive(r, 0);
+        } else if (kind == 6) {
+            g.value = solid(r);
+        } else if (kind == 7) {
+            g.value = text(r);
+        } else if (kind == 10) {
+            const auto pos = r.p;
+            const auto n = count(r, 1);
+            const auto data_offset = r.p;
+            const auto payload = r.take(n);
+            g.value = {{"kind", "csg"},
+                       {"source_offset", pos},
+                       {"source_byte_count", r.p - pos},
+                       {"payload_source_offset", data_offset},
+                       {"payload_byte_count", n},
+                       {"archive_decode_status", "not_parsed"}};
+            try {
+                g.value["archive"] = decode_csg_bytes_budgeted(
+                    payload, std::min(std::size_t(100000), limits.max_values - values),
+                    std::min(std::size_t(128), limits.max_depth),
+                    [&](std::size_t cost) { value_budget(cost); });
+                g.value["archive_decode_status"] = "decoded";
+            } catch (const DecodeBudgetExceeded &) {
+                throw;
+            } catch (const std::exception &e) {
+                g.value["archive_decode_error"] = e.what();
+            }
+        } else if (kind == 4 || kind == 5 || kind == 8 || kind == 9) {
+            // These declared kinds fall through both native switch tables.
+            // The writer stores their kind/style but no geometry payload.
+            g.value = {{"kind", "entry_payload_not_serialized"},
+                       {"geometry_status", "not_serialized"}};
         } else {
             throw Unsupported("unsupported legacy graphics entry kind " + std::to_string(kind));
         }

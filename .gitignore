@@ -91,6 +91,7 @@
 !/tests/property_blocks.cpp
 !/tests/property_binary_values.cpp
 !/tests/legacy_graphics.cpp
+!/tests/legacy_graphics_types.cpp
 !/tests/layer_selection.cpp
 !/tests/scene_layers.cpp
 !/tests/native_group_layers.cpp

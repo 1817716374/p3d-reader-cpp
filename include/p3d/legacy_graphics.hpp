@@ -19,6 +19,10 @@ struct LegacyGraphicsLimits {
 // not skipped. Status is parsed, ambiguous or not_parsed; parsed requires a
 // unique full-buffer interpretation and a completed search. Ambiguous outputs
 // expose hypotheses instead of choosing one. Limits apply across all attempts.
+// Direct fields include curves/Bsplines, nine solid parameter layouts and text.
+// Nested CSG has independent member decode statuses. Known native omissions
+// report geometry_status=not_serialized; a parsed archive is not proof that
+// every source geometry exists or is valid. Input too large omits source_storage.
 // Source-cache decoding does not select active geometry or bind materials.
 Json decode_legacy_graphics(const Bytes &,
                             LegacyGraphicsProfile = LegacyGraphicsProfile::writer_2025,

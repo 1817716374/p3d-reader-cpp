@@ -1,4 +1,5 @@
 #include "blob_internal.hpp"
+#include "decode_budget.hpp"
 namespace p3d {
 Json binary_json(const Bytes &b) {
     Reader r(b);
@@ -198,6 +199,9 @@ Json binary_xml(const Bytes &b) {
     return roots[0];
 }
 Json decode_bgfb(const Bytes &b) {
+    return decode_bgfb(b, {});
+}
+Json decode_bgfb(const Bytes &b, const std::function<void(std::size_t)> &charge) {
     require(b.size() >= 12 && utf8(slice(b, 0, 8)) == "bg0001fb", "BGFB signature");
     const auto &types = bgfb_schema().at("types");
     const std::map<std::string, std::pair<std::string, unsigned>> scalars = {
@@ -261,6 +265,8 @@ Json decode_bgfb(const Bytes &b) {
     std::set<std::pair<std::string, std::size_t>> active;
     std::function<Json(const std::string &, std::size_t, unsigned)> read =
         [&](const std::string &typ, std::size_t pos, unsigned depth) -> Json {
+        if (charge)
+            charge(1);
         require(depth <= 80, "BGFB depth");
         if (scalars.count(typ)) {
             Reader r(b, pos);
@@ -287,6 +293,8 @@ Json decode_bgfb(const Bytes &b) {
             std::size_t size = scalar ? scalars.at(it).second : st ? layout(it).size : 4;
             require(count <= b.size() / size, "BGFB array count");
             checked(start, size * count);
+            if (charge)
+                charge(count);
             Json a = Json::array();
             for (unsigned i = 0; i < count; ++i)
                 a.push_back(

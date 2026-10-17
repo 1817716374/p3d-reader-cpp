@@ -1,18 +1,22 @@
 #include <p3d/csg.hpp>
 #include "internal.hpp"
+#include "decode_budget.hpp"
 
 namespace p3d {
 namespace {
 struct Budget {
     std::size_t nodes;
     std::size_t max_depth;
+    std::function<void(std::size_t)> charge;
 };
 Json decode_archive(const Bytes &, std::size_t, std::size_t, Budget &, std::size_t);
 // A view into the archive: child lengths cannot expose a sibling's bytes.
 struct Cursor {
     Reader r;
     std::size_t end;
-    Cursor(const Bytes &b, std::size_t offset, std::size_t length) : r(b, offset) {
+    Budget *budget;
+    Cursor(const Bytes &b, std::size_t offset, std::size_t length, Budget *budget_ = nullptr)
+        : r(b, offset), budget(budget_) {
         r.need(length);
         end = offset + length;
     }
@@ -37,6 +41,8 @@ struct Cursor {
     std::size_t count(std::size_t width) {
         auto n = integer();
         require(n >= 0 && std::size_t(n) <= left() / width, "CSG signed count out of bounds");
+        if (budget && budget->charge)
+            budget->charge(std::size_t(n));
         return std::size_t(n);
     }
     std::pair<std::size_t, std::size_t> block() {
@@ -67,6 +73,8 @@ Json nodes(const Bytes &b, std::size_t offset, std::size_t size, Budget &budget)
         if (!length)
             return nullptr;
         const auto id = pending.size();
+        if (budget.charge)
+            budget.charge(1);
         pending.push_back({start, length});
         out["nodes"].push_back(range(start, length));
         return id;
@@ -84,7 +92,7 @@ Json nodes(const Bytes &b, std::size_t offset, std::size_t size, Budget &budget)
                 node["status"] = "node_limit";
             } else {
                 --budget.nodes;
-                Cursor r(b, item.offset, item.size);
+                Cursor r(b, item.offset, item.size, &budget);
                 const auto version = r.integer();
                 node["version"] = version;
                 if (version != 0x1ee290) {
@@ -128,6 +136,8 @@ Json nodes(const Bytes &b, std::size_t offset, std::size_t size, Budget &budget)
                     }
                 }
             }
+        } catch (const DecodeBudgetExceeded &) {
+            throw;
         } catch (const std::exception &e) {
             node["status"] = "invalid";
             node["decode_error"] = e.what();
@@ -157,8 +167,11 @@ Json geometry_list(Cursor &r, Budget &budget, std::size_t depth) {
                 }
             } else {
                 item["encoding"] = "bgfb";
-                item["geometry"] = decode_bgfb(slice(r.r.b, block.first, block.second));
+                item["geometry"] =
+                    decode_bgfb(slice(r.r.b, block.first, block.second), budget.charge);
             }
+        } catch (const DecodeBudgetExceeded &) {
+            throw;
         } catch (const std::exception &e) {
             item["status"] = "not_decoded";
             item["decode_error"] = e.what();
@@ -188,7 +201,7 @@ void references(Json &tree, std::size_t geometries, std::size_t caches, std::siz
 }
 Json decode_archive(const Bytes &b, std::size_t offset, std::size_t size, Budget &budget,
                     std::size_t depth) {
-    Cursor r(b, offset, size);
+    Cursor r(b, offset, size, &budget);
     const auto marker = r.integer();
     require(marker == 22, "CSG archive marker");
     Json out = {{"_type", "GeCsgTree"},
@@ -232,10 +245,14 @@ Json decode_archive(const Bytes &b, std::size_t offset, std::size_t size, Budget
 }
 } // namespace
 Json decode_csg_bytes(const Bytes &b, std::size_t max_nodes, std::size_t max_archive_depth) {
+    return decode_csg_bytes_budgeted(b, max_nodes, max_archive_depth, {});
+}
+Json decode_csg_bytes_budgeted(const Bytes &b, std::size_t max_nodes, std::size_t max_archive_depth,
+                               const std::function<void(std::size_t)> &charge) {
     // Bound the recursive JSON nesting even if the caller supplies an excessive
     // depth. The binary node tree itself is decoded iteratively.
     require(max_archive_depth <= 128, "CSG maximum archive depth exceeds 128");
-    Budget budget{max_nodes, max_archive_depth};
+    Budget budget{max_nodes, max_archive_depth, charge};
     auto out = decode_archive(b, 0, b.size(), budget, 0);
     out["raw_base64"] = base64(b);
     return out;
