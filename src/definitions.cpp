@@ -313,7 +313,9 @@ Json read_materials(const Document &doc) {
         if (e.key()[0] == '#' && e.key().find('%') == std::string::npos)
             models[e.value()] = std::to_string(std::stoull(e.key().substr(1), nullptr, 16));
     for (auto &g : doc.graphics_records())
-        for (auto &a : g["attributes"])
+        for (std::size_t attribute_ordinal = 0; attribute_ordinal < g["attributes"].size();
+             ++attribute_ordinal) {
+            const auto &a = g["attributes"][attribute_ordinal];
             if (a["group"] == 0 && a["key"] == 20014) {
                 auto s = g["stream"].get<StreamPath>();
                 require(s.size() >= 2, "material stream scope");
@@ -331,6 +333,9 @@ Json read_materials(const Document &doc) {
                              {"stream", s},
                              {"record_offset", g["offset"]},
                              {"attribute_index", a["index"]},
+                             {"attribute_ordinal", attribute_ordinal},
+                             {"attribute_offset", a["offset"]},
+                             {"attribute_header_offset", a["offset"].get<std::uint64_t>() - 16},
                              {"payload", a["payload"]},
                              {"native_catalog_candidates", catalog_indices.count(nk)
                                                                ? Json(catalog_indices.at(nk))
@@ -364,6 +369,7 @@ Json read_materials(const Document &doc) {
                 }
                 definitions.push_back(item);
             }
+        }
     return {
         {"definitions", definitions},
         {"native_catalog_records", std::move(catalog)},
