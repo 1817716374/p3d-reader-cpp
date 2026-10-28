@@ -1136,8 +1136,12 @@ Json transformed_append_count(const Json &input) {
     return out;
 }
 
-Json native_input(const Bytes &entry, bool model_has_project) {
-    const std::size_t geometry_start = model_has_project ? 36 : 32;
+Json native_input(const Bytes &entry, bool model_has_project,
+                  std::optional<std::size_t> direct_geometry_offset = std::nullopt) {
+    const bool direct_geometry = direct_geometry_offset.has_value();
+    const std::size_t geometry_start = direct_geometry
+                                           ? *direct_geometry_offset
+                                           : model_has_project ? 36 : 32;
     Json out = {{"status", "not_evaluated"},
                 {"model_has_project", model_has_project},
                 {"geometry_offset", geometry_start}};
@@ -1147,20 +1151,25 @@ Json native_input(const Bytes &entry, bool model_has_project) {
     }
     try {
         Reader r(entry, 4);
-        const auto type = r.i32();
+        const auto type = direct_geometry ? 2 : r.i32();
         out["entry_geometry_type"] = type;
         static const std::map<int, const char *> readers = {
             {1, "curve_primitive_bgfb"}, {2, "curve_vector_bgfb"},
             {3, "polyface_bgfb"},        {4, "bspline_curve_via_bgfb_primitive"},
             {5, "bspline_surface_bgfb"}, {6, "solid_primitive_bgfb"},
             {7, "text_entity_bytes"},    {10, "csg_tree_bytes"}};
-        r.p = geometry_start - 8;
-        const auto count = r.u64();
+        std::uint64_t count = 0;
+        if (direct_geometry) {
+            count = entry.size() - geometry_start;
+        } else {
+            r.p = geometry_start - 8;
+            count = r.u64();
+        }
         // The native length guard precedes the type dispatch. Empty or oversized
         // ranges return the existing Entry without reading geometry OR its footer.
         // The native unsigned addition can wrap; do not classify that path here.
         require(count <= UINT64_MAX - geometry_start, "native_geometry_range_addition_overflow");
-        if (!count || count > r.left()) {
+        if (!count || (!direct_geometry && count > r.left())) {
             out.update(
                 {{"status", "geometry_not_read"},
                  {"reader", nullptr},
@@ -1281,6 +1290,13 @@ Json native_input(const Bytes &entry, bool model_has_project) {
     return out;
 }
 } // namespace
+
+Json decode_measure_curve_array(const Bytes &bytes) {
+    auto out = native_input(bytes, false, 0);
+    out["input_kind"] = "measurement_curve_vector_payload";
+    out["source_payload_size"] = bytes.size();
+    return out;
+}
 
 Json graphics_native_footer(const Bytes &bytes, std::size_t offset, bool entry) {
     Json out = {{"status", "not_evaluated"},

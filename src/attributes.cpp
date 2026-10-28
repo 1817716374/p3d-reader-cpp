@@ -189,6 +189,16 @@ Json decode_measure_info_attribute(unsigned index, const Bytes &b, int measureme
                 {"points", std::move(points)},
                 {"native_status", b.empty() ? 1 : 0}};
     }
+    const bool curve_array = (measurement_type == 3 && index == 9) ||
+                             (measurement_type == 4 && (index == 8 || index == 9)) ||
+                             (measurement_type == 5 && index == 8);
+    if (curve_array) {
+        auto native = decode_measure_curve_array(b);
+        return {{"encoding", "measurement_curve_array_bgfb"},
+                {"measurement_type", measurement_type},
+                {"property_index", index},
+                {"native_curve_vector", std::move(native)}};
+    }
     return nullptr;
 }
 Json decode_layer_group_attribute(unsigned group, const Bytes &b) {
