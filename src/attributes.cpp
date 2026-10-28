@@ -130,6 +130,21 @@ Json decode_measure_info_attribute(unsigned index, const Bytes &b) {
                 {"type_name", name},
                 {"enum_status", name.is_null() ? "unknown_value" : "identified"}};
     }
+    if (index == 4) {
+        // BPValue::getPointsFromBytes consumes consecutive GePoint3d values
+        // (three native doubles each); BPValue::setPointsToBytes emits the
+        // same raw 24-byte records without a count prefix.
+        require(b.size() % 24 == 0, "measurement result point array width");
+        Reader r(b);
+        Json points = Json::array();
+        while (r.left())
+            points.push_back(r.doubles(3));
+        return {{"encoding", "measurement_result_points"},
+                {"element_width", 24},
+                {"count", points.size()},
+                {"points", std::move(points)},
+                {"native_status", b.empty() ? 1 : 0}};
+    }
     return nullptr;
 }
 Json decode_layer_group_attribute(unsigned group, const Bytes &b) {
