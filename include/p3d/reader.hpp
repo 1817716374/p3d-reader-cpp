@@ -818,8 +818,9 @@ class Document {
     const Json &graphics_records() const;
     const Json &bindings() const;
     // P3D-SMAP blocks decoded as the three 64-bit values consumed by PDMV1,
-    // their seven 32-bit words, and the original record bytes. This includes
-    // SB blocks outside the count in P3D~MCH; it does not promote them into bindings().
+    // their seven 32-bit words, an SB1-compatible field view, and the original
+    // record bytes. This includes SB blocks outside P3D~MCH's count; it does
+    // not promote them into bindings().
     const Json &binding_blocks() const;
     const Json &relationships() const;
     const Json &materials() const;

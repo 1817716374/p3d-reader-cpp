@@ -540,12 +540,23 @@ Document::Document(const std::filesystem::path &path, Options opt)
                             const auto record_bytes = slice(b, start, 28);
                             Reader word_reader(record_bytes);
                             Json words = Json::array();
-                            for (unsigned word = 0; word < 7; ++word)
-                                words.push_back(word_reader.u32());
+                            std::array<std::uint32_t, 7> word_values{};
+                            for (unsigned word = 0; word < word_values.size(); ++word) {
+                                word_values[word] = word_reader.u32();
+                                words.push_back(word_values[word]);
+                            }
                             records.push_back({{"index", j},
                                                {"pdmv1_map_values", {first, second, third}},
                                                {"trailing_u32", trailing},
                                                {"observed_u32_words", std::move(words)},
+                                               {"binding_field_view",
+                                                {{"flags", word_values[0]},
+                                                 {"element_id", word_values[1]},
+                                                 {"model_id", word_values[2]},
+                                                 {"object_id", std::uint64_t(word_values[3]) |
+                                                                   (std::uint64_t(word_values[4]) << 32)},
+                                                 {"schema_id", std::uint64_t(word_values[5]) |
+                                                                   (std::uint64_t(word_values[6]) << 32)}}},
                                                {"raw", rawbytes(record_bytes)}});
                         }
                         v.binding_blocks.push_back({{"logical_stream", logical_name},

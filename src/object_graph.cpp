@@ -413,6 +413,39 @@ Json build_object_graph(const Document &doc) {
             s[2] == doc.index().value("P3D-SMG", std::string()) && model_storage.count(s[1]))
             live.insert(key(model_storage[s[1]], n["id"]));
     }
-    return build_graph_records(doc.objects(), doc.bindings(), doc.relationships(), models, live);
+    auto result = build_graph_records(doc.objects(), doc.bindings(), doc.relationships(), models, live);
+    Json unselected_bindings = Json::array();
+    for (const auto &block : doc.binding_blocks()) {
+        if (block["declared_by_mch"] == true)
+            continue;
+        for (const auto &record : block["records"]) {
+            const auto &fields = record["binding_field_view"];
+            const auto element_key = key(fields["model_id"], fields["element_id"]);
+            const auto object_key = key(fields["schema_id"], fields["object_id"]);
+            const auto object_ref = result["object_index"].value(
+                object_key, Json{{"records", Json::array()}, {"status", "missing"}});
+            Json tree_nodes = Json::array();
+            for (const auto &reference : result["hierarchy"]["element_references"])
+                if (reference.value("element_key", std::string()) == element_key)
+                    tree_nodes.push_back(reference["node"]);
+            const auto primary_bindings = result["binding_index"].value(element_key, Json::array());
+            const auto mch_status = block["declared_by_mch"].is_null()
+                                        ? "mch_count_unavailable"
+                                        : "not_selected_by_mch";
+            unselected_bindings.push_back(
+                {{"source", {{"stream", block["stream"]},
+                             {"block_index", block["block_index"]},
+                             {"record_index", record["index"]}}},
+                 {"selection_status", mch_status},
+                 {"binding_field_view", fields},
+                 {"object_reference",
+                  {{"object_key", object_key}, {"status", object_ref["status"]},
+                   {"records", object_ref["records"]}}},
+                 {"tree_reference_nodes", std::move(tree_nodes)},
+                 {"primary_binding_references", primary_bindings}});
+        }
+    }
+    result["unselected_binding_candidates"] = std::move(unselected_bindings);
+    return result;
 }
 } // namespace p3d
