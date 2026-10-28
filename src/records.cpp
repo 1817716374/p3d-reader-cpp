@@ -1035,13 +1035,54 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                                                  : complete ? "known_fields_decoded" : "truncated_known_fields";
                     }
                     fields["unmapped_suffix"] = rawbytes(state_reader.take(state_reader.left()));
+                    if (decoded.value("status", "") == "known_fields_decoded" &&
+                        fields["unmapped_suffix"]["bytes"] != 0)
+                        decoded["status"] = "known_fields_decoded_with_unknown_suffix";
                     decoded["flow_arrows"] = std::move(fields);
                 } else {
                     decoded["status"] = "truncated_flow_arrows_state";
                 }
             }
+            if (type_id == 405 && derived_offset && derived_offset <= state.size()) {
+                // FeaturesProcessor stores an optional sentinel followed by
+                // the feature category enum. The UI's native enum switch
+                // supplies the labels for values 0 through 6.
+                Reader feature_reader(state, derived_offset);
+                Json feature = Json::object();
+                if (feature_reader.left() >= 2) {
+                    const auto marker = feature_reader.u16();
+                    feature["record_marker"] = marker;
+                    if (marker == 0xffff && feature_reader.left() >= 2) {
+                        const auto value = feature_reader.u16();
+                        static const char *feature_names[] = {
+                            "break_line", "boundary", "contours", "hole",
+                            "island", "spot", "void"};
+                        static const char *feature_labels[] = {
+                            "Break Line", "Bound", "Contours", "Hole",
+                            "IsLand", "Spot", "Void"};
+                        feature["feature_type"] = value;
+                        if (value < 7) {
+                            feature["feature_type_name"] = feature_names[value];
+                            feature["feature_type_label"] = feature_labels[value];
+                            decoded["status"] = "known_fields_decoded";
+                        }
+                        feature["unmapped_suffix"] = rawbytes(feature_reader.take(feature_reader.left()));
+                        if (value >= 7 || feature["unmapped_suffix"]["bytes"] != 0)
+                            decoded["status"] = "partial";
+                    } else {
+                        feature["unmapped_suffix"] = rawbytes(slice(state, derived_offset, state.size() - derived_offset));
+                    }
+                } else {
+                    feature["unmapped_suffix"] = rawbytes(feature_reader.take(feature_reader.left()));
+                }
+                decoded["features"] = std::move(feature);
+            }
             out["decoded_state"] = std::move(decoded);
             out["status"] = "processor_state_partially_decoded";
+            if ((type_id == 405 || type_id == 407) &&
+                out["decoded_state"].value("status", "") == "known_fields_decoded" &&
+                out["decoded_state"].value("base_frame", Json::object()).value("status", "") == "decoded")
+                out["status"] = "processor_state_decoded";
         }
         return out;
     }
