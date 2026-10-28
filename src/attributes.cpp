@@ -183,6 +183,14 @@ Json material_assignment_records(const Json &graphics) {
     return out;
 }
 Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
+    if (group == 0 && key == 20080) {
+        Reader r(b);
+        auto value = r.u32();
+        r.finish();
+        return {{"encoding", "scalar_u32"},
+                {"semantic_role", "unresolved"},
+                {"value", value}};
+    }
     if (key == 109 && group == 0) {
         Reader r(b);
         auto flags = r.u32(), unassigned = r.u32();
