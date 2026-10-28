@@ -185,11 +185,9 @@ Json material_assignment_records(const Json &graphics) {
 Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
     if (group == 0 && key == 20080) {
         Reader r(b);
-        auto value = r.u32();
+        auto view_index = r.i32();
         r.finish();
-        return {{"encoding", "scalar_u32"},
-                {"semantic_role", "unresolved"},
-                {"value", value}};
+        return {{"encoding", "view_index"}, {"view_index", view_index}};
     }
     if (key == 109 && group == 0) {
         Reader r(b);
