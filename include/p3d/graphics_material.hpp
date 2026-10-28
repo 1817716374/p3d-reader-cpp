@@ -25,7 +25,8 @@ struct GraphicsMaterialContext {
     // Converts a rebuilt Entry's BPMaterial to a material in the owning project.
     std::function<GraphicsMaterialResult(const Json &)> load_inline_material;
 };
-// entries is the ordered, already rebuilt BPGraphics Entry array, each containing
+// Native part indices are zero-based BPGraphics Entry positions. entries is the
+// ordered, already rebuilt BPGraphics Entry array, each containing
 // inline_material (null means absent). attributes is the complete selected native
 // attribute collection, in source order, with group/key/index/payload fields.
 // Models material selection before the ordinary draw context resolves symbology.
