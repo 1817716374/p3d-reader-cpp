@@ -1168,9 +1168,9 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             if ((type_id == 404 || type_id == 413) && derived_offset &&
                 derived_offset <= state.size()) {
                 // The native SpotsProcessor reader is shared by type 404 and
-                // FeatureSpotsProcessor (type 413). Its initial serialized
-                // fields are a u16 version, two bytes, and a three-double
-                // vector; subsequent nested members remain opaque here.
+                // FeatureSpotsProcessor (type 413). Its serialized members
+                // are a fixed prefix followed by three UTF-16 strings and
+                // fixed-width scalar/vector members.
                 Reader spots_reader(state, derived_offset);
                 Json spots = Json::object();
                 if (spots_reader.left() >= 28) {
@@ -1180,9 +1180,68 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     spots["member_0x60_vector3"] =
                         Json::array({spots_reader.f64(), spots_reader.f64(),
                                      spots_reader.f64()});
+                    bool complete = true;
+                    auto take_utf16z = [&](const char *name) {
+                        if (!complete || spots_reader.left() < 2) {
+                            complete = false;
+                            return;
+                        }
+                        const auto start = spots_reader.p;
+                        bool terminated = false;
+                        while (spots_reader.left() >= 2) {
+                            if (spots_reader.u16() == 0) {
+                                terminated = true;
+                                break;
+                            }
+                        }
+                        if (!terminated) {
+                            complete = false;
+                            return;
+                        }
+                        const auto raw = slice(state, start, spots_reader.p - start);
+                        const auto text = slice(raw, 0, raw.size() - 2);
+                        spots[std::string("member_") + name] = utf16(text);
+                        spots[std::string("member_") + name + "_serialized"] =
+                            rawbytes(raw);
+                    };
+                    auto take_u32 = [&](const char *name) {
+                        if (!complete || spots_reader.left() < 4) {
+                            complete = false;
+                            return;
+                        }
+                        spots[std::string("member_") + name] = spots_reader.u32();
+                    };
+                    auto take_vector3 = [&](const char *name) {
+                        if (!complete || spots_reader.left() < 24) {
+                            complete = false;
+                            return;
+                        }
+                        spots[std::string("member_") + name] =
+                            Json::array({spots_reader.f64(), spots_reader.f64(),
+                                         spots_reader.f64()});
+                    };
+                    auto take_u16 = [&](const char *name) {
+                        if (!complete || spots_reader.left() < 2) {
+                            complete = false;
+                            return;
+                        }
+                        spots[std::string("member_") + name] = spots_reader.u16();
+                    };
+                    take_utf16z("0x40_utf16z");
+                    take_u32("0x78_u32");
+                    take_utf16z("0x80_utf16z");
+                    take_utf16z("0xa0_utf16z");
+                    take_u32("0x30_u32");
+                    take_vector3("0xc0_vector3");
+                    take_u16("0xd8_u16");
                     spots["unmapped_suffix"] =
                         rawbytes(spots_reader.take(spots_reader.left()));
-                    decoded["status"] = "known_prefix_decoded_with_unknown_suffix";
+                    decoded["status"] = !complete
+                                             ? "truncated_known_fields"
+                                             : spots["version"] == 1 &&
+                                                       spots["unmapped_suffix"]["bytes"] == 0
+                                                   ? "known_fields_decoded"
+                                                   : "known_fields_decoded_with_unknown_suffix";
                 } else {
                     spots["unmapped_suffix"] =
                         rawbytes(spots_reader.take(spots_reader.left()));
@@ -1259,7 +1318,8 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             }
             out["decoded_state"] = std::move(decoded);
             out["status"] = "processor_state_partially_decoded";
-            if ((type_id == 402 || type_id == 405 || type_id == 407) &&
+            if ((type_id == 402 || type_id == 404 || type_id == 405 ||
+                 type_id == 407 || type_id == 413) &&
                 out["decoded_state"].value("status", "") == "known_fields_decoded" &&
                 out["decoded_state"].value("base_frame", Json::object()).value("status", "") == "decoded")
                 out["status"] = "processor_state_decoded";
