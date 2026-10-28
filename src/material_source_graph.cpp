@@ -217,6 +217,19 @@ Json material_source_graph(const Json &materials, const Json &catalogs, const Js
                 known = false;
                 result["reason"] = e.what();
             }
+            // Carry both persisted source paths onto each candidate edge. A
+            // candidate is still only a catalog match: keep duplicate entries
+            // and do not select a runtime material or collapse the two paths.
+            for (auto &candidate : result["candidates"]) {
+                const auto ci = candidate.at("catalog_context_index").get<std::size_t>();
+                const auto ei = candidate.at("catalog_entry_index").get<std::size_t>();
+                const auto &entry = out.at("catalogs").at(ci).at("entries").at(ei);
+                candidate["catalog_id"] = entry.at("id");
+                candidate["catalog_name"] = entry.at("name");
+                candidate["declared_source"] = entry.at("declared_source");
+                candidate["initial_read_status"] = entry.at("initial_read_status");
+                candidate["initial_read_source"] = entry.at("initial_read_source");
+            }
             result["candidate_set_complete"] = known;
             result["status"] =
                 known ? (result["candidates"].empty() ? "no_candidates" : "candidates")

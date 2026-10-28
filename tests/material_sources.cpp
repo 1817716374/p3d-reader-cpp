@@ -81,6 +81,15 @@ unsigned material_sources_tests() {
               nodes[0].at("initial_read_source").at("definition_indices") == Json::array({0}),
           "physical selected attribute identity overrides equal saved IDs; declared and provider "
           "inputs remain distinct");
+    const auto &candidate =
+        result.at("attribute_assignments")[0].at("queries")[0].at("candidates")[0];
+    check(candidate.at("catalog_entry_index") == 0 && candidate.at("catalog_id") == 77 &&
+              candidate.at("catalog_name") == "Wood" &&
+              candidate.at("declared_source").at("definition_indices") == Json::array({1}) &&
+              candidate.at("initial_read_status") == "decoded" &&
+              candidate.at("initial_read_source").at("definition_indices") == Json::array({0}),
+          "query candidate carries both independent source-definition edges without selecting a "
+          "runtime winner");
     check(
         nodes[0].at("declared_source").at("source_identity").at("attribute_header_offset") == 256 &&
             nodes[0].at("declared_source").at("source_identity").at("attribute_payload_offset") ==
@@ -100,9 +109,11 @@ unsigned material_sources_tests() {
             nodes[2].at("declared_source").at("definition_indices") == Json::array({2, 3}),
         "duplicate physical identity remains ambiguous rather than content or name deduplication");
     check(result.at("definitions").size() == 4 &&
-              result.at("attribute_assignments")[0].at("queries")[0].at("candidates") ==
-                  Json::array({{{"catalog_context_index", 0}, {"catalog_entry_index", 0}},
-                               {{"catalog_context_index", 1}, {"catalog_entry_index", 0}}}),
+              result.at("attribute_assignments")[0].at("queries")[0].at("candidates").size() == 2 &&
+              result.at("attribute_assignments")[0].at("queries")[0].at("candidates")[0].at(
+                  "catalog_context_index") == 0 &&
+              result.at("attribute_assignments")[0].at("queries")[0].at("candidates")[1].at(
+                  "catalog_context_index") == 1,
           "matching names preserve catalog namespaces and native registered order without "
           "selecting a runtime winner");
     check(nodes[1].at("initial_read_source").at("status") == "not_evaluated" &&
