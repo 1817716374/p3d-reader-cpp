@@ -104,6 +104,34 @@ Json decode_material_assignment(unsigned index, const Bytes &b) {
         material_index_entries(out, index);
     return out;
 }
+Json decode_measure_info_attribute(unsigned index, const Bytes &b) {
+    // BPMeasureInfoBase writes these members as native 32-bit values under
+    // composed ID 0x2711000d (group 13, key 10001).
+    if (index == 1) {
+        Reader r(b);
+        require(b.size() == 4, "measurement version width");
+        const auto version = r.i32();
+        r.finish();
+        return {{"encoding", "measurement_info_version"}, {"version", version}};
+    }
+    if (index == 2) {
+        static const char *const names[] = {"base", "two_points", "edge", "point_to_face",
+                                            "face_to_face", "select_face", "attribute_face",
+                                            "angle", "distance_result_sum", "area_result_sum"};
+        Reader r(b);
+        require(b.size() == 4, "measurement type width");
+        const auto type = r.i32();
+        r.finish();
+        Json name = nullptr;
+        if (type >= 0 && type < static_cast<std::int32_t>(sizeof(names) / sizeof(names[0])))
+            name = names[type];
+        return {{"encoding", "measurement_info_type"},
+                {"type", type},
+                {"type_name", name},
+                {"enum_status", name.is_null() ? "unknown_value" : "identified"}};
+    }
+    return nullptr;
+}
 Json decode_layer_group_attribute(unsigned group, const Bytes &b) {
     Reader r(b);
     if (group == 1) {

@@ -1707,6 +1707,31 @@ static void material_index_tests() {
           "typed material view follows parsed JSON while preserving duplicate source keys");
 }
 static void attribute_semantics_tests() {
+    Bytes measure;
+    put<std::int32_t>(measure, 3);
+    const auto measure_version = decode_attribute(13, 10001, measure, 1);
+    check(measure_version["encoding"] == "measurement_info_version" &&
+              measure_version["version"] == 3,
+          "measurement info version is a signed 32-bit value");
+    measure.clear();
+    put<std::int32_t>(measure, 8);
+    const auto measure_type = decode_attribute(13, 10001, measure, 2);
+    check(measure_type["encoding"] == "measurement_info_type" &&
+              measure_type["type"] == 8 && measure_type["type_name"] == "distance_result_sum" &&
+              measure_type["enum_status"] == "identified",
+          "measurement info type resolves the declared native enum");
+    measure.clear();
+    put<std::int32_t>(measure, 10);
+    check(decode_attribute(13, 10001, measure, 2)["enum_status"] == "unknown_value",
+          "unknown measurement enum values retain their numeric value");
+    bool measurement_width_rejected = false;
+    try {
+        decode_attribute(13, 10001, Bytes{1, 2, 3}, 1);
+    } catch (const std::exception &) {
+        measurement_width_rejected = true;
+    }
+    check(measurement_width_rejected, "measurement info scalar width is checked");
+
     Bytes b;
     put<std::uint32_t>(b, 0x5dc00000u);
     put<std::uint32_t>(b, 0xfffffffdu);

@@ -880,6 +880,11 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     }
     if (group == 4 && key == 10001)
         return decode_material_assignment(index, b);
+    if (group == 13 && key == 10001) {
+        auto measure = decode_measure_info_attribute(index, b);
+        if (!measure.is_null())
+            return measure;
+    }
     if (key == 4 && group <= 1 && index == 0)
         return decode_layer_group_attribute(group, b);
     auto display = decode_display_attribute(group, key, b);
