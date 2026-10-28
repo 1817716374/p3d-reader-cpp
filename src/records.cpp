@@ -881,6 +881,62 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     }
     if (group == 4 && key == 10001)
         return decode_material_assignment(index, b);
+    if (group == 307 && key == 23223) {
+        if (b.size() < 2)
+            return {{"encoding", "terrain_display_processor_state"},
+                    {"status", "truncated_type_id"},
+                    {"bytes", b.size()},
+                    {"state_payload", rawbytes(b)}};
+        Reader r(b);
+        const auto type_id = r.u16();
+        std::string type_name;
+        switch (type_id) {
+        case 401:
+            type_name = "DTMEntityTrianglesDisplayProcessor";
+            break;
+        case 402:
+            type_name = "DTMEntityContoursDisplayProcessor";
+            break;
+        case 403:
+            type_name = "DTMEntityRegionsDisplayProcessor";
+            break;
+        case 404:
+            type_name = "DTMEntitySpotsDisplayProcessor";
+            break;
+        case 405:
+            type_name = "DTMEntityFeaturesDisplayProcessor";
+            break;
+        case 407:
+            type_name = "DTMEntityFlowArrowsDisplayProcessor";
+            break;
+        case 408:
+            type_name = "DTMEntityHighPointsDisplayProcessor";
+            break;
+        case 409:
+            type_name = "DTMEntityLowPointsDisplayProcessor";
+            break;
+        case 413:
+            type_name = "DTMEntityFeatureSpotsDisplayProcessor";
+            break;
+        case 414:
+            type_name = "DTMEntityRasterDrapingDisplayProcessor";
+            break;
+        default:
+            break;
+        }
+        auto state = r.take(r.left());
+        Json out = {{"encoding", "terrain_display_processor_state"},
+                    {"native_type_id", type_id},
+                    {"state_bytes", state.size()},
+                    {"state_payload", rawbytes(state)}};
+        if (type_name.empty()) {
+            out["status"] = "unknown_native_type";
+        } else {
+            out["status"] = "processor_type_identified";
+            out["native_type_name"] = type_name;
+        }
+        return out;
+    }
     if (group == 13 && key == 10001) {
         auto measure = decode_measure_info_attribute(index, b, measurement_type);
         if (!measure.is_null())
