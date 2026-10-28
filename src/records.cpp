@@ -1165,6 +1165,31 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                 }
                 decoded["contours"] = std::move(contour);
             }
+            if ((type_id == 404 || type_id == 413) && derived_offset &&
+                derived_offset <= state.size()) {
+                // The native SpotsProcessor reader is shared by type 404 and
+                // FeatureSpotsProcessor (type 413). Its initial serialized
+                // fields are a u16 version, two bytes, and a three-double
+                // vector; subsequent nested members remain opaque here.
+                Reader spots_reader(state, derived_offset);
+                Json spots = Json::object();
+                if (spots_reader.left() >= 28) {
+                    spots["version"] = spots_reader.u16();
+                    spots["member_0x110_u8"] = spots_reader.u8();
+                    spots["member_0x38_u8"] = spots_reader.u8();
+                    spots["member_0x60_vector3"] =
+                        Json::array({spots_reader.f64(), spots_reader.f64(),
+                                     spots_reader.f64()});
+                    spots["unmapped_suffix"] =
+                        rawbytes(spots_reader.take(spots_reader.left()));
+                    decoded["status"] = "known_prefix_decoded_with_unknown_suffix";
+                } else {
+                    spots["unmapped_suffix"] =
+                        rawbytes(spots_reader.take(spots_reader.left()));
+                    decoded["status"] = "truncated_known_prefix";
+                }
+                decoded["spots"] = std::move(spots);
+            }
             if ((type_id == 408 || type_id == 409) && derived_offset &&
                 derived_offset <= state.size()) {
                 // High/low point processors share the same versioned prefix
