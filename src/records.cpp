@@ -1043,6 +1043,47 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     decoded["status"] = "truncated_flow_arrows_state";
                 }
             }
+            if (type_id == 401 && derived_offset && derived_offset <= state.size()) {
+                // The native triangle-processor reader consumes a length-
+                // delimited versioned integer: u32 for v1, u64 otherwise.
+                // The property's business meaning is not established.
+                Reader triangle_reader(state, derived_offset);
+                Json triangle = Json::object();
+                if (triangle_reader.left() >= 2) {
+                    const auto block_length = triangle_reader.u16();
+                    triangle["length_after_length_word"] = block_length;
+                    if (block_length <= triangle_reader.left()) {
+                        const auto field_bytes = triangle_reader.take(block_length);
+                        Reader fields(field_bytes);
+                        if (fields.left() >= 2) {
+                            const auto version = fields.u16();
+                            triangle["version"] = version;
+                            if (version == 1 && fields.left() >= 4)
+                                triangle["serialized_value_u32"] = fields.u32();
+                            else if (version != 1 && fields.left() >= 8)
+                                triangle["serialized_value_u64"] = fields.u64();
+                            triangle["unmapped_block_suffix"] =
+                                rawbytes(fields.take(fields.left()));
+                            triangle["unmapped_suffix"] =
+                                rawbytes(triangle_reader.take(triangle_reader.left()));
+                            decoded["status"] =
+                                triangle["unmapped_block_suffix"]["bytes"] == 0 &&
+                                        triangle["unmapped_suffix"]["bytes"] == 0
+                                    ? "known_fields_decoded"
+                                    : "known_field_decoded_with_unknown_suffix";
+                        } else {
+                            triangle["unmapped_block"] = rawbytes(fields.take(fields.left()));
+                        }
+                    } else {
+                        triangle["unmapped_block"] =
+                            rawbytes(triangle_reader.take(triangle_reader.left()));
+                    }
+                } else {
+                    triangle["unmapped_suffix"] =
+                        rawbytes(triangle_reader.take(triangle_reader.left()));
+                }
+                decoded["triangle_processor"] = std::move(triangle);
+            }
             if ((type_id == 408 || type_id == 409) && derived_offset &&
                 derived_offset <= state.size()) {
                 // High/low point processors share the same versioned prefix
