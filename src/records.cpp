@@ -1043,7 +1043,8 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     decoded["status"] = "truncated_flow_arrows_state";
                 }
             }
-            if (type_id == 401 && derived_offset && derived_offset <= state.size()) {
+            if ((type_id == 401 || type_id == 403 || type_id == 414) && derived_offset &&
+                derived_offset <= state.size()) {
                 // The native triangle-processor reader consumes a length-
                 // delimited versioned integer: u32 for v1, u64 otherwise.
                 // The property's business meaning is not established.
@@ -1082,7 +1083,79 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     triangle["unmapped_suffix"] =
                         rawbytes(triangle_reader.take(triangle_reader.left()));
                 }
-                decoded["triangle_processor"] = std::move(triangle);
+                if (type_id == 401)
+                    decoded["triangle_processor"] = std::move(triangle);
+                else if (type_id == 403) {
+                    triangle["role"] = "regions_triangle_subobject";
+                    decoded["regions_triangle_base"] = std::move(triangle);
+                } else {
+                    triangle["role"] = "raster_draping_triangle_subobject";
+                    decoded["raster_draping_base"] = std::move(triangle);
+                }
+            }
+            if (type_id == 403 && derived_offset && derived_offset <= state.size()) {
+                // RegionsProcessor serializes its triangle subobject first,
+                // then a version u16, a u64 member, and a UTF-16 zero-
+                // terminated string. Locate the extension at the end of the
+                // length-delimited triangle block.
+                Json regions = Json::object();
+                Reader block_reader(state, derived_offset);
+                bool complete = false;
+                std::size_t extension_offset = state.size();
+                if (block_reader.left() >= 2) {
+                    const auto block_length = block_reader.u16();
+                    regions["triangle_block_length_after_length_word"] = block_length;
+                    if (std::size_t(block_length) <= block_reader.left()) {
+                        extension_offset = block_reader.p + block_length;
+                        Reader region_reader(state, extension_offset);
+                        if (region_reader.left() >= 10) {
+                            const auto version = region_reader.u16();
+                            regions["version"] = version;
+                            regions["member_0x38_u64"] = region_reader.u64();
+                            if (region_reader.left() >= 2) {
+                                const auto string_start = region_reader.p;
+                                bool terminated = false;
+                                while (region_reader.left() >= 2) {
+                                    if (region_reader.u16() == 0) {
+                                        terminated = true;
+                                        break;
+                                    }
+                                }
+                                if (terminated) {
+                                    const auto raw = slice(state, string_start,
+                                                           region_reader.p - string_start);
+                                    regions["member_0x40_utf16z"] =
+                                        utf16(slice(raw, 0, raw.size() - 2));
+                                    regions["member_0x40_utf16z_serialized"] =
+                                        rawbytes(raw);
+                                    regions["unmapped_suffix"] =
+                                        rawbytes(region_reader.take(region_reader.left()));
+                                    complete = version == 1 &&
+                                               regions["unmapped_suffix"]["bytes"] == 0;
+                                } else {
+                                    regions["unmapped_suffix"] =
+                                        rawbytes(region_reader.take(region_reader.left()));
+                                }
+                            } else {
+                                regions["unmapped_suffix"] =
+                                    rawbytes(region_reader.take(region_reader.left()));
+                            }
+                        } else {
+                            regions["unmapped_suffix"] =
+                                rawbytes(region_reader.take(region_reader.left()));
+                        }
+                    } else {
+                        regions["unmapped_block"] =
+                            rawbytes(block_reader.take(block_reader.left()));
+                    }
+                } else {
+                    regions["unmapped_block"] = rawbytes(block_reader.take(block_reader.left()));
+                }
+                if (complete && decoded.value("base_frame", Json::object())
+                                    .value("status", "") == "decoded")
+                    decoded["status"] = "known_fields_decoded";
+                regions["extension_offset"] = extension_offset;
+                decoded["regions"] = std::move(regions);
             }
             if (type_id == 402 && derived_offset && derived_offset <= state.size()) {
                 // ContoursProcessor::Read (TerrainEntityProcessor.dll RVA
@@ -1318,7 +1391,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             }
             out["decoded_state"] = std::move(decoded);
             out["status"] = "processor_state_partially_decoded";
-            if ((type_id == 402 || type_id == 404 || type_id == 405 ||
+            if ((type_id == 402 || type_id == 403 || type_id == 404 || type_id == 405 ||
                  type_id == 407 || type_id == 413) &&
                 out["decoded_state"].value("status", "") == "known_fields_decoded" &&
                 out["decoded_state"].value("base_frame", Json::object()).value("status", "") == "decoded")
