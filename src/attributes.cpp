@@ -130,6 +130,24 @@ Json decode_measure_info_attribute(unsigned index, const Bytes &b) {
                 {"type_name", name},
                 {"enum_status", name.is_null() ? "unknown_value" : "identified"}};
     }
+    if (index == 3) {
+        // The BPApp reader converts the property bytes from UTF-8 into PString
+        // through P3DDC's UTF-8 conversion entry point. Native C-string
+        // conversion stops at the first NUL; preserve any following bytes.
+        const auto terminator = std::find(b.begin(), b.end(), std::uint8_t(0));
+        const auto text_size = static_cast<std::size_t>(terminator - b.begin());
+        Json out = {{"encoding", "measurement_result_utf8"},
+                    {"text", utf8(slice(b, 0, text_size))},
+                    {"source_byte_count", b.size()},
+                    {"text_byte_count", text_size},
+                    {"terminator_present", terminator != b.end()}};
+        if (terminator != b.end()) {
+            out["terminator_offset"] = text_size;
+            out["suffix_after_terminator"] = rawbytes(slice(b, text_size + 1,
+                                                            b.size() - text_size - 1));
+        }
+        return out;
+    }
     if (index == 4) {
         // BPValue::getPointsFromBytes consumes consecutive GePoint3d values
         // (three native doubles each); BPValue::setPointsToBytes emits the
