@@ -1151,8 +1151,17 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                 } else {
                     regions["unmapped_block"] = rawbytes(block_reader.take(block_reader.left()));
                 }
-                if (complete && decoded.value("base_frame", Json::object())
-                                    .value("status", "") == "decoded")
+                const auto triangle_base =
+                    decoded.value("regions_triangle_base", Json::object());
+                const bool triangle_complete =
+                    triangle_base.contains("version") &&
+                    triangle_base.contains("unmapped_block_suffix") &&
+                    triangle_base["unmapped_block_suffix"].value("bytes", 1u) == 0 &&
+                    (triangle_base.contains("serialized_value_u32") ||
+                     triangle_base.contains("serialized_value_u64"));
+                if (complete && triangle_complete &&
+                    decoded.value("base_frame", Json::object())
+                            .value("status", "") == "decoded")
                     decoded["status"] = "known_fields_decoded";
                 regions["extension_offset"] = extension_offset;
                 decoded["regions"] = std::move(regions);
