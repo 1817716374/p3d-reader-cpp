@@ -1043,6 +1043,39 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     decoded["status"] = "truncated_flow_arrows_state";
                 }
             }
+            if ((type_id == 408 || type_id == 409) && derived_offset &&
+                derived_offset <= state.size()) {
+                // High/low point processors share the same versioned prefix
+                // layout as the flow-arrow processor. The SDK exposes the
+                // point layer and visibility independently; the three-value
+                // vector stays semantically unnamed until its purpose is
+                // confirmed.
+                Reader point_reader(state, derived_offset);
+                Json point = Json::object();
+                if (point_reader.left() >= 33) {
+                    const auto version = point_reader.u16();
+                    point["version"] = version;
+                    point["point_layer_id"] = point_reader.u16();
+                    point["point_type_raw"] = point_reader.u8();
+                    point["vector3"] =
+                        Json::array({point_reader.f64(), point_reader.f64(),
+                                     point_reader.f64()});
+                    const auto visible_raw = point_reader.u32();
+                    point["visible"] = visible_raw != 0;
+                    point["visible_raw"] = visible_raw;
+                    point["unmapped_suffix"] =
+                        rawbytes(point_reader.take(point_reader.left()));
+                    decoded["status"] =
+                        point["unmapped_suffix"]["bytes"] == 0 && version <= 2
+                            ? "known_fields_decoded"
+                            : "known_prefix_decoded_with_unknown_suffix";
+                } else {
+                    point["unmapped_suffix"] =
+                        rawbytes(point_reader.take(point_reader.left()));
+                    decoded["status"] = "truncated_known_prefix";
+                }
+                decoded["high_low_points"] = std::move(point);
+            }
             if (type_id == 405 && derived_offset && derived_offset <= state.size()) {
                 // FeaturesProcessor stores an optional sentinel followed by
                 // the feature category enum. The UI's native enum switch
