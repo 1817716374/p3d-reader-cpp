@@ -189,6 +189,17 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
         r.finish();
         return {{"encoding", "view_index"}, {"view_index", view_index}};
     }
+    if (group == 0 && key == 20050 && b.size() == 36) {
+        Reader r(b);
+        Json words = Json::array();
+        for (std::size_t i = 0; i < 9; ++i)
+            words.push_back({{"source_offset", i * 4}, {"value_u32", r.u32()}});
+        r.finish();
+        return {{"encoding", "native_fixed_word_record"},
+                {"semantic_role", "unresolved"},
+                {"word_width_bytes", 4},
+                {"words", std::move(words)}};
+    }
     if (group == 12 && key == 20050) {
         constexpr std::size_t header_bytes = 16;
         constexpr std::size_t bucket_count = 16;
