@@ -935,77 +935,113 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             out["status"] = "processor_type_identified";
             out["native_type_name"] = type_name;
         }
-        if (type_id == 407) {
-            // DTMEntityFlowArrowsProcessor::Read serializes the shared base
-            // frame, followed by a versioned flow-arrow state. Keep the base
-            // bytes intact until each shared member has a verified name.
-            Json decoded = {{"status", "partial"}};
-            Reader state_reader(state);
-            if (state_reader.left() >= 4) {
-                const auto base_frame_length = state_reader.u16();
-                const auto base_version = state_reader.u16();
-                if (base_frame_length >= 2 &&
-                    std::size_t(base_frame_length - 2) <= state_reader.left()) {
-                    auto base_fields = state_reader.take(std::size_t(base_frame_length - 2));
-                    decoded["base_frame"] = {
-                        {"version", base_version},
-                        {"length_after_length_word", base_frame_length},
-                        {"unmapped_fields", rawbytes(base_fields)}};
-                    if (state_reader.left() >= 2) {
-                        const auto version = state_reader.u16();
-                        Json fields = {{"version", version}};
-                        // This ordering and the version-1 defaults are read
-                        // directly from the native processor serializer.
-                        if (state_reader.left() >= 2 + 24 + 4) {
-                            fields["layer_id"] = state_reader.u16();
-                            fields["scale_vector"] =
-                                Json::array({state_reader.f64(), state_reader.f64(),
-                                             state_reader.f64()});
-                            const auto visible_raw = state_reader.u32();
-                            fields["visible"] = visible_raw != 0;
-                            fields["visible_raw"] = visible_raw;
-                            bool complete = true;
-                            if (version > 1) {
-                                if (state_reader.left() >= 12) {
-                                    const auto arrow_type = state_reader.i32();
-                                    const auto scale = state_reader.f64();
-                                    static const char *arrow_names[] = {
-                                        "hollow", "closed", "filled", "double"};
-                                    fields["arrow_type"] = arrow_type;
-                                    if (arrow_type >= 0 && arrow_type < 4)
-                                        fields["arrow_type_name"] = arrow_names[arrow_type];
-                                    fields["scale"] = scale;
-                                } else {
-                                    complete = false;
-                                }
-                            } else if (version <= 1) {
-                                fields["arrow_type"] = 1;
-                                fields["arrow_type_name"] = "closed";
-                                fields["scale"] = 10000.0;
-                                fields["arrow_type_and_scale_source"] = "native_default_for_version_1";
-                            }
-                            decoded["status"] = version > 2
-                                                     ? "decoded_with_unknown_version_tail"
-                                                     : complete ? "decoded" : "truncated_known_fields";
-                        }
-                        fields["unmapped_suffix"] = rawbytes(state_reader.take(state_reader.left()));
-                        decoded["flow_arrows"] = std::move(fields);
-                    } else {
-                        decoded["unmapped_suffix"] = rawbytes(state_reader.take(state_reader.left()));
-                    }
-                } else {
-                    decoded["status"] = "invalid_base_frame_length";
-                    decoded["unmapped_state"] = rawbytes(state_reader.take(state_reader.left()));
+        if (!type_name.empty()) {
+            auto decode_base_frame = [](const Bytes &bytes, Json &decoded) {
+                Reader reader(bytes);
+                if (reader.left() < 4) {
+                    decoded["status"] = "truncated_base_frame";
+                    decoded["unmapped_state"] = rawbytes(bytes);
+                    return std::size_t(0);
                 }
-            } else {
-                decoded["status"] = "truncated_base_frame";
-                decoded["unmapped_state"] = rawbytes(state_reader.take(state_reader.left()));
+                const auto frame_length = reader.u16();
+                const auto version = reader.u16();
+                if (frame_length < 2 ||
+                    std::size_t(frame_length - 2) > reader.left()) {
+                    decoded["status"] = "invalid_base_frame_length";
+                    decoded["unmapped_state"] = rawbytes(bytes);
+                    return std::size_t(0);
+                }
+                auto raw_fields = reader.take(std::size_t(frame_length - 2));
+                Json frame = {{"version", version},
+                              {"length_after_length_word", frame_length},
+                              {"raw_fields", rawbytes(raw_fields)}};
+                Reader fields(raw_fields);
+                const auto minimum = version == 1 ? 24u : 25u;
+                if (version <= 2 && fields.left() >= minimum) {
+                    const auto layer_id = fields.u32();
+                    const auto color = fields.u32();
+                    const auto style = fields.u32();
+                    const auto weight = fields.u32();
+                    const auto transparency = fields.f64();
+                    const auto visible_raw = version == 1 ? std::uint8_t(1) : fields.u8();
+                    auto sentinel = [](std::uint32_t value, std::uint32_t by_layer,
+                                       std::uint32_t by_block) {
+                        if (value == by_layer)
+                            return "by_layer";
+                        if (value == by_block)
+                            return "by_block";
+                        return "explicit";
+                    };
+                    frame["display_properties"] = {
+                        {"layer_id", layer_id},
+                        {"symbology",
+                         {{"color", color},
+                          {"color_source", sentinel(color, 0xffffffffu, 0xfffffffeu)},
+                          {"style", style},
+                          {"style_source", sentinel(style, 0x7fffffffu, 0x7ffffffeu)},
+                          {"weight", weight},
+                          {"weight_source", sentinel(weight, 0xffffffffu, 0xfffffffeu)}}},
+                        {"transparency", transparency},
+                        {"visible", visible_raw != 0},
+                        {"visible_raw", visible_raw}};
+                    frame["padding_bytes"] = rawbytes(fields.take(fields.left()));
+                    frame["status"] = "decoded";
+                } else {
+                    frame["status"] = "unmapped_version_or_short_fields";
+                }
+                decoded["base_frame"] = std::move(frame);
+                return reader.p;
+            };
+
+            Json decoded = {{"status", "partial"}};
+            const auto derived_offset = decode_base_frame(state, decoded);
+            if (type_id == 407 && derived_offset && derived_offset <= state.size()) {
+                // DTMEntityFlowArrowsProcessor::Read follows the common frame
+                // with its own versioned fields.
+                Reader state_reader(state, derived_offset);
+                if (state_reader.left() >= 2) {
+                    const auto version = state_reader.u16();
+                    Json fields = {{"version", version}};
+                    if (state_reader.left() >= 2 + 24 + 4) {
+                        fields["layer_id"] = state_reader.u16();
+                        fields["scale_vector"] =
+                            Json::array({state_reader.f64(), state_reader.f64(),
+                                         state_reader.f64()});
+                        const auto visible_raw = state_reader.u32();
+                        fields["visible"] = visible_raw != 0;
+                        fields["visible_raw"] = visible_raw;
+                        bool complete = true;
+                        if (version > 1) {
+                            if (state_reader.left() >= 12) {
+                                const auto arrow_type = state_reader.i32();
+                                const auto scale = state_reader.f64();
+                                static const char *arrow_names[] = {
+                                    "hollow", "closed", "filled", "double"};
+                                fields["arrow_type"] = arrow_type;
+                                if (arrow_type >= 0 && arrow_type < 4)
+                                    fields["arrow_type_name"] = arrow_names[arrow_type];
+                                fields["scale"] = scale;
+                            } else {
+                                complete = false;
+                            }
+                        } else {
+                            fields["arrow_type"] = 1;
+                            fields["arrow_type_name"] = "closed";
+                            fields["scale"] = 10000.0;
+                            fields["arrow_type_and_scale_source"] = "native_default_for_version_1";
+                        }
+                        decoded["status"] = version > 2
+                                                 ? "known_fields_decoded_with_unknown_version_tail"
+                                                 : complete ? "known_fields_decoded" : "truncated_known_fields";
+                    }
+                    fields["unmapped_suffix"] = rawbytes(state_reader.take(state_reader.left()));
+                    decoded["flow_arrows"] = std::move(fields);
+                } else {
+                    decoded["status"] = "truncated_flow_arrows_state";
+                }
             }
             out["decoded_state"] = std::move(decoded);
-            if (out["decoded_state"]["status"] == "decoded")
-                out["status"] = "processor_state_decoded";
-            else
-                out["status"] = "processor_state_partially_decoded";
+            out["status"] = "processor_state_partially_decoded";
         }
         return out;
     }
