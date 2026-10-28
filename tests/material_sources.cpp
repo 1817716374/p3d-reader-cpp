@@ -341,5 +341,44 @@ unsigned material_sources_tests() {
     check(
         std::all_of(threaded.begin(), threaded.end(), [&](const Json &r) { return r == expected; }),
         "parallel source graph construction shares no mutable catalog or definition state");
+
+    Json element_graphics =
+        Json::array({{{"id", 99},
+                      {"offset", 12},
+                      {"stream", {"SM", "model-token", "SMGA", "attributes"}},
+                      {"attributes", Json::array({prop(4, 0, bytes(u"Entity"))})}},
+                     {{"id", 100},
+                      {"offset", 24},
+                      {"stream", {"SM", "model-token", "SMGA", "attributes"}},
+                      {"attributes", Json::array({prop(2, 0, bytes(u"Part"))})}},
+                     {{"id", 101},
+                      {"offset", 36},
+                      {"stream", {"other", "model-token", "SMGA", "attributes"}},
+                      {"attributes", Json::array({prop(4, 0, bytes(u"Other"))})}}});
+    Json element_records = Json::array({{{"id", 99},
+                                         {"offset", 48},
+                                         {"element_type", 21},
+                                         {"stream", {"SM", "model-token", "SMG", "elements"}}},
+                                        {{"id", 99},
+                                         {"offset", 60},
+                                         {"element_type", 22},
+                                         {"stream", {"SM", "model-token", "SMG", "elements"}}}});
+    auto owner_graph = detail::material_source_graph({{"definitions", none}}, none,
+                                                     element_graphics, element_records, {});
+    detail::attach_native_element_sources(owner_graph, element_graphics, element_records,
+                                          {{"model-token", 7}}, "SM", "SMGA", "SMG");
+    const auto &owner_edges = owner_graph.at("attribute_assignments");
+    check(owner_edges.size() == 3 &&
+              owner_edges[0].at("owning_element_relation").at("status") == "ambiguous" &&
+              owner_edges[0].at("owning_element_relation").at("candidates").size() == 2 &&
+              owner_edges[0]
+                      .at("owning_element_relation")
+                      .at("candidates")[0]
+                      .at("native_record_index") == 0 &&
+              owner_edges[1].at("owning_element_relation").at("status") == "not_found" &&
+              owner_edges[2].at("owning_element_relation").at("status") ==
+                  "not_in_native_entity_graphics_scope",
+          "material declarations join native elements only by the scene builder's exact model/id "
+          "scope and preserve missing or duplicate matches");
     return checks;
 }

@@ -407,10 +407,71 @@ Json material_source_graph(const Json &materials, const Json &catalogs, const Js
     }
     return out;
 }
+void attach_native_element_sources(Json &graph, const Json &graphics, const Json &native,
+                                   const std::map<std::string, std::uint64_t> &model_ids,
+                                   const std::string &sm_path, const std::string &smga_path,
+                                   const std::string &smg_path) {
+    using ElementKey = std::pair<std::uint64_t, std::uint64_t>;
+    std::map<ElementKey, Json> elements;
+    if (!graphics.is_array() || !native.is_array() || !graph.contains("attribute_assignments"))
+        return;
+    for (std::size_t i = 0; i < native.size(); ++i) {
+        const auto &record = native[i];
+        if (!record.contains("stream") || !record.at("stream").is_array() ||
+            record.at("stream").size() != 4 || record.at("stream")[0] != sm_path ||
+            record.at("stream")[2] != smg_path || !record.contains("id"))
+            continue;
+        const auto model = model_ids.find(record.at("stream")[1].get<std::string>());
+        if (model == model_ids.end())
+            continue;
+        auto &matches = elements[{model->second, integer(record.at("id"))}];
+        matches.push_back({{"native_record_index", i},
+                           {"model_id", model->second},
+                           {"element_id", record.at("id")},
+                           {"native_type", record.value("element_type", Json())},
+                           {"source", source_record(record)}});
+    }
+    for (auto &assignment : graph["attribute_assignments"]) {
+        assignment["owning_element_relation"] = {{"status", "not_in_native_entity_graphics_scope"},
+                                                 {"candidates", Json::array()}};
+        if (!assignment.contains("graphics_record_index"))
+            continue;
+        const auto gi = assignment.at("graphics_record_index").get<std::size_t>();
+        if (gi >= graphics.size())
+            continue;
+        const auto &record = graphics[gi];
+        if (!record.contains("stream") || !record.at("stream").is_array() ||
+            record.at("stream").size() < 4 || record.at("stream")[0] != sm_path ||
+            record.at("stream")[2] != smga_path || !record.contains("id"))
+            continue;
+        const auto model = model_ids.find(record.at("stream")[1].get<std::string>());
+        if (model == model_ids.end()) {
+            assignment["owning_element_relation"]["status"] = "model_not_indexed";
+            continue;
+        }
+        const auto found = elements.find({model->second, integer(record.at("id"))});
+        if (found == elements.end()) {
+            assignment["owning_element_relation"]["status"] = "not_found";
+            continue;
+        }
+        assignment["owning_element_relation"]["candidates"] = found->second;
+        assignment["owning_element_relation"]["status"] =
+            found->second.size() == 1 ? "matched" : "ambiguous";
+    }
+}
 } // namespace detail
 Json read_stored_material_graph(const Document &doc, const StoredMaterialSourceOptions &options) {
-    return detail::material_source_graph(doc.materials(),
-                                         doc.native_material_catalog(options.catalog),
-                                         doc.graphics_records(), doc.native_records(), options);
+    auto graph =
+        detail::material_source_graph(doc.materials(), doc.native_material_catalog(options.catalog),
+                                      doc.graphics_records(), doc.native_records(), options);
+    std::map<std::string, std::uint64_t> model_ids;
+    for (auto it = doc.index().begin(); it != doc.index().end(); ++it)
+        if (it.key().size() > 1 && it.key()[0] == '#' && it.key().find('%') == std::string::npos)
+            model_ids[it.value().get<std::string>()] = std::stoull(it.key().substr(1), nullptr, 16);
+    const auto canonical = [&](const char *key) { return doc.index().value(key, std::string()); };
+    detail::attach_native_element_sources(graph, doc.graphics_records(), doc.native_records(),
+                                          model_ids, canonical("P3D-SM"), canonical("P3D-SMGA"),
+                                          canonical("P3D-SMG"));
+    return graph;
 }
 } // namespace p3d
