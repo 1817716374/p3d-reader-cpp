@@ -622,6 +622,47 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                 element.instances.push_back(inst);
             }
         }
+        // A stored part-material index addresses BPGraphics' ordered Entry list.
+        // In the verified one-child entity form, the sole native dependency is
+        // therefore Entry/part 0. Keep the association at the source-record
+        // level: one Entry can reconstruct several primitive ranges/faces.
+        meta["geometry_part_material_assignments"] = Json::array();
+        if (meta.contains("advanced_material_assignments")) {
+            for (const auto &assignment : meta["advanced_material_assignments"]) {
+                if ((assignment["group"] != 2 && assignment["group"] != 4) ||
+                    assignment["key"] != 10001)
+                    continue;
+                Json mapped = {{"status", "unresolved"},
+                               {"source", assignment},
+                               {"part_index", assignment["attribute_index"]},
+                               {"part_index_basis", "zero_based_graphics_entry_order"},
+                               {"face_mapping_status", "entry_level_only"}};
+                if (n["element_type"] != 97) {
+                    mapped["reason"] = "owner_type_outside_verified_single_entry_scope";
+                } else if (n["children"].size() != 1) {
+                    mapped["reason"] = n["children"].empty()
+                                            ? "owner_has_no_native_graphics_child"
+                                            : "multiple_native_graphics_children_order_unverified";
+                } else if (assignment["attribute_index"] != 0) {
+                    mapped["reason"] = "part_index_outside_verified_single_entry_scope";
+                } else {
+                    const auto child = n["children"][0];
+                    const auto child_records = geometry_records.find(scoped(model, child));
+                    if (child_records == geometry_records.end() || child_records->second.empty()) {
+                        mapped["reason"] = "native_graphics_child_record_missing";
+                    } else if (child_records->second.size() != 1) {
+                        mapped["reason"] = "native_graphics_child_record_ambiguous";
+                        mapped["record_count"] = child_records->second.size();
+                    } else {
+                        mapped["status"] = "matched";
+                        mapped["native_child_reference_ordinal"] = 0;
+                        mapped["geometry_id"] = child;
+                        mapped["geometry_record_key"] = source_key(*child_records->second[0]);
+                    }
+                }
+                meta["geometry_part_material_assignments"].push_back(std::move(mapped));
+            }
+        }
         for (auto &inst : element.instances)
             inst.style = instance_style;
         meta["geometry_ids"] = geometry_ids;
