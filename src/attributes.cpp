@@ -244,6 +244,14 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
                     {"unread_suffix_source_offset", consumed_bytes},
                     {"unread_suffix_byte_count", b.size() - consumed_bytes},
                     {"unread_suffix_status", b.size() > consumed_bytes ? "opaque" : "absent"}};
+        Reader header(b);
+        out["native_header_fields"] = {
+            {"semantic_role", "unresolved"},
+            {"f64_at_0", {{"source_offset", 0}, {"value", header.f64()}}},
+            {"u32_at_8", {{"source_offset", 8}, {"value", header.u32()}}},
+            {"unread_bytes_at_12", {{"source_offset", 12},
+                                     {"byte_count", 4},
+                                     {"bytes", rawbytes(slice(b, 12, 4))}}}};
         // The current native writer appends two GeRotMatrix values after the
         // fixed table. Older 4,424-byte variants do not share this proven
         // suffix layout, so decode the matrices only when the full native
