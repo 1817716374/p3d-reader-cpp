@@ -1,6 +1,7 @@
 #include "geometry.hpp"
 #include "internal.hpp"
 #include <atomic>
+#include <charconv>
 #include <fstream>
 #include <lz4/lz4.h>
 #include <mutex>
@@ -382,7 +383,7 @@ struct Document::Impl {
     std::vector<Stream> streams;
     Json index = Json::object(), model_ids = Json::object(), schema_ids = Json::object(),
          objects = Json::array(), native = Json::array(), graphics = Json::array(),
-         bindings = Json::array(), relations = Json::array(), materials, schemas, models,
+         bindings = Json::array(), binding_blocks = Json::array(), relations = Json::array(), materials, schemas, models,
          colors = Json::array(), layers, file_header;
     Options options;
 };
@@ -424,7 +425,7 @@ Document::Document(const std::filesystem::path &path, Options opt)
     }
     struct Parsed {
         Json objects = Json::array(), native = Json::array(), graphics = Json::array(),
-             bindings = Json::array(), relations = Json::array();
+             bindings = Json::array(), binding_blocks = Json::array(), relations = Json::array();
     };
     std::vector<Parsed> parsed(d.streams.size());
     std::atomic<std::size_t> work{0};
@@ -511,6 +512,50 @@ Document::Document(const std::filesystem::path &path, Options opt)
                                               {"schema_id", sc}});
                     }
                 }
+                if (s.path.size() == 3 && s.path[0] == canonical("P3D-SD") &&
+                    s.path[1] == canonical("P3D-SMAP")) {
+                    std::string logical_name;
+                    for (auto entry = d.index.begin(); entry != d.index.end(); ++entry)
+                        if (entry.key().rfind("P3D-SB", 0) == 0 && entry.value() == s.path[2]) {
+                            logical_name = entry.key();
+                            break;
+                        }
+                    if (!logical_name.empty()) {
+                        const auto suffix = logical_name.substr(6);
+                        std::uint32_t block_index = 0;
+                        const auto parsed_index = std::from_chars(
+                            suffix.data(), suffix.data() + suffix.size(), block_index);
+                        require(parsed_index.ec == std::errc{} &&
+                                    parsed_index.ptr == suffix.data() + suffix.size() &&
+                                    block_index > 0,
+                                "binding block index");
+                        Reader r(b);
+                        const auto count = r.u32();
+                        require(r.left() == std::uint64_t(count) * 28, "binding block size");
+                        Json records = Json::array();
+                        for (std::uint32_t j = 0; j < count; ++j) {
+                            const auto start = r.p;
+                            const auto first = r.u64(), second = r.u64(), third = r.u64();
+                            const auto trailing = r.u32();
+                            const auto record_bytes = slice(b, start, 28);
+                            Reader word_reader(record_bytes);
+                            Json words = Json::array();
+                            for (unsigned word = 0; word < 7; ++word)
+                                words.push_back(word_reader.u32());
+                            records.push_back({{"index", j},
+                                               {"pdmv1_map_values", {first, second, third}},
+                                               {"trailing_u32", trailing},
+                                               {"observed_u32_words", std::move(words)},
+                                               {"raw", rawbytes(record_bytes)}});
+                        }
+                        v.binding_blocks.push_back({{"logical_stream", logical_name},
+                                                    {"stream", s.path},
+                                                    {"block_index", block_index},
+                                                    {"record_count", count},
+                                                    {"record_stride", 28},
+                                                    {"records", std::move(records)}});
+                    }
+                }
                 if (s.path.size() == 4 && s.path[1] == canonical("P3D-SREP") &&
                     s.path.back() == canonical("P3D~MELE1") && b.size() >= 60) {
                     v.relations = parse_relationships(b);
@@ -552,8 +597,32 @@ Document::Document(const std::filesystem::path &path, Options opt)
             d.graphics.push_back(std::move(x));
         for (auto &x : v.bindings)
             d.bindings.push_back(std::move(x));
+        for (auto &x : v.binding_blocks)
+            d.binding_blocks.push_back(std::move(x));
         for (auto &x : v.relations)
             d.relations.push_back(std::move(x));
+    }
+    std::optional<std::uint32_t> declared_binding_block_count;
+    const StreamPath binding_map_prefix = {d.index.value("P3D-SD", std::string()),
+                                           d.index.value("P3D-SMAP", std::string())};
+    const auto mch_path = StreamPath{binding_map_prefix[0], binding_map_prefix[1],
+                                     d.index.value("P3D~MCH", std::string())};
+    for (const auto &stream : d.streams) {
+        if (stream.path == mch_path && stream.decoded && stream.decoded->size() == 4) {
+            Reader r(*stream.decoded);
+            declared_binding_block_count = r.u32();
+            break;
+        }
+    }
+    for (auto &block : d.binding_blocks) {
+        if (declared_binding_block_count) {
+            block["mch_declared_block_count"] = *declared_binding_block_count;
+            block["declared_by_mch"] =
+                block["block_index"].get<std::uint32_t>() <= *declared_binding_block_count;
+        } else {
+            block["mch_declared_block_count"] = nullptr;
+            block["declared_by_mch"] = nullptr;
+        }
     }
     d.schemas = read_schemas(*this);
     d.models = read_models(*this);
@@ -582,7 +651,8 @@ ACCESSOR(models, models)
 ACCESSOR(layer_tables, layers)
 ACCESSOR(objects, objects)
 ACCESSOR(native_records, native)
-ACCESSOR(graphics_records, graphics) ACCESSOR(bindings, bindings) ACCESSOR(relationships, relations)
+ACCESSOR(graphics_records, graphics) ACCESSOR(bindings, bindings)
+ACCESSOR(binding_blocks, binding_blocks) ACCESSOR(relationships, relations)
     ACCESSOR(materials, materials) ACCESSOR(schemas, schemas)
         ACCESSOR(color_tables, colors) Json Document::object_graph() const {
     return build_object_graph(*this);
@@ -599,12 +669,24 @@ Json Document::summary() const {
         for (auto &a : g["attributes"])
             if (a["decoded"].contains("commands"))
                 cmds += a["decoded"]["commands"].size();
+    Json block_summary = Json::array();
+    std::size_t block_records = 0;
+    for (const auto &block : binding_blocks()) {
+        block_records += block["record_count"].get<std::size_t>();
+        block_summary.push_back({{"logical_stream", block["logical_stream"]},
+                                 {"block_index", block["block_index"]},
+                                 {"record_count", block["record_count"]},
+                                 {"declared_by_mch", block["declared_by_mch"]}});
+    }
     return {{"streams", streams().size()},
             {"objects", objects().size()},
             {"native_records", native_records().size()},
             {"graphics_records", graphics_records().size()},
             {"commands", cmds},
             {"bindings", bindings().size()},
+            {"binding_blocks", binding_blocks().size()},
+            {"binding_block_records", block_records},
+            {"binding_block_summary", std::move(block_summary)},
             {"relationships", relationships().size()},
             {"materials", materials().at("definitions").size()},
             {"schemas", schemas().size()},

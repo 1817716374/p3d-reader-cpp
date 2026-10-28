@@ -68,6 +68,7 @@ int main(int argc, char **argv) {
                          {"native_records", d.native_records()},
                          {"graphics_records", d.graphics_records()},
                          {"bindings", d.bindings()},
+                         {"binding_blocks", d.binding_blocks()},
                          {"relationships", d.relationships()},
                          {"materials", d.materials()},
                          {"schemas", d.schemas()},
