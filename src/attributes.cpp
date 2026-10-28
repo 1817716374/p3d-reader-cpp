@@ -189,6 +189,69 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
         r.finish();
         return {{"encoding", "view_index"}, {"view_index", view_index}};
     }
+    if (group == 12 && key == 20050) {
+        constexpr std::size_t header_bytes = 16;
+        constexpr std::size_t bucket_count = 16;
+        constexpr std::size_t bucket_stride = 256;
+        constexpr std::size_t entry_bytes = 16;
+        constexpr std::size_t bucket_capacity = 15;
+        constexpr std::size_t buckets_offset = header_bytes;
+        constexpr std::size_t counts_offset = buckets_offset + bucket_count * bucket_stride;
+        constexpr std::size_t post_counts_bytes = 24;
+        constexpr std::size_t tail_offset = counts_offset + bucket_count + post_counts_bytes;
+        constexpr std::size_t native_copy_bytes = 4568;
+
+        require(b.size() >= counts_offset + bucket_count,
+                "native fixed group table count array is truncated");
+        Json buckets = Json::array();
+        for (std::size_t i = 0; i < bucket_count; ++i) {
+            const auto count = static_cast<std::size_t>(b[counts_offset + i]);
+            require(count <= bucket_capacity, "native fixed group table count exceeds capacity");
+            Json entries = Json::array();
+            for (std::size_t j = 0; j < count; ++j) {
+                const auto offset = buckets_offset + i * bucket_stride + j * entry_bytes;
+                entries.push_back({{"source_offset", offset},
+                                   {"bytes", rawbytes(slice(b, offset, entry_bytes))}});
+            }
+            buckets.push_back({{"bucket_index", i},
+                               {"entry_count", count},
+                               {"entries", std::move(entries)}});
+        }
+
+        const auto post_counts_size =
+            b.size() > counts_offset + bucket_count
+                ? std::min(post_counts_bytes, b.size() - counts_offset - bucket_count)
+                : 0;
+        const auto trailer_size = b.size() > tail_offset ? b.size() - tail_offset : 0;
+        Json out = {{"encoding", "native_fixed_group_table"},
+                    {"layout_status", "structural_only"},
+                    {"entry_semantics", "unresolved"},
+                    {"source_size", b.size()},
+                    {"native_copy_size", native_copy_bytes},
+                    {"native_padding_bytes", b.size() < native_copy_bytes
+                                                   ? native_copy_bytes - b.size()
+                                                   : 0},
+                    {"header_source_offset", 0},
+                    {"header_byte_count", header_bytes},
+                    {"bucket_storage_offset", buckets_offset},
+                    {"bucket_stride", bucket_stride},
+                    {"bucket_capacity", bucket_capacity},
+                    {"entry_byte_count", entry_bytes},
+                    {"buckets", std::move(buckets)},
+                    {"post_counts_source_offset", counts_offset + bucket_count},
+                    {"post_counts_byte_count", post_counts_size},
+                    {"post_counts_status", post_counts_size == post_counts_bytes ? "opaque"
+                                                                                 : "truncated"},
+                    {"trailer_source_offset", tail_offset},
+                    {"trailer_byte_count", trailer_size},
+                    {"trailer_status", trailer_size ? "opaque" : "absent"}};
+        if (b.size() > native_copy_bytes) {
+            out["suffix_source_offset"] = native_copy_bytes;
+            out["suffix_byte_count"] = b.size() - native_copy_bytes;
+            out["suffix_status"] = "opaque";
+        }
+        return out;
+    }
     if (key == 109 && group == 0) {
         Reader r(b);
         auto flags = r.u32(), unassigned = r.u32();
