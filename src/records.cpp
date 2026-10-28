@@ -1084,6 +1084,87 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                 }
                 decoded["triangle_processor"] = std::move(triangle);
             }
+            if (type_id == 402 && derived_offset && derived_offset <= state.size()) {
+                // ContoursProcessor::Read (TerrainEntityProcessor.dll RVA
+                // 0x38f50) reads these scalar members in order. The native
+                // offsets are stable evidence; SDK accessor names have not
+                // yet been mapped to individual members.
+                Reader contour_reader(state, derived_offset);
+                Json contour = Json::object();
+                if (contour_reader.left() >= 2) {
+                    const auto version = contour_reader.u16();
+                    contour["version"] = version;
+                    bool complete = true;
+                    auto take_u8 = [&](const char *name) {
+                        if (!complete || contour_reader.left() < 1) {
+                            complete = false;
+                            return;
+                        }
+                        contour[std::string("member_") + name] = contour_reader.u8();
+                    };
+                    auto take_u16 = [&](const char *name) {
+                        if (!complete || contour_reader.left() < 2) {
+                            complete = false;
+                            return;
+                        }
+                        contour[std::string("member_") + name] = contour_reader.u16();
+                    };
+                    auto take_u32 = [&](const char *name) {
+                        if (!complete || contour_reader.left() < 4) {
+                            complete = false;
+                            return;
+                        }
+                        contour[std::string("member_") + name] = contour_reader.u32();
+                    };
+                    auto take_f64 = [&](const char *name) {
+                        if (!complete || contour_reader.left() < 8) {
+                            complete = false;
+                            return;
+                        }
+                        contour[std::string("member_") + name] = contour_reader.f64();
+                    };
+
+                    take_u8("0x38_u8");
+                    take_f64("0x40_f64");
+                    take_u32("0x48_u32");
+                    take_f64("0x50_f64");
+                    take_u32("0x58_u32");
+                    take_u8("0x5c_bool_raw");
+                    if (contour.contains("member_0x5c_bool_raw"))
+                        contour["member_0x5c_bool"] =
+                            contour["member_0x5c_bool_raw"].get<std::uint8_t>() != 0;
+                    take_u16("0x5e_u16");
+                    take_u16("0x60_u16");
+                    take_f64("0x68_f64");
+                    take_u8("0x70_u8");
+                    take_f64("0x78_f64");
+                    take_u32("0x30_u32");
+                    if (version > 1) {
+                        take_u8("0x80_u8");
+                        take_f64("0x88_f64");
+                    }
+                    take_u32("0x98_u32");
+                    take_u32("0x90_u32");
+                    take_u32("0x94_u32");
+                    if (version > 3)
+                        take_u32("0x4c_u32");
+
+                    contour["unmapped_suffix"] =
+                        rawbytes(contour_reader.take(contour_reader.left()));
+                    if (!complete)
+                        decoded["status"] = "truncated_known_fields";
+                    else if (version >= 1 && version <= 4 &&
+                             contour["unmapped_suffix"]["bytes"] == 0)
+                        decoded["status"] = "known_fields_decoded";
+                    else
+                        decoded["status"] = "known_fields_decoded_with_unknown_extension";
+                } else {
+                    contour["unmapped_suffix"] =
+                        rawbytes(contour_reader.take(contour_reader.left()));
+                    decoded["status"] = "truncated_known_fields";
+                }
+                decoded["contours"] = std::move(contour);
+            }
             if ((type_id == 408 || type_id == 409) && derived_offset &&
                 derived_offset <= state.size()) {
                 // High/low point processors share the same versioned prefix
@@ -1153,7 +1234,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             }
             out["decoded_state"] = std::move(decoded);
             out["status"] = "processor_state_partially_decoded";
-            if ((type_id == 405 || type_id == 407) &&
+            if ((type_id == 402 || type_id == 405 || type_id == 407) &&
                 out["decoded_state"].value("status", "") == "known_fields_decoded" &&
                 out["decoded_state"].value("base_frame", Json::object()).value("status", "") == "decoded")
                 out["status"] = "processor_state_decoded";
