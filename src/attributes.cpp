@@ -268,6 +268,34 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
         // An auxiliary drawing frame is metadata, not an element placement or a CRS.
         return out;
     }
+    if (group == 1 && key == 20030) {
+        // This record shares the fixed binary layout of key 22295, but its
+        // semantic role is not established. Keep neutral slot names here.
+        Reader r(b);
+        auto word0 = r.u32();
+        auto word1 = r.u32();
+        auto signed_word = r.i32();
+        auto vector = r.doubles(3);
+        auto scalar = r.f64();
+        Json matrix = Json::array();
+        for (unsigned i = 0; i < 3; ++i)
+            matrix.push_back(r.doubles(3));
+        auto word64 = r.u64();
+        Json out = {{"encoding", "shared_coordinate_record_layout"},
+               {"semantic_role", "unresolved"},
+               {"layout_reference", "group1_key22295"},
+               {"u32_at_0", word0},
+               {"u32_at_4", word1},
+               {"i32_at_8", signed_word},
+               {"f64_vector3_at_12", vector},
+               {"f64_at_36", scalar},
+               {"f64_matrix3x3_at_44", matrix},
+               {"u64_at_116", word64},
+               {"extra_data_offset", r.p},
+               {"extra_data_status", r.left() ? "opaque" : "absent"},
+               {"extra_data", rawbytes(r.take(r.left()))}};
+        return out;
+    }
     return nullptr;
 }
 } // namespace p3d
