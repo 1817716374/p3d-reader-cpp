@@ -244,6 +244,35 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
                     {"unread_suffix_source_offset", consumed_bytes},
                     {"unread_suffix_byte_count", b.size() - consumed_bytes},
                     {"unread_suffix_status", b.size() > consumed_bytes ? "opaque" : "absent"}};
+        // The current native writer appends two GeRotMatrix values after the
+        // fixed table. Older 4,424-byte variants do not share this proven
+        // suffix layout, so decode the matrices only when the full native
+        // 4,568-byte copy is present. The native reader currently ignores this
+        // suffix; exposing the writer fields does not claim that it restores
+        // them into the runtime object.
+        if (b.size() >= native_copy_bytes) {
+            constexpr std::size_t matrix_bytes = 9 * sizeof(double);
+            constexpr std::size_t matrix_offsets[] = {0x1048, 0x1090};
+            constexpr std::size_t native_matrix_offsets[] = {0x60, 0xa8};
+            Json matrices = Json::array();
+            for (std::size_t i = 0; i < 2; ++i) {
+                Reader matrix_reader(b, matrix_offsets[i]);
+                Json rows = Json::array();
+                for (unsigned row = 0; row < 3; ++row)
+                    rows.push_back(matrix_reader.doubles(3));
+                matrices.push_back({{"slot_index", i},
+                                    {"source_offset", matrix_offsets[i]},
+                                    {"native_object_offset", native_matrix_offsets[i]},
+                                    {"byte_count", matrix_bytes},
+                                    {"row_major_f64", std::move(rows)}});
+            }
+            out["native_writer_matrix_fields"] = {
+                {"status", "decoded"},
+                {"field_type", "GeRotMatrix"},
+                {"field_count", 2},
+                {"runtime_reader_consumes_fields", false},
+                {"fields", std::move(matrices)}};
+        }
         if (b.size() > native_copy_bytes) {
             out["suffix_source_offset"] = native_copy_bytes;
             out["suffix_byte_count"] = b.size() - native_copy_bytes;
