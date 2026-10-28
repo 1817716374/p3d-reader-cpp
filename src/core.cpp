@@ -676,10 +676,21 @@ NativeScene Document::native_scene(Tessellation policy) const {
 }
 Json Document::summary() const {
     std::size_t cmds = 0;
+    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> attribute_counts;
     for (auto &g : graphics_records())
-        for (auto &a : g["attributes"])
+        for (auto &a : g["attributes"]) {
+            if (a.contains("group") && a.contains("key") && a["group"].is_number_integer() &&
+                a["key"].is_number_integer())
+                ++attribute_counts[{a["group"].get<std::int64_t>(),
+                                    a["key"].get<std::int64_t>()}];
             if (a["decoded"].contains("commands"))
                 cmds += a["decoded"]["commands"].size();
+        }
+    Json attribute_summary = Json::array();
+    for (const auto &[identity, count] : attribute_counts)
+        attribute_summary.push_back({{"group", identity.first},
+                                     {"key", identity.second},
+                                     {"count", count}});
     Json block_summary = Json::array();
     std::size_t block_records = 0;
     for (const auto &block : binding_blocks()) {
@@ -693,6 +704,7 @@ Json Document::summary() const {
             {"objects", objects().size()},
             {"native_records", native_records().size()},
             {"graphics_records", graphics_records().size()},
+            {"graphic_attribute_counts", std::move(attribute_summary)},
             {"commands", cmds},
             {"bindings", bindings().size()},
             {"binding_blocks", binding_blocks().size()},
