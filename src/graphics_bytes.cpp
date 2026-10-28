@@ -223,6 +223,8 @@ Json decode_graphics_bytes(const Bytes &b) {
     }
     footer(r, out, false);
     out["entry_index_scope"] = "serialized_graphics";
+    out["part_index_basis"] = "zero_based_serialized_graphics_entry_order";
+    out["part_index_mapping_status"] = "entry_order_preserved_when_native_restore_succeeds";
     out["view_flag_status"] = "not_serialized";
     out["owning_element_part_mapping_status"] = "not_established";
     out["native_geometry_input"] = {{"status", "not_evaluated"},
