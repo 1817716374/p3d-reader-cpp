@@ -841,6 +841,33 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     auto reference_extension = decode_reference_extension(group, key, b, index);
     if (!reference_extension.is_null())
         return reference_extension;
+    if (group == 0 && key == 22900 && index == 1) {
+        Reader r(b);
+        require(r.left() >= 8, "native processor descriptor requires eight bytes");
+        const auto processor_key = r.u32();
+        const auto selection_mask = r.u32();
+        Json out = {{"encoding", "native_processor_dispatch_descriptor"},
+                    {"processor_key", processor_key},
+                    {"processor_key_enabled", (processor_key >> 16) != 0},
+                    {"stored_selection_mask", selection_mask},
+                    {"selection_rule", "(stored_selection_mask & requested_mask) == requested_mask"},
+                    {"processor_resolution", "not_evaluated"},
+                    {"consumed_bytes", 8}};
+        if (r.left())
+            out["ignored_suffix"] = rawbytes(r.take(r.left()));
+        return out;
+    }
+    if (group == 3 && key == 20031 && index == 0) {
+        Reader r(b);
+        require(b.size() == 8, "native geometry pair key requires eight bytes");
+        const auto first = r.u32();
+        const auto second = r.u32();
+        return {{"encoding", "native_geometry_pair_lookup_key"},
+                {"key_words", {first, second}},
+                {"comparison", "ordered_composite_u32_pair"},
+                {"lookup_domain", "native_geometry_collection"},
+                {"business_meaning", "unresolved"}};
+    }
     if (group == 106 && key == 10001 && index == 0) {
         auto out = decode_graphics_bytes(b);
         out["role"] = "view_link_boundary_geometry";

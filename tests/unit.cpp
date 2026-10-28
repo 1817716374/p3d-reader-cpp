@@ -1708,6 +1708,39 @@ static void material_index_tests() {
 }
 static void attribute_semantics_tests() {
     Bytes b;
+    put<std::uint32_t>(b, 0x5dc00000u);
+    put<std::uint32_t>(b, 0xfffffffdu);
+    auto processor = decode_attribute(0, 22900, b, 1);
+    check(processor["encoding"] == "native_processor_dispatch_descriptor" &&
+              processor["processor_key"] == 0x5dc00000u &&
+              processor["processor_key_enabled"] == true &&
+              processor["stored_selection_mask"] == 0xfffffffdu &&
+              processor["selection_rule"] ==
+                  "(stored_selection_mask & requested_mask) == requested_mask" &&
+              processor["processor_resolution"] == "not_evaluated",
+          "native processor descriptor exposes registered key and stored selection mask");
+    b.push_back(0x72);
+    processor = decode_attribute(0, 22900, b, 1);
+    check(processor["consumed_bytes"] == 8 &&
+              bytesof(processor["ignored_suffix"]) == Bytes{0x72},
+          "native processor descriptor consumes eight bytes and preserves any ignored suffix");
+    Bytes geometry_pair;
+    put<std::uint32_t>(geometry_pair, 0x5dc00000u);
+    put<std::uint32_t>(geometry_pair, 0xffffffffu);
+    const auto pair_key = decode_attribute(3, 20031, geometry_pair, 0);
+    check(pair_key["encoding"] == "native_geometry_pair_lookup_key" &&
+              pair_key["key_words"] == Json::array({0x5dc00000u, 0xffffffffu}) &&
+              pair_key["comparison"] == "ordered_composite_u32_pair" &&
+              pair_key["business_meaning"] == "unresolved",
+          "native geometry collection key retains its ordered pair without inventing its domain");
+    bool pair_size_rejected = false;
+    try {
+        decode_attribute(3, 20031, Bytes{0, 1, 2, 3}, 0);
+    } catch (const std::exception &) {
+        pair_size_rejected = true;
+    }
+    check(pair_size_rejected, "native geometry pair lookup key requires its exact eight-byte size");
+    b.clear();
     put<std::uint32_t>(b, 0xfedcba98);
     check(decode_attribute(0, 22634, b)["display_style_entry_id"] == 0xfedcba98u,
           "display style reference preserves unsigned id");
