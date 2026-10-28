@@ -146,6 +146,43 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
         for (const auto &candidate : material_definitions[di].at("native_catalog_candidates"))
             if (candidate.is_number_unsigned() || candidate.is_number_integer())
                 material_definitions_by_catalog[candidate.get<std::size_t>()].push_back(di);
+    auto exact_material_name_relation = [&](const Json &name) {
+        Json relation = {{"status", "not_evaluated"},
+                         {"comparison", "exact_unicode_scalar_sequence"},
+                         {"native_selection", "not_evaluated"},
+                         {"catalog_candidates", Json::array()},
+                         {"definition_candidates", Json::array()}};
+        if (!name.is_string()) {
+            relation["status"] = "source_name_unavailable";
+            return relation;
+        }
+        const auto found = material_catalog_by_name.find(name.get<std::string>());
+        if (found == material_catalog_by_name.end()) {
+            relation["status"] = "not_found";
+            return relation;
+        }
+        for (const auto ci : found->second) {
+            const auto &catalog = material_catalog.at(ci);
+            relation["catalog_candidates"].push_back(
+                {{"catalog_index", ci}, {"record_id", catalog.at("record_id")},
+                 {"stream", catalog.at("stream")}});
+            const auto definitions = material_definitions_by_catalog.find(ci);
+            if (definitions != material_definitions_by_catalog.end())
+                for (const auto di : definitions->second) {
+                    const auto &definition = material_definitions.at(di);
+                    relation["definition_candidates"].push_back(
+                        {{"definition_index", di}, {"material_id", definition.at("id")},
+                         {"scope", definition.at("scope")}, {"stream", definition.at("stream")}});
+                }
+        }
+        const auto catalog_count = relation["catalog_candidates"].size();
+        const auto definition_count = relation["definition_candidates"].size();
+        relation["status"] = catalog_count != 1 ? "ambiguous_catalog"
+            : definition_count == 1 ? "unique_exact_name_candidate"
+            : definition_count == 0 ? "catalog_without_definition"
+                                    : "ambiguous_definition";
+        return relation;
+    };
     std::vector<std::shared_ptr<GeometryDefinition>> definitions;
     std::vector<std::function<Geometry()>> tasks;
     std::map<std::string, std::size_t> definition_lookup;
@@ -637,85 +674,124 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                 element.instances.push_back(inst);
             }
         }
-        // A stored part-material index addresses BPGraphics' ordered Entry list.
-        // In the verified one-child entity form, the sole native dependency is
-        // therefore Entry/part 0. Keep the association at the source-record
-        // level: one Entry can reconstruct several primitive ranges/faces.
+        // Keep entity fallback materials separate from per-part assignments.
+        // Group 4/index 0 is entity-level; group 4/index 1 is the advanced
+        // part-name table; group 2 records are legacy per-part names.
+        meta["geometry_entity_material_assignments"] = Json::array();
         meta["geometry_part_material_assignments"] = Json::array();
         if (meta.contains("advanced_material_assignments")) {
             for (const auto &assignment : meta["advanced_material_assignments"]) {
-                if ((assignment["group"] != 2 && assignment["group"] != 4) ||
-                    assignment["key"] != 10001)
+                if (assignment["key"] != 10001)
                     continue;
-                Json mapped = {{"status", "unresolved"},
-                               {"source", assignment},
-                               {"part_index", assignment["attribute_index"]},
-                               {"part_index_basis", "zero_based_graphics_entry_order"},
-                               {"face_mapping_status", "entry_level_only"}};
-                if (n["element_type"] != 97) {
-                    mapped["reason"] = "owner_type_outside_verified_single_entry_scope";
-                } else if (n["children"].size() != 1) {
-                    mapped["reason"] = n["children"].empty()
-                                            ? "owner_has_no_native_graphics_child"
-                                            : "multiple_native_graphics_children_order_unverified";
-                } else if (assignment["attribute_index"] != 0) {
-                    mapped["reason"] = "part_index_outside_verified_single_entry_scope";
-                } else {
-                    const auto child = n["children"][0];
-                    const auto child_records = geometry_records.find(scoped(model, child));
-                    if (child_records == geometry_records.end() || child_records->second.empty()) {
-                        mapped["reason"] = "native_graphics_child_record_missing";
-                    } else if (child_records->second.size() != 1) {
-                        mapped["reason"] = "native_graphics_child_record_ambiguous";
-                        mapped["record_count"] = child_records->second.size();
+                const auto group = assignment.at("group").get<unsigned>();
+                const auto attribute_index = assignment.at("attribute_index").get<unsigned>();
+                const auto decoded = assignment.value("decoded", Json::object());
+                if (group == 4 && attribute_index == 0) {
+                    Json mapped = {{"status", "unresolved"},
+                                   {"scope", "entity_material_fallback"},
+                                   {"source", assignment},
+                                   {"geometry_targets", Json::array()},
+                                   {"material_name_relation",
+                                    exact_material_name_relation(
+                                        decoded.value("material_name", Json()))}};
+                    if (n["element_type"] != 97) {
+                        mapped["reason"] = "owner_type_outside_verified_geometry_scope";
+                    } else if (n["children"].empty()) {
+                        mapped["reason"] = "owner_has_no_native_graphics_child";
                     } else {
-                        mapped["status"] = "matched";
-                        mapped["native_child_reference_ordinal"] = 0;
-                        mapped["geometry_id"] = child;
-                        mapped["geometry_record_key"] = source_key(*child_records->second[0]);
-                    }
-                }
-                Json name_relation = {{"status", "not_evaluated"},
-                                      {"comparison", "exact_unicode_scalar_sequence"},
-                                      {"native_selection", "not_evaluated"},
-                                      {"catalog_candidates", Json::array()},
-                                      {"definition_candidates", Json::array()}};
-                const auto decoded_name = assignment.value("decoded", Json::object())
-                                              .value("material_name", Json());
-                if (!decoded_name.is_string()) {
-                    name_relation["status"] = "source_name_unavailable";
-                } else {
-                    const auto name_matches = material_catalog_by_name.find(
-                        decoded_name.get<std::string>());
-                    if (name_matches == material_catalog_by_name.end()) {
-                        name_relation["status"] = "not_found";
-                    } else {
-                        for (const auto ci : name_matches->second) {
-                            const auto &catalog = material_catalog.at(ci);
-                            name_relation["catalog_candidates"].push_back(
-                                {{"catalog_index", ci}, {"record_id", catalog.at("record_id")},
-                                 {"stream", catalog.at("stream")}});
-                            const auto found_definitions = material_definitions_by_catalog.find(ci);
-                            if (found_definitions != material_definitions_by_catalog.end())
-                                for (const auto di : found_definitions->second) {
-                                    const auto &definition = material_definitions.at(di);
-                                    name_relation["definition_candidates"].push_back(
-                                        {{"definition_index", di},
-                                         {"material_id", definition.at("id")},
-                                         {"scope", definition.at("scope")},
-                                         {"stream", definition.at("stream")}});
-                                }
+                        bool complete_targets = true;
+                        for (std::size_t child_index = 0; child_index < n["children"].size();
+                             ++child_index) {
+                            const auto child = n["children"][child_index];
+                            const auto child_records = geometry_records.find(scoped(model, child));
+                            if (child_records == geometry_records.end() ||
+                                child_records->second.size() != 1) {
+                                complete_targets = false;
+                                mapped["unresolved_geometry_targets"].push_back(
+                                    {{"geometry_id", child},
+                                     {"native_child_reference_ordinal", child_index},
+                                     {"status", child_records == geometry_records.end() ||
+                                                        child_records->second.empty()
+                                                    ? "missing"
+                                                    : "ambiguous"},
+                                     {"record_count", child_records == geometry_records.end()
+                                                          ? 0
+                                                          : child_records->second.size()}});
+                            } else {
+                                mapped["geometry_targets"].push_back(
+                                    {{"geometry_id", child},
+                                     {"native_child_reference_ordinal", child_index},
+                                     {"geometry_record_key", source_key(*child_records->second[0])}});
+                            }
                         }
-                        const auto catalog_count = name_relation["catalog_candidates"].size();
-                        const auto definition_count = name_relation["definition_candidates"].size();
-                        name_relation["status"] = catalog_count != 1 ? "ambiguous_catalog"
-                            : definition_count == 1 ? "unique_exact_name_candidate"
-                            : definition_count == 0 ? "catalog_without_definition"
-                                                    : "ambiguous_definition";
+                        if (complete_targets)
+                            mapped["status"] = "matched";
                     }
+                    meta["geometry_entity_material_assignments"].push_back(std::move(mapped));
+                    continue;
                 }
-                mapped["material_name_relation"] = std::move(name_relation);
-                meta["geometry_part_material_assignments"].push_back(std::move(mapped));
+
+                Json part_rows = Json::array();
+                if (group == 2) {
+                    part_rows.push_back({{"part_index", assignment["attribute_index"]},
+                                         {"material_name",
+                                          decoded.value("material_name", Json())},
+                                         {"source", assignment}});
+                } else if (group == 4 && attribute_index == 1 &&
+                           decoded.value("encoding", std::string()) == "advanced_material_json") {
+                    for (const auto &entry : decoded.value("entries", Json::array()))
+                        part_rows.push_back({{"part_index", entry.value("part_index", Json())},
+                                             {"material_name",
+                                              entry.value("material_name", Json())},
+                                             {"source", assignment},
+                                             {"table_entry", entry}});
+                    if (part_rows.empty())
+                        part_rows.push_back({{"part_index", nullptr}, {"material_name", nullptr},
+                                             {"source", assignment},
+                                             {"reason", "advanced_part_material_table_empty_or_unrecognized"}});
+                } else {
+                    continue;
+                }
+
+                for (auto &row : part_rows) {
+                    Json mapped = {{"status", "unresolved"},
+                                   {"scope", "part_material"},
+                                   {"source", row["source"]},
+                                   {"part_index", row["part_index"]},
+                                   {"part_index_basis", "zero_based_graphics_entry_order"},
+                                   {"face_mapping_status", "entry_level_only"},
+                                   {"material_name_relation",
+                                    exact_material_name_relation(row["material_name"])}};
+                    if (row.contains("table_entry"))
+                        mapped["table_entry"] = row["table_entry"];
+                    if (row.contains("reason")) {
+                        mapped["reason"] = row["reason"];
+                    } else if (n["element_type"] != 97) {
+                        mapped["reason"] = "owner_type_outside_verified_single_entry_scope";
+                    } else if (n["children"].size() != 1) {
+                        mapped["reason"] = n["children"].empty()
+                                                ? "owner_has_no_native_graphics_child"
+                                                : "multiple_native_graphics_children_order_unverified";
+                    } else if (!row["part_index"].is_number_integer() ||
+                               row["part_index"].get<std::int64_t>() != 0) {
+                        mapped["reason"] = "part_index_outside_verified_single_entry_scope";
+                    } else {
+                        const auto child = n["children"][0];
+                        const auto child_records = geometry_records.find(scoped(model, child));
+                        if (child_records == geometry_records.end() || child_records->second.empty()) {
+                            mapped["reason"] = "native_graphics_child_record_missing";
+                        } else if (child_records->second.size() != 1) {
+                            mapped["reason"] = "native_graphics_child_record_ambiguous";
+                            mapped["record_count"] = child_records->second.size();
+                        } else {
+                            mapped["status"] = "matched";
+                            mapped["native_child_reference_ordinal"] = 0;
+                            mapped["geometry_id"] = child;
+                            mapped["geometry_record_key"] = source_key(*child_records->second[0]);
+                        }
+                    }
+                    meta["geometry_part_material_assignments"].push_back(std::move(mapped));
+                }
             }
         }
         for (auto &inst : element.instances)
