@@ -43,6 +43,14 @@ static std::string scoped(const Json &model, const Json &id) {
 static std::string source_key(const Json &row) {
     return row["stream"].dump() + "@" + row["offset"].dump();
 }
+static const Json &scene_layer_definitions(const Json &metadata) {
+    static const Json empty = Json::array();
+    const auto layers = metadata.find("layers");
+    if (layers == metadata.end() || !layers->is_object())
+        return empty;
+    const auto definitions = layers->find("definitions");
+    return definitions == layers->end() || !definitions->is_array() ? empty : *definitions;
+}
 static std::string block_name(const Json &n) {
     for (auto &link : n["links"]) {
         if (link["app"] != 0x56d2)
@@ -90,10 +98,46 @@ static Json color(std::uint64_t index, const Json &entries) {
             {"palette_index", index & 255},
             {"unresolved_extended_ordinal", ordinal >= 0 ? Json(ordinal) : Json()}};
 }
-static Json style_color(const Json &style, const Json &entries) {
+static Json style_color(const Json &style, const Json &entries, const Json &element,
+                        const Json &layer_definitions) {
     if (style.contains("native_symbology_extension") &&
-        style["native_symbology_extension"].contains("inheritance_flags"))
-        return {{"rgb", nullptr}, {"source", "native_inheritance_rules_not_evaluated"}};
+        style["native_symbology_extension"].contains("inheritance_flags")) {
+        const auto &extension = style["native_symbology_extension"];
+        if (!extension.contains("by_layer"))
+            return {{"rgb", nullptr}, {"source", "native_inheritance_rules_not_evaluated"}};
+        const auto &by_layer = extension.value("by_layer", Json::object());
+        if (by_layer.value("color", false)) {
+            const auto &reference = element.value("stored_layer_reference", Json::object());
+            if (reference.value("status", std::string()) == "resolved" &&
+                reference.contains("layer_definition_index") &&
+                reference["layer_definition_index"].is_number_unsigned()) {
+                const auto definition_index =
+                    reference["layer_definition_index"].get<std::size_t>();
+                if (definition_index < layer_definitions.size()) {
+                    const auto &layer = layer_definitions[definition_index].value(
+                        "layer", Json::object());
+                    const auto &symbology =
+                        layer.value("by_layer_symbology", Json::object());
+                    if (symbology.contains("color_index") &&
+                        symbology["color_index"].is_number_unsigned()) {
+                        auto resolved = color(symbology["color_index"].get<std::uint64_t>(),
+                                              entries);
+                        if (!resolved["rgb"].is_null()) {
+                            resolved["color_encoding_source"] = resolved["source"];
+                            resolved["source"] = "native_layer_by_layer_symbology";
+                            resolved["layer_id"] = layer.value("layer_id", Json());
+                            resolved["layer_definition_index"] = definition_index;
+                            resolved["selection"] =
+                                "resolved_entity_layer_then_saved_by_layer_color";
+                            return resolved;
+                        }
+                    }
+                }
+            }
+            return {{"rgb", nullptr},
+                    {"source", "native_inheritance_rules_not_evaluated"}};
+        }
+    }
     if (style.contains("native_symbology_extension") &&
         style["native_symbology_extension"].contains("fill_style_block") &&
         style["native_symbology_extension"]["fill_style_block"].value("status", "") != "clear")
@@ -948,7 +992,8 @@ Json NativeScene::expanded() const {
             for (auto range : placed.primitive_ranges) {
                 auto style = combined_style(instance.style, range["style"]);
                 Json appearance = {
-                    {"color", style_color(style, extended)},
+                    {"color", style_color(style, extended, item,
+                                          scene_layer_definitions(metadata))},
                     {"style_status",
                      range.value("style_status", std::string("decoded_command_style"))}};
                 auto mid = style.value("material_id", Json());
@@ -1087,6 +1132,7 @@ void NativeScene::for_each_primitive(
     auto &colors = metadata.at("color_tables");
     Json extended =
         colors.empty() ? Json::array() : colors.back().value("color_entries", Json::array());
+    const auto &layer_definitions = scene_layer_definitions(metadata);
     for (std::size_t ei = 0; ei < elements.size(); ++ei) {
         auto &element = elements[ei];
         for (std::size_t ii = 0; ii < element.instances.size(); ++ii) {
@@ -1112,7 +1158,8 @@ void NativeScene::for_each_primitive(
                     inst.apply_placement && reverses_winding(inst.matrix) && channel == "faces";
                 v.style = combined_style(inst.style, range["style"]);
                 v.appearance = {
-                    {"color", style_color(v.style, extended)},
+                    {"color", style_color(v.style, extended, element.metadata,
+                                          layer_definitions)},
                     {"style_status",
                      range.value("style_status", std::string("decoded_command_style"))}};
                 auto mid = v.style.value("material_id", Json());
