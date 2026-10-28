@@ -194,9 +194,10 @@ NativeBsplineEvaluation native_bspline_evaluate_working(const BsplineCurve &, do
 Json native_record_input_filter(const Json &, const Bytes &);
 Json native_record_input_subtree(std::size_t, const Json &, std::uint32_t);
 Json command_fields(unsigned, const Bytes &);
-Json decode_attribute(unsigned, unsigned, const Bytes &, unsigned index = 0);
+Json decode_attribute(unsigned, unsigned, const Bytes &, unsigned index = 0,
+                      int measurement_type = -1);
 Json decode_material_assignment(unsigned index, const Bytes &);
-Json decode_measure_info_attribute(unsigned index, const Bytes &);
+Json decode_measure_info_attribute(unsigned index, const Bytes &, int measurement_type = -1);
 Json material_assignment_records(const Json &graphics);
 Json decode_display_attribute(unsigned, unsigned, const Bytes &);
 Json decode_layer_group_attribute(unsigned, const Bytes &);

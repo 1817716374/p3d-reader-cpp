@@ -837,7 +837,8 @@ Json native_material_texture_file(const Bytes &b) {
     out["ignored_suffix"] = rawbytes(r.take(r.left()));
     return out;
 }
-Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index) {
+Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index,
+                      int measurement_type) {
     auto reference_extension = decode_reference_extension(group, key, b, index);
     if (!reference_extension.is_null())
         return reference_extension;
@@ -881,7 +882,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     if (group == 4 && key == 10001)
         return decode_material_assignment(index, b);
     if (group == 13 && key == 10001) {
-        auto measure = decode_measure_info_attribute(index, b);
+        auto measure = decode_measure_info_attribute(index, b, measurement_type);
         if (!measure.is_null())
             return measure;
     }
@@ -1027,6 +1028,10 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
 Json parse_graphics(const Bytes &b) {
     Reader r(b);
     Json out = Json::array();
+    struct GraphicAttribute {
+        unsigned group, key, index, size_flags, reserved;
+        std::size_t offset, size;
+    };
     while (r.left()) {
         auto pos = r.p;
         require(r.u32() == 0xa11b, "graphics magic");
@@ -1035,26 +1040,39 @@ Json parse_graphics(const Bytes &b) {
         auto count = r.u32();
         auto end = pos + 28 + std::uint64_t(len);
         require(end <= b.size() && count <= len / 16, "graphics record length");
-        Json attrs = Json::array();
+        std::vector<GraphicAttribute> source_attributes;
+        source_attributes.reserve(count);
         for (unsigned i = 0; i < count; ++i) {
             auto group = r.u16(), key = r.u16();
             auto ix = r.u32(), sf = r.u32(), res = r.u32();
             auto size = sf & 0x7fffffff;
             require(r.p <= end && size <= end - r.p, "graphics attribute length");
             auto off = r.p;
-            auto raw = r.take(size);
+            r.skip(size);
+            source_attributes.push_back({group, key, ix, sf, res, off, size});
+        }
+        int measurement_type = -1;
+        for (const auto &a : source_attributes)
+            if (a.group == 13 && a.key == 10001 && a.index == 2 && a.size == 4) {
+                Reader value(b, a.offset);
+                measurement_type = value.i32();
+                break;
+            }
+        Json attrs = Json::array();
+        for (const auto &a : source_attributes) {
+            auto raw = slice(b, a.offset, a.size);
             Json decoded;
             try {
-                decoded = decode_attribute(group, key, raw, ix);
+                decoded = decode_attribute(a.group, a.key, raw, a.index, measurement_type);
             } catch (const std::exception &e) {
                 decoded = {{"encoding", "opaque"}, {"decode_error", e.what()}};
             }
-            attrs.push_back({{"group", group},
-                             {"key", key},
-                             {"index", ix},
-                             {"size_flags", sf},
-                             {"reserved", res},
-                             {"offset", off},
+            attrs.push_back({{"group", a.group},
+                             {"key", a.key},
+                             {"index", a.index},
+                             {"size_flags", a.size_flags},
+                             {"reserved", a.reserved},
+                             {"offset", a.offset},
                              {"payload", rawbytes(raw)},
                              {"decoded", std::move(decoded)}});
         }

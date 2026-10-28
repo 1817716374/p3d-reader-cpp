@@ -104,7 +104,7 @@ Json decode_material_assignment(unsigned index, const Bytes &b) {
         material_index_entries(out, index);
     return out;
 }
-Json decode_measure_info_attribute(unsigned index, const Bytes &b) {
+Json decode_measure_info_attribute(unsigned index, const Bytes &b, int measurement_type) {
     // BPMeasureInfoBase writes these members as native 32-bit values under
     // composed ID 0x2711000d (group 13, key 10001).
     if (index == 1) {
@@ -160,6 +160,32 @@ Json decode_measure_info_attribute(unsigned index, const Bytes &b) {
         return {{"encoding", "measurement_result_points"},
                 {"element_width", 24},
                 {"count", points.size()},
+                {"points", std::move(points)},
+                {"native_status", b.empty() ? 1 : 0}};
+    }
+    if (index == 8 && (measurement_type == 1 || measurement_type == 2 ||
+                       measurement_type == 3 || measurement_type == 6 ||
+                       measurement_type == 7)) {
+        require(b.size() % 24 == 0, "measurement subtype point array width");
+        Reader r(b);
+        Json points = Json::array();
+        while (r.left())
+            points.push_back(r.doubles(3));
+        const auto count = points.size();
+        const char *role = measurement_type == 1 || measurement_type == 2
+                               ? "start_end_points"
+                               : measurement_type == 3 ? "point_to_face_point"
+                               : measurement_type == 6 ? "arbitrary_face_area_points"
+                                                       : "angle_points";
+        if (measurement_type == 1 || measurement_type == 2)
+            require(count == 2, "measurement start/end point count");
+        if (measurement_type == 3)
+            require(count == 1, "point-to-face point count");
+        return {{"encoding", "measurement_subtype_points"},
+                {"measurement_type", measurement_type},
+                {"role", role},
+                {"element_width", 24},
+                {"count", count},
                 {"points", std::move(points)},
                 {"native_status", b.empty() ? 1 : 0}};
     }
