@@ -139,6 +139,10 @@ Json entry_bytes(const Bytes &b) {
     const auto geometry = r.take(std::size_t(size));
     out["geometry_bytes"] = size;
     out["geometry_status"] = geometry.empty() ? "empty" : "unsupported_encoding";
+    out["geometry_payload_status"] =
+        geometry.empty() ? (type == 8 ? "not_serialized" : "empty") : "present";
+    if (type == 8 && geometry.empty())
+        out["geometry_payload_note"] = "native_solid_entity_entry_has_no_geometry_payload";
     if (type == 10 && !geometry.empty()) {
         try {
             out["geometry"] = decode_csg_bytes(geometry);
