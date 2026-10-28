@@ -441,6 +441,8 @@ Json build_object_graph(const Document &doc) {
                  {"object_reference",
                   {{"object_key", object_key}, {"status", object_ref["status"]},
                    {"records", object_ref["records"]}}},
+                 {"native_element_status",
+                  live.count(element_key) ? "resolved" : "missing"},
                  {"tree_reference_nodes", std::move(tree_nodes)},
                  {"primary_binding_references", primary_bindings}});
         }
