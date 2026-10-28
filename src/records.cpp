@@ -958,7 +958,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                         // directly from the native processor serializer.
                         if (state_reader.left() >= 2 + 24 + 4) {
                             fields["layer_id"] = state_reader.u16();
-                            fields["cell_scale"] =
+                            fields["scale_vector"] =
                                 Json::array({state_reader.f64(), state_reader.f64(),
                                              state_reader.f64()});
                             const auto visible_raw = state_reader.u32();
