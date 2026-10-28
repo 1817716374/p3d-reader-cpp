@@ -135,6 +135,8 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
     std::vector<std::function<Geometry()>> tasks;
     std::map<std::string, std::size_t> definition_lookup;
     auto define = [&](const std::string &key, const Json &source, std::function<Geometry()> task) {
+        // Share only identical native source identities; equal geometry contents from distinct
+        // source records remain distinct definitions.
         auto it = definition_lookup.find(key);
         if (it != definition_lookup.end())
             return it->second;
