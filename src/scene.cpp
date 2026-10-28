@@ -131,6 +131,21 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
             model_map[std::to_string(id)] = it.value();
         }
     auto canonical = [&](const char *key) { return doc.index().value(key, std::string()); };
+    const auto &material_data = doc.materials();
+    std::map<std::string, std::vector<std::size_t>> material_catalog_by_name;
+    const auto &material_catalog = material_data.at("native_catalog_records");
+    const auto &material_definitions = material_data.at("definitions");
+    std::map<std::size_t, std::vector<std::size_t>> material_definitions_by_catalog;
+    for (std::size_t ci = 0; ci < material_catalog.size(); ++ci) {
+        const auto &record = material_catalog[ci];
+        const auto &name = record.at("catalog_name");
+        if (name.value("status", std::string()) == "decoded" && name.at("value").is_string())
+            material_catalog_by_name[name.at("value").get<std::string>()].push_back(ci);
+    }
+    for (std::size_t di = 0; di < material_definitions.size(); ++di)
+        for (const auto &candidate : material_definitions[di].at("native_catalog_candidates"))
+            if (candidate.is_number_unsigned() || candidate.is_number_integer())
+                material_definitions_by_catalog[candidate.get<std::size_t>()].push_back(di);
     std::vector<std::shared_ptr<GeometryDefinition>> definitions;
     std::vector<std::function<Geometry()>> tasks;
     std::map<std::string, std::size_t> definition_lookup;
@@ -660,6 +675,46 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                         mapped["geometry_record_key"] = source_key(*child_records->second[0]);
                     }
                 }
+                Json name_relation = {{"status", "not_evaluated"},
+                                      {"comparison", "exact_unicode_scalar_sequence"},
+                                      {"native_selection", "not_evaluated"},
+                                      {"catalog_candidates", Json::array()},
+                                      {"definition_candidates", Json::array()}};
+                const auto decoded_name = assignment.value("decoded", Json::object())
+                                              .value("material_name", Json());
+                if (!decoded_name.is_string()) {
+                    name_relation["status"] = "source_name_unavailable";
+                } else {
+                    const auto name_matches = material_catalog_by_name.find(
+                        decoded_name.get<std::string>());
+                    if (name_matches == material_catalog_by_name.end()) {
+                        name_relation["status"] = "not_found";
+                    } else {
+                        for (const auto ci : name_matches->second) {
+                            const auto &catalog = material_catalog.at(ci);
+                            name_relation["catalog_candidates"].push_back(
+                                {{"catalog_index", ci}, {"record_id", catalog.at("record_id")},
+                                 {"stream", catalog.at("stream")}});
+                            const auto found_definitions = material_definitions_by_catalog.find(ci);
+                            if (found_definitions != material_definitions_by_catalog.end())
+                                for (const auto di : found_definitions->second) {
+                                    const auto &definition = material_definitions.at(di);
+                                    name_relation["definition_candidates"].push_back(
+                                        {{"definition_index", di},
+                                         {"material_id", definition.at("id")},
+                                         {"scope", definition.at("scope")},
+                                         {"stream", definition.at("stream")}});
+                                }
+                        }
+                        const auto catalog_count = name_relation["catalog_candidates"].size();
+                        const auto definition_count = name_relation["definition_candidates"].size();
+                        name_relation["status"] = catalog_count != 1 ? "ambiguous_catalog"
+                            : definition_count == 1 ? "unique_exact_name_candidate"
+                            : definition_count == 0 ? "catalog_without_definition"
+                                                    : "ambiguous_definition";
+                    }
+                }
+                mapped["material_name_relation"] = std::move(name_relation);
                 meta["geometry_part_material_assignments"].push_back(std::move(mapped));
             }
         }
