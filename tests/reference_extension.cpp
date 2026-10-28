@@ -60,12 +60,30 @@ unsigned reference_extension_tests() {
               d["indexed_resources"][0]["source_flags"] == 0x80000001u &&
               !d["indexed_resources"][4].contains("region_slot"),
           "four region query flags are distinct from the fifth independently referenced resource");
+    check(d["indexed_resources"][0]["lookup_status"] == "skipped_negative_index" &&
+              d["indexed_resources"][1]["lookup_status"] == "skipped_negative_index" &&
+              d["indexed_resources"][2]["lookup_status"] == "not_evaluated" &&
+              d["indexed_resources"][3]["lookup_status"] == "not_evaluated" &&
+              d["indexed_resources"][4]["lookup_status"] == "not_evaluated",
+          "native indexed-resource resolver skips negative indices before lookup");
     check(
         d["object_references"][0]["id"] == 0xfedcba9876543210ull &&
             d["object_references"][1]["id"] == 0x123456789abcdef0ull &&
             d["object_references"][0]["owner_reference_path_indirection"] == true &&
-            d["object_references"][0]["target_resolution"] == "not_evaluated",
+            d["object_references"][0]["target_resolution"] == "not_evaluated" &&
+            d["has_nonzero_object_reference_id"] == true,
         "clip object references retain exact uint64 identities without claiming resolved targets");
+    auto single_reference_payload = main_payload(0);
+    put(single_reference_payload, 40, 0x1234, 8);
+    put(single_reference_payload, 48, 0, 8);
+    d = decode_attribute(0, 20081, single_reference_payload, 0);
+    check(d["has_nonzero_object_reference_id"] == true &&
+              d["object_references"][1]["id"] == 0,
+          "the native presence predicate is true when either reference ID is nonzero");
+    put(single_reference_payload, 40, 0, 8);
+    d = decode_attribute(0, 20081, single_reference_payload, 0);
+    check(d["has_nonzero_object_reference_id"] == false,
+          "the native presence predicate is false when both reference IDs are zero");
     check(
         d["object_references"][0]["lookup_profile"] == "owner_system" &&
             d["object_references"][0]["runtime_reject_mask"] == 8 &&
@@ -91,7 +109,8 @@ unsigned reference_extension_tests() {
     auto input = reference_extension_input(Json::array());
     check(input["status"] == "decoded" && input["scale_provider"]["id"] == 0 &&
               input["auxiliary_state_word"] == 0xfffffffeu &&
-              input["parameter_block_loaded"] == false,
+              input["parameter_block_loaded"] == false &&
+              input["has_nonzero_object_reference_id"] == false,
           "known empty initial collection uses constructor defaults");
     check(input["parameter_source"] == "initial_default" &&
               input["indexed_resources"][0]["index"] == -1 &&

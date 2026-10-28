@@ -11,6 +11,8 @@ static Json extension_resources(const Bytes &b) {
                          {"lookup_domain", "selected_file_resource_table"},
                          {"context_selection", "not_evaluated"},
                          {"negative_index", index < 0},
+                         {"lookup_status",
+                          index < 0 ? "skipped_negative_index" : "not_evaluated"},
                          {"target_resolution", "not_evaluated"},
                          {"slot_role", "unresolved"}};
         if (offset != 56) {
@@ -41,6 +43,10 @@ static Json extension_object_references(const Bytes &b) {
     return references;
 }
 
+static bool has_nonzero_object_reference_id(const Bytes &b) {
+    return Reader(b, 40).u64() != 0 || Reader(b, 48).u64() != 0;
+}
+
 Json decode_reference_extension(unsigned group, unsigned key, const Bytes &b, unsigned index) {
     if (key != 20081 || (group != 0 && group != 20117))
         return nullptr;
@@ -59,6 +65,7 @@ Json decode_reference_extension(unsigned group, unsigned key, const Bytes &b, un
         out["scale_provider"] = {{"id", id}, {"source_offset", 60}, {"enabled", (id >> 16) != 0}};
         out["indexed_resources"] = extension_resources(b);
         out["object_references"] = extension_object_references(b);
+        out["has_nonzero_object_reference_id"] = has_nonzero_object_reference_id(b);
         out["unresolved_ranges"] = Json::array({{{"offset", 0}, {"size", 8}},
                                                 {{"offset", 12}, {"size", 4}},
                                                 {{"offset", 20}, {"size", 4}},
@@ -134,6 +141,8 @@ Json reference_extension_input(const Json &attributes) {
                     {"parameter_source", loaded ? "selected_attribute" : "initial_default"},
                     {"indexed_resources", extension_resources(parameter_bytes)},
                     {"object_references", extension_object_references(parameter_bytes)},
+                    {"has_nonzero_object_reference_id",
+                     has_nonzero_object_reference_id(parameter_bytes)},
                     {"scale_provider",
                      {{"id", provider},
                       {"enabled", (provider >> 16) != 0},
