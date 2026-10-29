@@ -669,7 +669,7 @@ ACCESSOR(binding_blocks, binding_blocks) ACCESSOR(relationships, relations)
     return build_object_graph(*this);
 }
 Json Document::native_display_catalog() const {
-    return build_native_display_catalog(object_graph());
+    return build_native_display_catalog(object_graph(), layer_tables(), native_records());
 }
 Json Document::scene(unsigned n) const {
     return build_scene(*this, n);

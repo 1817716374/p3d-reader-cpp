@@ -224,7 +224,8 @@ Json decode_inline_material(const Bytes &);
 Json decode_graphics_bytes(const Bytes &);
 Json parse_relationships(const Bytes &);
 Json build_object_graph(const Document &);
-Json build_native_display_catalog(const Json &object_graph);
+Json build_native_display_catalog(const Json &object_graph, const Json &layer_tables,
+                                 const Json &native_records);
 Json build_graph_records(const Json &, const Json &, const Json &, const std::set<std::uint64_t> &,
                          const std::set<std::string> &);
 Json build_scene(const Document &, unsigned);
