@@ -804,6 +804,137 @@ static Bytes decompress_attribute(const Bytes &b, Json &metadata) {
     metadata = {{"version", ver}, {"codec", codec}, {"decoded_bytes", n}};
     return out;
 }
+static Json decode_dgn_display_style_type_filter(const Bytes &b) {
+    Json compression;
+    const auto data = decompress_attribute(b, compression);
+    Json out = compression;
+    out["encoding"] = "dgn_display_style_type_filter";
+    out["native_type_id"] = "0x58EA1000";
+    out["data"] = rawbytes(data);
+
+    if (data.size() < 12) {
+        out["status"] = "partial";
+        out["unparsed_data"] = rawbytes(data);
+        out["reason"] = "type_filter_header_truncated";
+        return out;
+    }
+
+    Reader r(data);
+    out["serialized_header_word"] = r.u16();
+    out["flags"] = r.u16();
+    const auto apply_mode_word = r.u32();
+    const auto apply_mode = apply_mode_word & 3u;
+    static const char *const apply_mode_names[] = {"all_element_types", "selected_element_types",
+                                                   "all_except_selected_element_types"};
+    out["apply_to_mode_word"] = apply_mode_word;
+    out["apply_to_mode"] = apply_mode;
+    if (apply_mode < sizeof(apply_mode_names) / sizeof(apply_mode_names[0]))
+        out["apply_to_mode_name"] = apply_mode_names[apply_mode];
+    out["unassigned_apply_to_mode_bits"] = apply_mode_word & ~3u;
+    out["discarded_word"] = r.u32();
+
+    // These are the element-handler tokens accepted by the native enum mapper,
+    // indexed by OdDgFilterElementType's serialized numeric value.
+    static const char *const element_type_tokens[] = {
+        "struct Bentley::Ustn::Element::BSplineSurfaceHandler",
+        "struct Bentley::Ustn::Element::BSplineCurveHandler",
+        "struct Bentley::Ustn::Element::MstnCellHeaderHandler",
+        "struct Bentley::Ustn::Element::SpiralCurveHandler",
+        "class Bentley::Ustn::Element::AssocRegionCellHeaderHandler",
+        "struct Bentley::Ustn::Element::DimensionHandler",
+        "class Bentley::Ustn::Element::BrepCellHeaderHandler",
+        "struct Bentley::Ustn::Element::SharedCellHandler",
+        "class Bentley::Ustn::Element::NoteCellHeaderHandler",
+        "struct Bentley::Ustn::Element::MultilineHandler",
+        "class Bentley::Ustn::Element::GroupedHoleHandler",
+        "struct Bentley::Ustn::Element::AttributeHandler",
+        "struct Bentley::Ustn::Element::LineStringHandler",
+        "struct Bentley::Ustn::Element::RasterHdrHandler",
+        "struct Bentley::Ustn::Element::TextNodeHandler",
+        "class HIERasterFrameHandler",
+        "struct Bentley::Ustn::Element::ComplexStringHandler",
+        "struct Bentley::Ustn::Element::MeshHeaderHandler",
+        "struct Bentley::Ustn::Element::EllipseHandler",
+        "struct XGraphicsDisplayHandler",
+        "struct Bentley::Ustn::Element::TextElemHandler",
+        "struct NamedViewDisplayHandler",
+        "struct Bentley::Ustn::Element::SolidHandler",
+        "struct Bentley::Ustn::Element::SectionClipElementHandler",
+        "struct Bentley::Ustn::Element::ConeHandler",
+        "struct Bentley::Ustn::Element::SectionCalloutHandler",
+        "class FeatureNodeHandler",
+        "struct Bentley::Ustn::Element::DetailCallout3DViewHandler",
+        "class Bentley::Ustn::Element::DigitalSignatureCellHeaderHandler",
+        "struct Bentley::Ustn::Element::ElevationCalloutHandler",
+        "struct Bentley::Ustn::Element::LineHandler",
+        "struct Bentley::Ustn::Element::TitleTextHandler",
+        "struct Bentley::Ustn::Element::CurveHandler",
+        "struct Bentley::Ustn::Element::SurfaceHandler",
+        "struct Bentley::Ustn::Element::PointStringHandler",
+        "struct Bentley::Markup::ContentAreaHandler",
+        "struct Bentley::Ustn::Element::OleCellHeaderHandler",
+        "class Bentley::Ustn::Element::AnnotationCellHeaderHandler",
+        "struct Bentley::Ustn::Element::ShapeHandler",
+        "struct Bentley::Ustn::Element::ComplexShapeHandler",
+        "struct Bentley::Ustn::Element::DrawingTitleHandler",
+        "struct Bentley::Ustn::Element::UnderlineDrawingTitleHandler",
+        "struct Bentley::Ustn::Element::DrawingTitleProxyClipElementHandler",
+        "struct Bentley::Ustn::Element::PlanCalloutHandler",
+        "struct Bentley::Ustn::Element::OrthogonalSectionCalloutHandler",
+        "struct Bentley::Ustn::Element::InteriorElevationCalloutHandler",
+        "struct Bentley::Ustn::Element::DetailCalloutHandler",
+        "struct Bentley::Ustn::Element::ArcHandler"};
+
+    Json selected = Json::array();
+    bool complete = apply_mode < sizeof(apply_mode_names) / sizeof(apply_mode_names[0]);
+    while (r.left()) {
+        const auto entry_offset = r.p;
+        if (r.left() < 4) {
+            complete = false;
+            out["unparsed_suffix"] = rawbytes(slice(data, entry_offset, r.left()));
+            break;
+        }
+        const auto entry_size = r.u16();
+        const auto control0 = r.u8();
+        const auto control1 = r.u8();
+        if (entry_size < 5 || static_cast<std::size_t>(entry_size - 4) > r.left()) {
+            complete = false;
+            out["unparsed_suffix"] = rawbytes(slice(data, entry_offset, data.size() - entry_offset));
+            break;
+        }
+        const auto name_bytes = r.take(entry_size - 4);
+        const bool terminated = !name_bytes.empty() && name_bytes.back() == 0;
+        const auto name_size = terminated ? name_bytes.size() - 1 : name_bytes.size();
+        std::string name(reinterpret_cast<const char *>(name_bytes.data()), name_size);
+        const bool has_embedded_nul = name.find('\0') != std::string::npos;
+        Json item = {{"record_offset", entry_offset},
+                     {"record_byte_count", entry_size},
+                     {"control_bytes", Json::array({control0, control1})},
+                     {"serialized_name_bytes", rawbytes(name_bytes)},
+                     {"name_terminated", terminated},
+                     {"name_has_embedded_nul", has_embedded_nul}};
+        if (terminated && !has_embedded_nul) {
+            item["handler_name"] = name;
+            Json type_value = nullptr;
+            for (unsigned i = 0; i < sizeof(element_type_tokens) / sizeof(element_type_tokens[0]); ++i)
+                if (name == element_type_tokens[i]) {
+                    type_value = i;
+                    break;
+                }
+            item["element_type_value"] = std::move(type_value);
+            item["element_type_status"] = item["element_type_value"].is_null() ? "unknown_token"
+                                                                                 : "decoded";
+            if (item["element_type_value"].is_null())
+                complete = false;
+        }
+        selected.push_back(std::move(item));
+        if (!terminated || has_embedded_nul)
+            complete = false;
+    }
+    out["selected_element_types"] = std::move(selected);
+    out["status"] = complete ? "decoded" : "partial";
+    return out;
+}
 Json native_material_texture_file(const Bytes &b) {
     Json out;
     const auto payload = decompress_attribute(b, out);
@@ -1682,6 +1813,8 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     auto display = decode_display_attribute(group, key, b);
     if (!display.is_null())
         return display;
+    if (group == 0x1000 && key == 0x58EA)
+        return decode_dgn_display_style_type_filter(b);
     if (key == 22913) {
         Json result;
         auto payload = decompress_attribute(b, result);
