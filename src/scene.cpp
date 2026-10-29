@@ -802,7 +802,8 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                                    {"scope", "part_material"},
                                    {"source", row["source"]},
                                    {"part_index", row["part_index"]},
-                                   {"part_index_basis", "zero_based_graphics_entry_order"},
+                                   {"part_index_basis",
+                                    "zero_based_native_entity_graphics_entry_order"},
                                    {"face_mapping_status", "entry_level_only"},
                                    {"material_name_relation",
                                     exact_material_name_relation(row["material_name"])}};
@@ -828,10 +829,29 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                             mapped["reason"] = "native_graphics_child_record_ambiguous";
                             mapped["record_count"] = child_records->second.size();
                         } else {
-                            mapped["status"] = "matched";
-                            mapped["native_child_reference_ordinal"] = 0;
-                            mapped["geometry_id"] = child;
-                            mapped["geometry_record_key"] = source_key(*child_records->second[0]);
+                            const auto record_key = source_key(*child_records->second[0]);
+                            const auto entries = geometry_defs.find(record_key);
+                            if (entries == geometry_defs.end() || entries->second.empty()) {
+                                mapped["reason"] = "native_graphics_child_has_no_geometry_entry";
+                            } else if (entries->second.size() != 1) {
+                                mapped["reason"] = "native_graphics_child_entry_order_unverified";
+                                mapped["geometry_entry_count"] = entries->second.size();
+                            } else {
+                                const auto definition_index = entries->second.front();
+                                const auto &entry_source = definitions.at(definition_index)->source;
+                                if (entry_source.value("kind", std::string()) !=
+                                    "native_shared_geometry") {
+                                    mapped["reason"] =
+                                        "native_graphics_child_entry_source_not_geometry_attribute";
+                                } else {
+                                    mapped["status"] = "matched";
+                                    mapped["native_child_reference_ordinal"] = 0;
+                                    mapped["geometry_id"] = child;
+                                    mapped["geometry_record_key"] = record_key;
+                                    mapped["geometry_entry_index"] = 0;
+                                    mapped["geometry_entry_source"] = entry_source;
+                                }
+                            }
                         }
                     }
                     meta["geometry_part_material_assignments"].push_back(std::move(mapped));
