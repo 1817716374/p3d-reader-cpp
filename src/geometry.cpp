@@ -658,6 +658,96 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     loft(g, rings, d["capped"].get<bool>());
                     return;
                 }
+                if (op == 31) {
+                    const auto axis_x = d.at("axis_x").get<Point3>();
+                    const auto axis_y = d.at("axis_y").get<Point3>();
+                    const auto origin = d.at("origin").get<Point3>();
+                    const auto radius_xy = d.at("radius_xy").get<double>();
+                    const auto radius_z = d.at("radius_z").get<double>();
+                    const auto latitude_start = d.at("latitude_start").get<double>();
+                    const auto latitude_sweep = d.at("latitude_sweep").get<double>();
+                    require(std::isfinite(radius_xy) && std::isfinite(radius_z) &&
+                                std::isfinite(latitude_start) && std::isfinite(latitude_sweep),
+                            "nonfinite sphere surface parameters");
+                    require(radius_xy != 0 && radius_z != 0 && latitude_sweep != 0 &&
+                                std::abs(latitude_sweep) <= 2 * pi,
+                            "unsupported sphere surface extent");
+                    const auto latitude_end = latitude_start + latitude_sweep;
+                    require(latitude_start >= -pi / 2 && latitude_start <= pi / 2 &&
+                                latitude_end >= -pi / 2 && latitude_end <= pi / 2,
+                            "sphere surface latitude outside polar interval");
+                    auto axis_z = cross(axis_x, axis_y);
+                    const auto axis_z_length = norm(axis_z);
+                    require(axis_z_length > 0 && std::isfinite(axis_z_length),
+                            "degenerate sphere surface frame");
+                    axis_z = scale(axis_z, 1 / axis_z_length);
+                    const auto radius_bound = std::max(std::abs(radius_xy), std::abs(radius_z));
+                    const auto longitude_segments = policy.segments(radius_bound);
+                    const auto latitude_segments = policy.segments(radius_bound, latitude_sweep);
+                    require(longitude_segments >= 3, "sphere surface needs three longitude segments");
+                    require(latitude_segments < policy.max_segments &&
+                                longitude_segments <=
+                                    policy.max_segments / (latitude_segments + 1),
+                            "sphere surface exceeds tessellation point budget");
+                    std::vector<std::vector<std::uint32_t>> rows;
+                    std::vector<Point3> points;
+                    rows.reserve(latitude_segments + 1);
+                    for (unsigned j = 0; j <= latitude_segments; ++j) {
+                        const auto latitude =
+                            j == latitude_segments
+                                ? latitude_start + latitude_sweep
+                                : latitude_start + latitude_sweep * j / latitude_segments;
+                        const auto c = std::cos(latitude), s = std::sin(latitude);
+                        auto &row = rows.emplace_back();
+                        const bool pole = std::abs(c) < 1e-12;
+                        row.reserve(pole ? 1 : longitude_segments);
+                        if (pole) {
+                            const auto point = add(origin, scale(axis_z, std::copysign(radius_z, s)));
+                            row.push_back(static_cast<std::uint32_t>(points.size()));
+                            points.push_back(point);
+                        } else {
+                            for (unsigned i = 0; i < longitude_segments; ++i) {
+                                const auto longitude = 2 * pi * i / longitude_segments;
+                                auto radial = add(scale(axis_x, radius_xy * c * std::cos(longitude)),
+                                                  scale(axis_y, radius_xy * c * std::sin(longitude)));
+                                const auto point = add(add(origin, radial),
+                                                       scale(axis_z, radius_z * s));
+                                row.push_back(static_cast<std::uint32_t>(points.size()));
+                                points.push_back(point);
+                            }
+                        }
+                    }
+                    std::vector<Triangle> faces;
+                    require(std::size_t(latitude_segments) * longitude_segments <=
+                                std::numeric_limits<std::size_t>::max() / 2,
+                            "sphere surface triangle count overflow");
+                    faces.reserve(std::size_t(latitude_segments) * longitude_segments * 2);
+                    for (unsigned j = 0; j < latitude_segments; ++j) {
+                        const auto &lower = rows[j];
+                        const auto &upper = rows[j + 1];
+                        for (unsigned i = 0; i < longitude_segments; ++i) {
+                            const auto next = (i + 1) % longitude_segments;
+                            if (lower.size() == 1)
+                                faces.push_back({lower[0], upper[next], upper[i]});
+                            else if (upper.size() == 1)
+                                faces.push_back({lower[i], lower[next], upper[0]});
+                            else {
+                                faces.push_back({lower[i], lower[next], upper[next]});
+                                faces.push_back({lower[i], upper[next], upper[i]});
+                            }
+                        }
+                    }
+                    for (auto &face : faces) {
+                        const auto a = points[face[0]], b = points[face[1]], c = points[face[2]];
+                        const auto centroid = scale(add(add(a, b), c), 1. / 3);
+                        if (dot(cross(sub(b, a), sub(c, a)), sub(centroid, origin)) < 0)
+                            std::swap(face[1], face[2]);
+                    }
+                    for (auto &point : points)
+                        point = transform(matrix, point);
+                    append(g, points, faces);
+                    return;
+                }
                 if (op == 16 || op == 17 || op == 52 || op == 56) {
                     require(!solid, "nested solid block");
                     solid = op;

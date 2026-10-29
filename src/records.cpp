@@ -728,7 +728,8 @@ Json command_fields(unsigned op, const Bytes &b) {
             v["axis_x"] = r.doubles(3);
             v["axis_y"] = r.doubles(3);
             v["origin"] = r.doubles(3);
-            v["radii"] = r.doubles(2);
+            v["radius_xy"] = r.f64();
+            v["radius_z"] = r.f64();
             v["latitude_start"] = r.f64();
             v["latitude_sweep"] = r.f64();
             r.finish();
