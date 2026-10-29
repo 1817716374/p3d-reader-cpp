@@ -1,5 +1,6 @@
 #include "internal.hpp"
 #include <charconv>
+#include <cmath>
 #include <string_view>
 
 namespace p3d {
@@ -31,6 +32,25 @@ Json boolean_field(const Json &attributes, const char *name) {
         out["status"] = "decoded";
         out["value"] = false;
     }
+    return out;
+}
+
+Json double_field(const Json &attributes, const char *name) {
+    if (!attributes.is_object() || !attributes.contains(name))
+        return {{"status", "missing"}};
+    const auto &source = attributes[name];
+    Json out = {{"source_value", source}, {"status", "unrecognized"}};
+    if (!source.is_string())
+        return out;
+    const auto text = source.get<std::string>();
+    double parsed = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed,
+                                        std::chars_format::general);
+    if (text.empty() || result.ec != std::errc{} || result.ptr != text.data() + text.size() ||
+        !std::isfinite(parsed))
+        return out;
+    out["status"] = "decoded";
+    out["value"] = parsed;
     return out;
 }
 
@@ -86,11 +106,18 @@ Json condition_details(const std::string &tag, const Json &attributes) {
     const auto kind = condition_kind(tag);
     Json out = {{"kind", kind ? kind : "unknown"}, {"tag", tag}, {"fields", attributes}};
     if (tag == "P3DEntityRangeShowCondition") {
+        out["range"] = {{"low_x", double_field(attributes, "RangeConditionLowX")},
+                        {"low_y", double_field(attributes, "RangeConditionLowY")},
+                        {"low_z", double_field(attributes, "RangeConditionLowZ")},
+                        {"high_x", double_field(attributes, "RangeConditionHighX")},
+                        {"high_y", double_field(attributes, "RangeConditionHighY")},
+                        {"high_z", double_field(attributes, "RangeConditionHighZ")}};
         out["operator"] = enum_field(attributes, "RangeConditionOperatorType",
                                      {{0, "unknown"}, {1, "inner"}, {2, "outer"},
                                       {4, "intersect"}});
         out["exclude"] = boolean_field(attributes, "RangeConditionExclude");
     } else if (tag == "P3DEntityVolumeShowCondition") {
+        out["volume"] = double_field(attributes, "VolumeCondition");
         out["operator"] = enum_field(attributes, "VolumeCompareOperatorType",
                                      {{1, "equal"}, {2, "not_equal"}, {3, "less"},
                                       {4, "greater"}});
