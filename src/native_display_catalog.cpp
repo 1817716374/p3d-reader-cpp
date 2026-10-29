@@ -235,6 +235,8 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
         const bool view_data = class_name == "BCCBBViewData";
         const bool view_config = class_name == "BCCBBViewConfigData";
         const bool view_config_list = class_name == "BCCBBViewConfigDataList";
+        const bool category_manager_pre = class_name == "BPEditEnvCategoryManagerPreData";
+        const bool category_manager_post = class_name == "BPEditEnvCategoryManagerPostData";
         const bool feature_style = class_name == "FeatureStyleDataElement";
         const bool group_relation = class_name == "PBBimGroupRelInfo";
         const bool layer_pix_relation = class_name == "PBBimLayerPixRelInfo";
@@ -242,8 +244,8 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
         const bool subcategory_node = class_name == "PBBimSubCategoryNodeName";
         if (!display_cache && !line_style && !hatch_style && !style_definition && !style_cache &&
             !style_graphic && !model_view && !view_data && !view_config && !view_config_list &&
-            !feature_style && !group_relation && !layer_pix_relation && !subcategory_info &&
-            !subcategory_node)
+            !category_manager_pre && !category_manager_post && !feature_style && !group_relation &&
+            !layer_pix_relation && !subcategory_info && !subcategory_node)
             continue;
 
         const auto &tree = object["property_tree"];
@@ -282,6 +284,9 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
         } else if (view_config) {
             record["record_kind"] = "view_config";
             record["filters"] = nested_records(tree, "Filters", "BCCBBViewFilter", false);
+        } else if (category_manager_pre || category_manager_post) {
+            record["record_kind"] = category_manager_pre ? "category_manager_pre_data"
+                                                          : "category_manager_post_data";
         } else if (group_relation) {
             record["record_kind"] = "group_relation";
         } else if (layer_pix_relation) {
@@ -305,6 +310,8 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
                                       : view_data ? "view_data"
                                       : view_config ? "view_config"
                                       : view_config_list ? "view_config_list"
+                                      : category_manager_pre ? "category_manager_pre_data"
+                                      : category_manager_post ? "category_manager_post_data"
                                       : feature_style ? "feature_style"
                                                       : "unknown";
             if (const auto *pix_type = unique_field(tree, "PixType"); pix_type && pix_type->contains("value"))
