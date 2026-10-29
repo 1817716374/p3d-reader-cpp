@@ -77,6 +77,18 @@ Json integer_width_field(const Json &attributes, const char *name, bool is_signe
     return out;
 }
 
+Json string_field(const Json &attributes, const char *name) {
+    if (!attributes.is_object() || !attributes.contains(name))
+        return {{"status", "missing"}};
+    const auto &source = attributes[name];
+    Json out = {{"source_value", source}, {"status", "unrecognized"}};
+    if (!source.is_string())
+        return out;
+    out["status"] = "decoded";
+    out["value"] = source;
+    return out;
+}
+
 Json enum_field(const Json &attributes, const char *name,
                 std::initializer_list<std::pair<std::int64_t, const char *>> values) {
     Json out = {{"source_value", attributes.is_object() && attributes.contains(name)
@@ -205,7 +217,7 @@ Json action_details(const std::string &tag, const Json &attributes) {
         out["action_id"] = 1;
     else if (tag == "FillColorOverrideAction")
         out["action_id"] = 2;
-    else if (tag == "StyleOverrideAction" || tag == "ShowStyleOverrideAction")
+    else if (tag == "StyleOverrideAction")
         out["action_id"] = 3;
     else if (tag == "WeightOverrideAction")
         out["action_id"] = 4;
@@ -218,12 +230,20 @@ Json action_details(const std::string &tag, const Json &attributes) {
         out["edge_color"] = integer_width_field(attributes, "ElementEdgeColor", false);
     } else if (tag == "FillColorOverrideAction") {
         out["fill_color"] = integer_width_field(attributes, "ElementFillColor", false);
-    } else if (tag == "StyleOverrideAction" || tag == "ShowStyleOverrideAction") {
+    } else if (tag == "StyleOverrideAction") {
         out["line_style"] = integer_width_field(attributes, "LineStyle", true);
+    } else if (tag == "ShowStyleOverrideAction") {
+        out["display_style"] = integer_width_field(attributes, "DisplayStyle", false);
     } else if (tag == "WeightOverrideAction") {
         out["line_weight"] = integer_width_field(attributes, "LineWeight", false);
     } else if (tag == "TransparencyOverrideAction") {
         out["transparency"] = double_field(attributes, "Transparency");
+    } else if (tag == "PDEntityPriorityAction") {
+        out["entity_priority"] = integer_width_field(attributes, "ElementPriority", true);
+    } else if (tag == "PresentationFormAction") {
+        out["presentation_form"] = string_field(attributes, "PresentationForm");
+    } else if (tag == "LayerOfDetailAction") {
+        out["level_of_detail"] = double_field(attributes, "LevelOfDetail");
     }
     return out;
 }
