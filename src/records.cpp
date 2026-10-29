@@ -1161,7 +1161,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         return {{"encoding", "native_geometry_pair_lookup_key"},
                 {"key_words", {first, second}},
                 {"comparison", "ordered_composite_u32_pair"},
-                {"lookup_domain", "native_geometry_collection"},
+                {"lookup_domain", "unresolved"},
                 {"business_meaning", "unresolved"}};
     }
     if (group == 106 && key == 10001 && index == 0) {
