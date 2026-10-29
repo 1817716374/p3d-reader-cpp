@@ -77,6 +77,20 @@ Json integer_width_field(const Json &attributes, const char *name, bool is_signe
     return out;
 }
 
+Json integer_code_field(const Json &attributes, const char *name) {
+    if (!attributes.is_object() || !attributes.contains(name))
+        return {{"status", "missing"}};
+    Json out = {{"source_value", attributes[name]}, {"status", "unrecognized"}};
+    const auto parsed = integer_field(attributes, name);
+    if (!parsed || *parsed < std::numeric_limits<std::int32_t>::min() ||
+        *parsed > std::numeric_limits<std::int32_t>::max())
+        return out;
+    out["status"] = "decoded";
+    out["code"] = *parsed;
+    out["width_bits"] = 32;
+    return out;
+}
+
 Json string_field(const Json &attributes, const char *name) {
     if (!attributes.is_object() || !attributes.contains(name))
         return {{"status", "missing"}};
@@ -233,7 +247,7 @@ Json action_details(const std::string &tag, const Json &attributes) {
     } else if (tag == "StyleOverrideAction") {
         out["line_style"] = integer_width_field(attributes, "LineStyle", true);
     } else if (tag == "ShowStyleOverrideAction") {
-        out["display_style"] = integer_width_field(attributes, "DisplayStyle", false);
+        out["display_style"] = integer_code_field(attributes, "DisplayStyle");
     } else if (tag == "WeightOverrideAction") {
         out["line_weight"] = integer_width_field(attributes, "LineWeight", false);
     } else if (tag == "TransparencyOverrideAction") {
