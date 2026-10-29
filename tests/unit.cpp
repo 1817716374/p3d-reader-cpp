@@ -2232,6 +2232,17 @@ static void arc_sweep_tests() {
         put<double>(body, v);
     put<std::uint8_t>(body, 1);
     Json commands = Json::array({command(18, body), command(21, Bytes{0})});
+    check(commands[0]["decoded"]["auxiliary_tail_relation"]["status"] ==
+                  "positive_path_plane_normal_multiple" &&
+              std::abs(commands[0]["decoded"]["auxiliary_tail_relation"]["scale_factor"]
+                           .get<double>() - 2.5) < 1e-12,
+          "arc sweep classifies its auxiliary tail against the path-plane normal");
+    auto nonparallel = body;
+    const double sideways = 2.5;
+    std::memcpy(nonparallel.data() + 88, &sideways, sizeof(sideways));
+    check(command(18, nonparallel)["decoded"]["auxiliary_tail_relation"]["status"] ==
+              "not_parallel",
+          "arc sweep leaves a nonparallel auxiliary tail unclassified");
     Bytes profile;
     const std::vector<Point3> points = {{2., -0.5, 0.5}, {3., -0.5, 0.5},
                                         {3., 0.5, 0.5}, {2., 0.5, 0.5},

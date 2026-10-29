@@ -723,10 +723,41 @@ Json command_fields(unsigned op, const Bytes &b) {
             v["vector"] = r.doubles(3);
             v["capped"] = bool(r.u8());
         } else if (op == 18) {
-            v["path_axis_x"] = r.doubles(3);
-            v["path_axis_y"] = r.doubles(3);
+            const auto axis_x = r.doubles(3);
+            const auto axis_y = r.doubles(3);
+            v["path_axis_x"] = axis_x;
+            v["path_axis_y"] = axis_y;
             v["path_center"] = r.doubles(3);
-            v["auxiliary_values"] = r.doubles(5);
+            const auto auxiliary = r.doubles(5);
+            v["auxiliary_values"] = auxiliary;
+            const std::array<double, 3> x{axis_x[0], axis_x[1], axis_x[2]},
+                y{axis_y[0], axis_y[1], axis_y[2]},
+                tail{auxiliary[2], auxiliary[3], auxiliary[4]};
+            const std::array<double, 3> normal{x[1] * y[2] - x[2] * y[1],
+                                               x[2] * y[0] - x[0] * y[2],
+                                               x[0] * y[1] - x[1] * y[0]};
+            const auto normal_sq = normal[0] * normal[0] + normal[1] * normal[1] +
+                                   normal[2] * normal[2];
+            const auto tail_length = std::hypot(tail[0], tail[1], tail[2]);
+            if (std::isfinite(normal_sq) && normal_sq > 0 && std::isfinite(tail_length)) {
+                const auto scale = (tail[0] * normal[0] + tail[1] * normal[1] +
+                                    tail[2] * normal[2]) / normal_sq;
+                const auto residual = std::hypot(tail[0] - scale * normal[0],
+                                                 tail[1] - scale * normal[1],
+                                                 tail[2] - scale * normal[2]);
+                const auto normal_length = std::sqrt(normal_sq);
+                if (std::isfinite(scale) && std::isfinite(residual) &&
+                    residual <= 1e-10 * std::max({1., tail_length,
+                                                  std::abs(scale) * normal_length}))
+                    v["auxiliary_tail_relation"] = {
+                        {"status", scale > 0 ? "positive_path_plane_normal_multiple"
+                                             : scale < 0 ? "negative_path_plane_normal_multiple"
+                                                         : "zero_path_plane_normal_multiple"},
+                        {"scale_factor", scale}};
+                else
+                    v["auxiliary_tail_relation"] = {{"status", "not_parallel"}};
+            } else
+                v["auxiliary_tail_relation"] = {{"status", "degenerate_or_non_finite_axes"}};
             v["sweep_angle"] = r.f64();
             v["capped"] = bool(r.u8());
             r.finish();
