@@ -1443,35 +1443,126 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             }
             if (type_id == 408 && derived_offset &&
                 derived_offset <= state.size()) {
-                // High/low point processors share the same versioned prefix
-                // layout as the flow-arrow processor. The SDK exposes the
-                // point layer and visibility independently; the three-value
-                // vector stays semantically unnamed until its purpose is
-                // confirmed.
+                // The high-points processor has no dedicated Read/Write
+                // virtual pair. Its sample begins with the same 29-byte
+                // prefix as LowPointsProcessor::Read; decode only that
+                // cross-type-compatible prefix and leave the rest opaque.
                 Reader point_reader(state, derived_offset);
                 Json point = Json::object();
-                if (point_reader.left() >= 33) {
-                    const auto version = point_reader.u16();
-                    point["version"] = version;
-                    point["point_layer_id"] = point_reader.u16();
-                    point["point_type_raw"] = point_reader.u8();
-                    point["vector3"] =
-                        Json::array({point_reader.f64(), point_reader.f64(),
-                                     point_reader.f64()});
-                    const auto visible_raw = point_reader.u32();
-                    point["visible"] = visible_raw != 0;
-                    point["visible_raw"] = visible_raw;
-                    point["unmapped_suffix"] =
-                        rawbytes(point_reader.take(point_reader.left()));
-                    decoded["status"] =
-                        point["unmapped_suffix"]["bytes"] == 0 && version <= 2
-                            ? "known_fields_decoded"
-                            : "known_prefix_decoded_with_unknown_suffix";
-                } else {
-                    point["unmapped_suffix"] =
-                        rawbytes(point_reader.take(point_reader.left()));
-                    decoded["status"] = "truncated_known_prefix";
+                bool prefix_decoded = false;
+                std::uint16_t point_version = 0;
+                if (point_reader.left() >= 2) {
+                    point_version = point_reader.u16();
+                    point["version"] = point_version;
+                    if (point_reader.left() >= 1) {
+                        point["member_0x38_u8"] = point_reader.u8();
+                        if (point_reader.left() >= 2) {
+                            const auto string_start = point_reader.p;
+                            bool terminated = false;
+                            while (point_reader.left() >= 2) {
+                                if (point_reader.u16() == 0) {
+                                    terminated = true;
+                                    break;
+                                }
+                            }
+                            if (terminated) {
+                                const auto raw = slice(
+                                    state, string_start,
+                                    point_reader.p - string_start);
+                                point["member_0x40_utf16z"] =
+                                    utf16(slice(raw, 0, raw.size() - 2));
+                                point["member_0x40_utf16z_serialized"] =
+                                    rawbytes(raw);
+                                const auto vector_start = point_reader.p;
+                                if (point_reader.left() >= 24) {
+                                    point["member_0x60_vector3"] = Json::array(
+                                        {point_reader.f64(), point_reader.f64(),
+                                         point_reader.f64()});
+                                    prefix_decoded = true;
+                                } else {
+                                    point_reader.p = vector_start;
+                                }
+                            } else {
+                                point_reader.p = string_start;
+                            }
+                        }
+                    }
                 }
+                bool compatible_layout_complete = prefix_decoded;
+                auto take_u32 = [&](const char *name) {
+                    if (!compatible_layout_complete || point_reader.left() < 4) {
+                        compatible_layout_complete = false;
+                        return;
+                    }
+                    point[std::string("member_") + name] = point_reader.u32();
+                };
+                auto take_f64 = [&](const char *name) {
+                    if (!compatible_layout_complete || point_reader.left() < 8) {
+                        compatible_layout_complete = false;
+                        return;
+                    }
+                    point[std::string("member_") + name] = point_reader.f64();
+                };
+                auto take_utf16z = [&](const char *name) {
+                    if (!compatible_layout_complete || point_reader.left() < 2) {
+                        compatible_layout_complete = false;
+                        return;
+                    }
+                    const auto start = point_reader.p;
+                    bool terminated = false;
+                    while (point_reader.left() >= 2) {
+                        if (point_reader.u16() == 0) {
+                            terminated = true;
+                            break;
+                        }
+                    }
+                    if (!terminated) {
+                        point_reader.p = start;
+                        compatible_layout_complete = false;
+                        return;
+                    }
+                    const auto raw = slice(state, start, point_reader.p - start);
+                    point[std::string("member_") + name] =
+                        utf16(slice(raw, 0, raw.size() - 2));
+                    point[std::string("member_") + name + "_serialized"] =
+                        rawbytes(raw);
+                };
+                auto take_vector3 = [&](const char *name) {
+                    if (!compatible_layout_complete || point_reader.left() < 24) {
+                        compatible_layout_complete = false;
+                        return;
+                    }
+                    point[std::string("member_") + name] = Json::array(
+                        {point_reader.f64(), point_reader.f64(), point_reader.f64()});
+                };
+                if (prefix_decoded) {
+                    take_u32("0x78_u32");
+                    take_f64("0x110_f64");
+                    take_u32("0x30_u32");
+                    take_utf16z("0x80_utf16z");
+                    take_utf16z("0xa0_utf16z");
+                    take_vector3("0xc0_vector3");
+                    if (compatible_layout_complete && point_reader.left() >= 2)
+                        point["member_0xd8_u16"] = point_reader.u16();
+                    else
+                        compatible_layout_complete = false;
+                    if (point_version > 1) {
+                        take_u32("0xdc_u32");
+                        take_f64("0xe0_f64");
+                        take_u32("0xe8_u32");
+                        take_utf16z("0xf0_utf16z");
+                    }
+                }
+                point["layout_evidence"] =
+                    "matches_low_points_native_prefix_unconfirmed_for_high_points";
+                point["unmapped_suffix"] =
+                    rawbytes(point_reader.take(point_reader.left()));
+                decoded["status"] = !prefix_decoded
+                                         ? "truncated_known_prefix"
+                                         : compatible_layout_complete &&
+                                                   point["unmapped_suffix"]["bytes"] == 0
+                                               ? "high_points_layout_compatible_fully_consumed_unconfirmed"
+                                               : "high_points_prefix_layout_compatible_unconfirmed";
                 decoded["high_low_points"] = std::move(point);
             }
             if (type_id == 405 && derived_offset && derived_offset <= state.size()) {
