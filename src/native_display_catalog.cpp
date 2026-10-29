@@ -157,6 +157,52 @@ Json record_reference(const Json &record) {
     return out;
 }
 
+Json model_reference(const Json &models, const Json &source_id) {
+    const auto id = unsigned_integer(&source_id);
+    Json out = {{"source_model_id", source_id}, {"match", "exact_decimal_model_id_key"}};
+    if (!id) {
+        out["status"] = "source_id_unavailable";
+        return out;
+    }
+    const auto key = std::to_string(*id);
+    if (!models.is_object() || !models.contains(key)) {
+        out["status"] = "missing";
+        out["model_id"] = *id;
+        return out;
+    }
+    const auto &model = models[key];
+    out["status"] = "resolved";
+    out["model_id"] = *id;
+    out["model"] = {{"model_id", *id},
+                     {"name", model.value("name", Json())},
+                     {"physical_storage", model.value("physical_storage", Json())}};
+    return out;
+}
+
+Json model_reference_list(const Json &models, const Json &fields, const char *field_name) {
+    Json out = {{"source_field", field_name},
+                {"match", "exact_decimal_model_id_key"},
+                {"references", Json::array()}};
+    if (!fields.contains(field_name)) {
+        out["status"] = "source_field_unavailable";
+        return out;
+    }
+    const auto &source = fields[field_name];
+    if (!source.is_array()) {
+        out["status"] = "source_value_not_array";
+        out["source_value"] = source;
+        return out;
+    }
+    out["status"] = "decoded";
+    out["source_value"] = source;
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        auto reference = model_reference(models, source[i]);
+        reference["source_ordinal"] = i;
+        out["references"].push_back(std::move(reference));
+    }
+    return out;
+}
+
 void add_path_context(Json &item, const Json &parsed,
                       const std::map<std::string, std::vector<Json>> &subcategories,
                       const std::map<std::string, std::vector<Json>> &nodes,
@@ -216,7 +262,7 @@ void add_layer_pix_references(Json &item, const Json &path,
 } // namespace
 
 Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
-                                 const Json &native_records) {
+                                 const Json &native_records, const Json &models) {
     Json records = Json::array();
     if (!graph.is_object() || !graph.contains("objects") || !graph["objects"].is_array())
         return {{"status", "object_graph_unavailable"}, {"records", records}};
@@ -478,7 +524,15 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
 
     for (auto &record : records) {
         const auto kind = record.value("record_kind", std::string{});
-        if (kind == "view_config_list") {
+        if (kind == "model_view") {
+            const auto &fields = record["fields"];
+            record["model_id_reference"] = model_reference(
+                models, fields.contains("ModelId") ? fields["ModelId"] : Json());
+            record["associated_model_references"] =
+                model_reference_list(models, fields, "AssociatedModels");
+            record["visible_model_references"] =
+                model_reference_list(models, fields, "VisibleModels");
+        } else if (kind == "view_config_list") {
             const auto &fields = record["fields"];
             Json references = Json::array();
             if (fields.contains("ConfigNames") && fields["ConfigNames"].is_array())
