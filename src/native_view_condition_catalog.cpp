@@ -275,6 +275,9 @@ Json action_details(const std::string &tag, const Json &attributes) {
         out["line_style"] = integer_width_field(attributes, "LineStyle", true);
         out["line_weight"] = integer_width_field(attributes, "LineWeight", false);
         out["annotation_scale"] = boolean_field(attributes, "AnnotationScale");
+    } else if (tag == "MaterialOverrideAction") {
+        out["material_id"] = string_field(attributes, "MaterialId");
+        out["material_name"] = string_field(attributes, "MaterialName");
     }
     return out;
 }
