@@ -969,6 +969,72 @@ Json native_material_texture_file(const Bytes &b) {
     return out;
 }
 
+Json decode_sesm_gams_member_data(std::uint32_t type_code, const Bytes &b) {
+    if (type_code != 1001 && type_code != 1002 && type_code != 1005 && type_code != 1006)
+        return nullptr;
+    try {
+        Reader r(b);
+        require(r.left() >= 16, "SESM member prefix");
+        Json prefix = Json::array();
+        for (int i = 0; i < 4; ++i)
+            prefix.push_back(r.u32());
+        Json out = {{"prefix_u32_values", std::move(prefix)},
+                    {"semantic_status", "unresolved"}};
+        if (type_code == 1001) {
+            require(r.left() >= 4, "SESM type 1001 value");
+            const auto source = r.u32();
+            out["source_u32_value"] = source;
+            out["native_u32_value"] = source == 0x80000000u ? 0u : source;
+        } else if (type_code == 1002) {
+            // The installed native reader reads the first two u32 values,
+            // skips the next eight bytes, then dispatches the remainder to
+            // a virtual callback. The callback's field semantics remain unknown.
+            out["native_reader_prefix"] = {
+                {"first_u32", prefix[0]},
+                {"second_u32", prefix[1]},
+                {"skipped_bytes_8_to_15", rawbytes(slice(b, 8, 8))}};
+            out["callback_input_offset"] = 16;
+            out["callback_input"] = rawbytes(slice(b, 16, b.size() - 16));
+            out["callback_semantics"] = "unresolved";
+        } else if (type_code == 1005) {
+            require(r.left() >= 8, "SESM type 1005 value");
+            out["native_u64_value"] = r.u64();
+        } else {
+            require(r.left() >= 4, "SESM type 1006 flag");
+            const auto flag = r.u32();
+            out["source_flag_u32"] = flag;
+            out["native_flag"] = flag != 0;
+            Json strings = Json::array();
+            for (int i = 0; i < 2; ++i) {
+                require(r.left() >= 4, "SESM type 1006 string length");
+                const auto signed_count = r.i32();
+                require(signed_count >= 0, "SESM type 1006 negative string length");
+                const auto count = static_cast<std::size_t>(signed_count);
+                require(count <= r.left() / 2, "SESM type 1006 string bytes");
+                auto source = r.take(count * 2);
+                const bool terminated = source.size() >= 2 && source[source.size() - 2] == 0 &&
+                                        source.back() == 0;
+                auto text = utf16(source);
+                if (terminated && !text.empty())
+                    text.pop_back();
+                strings.push_back({{"code_units", count},
+                                   {"text", std::move(text)},
+                                   {"source_terminated", terminated},
+                                   {"source_data", rawbytes(source)}});
+            }
+            out["native_strings"] = std::move(strings);
+        }
+        out["unparsed_suffix"] = rawbytes(r.take(r.left()));
+        out["status"] = "layout_decoded_semantics_unresolved";
+        return out;
+    } catch (const std::exception &e) {
+        return {{"semantic_status", "unresolved"},
+                {"status", "partial"},
+                {"decode_error", e.what()},
+                {"unparsed_data", rawbytes(b)}};
+    }
+}
+
 Json decode_sesm_gams_stream(const Bytes &b) {
     if (b.size() < 8 || latin1(slice(b, 0, 4)) != "SESM")
         return nullptr;
@@ -998,13 +1064,21 @@ Json decode_sesm_gams_stream(const Bytes &b) {
             const auto data_offset = r.p;
             require(data_size <= r.left(), "SESM record data size");
             auto data = r.take(data_size);
-            records.push_back({{"signature", marker},
-                               {"offset", record_offset},
-                               {"data_bytes", data_size},
-                               {"type_code", type_code},
-                               {"data_offset", data_offset},
-                               {"data", rawbytes(data)},
-                               {"semantic_status", "unresolved"}});
+            Json record = {{"signature", marker},
+                           {"offset", record_offset},
+                           {"data_bytes", data_size},
+                           {"type_code", type_code},
+                           {"data_offset", data_offset},
+                           {"data", rawbytes(data)},
+                           {"semantic_status", "unresolved"}};
+            if (type_code == 1001 || type_code == 1002 || type_code == 1005 || type_code == 1006)
+                record["native_reader_dispatch"] = "typed_member";
+            else if (type_code == 1007)
+                record["native_reader_dispatch"] = "skipped_without_typed_member";
+            auto member = decode_sesm_gams_member_data(type_code, data);
+            if (!member.is_null())
+                record["native_member_layout"] = std::move(member);
+            records.push_back(std::move(record));
         }
         require(!terminator.is_null(), "SESM terminator");
         out = {{"encoding", "sesm_gams_record_stream"},
