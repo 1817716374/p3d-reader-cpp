@@ -2233,9 +2233,9 @@ static void arc_sweep_tests() {
     put<std::uint8_t>(body, 1);
     Json commands = Json::array({command(18, body), command(21, Bytes{0})});
     Bytes profile;
-    const std::vector<Point3> points = {{2., -0.5, 0.}, {3., -0.5, 0.},
-                                        {3., 0.5, 0.}, {2., 0.5, 0.},
-                                        {2., -0.5, 0.}};
+    const std::vector<Point3> points = {{2., -0.5, 0.5}, {3., -0.5, 0.5},
+                                        {3., 0.5, 0.5}, {2., 0.5, 0.5},
+                                        {2., -0.5, 0.5}};
     put<std::uint32_t>(profile, points.size());
     for (auto point : points)
         for (auto value : point)
@@ -2248,8 +2248,25 @@ static void arc_sweep_tests() {
     for (auto point : geometry.vertices)
         for (auto value : point)
             finite = finite && std::isfinite(value);
-    check(geometry.unknown.empty() && !geometry.faces.empty() && finite,
-          "closed polygon region reconstructs as a finite arc sweep mesh");
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;
+    for (const auto face : geometry.faces)
+        for (unsigned i = 0; i < 3; ++i) {
+            auto a = face[i], b = face[(i + 1) % 3];
+            if (a > b)
+                std::swap(a, b);
+            edges.emplace_back(a, b);
+        }
+    std::sort(edges.begin(), edges.end());
+    bool closed = !edges.empty();
+    for (std::size_t i = 0; closed && i < edges.size();) {
+        auto j = i + 1;
+        while (j < edges.size() && edges[j] == edges[i])
+            ++j;
+        closed = j - i == 2;
+        i = j;
+    }
+    check(geometry.unknown.empty() && !geometry.faces.empty() && finite && closed,
+          "closed polygon sweep has a finite manifold mesh with welded profile seam");
 }
 static void quadratic_bspline_tests() {
     Bytes body = {0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0, 0, 3,
