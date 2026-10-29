@@ -91,6 +91,65 @@ std::optional<std::uint64_t> unsigned_integer(const Json *value) {
     return static_cast<std::uint64_t>(signed_value);
 }
 
+Json pbbim_domain_value(const Json &value) {
+    Json out = {{"encoding", "PBBimDomain"}, {"source_value", value}, {"status", "unknown_enum_value"}};
+    const auto code = unsigned_integer(&value);
+    if (!code)
+        return out;
+    const char *name = nullptr;
+    switch (*code) {
+    case 0:
+    case 1:
+    case 7:
+        name = "建筑";
+        break;
+    case 2:
+        name = "结构";
+        break;
+    case 3:
+        name = "暖通";
+        break;
+    case 4:
+        name = "给排水";
+        break;
+    case 5:
+        name = "电气";
+        break;
+    case 6:
+        name = "装配式";
+        break;
+    case 8:
+        name = "铝模";
+        break;
+    case 12:
+        name = "其他";
+        break;
+    case 13:
+        name = "钢结构";
+        break;
+    case 1001:
+        name = "结构设计";
+        break;
+    default:
+        break;
+    }
+    if (name) {
+        out["status"] = "decoded";
+        out["name"] = name;
+    }
+    return out;
+}
+
+Json pbbim_domain_fields(const std::string &class_name, const Json &fields) {
+    Json out = Json::object();
+    if (class_name.rfind("PBBim", 0) != 0 || !fields.is_object())
+        return out;
+    for (const char *key : {"Domain", "DisplayDomain", "StyleDomain", "GroupDomain"})
+        if (fields.contains(key))
+            out[key] = pbbim_domain_value(fields[key]);
+    return out;
+}
+
 Json display_statuses(const Json &tree) {
     Json out = Json::array();
     const auto *info = unique_field(tree, "DisplayInfo");
@@ -302,6 +361,9 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
                        {"object_id", object.value("object_id", Json())},
                        {"fields", direct_fields(tree)},
                        {"property_tree", tree}};
+        const auto domain_fields = pbbim_domain_fields(class_name, record["fields"]);
+        if (!domain_fields.empty())
+            record["domain_values"] = domain_fields;
         if (display_cache) {
             record["record_kind"] = "display_cache";
             record["display_statuses"] = display_statuses(tree);
