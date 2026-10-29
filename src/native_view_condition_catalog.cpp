@@ -108,6 +108,22 @@ Json point_value(std::string_view text, std::size_t dimensions) {
     return out;
 }
 
+Json base64_value(std::string_view text, std::string type) {
+    Json out = { {"status", "invalid_base64"}, {"type", std::move(type)},
+                 {"encoding", "base64"} };
+    Bytes bytes;
+    try {
+        bytes = unbase64(std::string(text));
+    } catch (const std::exception &) {
+        return out;
+    }
+    if (base64(bytes) != std::string(text))
+        return out;
+    out["status"] = "decoded";
+    out["data"] = rawbytes(bytes);
+    return out;
+}
+
 Json boolean_field(const Json &attributes, const char *name) {
     if (!attributes.is_object() || !attributes.contains(name))
         return { {"status", "missing"} };
@@ -362,6 +378,8 @@ Json bp_value_text(const Json &attributes) {
         out["typed_value"] = datetime_value(text);
     } else if (*type == 0x501 || *type == 0x601) {
         out["typed_value"] = point_value(text, *type == 0x501 ? 2 : 3);
+    } else if (*type == 0x701 || *type == 0x901) {
+        out["typed_value"] = base64_value(text, *type == 0x701 ? "geometry" : "binary");
     }
     return out;
 }
