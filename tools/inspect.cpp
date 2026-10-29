@@ -22,11 +22,11 @@ int main(int argc, char **argv) {
 #endif
         if (args.empty()) {
             std::cout
-                << "p3d-inspect FILE [--threads N] [--dump FILE] [--scene FILE] [--graph FILE]\n";
+                << "p3d-inspect FILE [--threads N] [--dump FILE] [--scene FILE] [--graph FILE] [--display-catalog FILE]\n";
             return 0;
         }
         p3d::Options opt;
-        std::filesystem::path dump, scene, graph, streams_dir;
+        std::filesystem::path dump, scene, graph, display_catalog, streams_dir;
         bool native = false, expanded = false;
         for (std::size_t i = 1; i < args.size(); ++i) {
             auto k = args[i].string();
@@ -38,6 +38,8 @@ int main(int argc, char **argv) {
                 scene = args[++i];
             else if (k == "--graph" && i + 1 < args.size())
                 graph = args[++i];
+            else if (k == "--display-catalog" && i + 1 < args.size())
+                display_catalog = args[++i];
             else if (k == "--streams-dir" && i + 1 < args.size())
                 streams_dir = args[++i];
             else if (k == "--native-summary")
@@ -77,6 +79,8 @@ int main(int argc, char **argv) {
                          {"layer_tables", d.layer_tables()}});
         if (!graph.empty())
             write(graph, d.object_graph());
+        if (!display_catalog.empty())
+            write(display_catalog, d.native_display_catalog());
         if (!streams_dir.empty()) {
             std::filesystem::create_directories(streams_dir);
             p3d::Json manifest = p3d::Json::array();

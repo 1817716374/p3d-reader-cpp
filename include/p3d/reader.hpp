@@ -835,6 +835,10 @@ class Document {
     // Native advanced/legacy name and part assignments, with source identity.
     Json material_assignments() const;
     Json object_graph() const;
+    // Typed projections of persisted display/view records. Original property
+    // trees remain attached to every record; path components are only lexical
+    // numeric tokens and are not interpreted as class/model identifiers.
+    Json native_display_catalog() const;
     Json scene(unsigned segments = 64) const;
     NativeScene native_scene(Tessellation = {}) const;
     Json summary() const;
