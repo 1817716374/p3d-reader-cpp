@@ -1331,7 +1331,117 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                 }
                 decoded["spots"] = std::move(spots);
             }
-            if ((type_id == 408 || type_id == 409) && derived_offset &&
+            if (type_id == 409 && derived_offset && derived_offset <= state.size()) {
+                // LowPointsProcessor::Read (RVA 0x3d880) defines this exact
+                // serialized order. The current sample ends in the middle of
+                // member +0xc0, so expose only fully present fields.
+                Reader low_reader(state, derived_offset);
+                Json low = Json::object();
+                bool complete = true;
+                auto take_u8 = [&](const char *name) {
+                    if (!complete || low_reader.left() < 1) {
+                        complete = false;
+                        return;
+                    }
+                    low[std::string("member_") + name] = low_reader.u8();
+                };
+                auto take_u16 = [&](const char *name) {
+                    if (!complete || low_reader.left() < 2) {
+                        complete = false;
+                        return;
+                    }
+                    low[std::string("member_") + name] = low_reader.u16();
+                };
+                auto take_u32 = [&](const char *name) {
+                    if (!complete || low_reader.left() < 4) {
+                        complete = false;
+                        return;
+                    }
+                    low[std::string("member_") + name] = low_reader.u32();
+                };
+                auto take_f64 = [&](const char *name) {
+                    if (!complete || low_reader.left() < 8) {
+                        complete = false;
+                        return;
+                    }
+                    low[std::string("member_") + name] = low_reader.f64();
+                };
+                auto take_utf16z = [&](const char *name) {
+                    if (!complete || low_reader.left() < 2) {
+                        complete = false;
+                        return;
+                    }
+                    const auto start = low_reader.p;
+                    bool terminated = false;
+                    while (low_reader.left() >= 2) {
+                        if (low_reader.u16() == 0) {
+                            terminated = true;
+                            break;
+                        }
+                    }
+                    if (!terminated) {
+                        // Keep the whole incomplete string in the raw suffix.
+                        low_reader.p = start;
+                        complete = false;
+                        return;
+                    }
+                    const auto raw = slice(state, start, low_reader.p - start);
+                    low[std::string("member_") + name] =
+                        utf16(slice(raw, 0, raw.size() - 2));
+                    low[std::string("member_") + name + "_serialized"] =
+                        rawbytes(raw);
+                };
+                auto take_vector3 = [&](const char *name) {
+                    if (!complete || low_reader.left() < 24) {
+                        complete = false;
+                        return;
+                    }
+                    low[std::string("member_") + name] =
+                        Json::array({low_reader.f64(), low_reader.f64(),
+                                     low_reader.f64()});
+                };
+
+                if (low_reader.left() >= 2) {
+                    const auto version = low_reader.u16();
+                    low["version"] = version;
+                    take_u8("0x38_u8");
+                    take_utf16z("0x40_utf16z");
+                    take_vector3("0x60_vector3");
+                    take_u32("0x78_u32");
+                    take_f64("0x110_f64");
+                    take_u32("0x30_u32");
+                    take_utf16z("0x80_utf16z");
+                    take_utf16z("0xa0_utf16z");
+                    take_vector3("0xc0_vector3");
+                    take_u16("0xd8_u16");
+                    if (version > 1) {
+                        take_u32("0xdc_u32");
+                        take_f64("0xe0_f64");
+                        take_u32("0xe8_u32");
+                        take_utf16z("0xf0_utf16z");
+                    } else {
+                        low["member_0xdc_u32"] = 1;
+                        low["member_0xdc_u32_source"] = "native_default_for_version_1";
+                        low["member_0xe0_f64"] = 10000.0;
+                        low["member_0xe0_f64_source"] = "native_default_for_version_1";
+                        low["member_0xe8_u32"] = 2;
+                        low["member_0xe8_u32_source"] = "native_default_for_version_1";
+                        low["member_0xf0_utf16z"] = "";
+                        low["member_0xf0_utf16z_source"] = "native_default_for_version_1";
+                    }
+                    low["unmapped_suffix"] = rawbytes(low_reader.take(low_reader.left()));
+                    decoded["status"] = !complete
+                                             ? "truncated_known_fields"
+                                             : version == 1 && low["unmapped_suffix"]["bytes"] == 0
+                                                   ? "known_fields_decoded"
+                                                   : "known_fields_decoded_with_unknown_suffix";
+                } else {
+                    low["unmapped_suffix"] = rawbytes(low_reader.take(low_reader.left()));
+                    decoded["status"] = "truncated_known_fields";
+                }
+                decoded["low_points"] = std::move(low);
+            }
+            if (type_id == 408 && derived_offset &&
                 derived_offset <= state.size()) {
                 // High/low point processors share the same versioned prefix
                 // layout as the flow-arrow processor. The SDK exposes the
