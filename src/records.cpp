@@ -1065,15 +1065,13 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                                 triangle["serialized_value_u64"] = fields.u64();
                             triangle["unmapped_block_suffix"] =
                                 rawbytes(fields.take(fields.left()));
-                            if (type_id == 414) {
-                                // RasterDrapingProcessor::Read calls the
-                                // triangle reader, then advances the source
-                                // cursor by two bytes when any bytes remain.
-                                // Its writer serializes a constant u16(1)
-                                // through the P3DDC u16 stream overload.
-                                // The reader does not inspect this value, so
-                                // expose its stored value without assigning
-                                // it a business meaning.
+                            if (type_id == 401 || type_id == 414) {
+                                // Both native processor vtables route their
+                                // post-triangle reader through RVA 0x3e450,
+                                // paired with writer RVA 0x3e420. The reader
+                                // skips two bytes; the writer emits u16(1).
+                                // Preserve the value without assigning it a
+                                // business meaning.
                                 if (triangle_reader.left() >= 2) {
                                     const auto field_offset = triangle_reader.p;
                                     const auto value = triangle_reader.u16();
@@ -1094,7 +1092,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                                 rawbytes(triangle_reader.take(triangle_reader.left()));
                             const bool block_complete =
                                 triangle["unmapped_block_suffix"]["bytes"] == 0;
-                            if (type_id == 414) {
+                            if (type_id == 401 || type_id == 414) {
                                 const bool field_complete =
                                     triangle.contains("post_triangle_u16");
                                 if (!field_complete &&
