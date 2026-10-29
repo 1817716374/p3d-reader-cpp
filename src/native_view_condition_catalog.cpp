@@ -258,6 +258,23 @@ Json action_details(const std::string &tag, const Json &attributes) {
         out["presentation_form"] = string_field(attributes, "PresentationForm");
     } else if (tag == "LayerOfDetailAction") {
         out["level_of_detail"] = double_field(attributes, "LevelOfDetail");
+    } else if (tag == "AreaHatchAction") {
+        out["distance"] = double_field(attributes, "Distance");
+        out["angle"] = double_field(attributes, "Angle");
+        out["distance2"] = double_field(attributes, "Distance2");
+        out["angle2"] = double_field(attributes, "Angle2");
+        out["element_color"] = integer_width_field(attributes, "ElementColor", false);
+        out["line_style"] = integer_width_field(attributes, "LineStyle", true);
+        out["line_weight"] = integer_width_field(attributes, "LineWeight", false);
+        out["annotation_scale"] = boolean_field(attributes, "AnnotationScale");
+    } else if (tag == "AreaPatternAction") {
+        out["cell_id"] = string_field(attributes, "CellId");
+        out["scale"] = double_field(attributes, "Scale");
+        out["angle"] = double_field(attributes, "Angle");
+        out["element_color"] = integer_width_field(attributes, "ElementColor", false);
+        out["line_style"] = integer_width_field(attributes, "LineStyle", true);
+        out["line_weight"] = integer_width_field(attributes, "LineWeight", false);
+        out["annotation_scale"] = boolean_field(attributes, "AnnotationScale");
     }
     return out;
 }
