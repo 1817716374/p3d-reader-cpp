@@ -79,6 +79,17 @@ Json direct_fields(const Json &tree) {
     return fields;
 }
 
+std::optional<std::uint64_t> unsigned_integer(const Json *value) {
+    if (!value || !value->is_number_integer())
+        return std::nullopt;
+    if (value->is_number_unsigned())
+        return value->get<std::uint64_t>();
+    const auto signed_value = value->get<std::int64_t>();
+    if (signed_value < 0)
+        return std::nullopt;
+    return static_cast<std::uint64_t>(signed_value);
+}
+
 Json display_statuses(const Json &tree) {
     Json out = Json::array();
     const auto *info = unique_field(tree, "DisplayInfo");
@@ -160,6 +171,23 @@ Json build_native_display_catalog(const Json &graph) {
             record["line_components"] = nested_records(tree, "Line", "PBBimLineStyle", true);
             record["hatch_components"] = nested_records(tree, "Hatch", "PBBimHatchStyle", true);
             record["visibility_statuses"] = nested_records(tree, "Visble", "PBBimDisplayStatus", false);
+        } else if (view_data) {
+            record["record_kind"] = "view_data";
+            const auto fields = record["fields"];
+            const auto class_id = unsigned_integer(fields.contains("ModelElementClassID")
+                                                       ? &fields["ModelElementClassID"]
+                                                       : nullptr);
+            const auto object_id = unsigned_integer(fields.contains("ModelElementDataID")
+                                                        ? &fields["ModelElementDataID"]
+                                                        : nullptr);
+            if (class_id && object_id) {
+                record["model_element_reference"] =
+                    {{"class_id", *class_id},
+                     {"object_id", *object_id},
+                     {"target", get_object(graph, *class_id, *object_id)}};
+            } else {
+                record["model_element_reference"] = {{"status", "source_id_pair_unavailable"}};
+            }
         } else {
             record["record_kind"] = line_style ? "line_style"
                                       : hatch_style ? "hatch_style"
