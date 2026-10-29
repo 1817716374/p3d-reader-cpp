@@ -81,6 +81,33 @@ Json datetime_value(std::string_view text) {
     return out;
 }
 
+Json double_field(const Json &attributes, const char *name);
+
+Json point_value(std::string_view text, std::size_t dimensions) {
+    Json out = { {"status", "unrecognized"},
+                 {"type", dimensions == 2 ? "point2d" : "point3d"} };
+    Json coordinates = Json::array();
+    std::size_t begin = 0;
+    while (begin <= text.size()) {
+        const auto end = text.find(',', begin);
+        const auto token_end = end == std::string_view::npos ? text.size() : end;
+        const auto token = std::string(text.substr(begin, token_end - begin));
+        const auto decoded = double_field(Json{{"value", token}}, "value");
+        if (decoded.value("status", std::string{}) != "decoded")
+            return out;
+        coordinates.push_back(decoded["value"]);
+        if (end == std::string_view::npos)
+            break;
+        begin = end + 1;
+    }
+    if (coordinates.size() != dimensions)
+        return out;
+    out["status"] = "decoded";
+    out["coordinates"] = std::move(coordinates);
+    out["source_format"] = dimensions == 2 ? "%.17g,%.17g" : "%.17g,%.17g,%.17g";
+    return out;
+}
+
 Json boolean_field(const Json &attributes, const char *name) {
     if (!attributes.is_object() || !attributes.contains(name))
         return { {"status", "missing"} };
@@ -333,6 +360,8 @@ Json bp_value_text(const Json &attributes) {
         }
     } else if (*type == 0xa01) {
         out["typed_value"] = datetime_value(text);
+    } else if (*type == 0x501 || *type == 0x601) {
+        out["typed_value"] = point_value(text, *type == 0x501 ? 2 : 3);
     }
     return out;
 }
