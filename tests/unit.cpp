@@ -2225,6 +2225,32 @@ static void box_center_tests() {
     check(g.faces.size() == 8 && g.vertices == expected,
           "uncapped box preserves its two open ends");
 }
+static void arc_sweep_tests() {
+    Bytes body;
+    for (double v : {1., 0., 0., 0., 1., 0., 0., 0., 0., 1., 1., 0., 0., 2.5,
+                     1.5707963267948966})
+        put<double>(body, v);
+    put<std::uint8_t>(body, 1);
+    Json commands = Json::array({command(18, body), command(21, Bytes{0})});
+    Bytes profile;
+    const std::vector<Point3> points = {{2., -0.5, 0.}, {3., -0.5, 0.},
+                                        {3., 0.5, 0.}, {2., 0.5, 0.},
+                                        {2., -0.5, 0.}};
+    put<std::uint32_t>(profile, points.size());
+    for (auto point : points)
+        for (auto value : point)
+            put(profile, value);
+    commands.push_back(command(1, profile));
+    commands.push_back(command(22, {}));
+    commands.push_back(command(19, {}));
+    const auto geometry = reconstruct(commands, Tessellation{});
+    bool finite = true;
+    for (auto point : geometry.vertices)
+        for (auto value : point)
+            finite = finite && std::isfinite(value);
+    check(geometry.unknown.empty() && !geometry.faces.empty() && finite,
+          "closed polygon region reconstructs as a finite arc sweep mesh");
+}
 static void guided_surface_tests() {
     const std::vector<Point3> corners = {{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}};
     auto fixture = [&](bool capped, bool twisted, bool damaged, double bend_height = 1.) {
@@ -3446,6 +3472,7 @@ int main() {
         inline_material_tests();
         embedded_texture_tests();
         box_center_tests();
+        arc_sweep_tests();
         guided_surface_tests();
         bgfb_native_tests();
         bspline_tests();

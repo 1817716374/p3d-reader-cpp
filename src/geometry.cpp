@@ -358,6 +358,99 @@ static void loft(Geometry &g, const std::vector<std::vector<Point3>> &sections, 
     }
     append(g, points, faces);
 }
+static void arc_sweep_ellipse(Geometry &g, const Json &parameters,
+                              const std::vector<Point3> &profile, Point3 profile_center,
+                              const Matrix4 &placement, const Tessellation &policy) {
+    require(profile.size() >= 4, "arc sweep ellipse profile is incomplete");
+    const auto path_axis_x = parameters.at("path_axis_x").get<Point3>();
+    const auto path_axis_y = parameters.at("path_axis_y").get<Point3>();
+    const auto center = parameters.at("path_center").get<Point3>();
+    const auto sweep = parameters.at("sweep_angle").get<double>();
+    const bool capped = parameters.at("capped").get<bool>();
+    const auto radial = sub(profile_center, center);
+    const auto radius = norm(radial);
+    auto normal = cross(path_axis_x, path_axis_y);
+    const auto normal_length = norm(normal);
+    require(std::isfinite(radius) && radius > 0 && std::isfinite(sweep) && sweep != 0 &&
+                std::abs(sweep) <= 2 * pi,
+            "unsupported arc sweep extent");
+    require(std::isfinite(normal_length) && normal_length > 0,
+            "degenerate arc sweep frame");
+    normal = scale(normal, 1 / normal_length);
+    require(std::abs(dot(radial, normal)) <= std::max(1., radius) * 1e-9,
+            "arc sweep profile center is outside its path plane");
+    const auto profile_segments = profile.size() - 1;
+    require(norm(sub(profile.front(), profile.back())) <= 1e-8 * std::max(1., radius),
+            "arc sweep profile is not closed");
+    double profile_extent = 0;
+    for (auto point : profile)
+        profile_extent = std::max(profile_extent, norm(sub(point, profile_center)));
+    const auto path_segments = policy.segments(radius + profile_extent, sweep);
+    require(path_segments > 0 && path_segments <= policy.max_segments / profile_segments,
+            "arc sweep exceeds tessellation budget");
+    const bool closed_path = std::abs(std::abs(sweep) - 2 * pi) <= 1e-10;
+    const auto path_rows = path_segments + (closed_path ? 0u : 1u);
+    require(std::size_t(path_rows) * profile.size() <= std::numeric_limits<std::uint32_t>::max(),
+            "arc sweep vertex index overflow");
+    std::vector<Point3> points;
+    points.reserve(std::size_t(path_rows) * profile.size());
+    auto rotate = [&](Point3 value, double angle) {
+        const auto c = std::cos(angle), s = std::sin(angle);
+        return add(add(scale(value, c), scale(cross(normal, value), s)),
+                   scale(normal, dot(normal, value) * (1 - c)));
+    };
+    for (unsigned row = 0; row < path_rows; ++row) {
+        const auto angle = sweep * row / path_segments;
+        for (const auto point : profile)
+            points.push_back(add(center, rotate(sub(point, center), angle)));
+    }
+    std::vector<Triangle> faces;
+    faces.reserve(std::size_t(path_segments) * profile_segments * 2 +
+                  (closed_path || !capped ? 0 : profile_segments * 2));
+    for (unsigned row = 0; row < path_segments; ++row) {
+        const auto next_row = (row + 1) % path_rows;
+        const auto angle_mid = sweep * (row + .5) / path_segments;
+        for (std::size_t edge = 0; edge < profile_segments; ++edge) {
+            const auto a = std::uint32_t(std::size_t(row) * profile.size() + edge);
+            const auto b = a + 1;
+            const auto c = std::uint32_t(std::size_t(next_row) * profile.size() + edge + 1);
+            const auto d = c - 1;
+            auto expected = rotate(sub(scale(add(profile[edge], profile[edge + 1]), .5),
+                                       profile_center),
+                                   angle_mid);
+            for (auto face : {Triangle{a, b, c}, Triangle{a, c, d}}) {
+                const auto pa = points[face[0]], pb = points[face[1]], pc = points[face[2]];
+                if (dot(cross(sub(pb, pa), sub(pc, pa)), expected) < 0)
+                    std::swap(face[1], face[2]);
+                faces.push_back(face);
+            }
+        }
+    }
+    if (!closed_path && capped) {
+        auto cap_profile = profile;
+        cap_profile.pop_back();
+        auto caps = polygon_faces(cap_profile, {profile_segments});
+        auto tangent0 = scale(cross(normal, radial), sweep > 0 ? 1 : -1);
+        auto tangent1 = scale(cross(normal, rotate(radial, sweep)), sweep > 0 ? 1 : -1);
+        for (std::size_t i = 0; i < caps.size(); ++i) {
+            auto start = caps[i];
+            const auto pa = points[start[0]], pb = points[start[1]], pc = points[start[2]];
+            if (dot(cross(sub(pb, pa), sub(pc, pa)), tangent0) > 0)
+                std::swap(start[1], start[2]);
+            faces.push_back(start);
+            auto end = caps[i];
+            for (auto &index : end)
+                index += std::uint32_t((path_rows - 1) * profile.size());
+            const auto ea = points[end[0]], eb = points[end[1]], ec = points[end[2]];
+            if (dot(cross(sub(eb, ea), sub(ec, ea)), tangent1) < 0)
+                std::swap(end[1], end[2]);
+            faces.push_back(end);
+        }
+    }
+    for (auto &point : points)
+        point = transform(placement, point);
+    append(g, points, faces);
+}
 static std::vector<Point3> curve(unsigned op, const Json &decoded, const Tessellation &policy,
                                  double bound = 1) {
     if (op == 1 || op == 9)
@@ -408,6 +501,11 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
     Json style = Json::object();
     unsigned solid = 0, stage = 0, path_kind = 0;
     Bytes payload;
+    Json solid_parameters;
+    Matrix4 solid_placement = identity();
+    std::vector<Point3> arc_sweep_profile;
+    Point3 arc_sweep_profile_center{};
+    bool arc_sweep_has_profile = false;
     bool in_path = false;
     std::vector<GuidedBoundary> path_native, guide_native;
     std::vector<std::vector<GuidedBoundary>> section_native;
@@ -477,6 +575,13 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     auto local =
                              curve(op, d, policy, policy.chord_tolerance ? scale_bound(matrix) : 1),
                          points = world(local);
+                    if (solid == 18 && op == 7 && !in_path) {
+                        require(!arc_sweep_has_profile,
+                                "arc sweep contains multiple analytic ellipse profiles");
+                        arc_sweep_profile = local;
+                        arc_sweep_profile_center = d.at("origin").get<Point3>();
+                        arc_sweep_has_profile = true;
+                    }
                     if (op == 9 && !solid)
                         append(g, points, polygon_faces(points));
                     else {
@@ -484,6 +589,15 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         for (auto &t : tan)
                             t = vector_transform(matrix, t);
                         if (in_path) {
+                            if (solid == 18 && path_kind == 21) {
+                                std::size_t start =
+                                    !arc_sweep_profile.empty() && !local.empty() &&
+                                            norm(sub(arc_sweep_profile.back(), local.front())) < 1e-6
+                                        ? 1
+                                        : 0;
+                                arc_sweep_profile.insert(arc_sweep_profile.end(),
+                                                         local.begin() + start, local.end());
+                            }
                             if (solid == 56) {
                                 GuidedBoundary boundary;
                                 if (op == 5 || op == 7) {
@@ -765,6 +879,20 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     guide_counts.clear();
                     return;
                 }
+                if (op == 18) {
+                    require(!solid, "nested solid block");
+                    solid = op;
+                    payload = body;
+                    solid_parameters = d;
+                    solid_placement = matrix;
+                    sections.clear();
+                    section_parts.clear();
+                    section_rings.clear();
+                    section_tangents.clear();
+                    arc_sweep_profile.clear();
+                    arc_sweep_has_profile = false;
+                    return;
+                }
                 if (op == 50 || op == 51 || op == 53 || op == 54 || op == 55) {
                     if (op == 55)
                         guide_counts = d.at("guide_counts").get<std::vector<std::size_t>>();
@@ -781,6 +909,10 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     native_ring_ends.clear();
                     path_tangents.clear();
                     path_kind = op;
+                    if (solid == 18 && op == 21) {
+                        arc_sweep_profile.clear();
+                        arc_sweep_has_profile = false;
+                    }
                     return;
                 }
                 if (op == 23) {
@@ -800,6 +932,20 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     }
                     lengths.push_back(path.size() - prev);
                     if (solid) {
+                        if (solid == 18 && path_kind == 21 && !arc_sweep_profile.empty() &&
+                            !arc_sweep_has_profile) {
+                            const auto end = arc_sweep_profile.size();
+                            const auto first = arc_sweep_profile.front();
+                            const auto last = arc_sweep_profile.back();
+                            if (norm(sub(first, last)) <=
+                                1e-10 * std::max({1., norm(first), norm(last)})) {
+                                Point3 center{};
+                                for (std::size_t i = 0; i + 1 < end; ++i)
+                                    center = add(center, arc_sweep_profile[i]);
+                                arc_sweep_profile_center = scale(center, 1. / (end - 1));
+                                arc_sweep_has_profile = true;
+                            }
+                        }
                         if (stage != 55) {
                             sections.push_back(path);
                             section_parts.push_back(path_parts);
@@ -836,7 +982,17 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 }
                 if (op == 19) {
                     require(solid, "solid block underflow");
-                    if (solid == 17) {
+                    if (solid == 18) {
+                        if (arc_sweep_has_profile && sections.size() == 1)
+                            arc_sweep_ellipse(g, solid_parameters, arc_sweep_profile,
+                                              arc_sweep_profile_center, solid_placement, policy);
+                        else
+                            g.unknown.push_back({{"opcode", 18},
+                                                 {"offset", cmd["offset"]},
+                                                 {"reason", "arc sweep profile form is not yet supported"},
+                                                 {"profile_sections", sections.size()},
+                                                 {"parameters", solid_parameters}});
+                    } else if (solid == 17) {
                         Reader r(payload);
                         auto vector = vector_transform(matrix, r.doubles(3).get<Point3>());
                         bool capped = r.u8();
@@ -975,6 +1131,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     }
                     solid = 0;
                     sections.clear();
+                    arc_sweep_profile.clear();
+                    arc_sweep_has_profile = false;
                     return;
                 }
                 if (op == 13) {

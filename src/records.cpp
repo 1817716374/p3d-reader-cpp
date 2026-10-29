@@ -659,6 +659,7 @@ Json command_fields(unsigned op, const Bytes &b) {
                                                     {14, "pop_transform"},
                                                     {16, "ruled_loft_begin"},
                                                     {17, "extrusion_begin"},
+                                                    {18, "arc_sweep_begin"},
                                                     {19, "solid_end"},
                                                     {20, "open_path_begin"},
                                                     {21, "region_begin"},
@@ -721,8 +722,12 @@ Json command_fields(unsigned op, const Bytes &b) {
             v["vector"] = r.doubles(3);
             v["capped"] = bool(r.u8());
         } else if (op == 18) {
-            v["numeric_values"] = r.doubles(15);
-            v["trailing_flag"] = r.u8();
+            v["path_axis_x"] = r.doubles(3);
+            v["path_axis_y"] = r.doubles(3);
+            v["path_center"] = r.doubles(3);
+            v["auxiliary_values"] = r.doubles(5);
+            v["sweep_angle"] = r.f64();
+            v["capped"] = bool(r.u8());
             r.finish();
         } else if (op == 31) {
             v["axis_x"] = r.doubles(3);
