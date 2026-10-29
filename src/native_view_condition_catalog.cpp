@@ -1,6 +1,7 @@
 #include "internal.hpp"
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <string_view>
 
 namespace p3d {
@@ -92,6 +93,46 @@ Json bp_value_type_field(const Json &attributes) {
     return out;
 }
 
+Json bp_value_text(const Json &attributes) {
+    const Json source = attributes.is_object() && attributes.contains("dexDataValue")
+                            ? attributes["dexDataValue"]
+                            : Json();
+    Json out = {{"source_value", source},
+                {"encoding", "type-directed BPValue text; original lexical value retained"},
+                {"typed_value", {{"status", "not_decoded"}}}};
+    const auto type = integer_field(attributes, "dexDataType");
+    if (!type || !source.is_string())
+        return out;
+    const auto text = source.get<std::string>();
+    if (*type == 0x101) {
+        const auto decoded = double_field(Json{{"value", text}}, "value");
+        if (decoded.value("status", std::string{}) == "decoded")
+            out["typed_value"] = {{"status", "decoded"}, {"type", "double"},
+                                  {"value", decoded["value"]}};
+    } else if (*type == 0x201 || *type == 0x401) {
+        std::int64_t parsed = 0;
+        const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+        const bool in_range = *type == 0x401 ||
+                              (parsed >= std::numeric_limits<std::int32_t>::min() &&
+                               parsed <= std::numeric_limits<std::int32_t>::max());
+        if (!text.empty() && result.ec == std::errc{} && result.ptr == text.data() + text.size() &&
+            in_range)
+            out["typed_value"] = {{"status", "decoded"},
+                                  {"type", *type == 0x201 ? "integer" : "long"},
+                                  {"value", parsed}};
+    } else if (*type == 0x301) {
+        if (text == "true" || text == "1")
+            out["typed_value"] = {{"status", "decoded"}, {"type", "boolean"},
+                                  {"value", true}};
+        else if (text == "false" || text == "0")
+            out["typed_value"] = {{"status", "decoded"}, {"type", "boolean"},
+                                  {"value", false}};
+    } else if (*type == 0x801) {
+        out["typed_value"] = {{"status", "decoded"}, {"type", "string"}, {"value", text}};
+    }
+    return out;
+}
+
 const char *condition_kind(std::string_view tag) {
     if (tag == "P3DEntityRangeShowCondition")
         return "entity_range";
@@ -124,10 +165,7 @@ Json condition_details(const std::string &tag, const Json &attributes) {
         out["exclude"] = boolean_field(attributes, "VolumeCompareExclude");
     } else if (tag == "P3DEntityDexDataShowCondition") {
         out["value_type"] = bp_value_type_field(attributes);
-        out["value"] = {{"source_value", attributes.is_object() && attributes.contains("dexDataValue")
-                                             ? attributes["dexDataValue"]
-                                             : Json()},
-                         {"encoding", "type-directed BPValue text; original lexical value retained"}};
+        out["value"] = bp_value_text(attributes);
         out["operator"] = enum_field(attributes, "dexDataValueCompareOperator",
                                      {{0, "equal"}, {1, "not_equal"}, {2, "greater"},
                                       {3, "greater_or_equal"}, {4, "less"},
