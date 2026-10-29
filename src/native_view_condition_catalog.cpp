@@ -18,6 +18,69 @@ std::optional<std::int64_t> integer_field(const Json &attributes, const char *na
     return parsed;
 }
 
+std::optional<unsigned> fixed_decimal(std::string_view text, std::size_t offset,
+                                      std::size_t width) {
+    if (offset + width > text.size())
+        return std::nullopt;
+    unsigned value = 0;
+    for (std::size_t i = offset; i < offset + width; ++i) {
+        const char c = text[i];
+        if (c < '0' || c > '9')
+            return std::nullopt;
+        value = value * 10 + static_cast<unsigned>(c - '0');
+    }
+    return value;
+}
+
+bool valid_calendar_date(unsigned year, unsigned month, unsigned day) {
+    if (year == 0 || year > 9999 || month == 0 || month > 12 || day == 0)
+        return false;
+    constexpr unsigned month_days[] = {31, 28, 31, 30, 31, 30,
+                                       31, 31, 30, 31, 30, 31};
+    unsigned max_day = month_days[month - 1];
+    if (month == 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)))
+        max_day = 29;
+    return day <= max_day;
+}
+
+Json datetime_value(std::string_view text) {
+    Json out = { {"status", "unrecognized"}, {"type", "datetime"} };
+    const bool date_only = text.size() == 10 && text[4] == '-' && text[7] == '-';
+    const bool date_time = (text.size() == 21 || text.size() == 22) &&
+                           text[8] == ' ' && text[11] == ':' && text[14] == ':' &&
+                           text[17] == '.' && (text.size() == 21 || text[21] == 'Z');
+    if (!date_only && !date_time)
+        return out;
+
+    const auto year = fixed_decimal(text, 0, 4);
+    const auto month = fixed_decimal(text, date_only ? 5 : 4, 2);
+    const auto day = fixed_decimal(text, date_only ? 8 : 6, 2);
+    if (!year || !month || !day || !valid_calendar_date(*year, *month, *day))
+        return out;
+
+    out["status"] = "decoded";
+    out["component"] = date_only ? "date" : "date_and_time";
+    out["year"] = *year;
+    out["month"] = *month;
+    out["day"] = *day;
+    out["source_format"] = date_only ? "YYYY-MM-DD" : "YYYYMMDD HH:MM:SS.sss[Z]";
+    if (date_time) {
+        const auto hour = fixed_decimal(text, 9, 2);
+        const auto minute = fixed_decimal(text, 12, 2);
+        const auto second = fixed_decimal(text, 15, 2);
+        const auto millisecond = fixed_decimal(text, 18, 3);
+        if (!hour || !minute || !second || !millisecond || *hour > 23 ||
+            *minute > 59 || *second > 59)
+            return { {"status", "unrecognized"}, {"type", "datetime"} };
+        out["hour"] = *hour;
+        out["minute"] = *minute;
+        out["second"] = *second;
+        out["millisecond"] = *millisecond;
+        out["timezone"] = text.size() == 22 ? "utc" : "unspecified_or_local";
+    }
+    return out;
+}
+
 Json boolean_field(const Json &attributes, const char *name) {
     if (!attributes.is_object() || !attributes.contains(name))
         return { {"status", "missing"} };
@@ -268,6 +331,8 @@ Json bp_value_text(const Json &attributes) {
             out["typed_value"] = {{"status", "decoded"}, {"type", "json"},
                                   {"value", parsed}};
         }
+    } else if (*type == 0xa01) {
+        out["typed_value"] = datetime_value(text);
     }
     return out;
 }
