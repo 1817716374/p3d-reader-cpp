@@ -472,7 +472,8 @@ Document::Document(const std::filesystem::path &path, Options opt)
                         Reader r(b, start + 8);
                         auto len = r.u32();
                         auto id = r.u64();
-                        auto o = parse_dex(b, pos, opt.decode_binary_fields);
+                        auto o = parse_dex(b, pos, opt.decode_binary_fields,
+                                           opt.narrow_string_decoders);
                         require(pos == start + 20 + len, "DEX record length");
                         o.update({{"class_id", d.schema_ids[s.path[2]]},
                                   {"object_id", id},

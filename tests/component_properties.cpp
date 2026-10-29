@@ -166,6 +166,22 @@ unsigned component_property_tests() {
         return one(v).at("root").at("entries").at(0).at("value").at("value");
     };
 
+    std::vector<NarrowStringDecoder> narrow_decoders = {
+        {"windows-936", [](const Bytes &bytes) -> std::optional<std::string> {
+             if (bytes == Bytes{0xb3, 0xa4})
+                 return std::string("\xe9\x95\xbf"); // 长, supplied as UTF-8.
+             return std::nullopt;
+         }}};
+    const auto decoded_narrow = decode_component_properties(
+        object({{string("name"), property(string(std::string("\xb3\xa4", 2)))}}),
+        narrow_decoders);
+    const auto &narrow_value = decoded_narrow.at("root").at("entries")[0].at("value").at("value");
+    check(narrow_value.at("encoding") == "unspecified_narrow_string" &&
+              narrow_value.at("bytes_base64") == "s6Q=" &&
+              narrow_value.at("text_candidates")[0].at("encoding") == "windows-936" &&
+              narrow_value.at("text_candidates")[0].at("text") == "\xe9\x95\xbf",
+          "explicit narrow-string decoder adds text candidate without replacing source bytes");
+
     // Literal wire fixture: a zero uint64 count followed by the Noumenon footer.
     const Bytes empty = {0, 0, 0,    0, 0,    0,    0,    0,    8,    0,    0,    0, 0, 0,
                          0, 0, 0x92, 0, 0x19, 0x24, 0x22, 0x70, 0x77, 0x24, 24,   0, 0, 0,

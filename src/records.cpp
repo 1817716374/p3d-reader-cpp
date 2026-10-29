@@ -170,7 +170,8 @@ class Dex : public Reader {
         throw std::runtime_error("DEX unclosed node");
     }
 };
-Json parse_dex(const Bytes &b, std::size_t &offset, bool enrich) {
+Json parse_dex(const Bytes &b, std::size_t &offset, bool enrich,
+               const std::vector<NarrowStringDecoder> &string_decoders) {
     Dex r(b, offset);
     require(hex(r.take(10)) == "50334444455800ff0a0d", "DEX magic");
     auto ver = hex(r.take(6));
@@ -181,7 +182,7 @@ Json parse_dex(const Bytes &b, std::size_t &offset, bool enrich) {
         r.table.push_back(r.text());
     auto root = r.node();
     if (enrich)
-        enrich_tree(root);
+        enrich_tree(root, "", Json::object(), string_decoders);
     offset = r.p;
     return {{"version_hex", ver}, {"string_table", std::move(r.table)}, {"root", std::move(root)}};
 }

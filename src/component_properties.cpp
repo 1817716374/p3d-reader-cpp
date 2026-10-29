@@ -43,6 +43,7 @@ std::int64_t signed_low32(std::int64_t value) {
 
 struct StackDecoder {
     const Bytes &source;
+    std::vector<NarrowStringDecoder> string_decoders;
     std::size_t visits = 0;
     std::size_t incomplete_values = 0;
     bool complete = true;
@@ -175,8 +176,25 @@ struct StackDecoder {
         if (std::all_of(bytes.begin(), bytes.end(), [](unsigned char c) { return c < 128; })) {
             out["text"] = std::string(bytes.begin(), bytes.end());
             out["encoding"] = "ascii";
-        } else
+        } else {
             out["encoding"] = "unspecified_narrow_string";
+            Json candidates = Json::array();
+            for (const auto &decoder : string_decoders) {
+                if (decoder.encoding.empty() || !decoder.decode)
+                    continue;
+                try {
+                    if (auto decoded = decoder.decode(bytes))
+                        candidates.push_back({{"encoding", decoder.encoding},
+                                              {"text", std::move(*decoded)}});
+                } catch (const std::exception &e) {
+                    candidates.push_back({{"encoding", decoder.encoding},
+                                          {"status", "failed"},
+                                          {"reason", e.what()}});
+                }
+            }
+            if (!candidates.empty())
+                out["text_candidates"] = std::move(candidates);
+        }
         return out;
     }
     Json read(std::size_t begin, std::size_t &end, unsigned depth, std::uint64_t expected = 0) {
@@ -972,9 +990,10 @@ Json component_graphics_fallback_input(const Json &properties) {
 }
 } // namespace
 
-static Json decode_stack(const Bytes &bytes, std::uint64_t expected, const char *scope) {
+static Json decode_stack(const Bytes &bytes, std::uint64_t expected, const char *scope,
+                         const std::vector<NarrowStringDecoder> &string_decoders) {
     require(bytes.size() <= 64 * 1024 * 1024, "component property input limit");
-    StackDecoder decoder{bytes};
+    StackDecoder decoder{bytes, string_decoders};
     std::size_t end = bytes.size();
     Json out = {{"scope", scope}};
     try {
@@ -996,12 +1015,14 @@ static Json decode_stack(const Bytes &bytes, std::uint64_t expected, const char 
     return out;
 }
 
-Json decode_data_unit(const Bytes &bytes) {
-    return decode_stack(bytes, 0, "stored_data_unit");
+Json decode_data_unit(const Bytes &bytes,
+                      const std::vector<NarrowStringDecoder> &string_decoders) {
+    return decode_stack(bytes, 0, "stored_data_unit", string_decoders);
 }
 
-Json decode_component_properties(const Bytes &bytes) {
-    auto out = decode_stack(bytes, noumenon_id, "stored_component_properties");
+Json decode_component_properties(
+    const Bytes &bytes, const std::vector<NarrowStringDecoder> &string_decoders) {
+    auto out = decode_stack(bytes, noumenon_id, "stored_component_properties", string_decoders);
     try {
         if (!out.contains("root"))
             return out;

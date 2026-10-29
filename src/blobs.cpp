@@ -193,15 +193,17 @@ Json decode_property_binary_value(PropertyBinaryCodec codec, const Bytes &bytes,
     throw std::runtime_error("unknown_property_binary_codec");
 }
 } // namespace detail
-Json decode_binary_field(const std::string &name, const Bytes &b, const std::string &cl,
-                         const Json &roots) {
+Json decode_binary_field(
+    const std::string &name, const Bytes &b, const std::string &cl, const Json &roots,
+    const std::vector<NarrowStringDecoder> &string_decoders) {
     Json out = {{"binary_base64", base64(b)}, {"bytes", b.size()}};
     if (name == "ParaCmptProperty" || name == "DataUnit") {
         out["encoding"] =
             name == "DataUnit" ? "registered_value_stack" : "component_property_stack";
         try {
             out["decoded"] =
-                name == "DataUnit" ? decode_data_unit(b) : decode_component_properties(b);
+                name == "DataUnit" ? decode_data_unit(b, string_decoders)
+                                    : decode_component_properties(b, string_decoders);
         } catch (const std::exception &e) {
             out["field_decode_error"] = e.what();
         }
@@ -336,7 +338,8 @@ Json decode_binary_field(const std::string &name, const Bytes &b, const std::str
     }
     return out;
 }
-void enrich_tree(Json &node, const std::string &root_class, const Json &root_fields) {
+void enrich_tree(Json &node, const std::string &root_class, const Json &root_fields,
+                 const std::vector<NarrowStringDecoder> &string_decoders) {
     if (root_class.empty()) {
         Json fields = Json::object();
         if (node.contains("children"))
@@ -346,15 +349,15 @@ void enrich_tree(Json &node, const std::string &root_class, const Json &root_fie
                     fields[name] = child.value("value", Json());
             }
         auto name = node["name"].get<std::string>();
-        enrich_tree(node, name, fields);
+        enrich_tree(node, name, fields, string_decoders);
         return;
     }
     if (node.contains("value") && node["value"].is_object() &&
         node["value"].contains("binary_base64"))
         node["value"] = decode_binary_field(node["name"], unbase64(node["value"]["binary_base64"]),
-                                            root_class, root_fields);
+                                             root_class, root_fields, string_decoders);
     if (node.contains("children"))
         for (auto &child : node["children"])
-            enrich_tree(child, root_class, root_fields);
+            enrich_tree(child, root_class, root_fields, string_decoders);
 }
 } // namespace p3d

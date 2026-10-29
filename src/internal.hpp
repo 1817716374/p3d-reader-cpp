@@ -301,7 +301,8 @@ Json read_schemas(const Document &);
 Json read_models(const Document &);
 Json decode_model_units(const Bytes &);
 Json decode_model_coordinates(const Bytes &);
-void enrich_tree(Json &, const std::string & = "", const Json & = Json::object());
+void enrich_tree(Json &, const std::string & = "", const Json & = Json::object(),
+                 const std::vector<NarrowStringDecoder> & = {});
 Json leaf_fields(const Json &);
 Json text_json(const Bytes &);
 const Json &bgfb_schema();

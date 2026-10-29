@@ -83,10 +83,19 @@ struct ReferenceFileQueryContext {
 // It neither opens files nor selects host contexts or loads target models.
 Json initial_reference_file_query(const Json &reference_record,
                                   const ReferenceFileQueryContext &context);
+// Optional, explicitly selected decoders for non-ASCII narrow strings in
+// component-property stacks and DataUnit values. Each decoder returns UTF-8
+// text when it recognizes the bytes. Results are reported as candidates; the
+// P3D bytes do not identify a code page.
+struct NarrowStringDecoder {
+    std::string encoding;
+    std::function<std::optional<std::string>(const Bytes &)> decode;
+};
 struct Options {
     unsigned threads = 1;
     std::size_t max_stream_bytes = 256u * 1024 * 1024;
     bool decode_binary_fields = true;
+    std::vector<NarrowStringDecoder> narrow_string_decoders;
 };
 struct Stream {
     StreamPath path;
@@ -848,8 +857,10 @@ class Document {
     std::shared_ptr<Impl> impl_;
 };
 Json decode_binary_field(const std::string &name, const Bytes &, const std::string &root_class = "",
-                         const Json &root_fields = Json::object());
-Json parse_dex(const Bytes &, std::size_t &offset, bool enrich = true);
+                         const Json &root_fields = Json::object(),
+                         const std::vector<NarrowStringDecoder> & = {});
+Json parse_dex(const Bytes &, std::size_t &offset, bool enrich = true,
+               const std::vector<NarrowStringDecoder> & = {});
 Json parse_native(const Bytes &);
 // Payload of a user linkage with app 0x4F5A, excluding its four-byte header.
 // A supplied decoder converts the NUL-excluded ANSI bytes to UTF-8.
