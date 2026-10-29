@@ -1451,7 +1451,31 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     take_u32("0x30_u32");
                     take_utf16z("0x80_utf16z");
                     take_utf16z("0xa0_utf16z");
+                    const auto vector3_start = low_reader.p;
+                    const auto vector3_available = low_reader.left();
                     take_vector3("0xc0_vector3");
+                    if (vector3_available > 0 && vector3_available < 24) {
+                        // Keep an incomplete native vector recoverable: decode
+                        // complete doubles from a copy, while leaving the
+                        // original cursor untouched so the entire truncated
+                        // field remains in unmapped_suffix.
+                        const auto partial_vector_bytes =
+                            slice(state, vector3_start, vector3_available);
+                        Reader partial_vector(partial_vector_bytes);
+                        Json components = Json::array();
+                        while (partial_vector.left() >= 8)
+                            components.push_back(partial_vector.f64());
+                        low["member_0xc0_vector3_partial"] = {
+                            {"decoded_components", std::move(components)},
+                            {"available_component_count", vector3_available / 8},
+                            {"required_component_count", 3},
+                            {"serialized_bytes",
+                             rawbytes(slice(state, vector3_start, vector3_available))},
+                            {"incomplete_component_bytes",
+                             rawbytes(slice(state, vector3_start +
+                                                       (vector3_available / 8) * 8,
+                                           vector3_available % 8))}};
+                    }
                     take_u16("0xd8_u16");
                     if (version > 1) {
                         take_u32("0xdc_u32");
