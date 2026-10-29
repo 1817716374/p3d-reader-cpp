@@ -22,11 +22,12 @@ int main(int argc, char **argv) {
 #endif
         if (args.empty()) {
             std::cout
-                << "p3d-inspect FILE [--threads N] [--dump FILE] [--scene FILE] [--graph FILE] [--display-catalog FILE]\n";
+                << "p3d-inspect FILE [--threads N] [--dump FILE] [--scene FILE] [--graph FILE] [--display-catalog FILE] [--view-condition-catalog FILE]\n";
             return 0;
         }
         p3d::Options opt;
-        std::filesystem::path dump, scene, graph, display_catalog, streams_dir;
+        std::filesystem::path dump, scene, graph, display_catalog, view_condition_catalog,
+            streams_dir;
         bool native = false, expanded = false;
         for (std::size_t i = 1; i < args.size(); ++i) {
             auto k = args[i].string();
@@ -40,6 +41,8 @@ int main(int argc, char **argv) {
                 graph = args[++i];
             else if (k == "--display-catalog" && i + 1 < args.size())
                 display_catalog = args[++i];
+            else if (k == "--view-condition-catalog" && i + 1 < args.size())
+                view_condition_catalog = args[++i];
             else if (k == "--streams-dir" && i + 1 < args.size())
                 streams_dir = args[++i];
             else if (k == "--native-summary")
@@ -81,6 +84,8 @@ int main(int argc, char **argv) {
             write(graph, d.object_graph());
         if (!display_catalog.empty())
             write(display_catalog, d.native_display_catalog());
+        if (!view_condition_catalog.empty())
+            write(view_condition_catalog, d.native_view_condition_catalog());
         if (!streams_dir.empty()) {
             std::filesystem::create_directories(streams_dir);
             p3d::Json manifest = p3d::Json::array();

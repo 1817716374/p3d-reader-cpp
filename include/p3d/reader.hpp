@@ -848,6 +848,10 @@ class Document {
     // trees remain attached to every record; path components are only lexical
     // numeric tokens and are not interpreted as class/model identifiers.
     Json native_display_catalog() const;
+    // Persisted view condition sets carried by graphics attribute group 0,
+    // key 22840. Source XML trees and rule order are retained; conditions are
+    // described but not evaluated against scene entities.
+    Json native_view_condition_catalog() const;
     Json scene(unsigned segments = 64) const;
     NativeScene native_scene(Tessellation = {}) const;
     Json summary() const;
