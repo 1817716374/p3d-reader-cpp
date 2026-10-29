@@ -668,6 +668,7 @@ Json command_fields(unsigned op, const Bytes &b) {
                                                     {28, "symbology"},
                                                     {29, "identifier"},
                                                     {30, "box_frustum"},
+                                                    {31, "sphere_surface"},
                                                     {34, "instance_transform"},
                                                     {37, "text"},
                                                     {40, "metadata"},
@@ -719,6 +720,18 @@ Json command_fields(unsigned op, const Bytes &b) {
         } else if (op == 17) {
             v["vector"] = r.doubles(3);
             v["capped"] = bool(r.u8());
+        } else if (op == 18) {
+            v["numeric_values"] = r.doubles(15);
+            v["trailing_flag"] = r.u8();
+            r.finish();
+        } else if (op == 31) {
+            v["axis_x"] = r.doubles(3);
+            v["axis_y"] = r.doubles(3);
+            v["origin"] = r.doubles(3);
+            v["radii"] = r.doubles(2);
+            v["latitude_start"] = r.f64();
+            v["latitude_sweep"] = r.f64();
+            r.finish();
         } else if (op == 55) {
             auto groups = r.u32();
             require(groups <= (b.size() - 4) / 4, "guided loft group count exceeds payload");
