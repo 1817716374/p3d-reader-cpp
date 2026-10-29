@@ -279,6 +279,9 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
             } else {
                 record["model_element_reference"] = {{"status", "source_id_pair_unavailable"}};
             }
+        } else if (view_config) {
+            record["record_kind"] = "view_config";
+            record["filters"] = nested_records(tree, "Filters", "BCCBBViewFilter", false);
         } else if (group_relation) {
             record["record_kind"] = "group_relation";
         } else if (layer_pix_relation) {
@@ -314,6 +317,8 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
     std::map<std::uint64_t, std::vector<Json>> native_layer_index;
     std::map<std::uint64_t, std::vector<Json>> style_definition_index,
         style_cache_index, display_cache_index;
+    std::map<std::string, std::vector<Json>> view_config_index,
+        config_list_membership_index, active_config_list_index;
     if (layer_tables.is_object() && layer_tables.contains("group_states") &&
         layer_tables["group_states"].is_array()) {
         auto layer_source_records = [&](const Json &indices) {
@@ -367,7 +372,35 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
         else if (record["record_kind"] == "subcategory_node_name" &&
                  fields.contains("LocationIndex") && fields["LocationIndex"].is_string())
             node_index[fields["LocationIndex"].get<std::string>()].push_back(record);
+        else if (record["record_kind"] == "view_config" && fields.contains("Name") &&
+                 fields["Name"].is_string())
+            view_config_index[fields["Name"].get<std::string>()].push_back(record);
+        else if (record["record_kind"] == "view_config_list") {
+            if (fields.contains("ConfigNames") && fields["ConfigNames"].is_array())
+                for (const auto &name : fields["ConfigNames"])
+                    if (name.is_string())
+                        config_list_membership_index[name.get<std::string>()].push_back(record);
+            if (fields.contains("ActiveConfigName") && fields["ActiveConfigName"].is_string())
+                active_config_list_index[fields["ActiveConfigName"].get<std::string>()]
+                    .push_back(record);
+        }
     }
+
+    auto name_reference = [&](const Json &source_name) {
+        Json matches = Json::array();
+        if (source_name.is_string()) {
+            const auto found = view_config_index.find(source_name.get<std::string>());
+            if (found != view_config_index.end())
+                for (const auto &config : found->second)
+                    matches.push_back(record_reference(config));
+        }
+        const auto status = !source_name.is_string() ? "source_name_unavailable"
+                           : matches.empty() ? "missing"
+                           : matches.size() == 1 ? "resolved"
+                                                 : "ambiguous";
+        return Json{{"status", status}, {"match", "exact_config_name"},
+                    {"source_name", source_name}, {"records", std::move(matches)}};
+    };
 
     for (auto &record : records) {
         if (record["record_kind"] != "layer_pix_relation")
@@ -438,7 +471,32 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
 
     for (auto &record : records) {
         const auto kind = record.value("record_kind", std::string{});
-        if (kind == "line_style" || kind == "hatch_style" || kind == "layer_pix_relation") {
+        if (kind == "view_config_list") {
+            const auto &fields = record["fields"];
+            Json references = Json::array();
+            if (fields.contains("ConfigNames") && fields["ConfigNames"].is_array())
+                for (const auto &name : fields["ConfigNames"])
+                    references.push_back(name_reference(name));
+            record["config_name_references"] = std::move(references);
+            record["active_config_reference"] = name_reference(
+                fields.contains("ActiveConfigName") ? fields["ActiveConfigName"] : Json());
+        } else if (kind == "view_config") {
+            const auto &fields = record["fields"];
+            const auto name = fields.contains("Name") && fields["Name"].is_string()
+                                  ? fields["Name"].get<std::string>()
+                                  : std::string{};
+            Json listed_by = Json::array(), active_in = Json::array();
+            if (const auto found = config_list_membership_index.find(name);
+                found != config_list_membership_index.end())
+                for (const auto &candidate : found->second)
+                    listed_by.push_back(record_reference(candidate));
+            if (const auto found = active_config_list_index.find(name);
+                found != active_config_list_index.end())
+                for (const auto &candidate : found->second)
+                    active_in.push_back(record_reference(candidate));
+            record["listed_by_view_config_lists"] = std::move(listed_by);
+            record["active_in_view_config_lists"] = std::move(active_in);
+        } else if (kind == "line_style" || kind == "hatch_style" || kind == "layer_pix_relation") {
             const auto &fields = record["fields"];
             if (fields.contains("PixType")) {
                 const auto parsed = parse_location_index(fields["PixType"]);
