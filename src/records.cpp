@@ -968,6 +968,65 @@ Json native_material_texture_file(const Bytes &b) {
     out["ignored_suffix"] = rawbytes(r.take(r.left()));
     return out;
 }
+
+Json decode_sesm_gams_stream(const Bytes &b) {
+    if (b.size() < 8 || latin1(slice(b, 0, 4)) != "SESM")
+        return nullptr;
+    Json out;
+    try {
+        Reader r(b);
+        require(latin1(r.take(4)) == "SESM", "SESM signature");
+        const auto version = r.u32();
+        require(version == 1, "SESM version");
+        Json header_words = Json::array();
+        for (int i = 0; i < 5; ++i)
+            header_words.push_back(r.u32());
+        require(header_words[0].get<std::uint32_t>() >= 2, "SESM header word 0");
+
+        Json records = Json::array();
+        Json terminator = nullptr;
+        while (r.left() >= 4) {
+            const auto record_offset = r.p;
+            const auto marker = latin1(r.take(4));
+            if (marker == "DOES") {
+                terminator = { {"signature", marker}, {"offset", record_offset} };
+                break;
+            }
+            require(marker == "GAMS", "SESM record marker");
+            const auto data_size = r.u32();
+            const auto type_code = r.u32();
+            const auto data_offset = r.p;
+            require(data_size <= r.left(), "SESM record data size");
+            auto data = r.take(data_size);
+            records.push_back({{"signature", marker},
+                               {"offset", record_offset},
+                               {"data_bytes", data_size},
+                               {"type_code", type_code},
+                               {"data_offset", data_offset},
+                               {"data", rawbytes(data)},
+                               {"semantic_status", "unresolved"}});
+        }
+        require(!terminator.is_null(), "SESM terminator");
+        out = {{"encoding", "sesm_gams_record_stream"},
+               {"signature", "SESM"},
+               {"version", version},
+               {"header_u32_values", std::move(header_words)},
+               {"records", std::move(records)},
+               {"terminator", std::move(terminator)},
+               {"trailing_bytes", rawbytes(r.take(r.left()))},
+               {"semantic_status", "unresolved"},
+               {"status", "structure_decoded_semantics_unresolved"}};
+    } catch (const std::exception &e) {
+        out = {{"encoding", "sesm_gams_record_stream"},
+               {"signature", "SESM"},
+               {"status", "partial"},
+               {"semantic_status", "unresolved"},
+               {"decode_error", e.what()},
+               {"data", rawbytes(b)}};
+    }
+    return out;
+}
+
 Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index,
                       int measurement_type) {
     auto reference_extension = decode_reference_extension(group, key, b, index);
@@ -1879,6 +1938,11 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     const bool stored = result["codec"] == "stored";
     result["encoding"] = stored ? "uncompressed_binary" : "compressed_binary";
     result["data"] = rawbytes(decoded);
+    if (group == 0 && key == 22901) {
+        auto sectioned = decode_sesm_gams_stream(decoded);
+        if (!sectioned.is_null())
+            result.update(sectioned);
+    }
     if (group == 0 && key == 22906) {
         result["encoding"] = "material_auxiliary_records";
         result["native_input"] = decode_material_auxiliary_records(decoded);
