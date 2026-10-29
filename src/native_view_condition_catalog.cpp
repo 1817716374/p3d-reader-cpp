@@ -53,6 +53,25 @@ Json enum_field(const Json &attributes, const char *name,
     return out;
 }
 
+Json bp_value_type_field(const Json &attributes) {
+    Json out = enum_field(attributes, "dexDataType",
+                          {{0x000, "unknown"},
+                           {0x101, "double"},
+                           {0x201, "integer"},
+                           {0x301, "boolean"},
+                           {0x401, "long"},
+                           {0x501, "point2d"},
+                           {0x601, "point3d"},
+                           {0x701, "geometry"},
+                           {0x801, "string"},
+                           {0x901, "binary"},
+                           {0xa01, "datetime"},
+                           {0xb01, "json"}});
+    out["source_width_bits"] = 16;
+    out["source_enum"] = "BIMBase::BPValueType";
+    return out;
+}
+
 const char *condition_kind(std::string_view tag) {
     if (tag == "P3DEntityRangeShowCondition")
         return "entity_range";
@@ -77,6 +96,11 @@ Json condition_details(const std::string &tag, const Json &attributes) {
                                       {4, "greater"}});
         out["exclude"] = boolean_field(attributes, "VolumeCompareExclude");
     } else if (tag == "P3DEntityDexDataShowCondition") {
+        out["value_type"] = bp_value_type_field(attributes);
+        out["value"] = {{"source_value", attributes.is_object() && attributes.contains("dexDataValue")
+                                             ? attributes["dexDataValue"]
+                                             : Json()},
+                         {"encoding", "type-directed BPValue text; original lexical value retained"}};
         out["operator"] = enum_field(attributes, "dexDataValueCompareOperator",
                                      {{0, "equal"}, {1, "not_equal"}, {2, "greater"},
                                       {3, "greater_or_equal"}, {4, "less"},
