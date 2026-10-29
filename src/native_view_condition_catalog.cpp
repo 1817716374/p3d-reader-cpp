@@ -212,6 +212,7 @@ Json condition_details(const std::string &tag, const Json &attributes) {
                                       {4, "greater"}});
         out["exclude"] = boolean_field(attributes, "VolumeCompareExclude");
     } else if (tag == "P3DEntityDexDataShowCondition") {
+        out["property_name"] = string_field(attributes, "DexDataPropertyName");
         out["value_type"] = bp_value_type_field(attributes);
         out["value"] = bp_value_text(attributes);
         out["operator"] = enum_field(attributes, "dexDataValueCompareOperator",
