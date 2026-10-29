@@ -367,12 +367,20 @@ static void arc_sweep_ellipse(Geometry &g, const Json &parameters,
     const auto center = parameters.at("path_center").get<Point3>();
     const auto sweep = parameters.at("sweep_angle").get<double>();
     const bool capped = parameters.at("capped").get<bool>();
-    auto radial = sub(profile_center, center);
     auto normal = cross(path_axis_x, path_axis_y);
     const auto normal_length = norm(normal);
     require(std::isfinite(normal_length) && normal_length > 0,
             "degenerate arc sweep frame");
     normal = scale(normal, 1 / normal_length);
+    const auto &tail_relation = parameters.at("auxiliary_tail_relation");
+    require(tail_relation.value("status", std::string{}) ==
+                    "positive_path_plane_normal_multiple" &&
+                tail_relation.contains("scale_factor"),
+            "arc sweep trajectory radius is unresolved");
+    const auto trajectory_scale = tail_relation.at("scale_factor").get<double>();
+    require(std::isfinite(trajectory_scale) && trajectory_scale > 0,
+            "arc sweep trajectory radius is invalid");
+    auto radial = scale(path_axis_x, trajectory_scale);
     radial = sub(radial, scale(normal, dot(radial, normal)));
     const auto radius = norm(radial);
     require(std::isfinite(radius) && radius > 0 && std::isfinite(sweep) && sweep != 0 &&
@@ -404,7 +412,7 @@ static void arc_sweep_ellipse(Geometry &g, const Json &parameters,
     for (unsigned row = 0; row < path_rows; ++row) {
         const auto angle = sweep * row / path_segments;
         for (const auto point : unique_profile)
-            points.push_back(add(center, rotate(sub(point, center), angle)));
+            points.push_back(add(center, rotate(add(radial, sub(point, profile_center)), angle)));
     }
     std::vector<Triangle> faces;
     faces.reserve(std::size_t(path_segments) * profile_segments * 2 +
@@ -418,9 +426,10 @@ static void arc_sweep_ellipse(Geometry &g, const Json &parameters,
             const auto b = std::uint32_t(std::size_t(row) * profile_segments + next_edge);
             const auto c = std::uint32_t(std::size_t(next_row) * profile_segments + next_edge);
             const auto d = std::uint32_t(std::size_t(next_row) * profile_segments + edge);
-            auto expected = rotate(sub(scale(add(unique_profile[edge],
-                                                 unique_profile[next_edge]), .5),
-                                       profile_center),
+            auto expected = rotate(add(radial,
+                                       sub(scale(add(unique_profile[edge],
+                                                      unique_profile[next_edge]), .5),
+                                            profile_center)),
                                    angle_mid);
             for (auto face : {Triangle{a, b, c}, Triangle{a, c, d}}) {
                 const auto pa = points[face[0]], pb = points[face[1]], pc = points[face[2]];
@@ -955,15 +964,12 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     if (solid) {
                         if (solid == 18 && path_kind == 21 && lengths.size() == 1 &&
                             !arc_sweep_profile.empty() && !arc_sweep_has_profile) {
-                            const auto end = arc_sweep_profile.size();
                             const auto first = arc_sweep_profile.front();
                             const auto last = arc_sweep_profile.back();
                             if (norm(sub(first, last)) <=
                                 1e-10 * std::max({1., norm(first), norm(last)})) {
-                                Point3 center{};
-                                for (std::size_t i = 0; i + 1 < end; ++i)
-                                    center = add(center, arc_sweep_profile[i]);
-                                arc_sweep_profile_center = scale(center, 1. / (end - 1));
+                                arc_sweep_profile_center =
+                                    solid_parameters.at("path_center").get<Point3>();
                                 arc_sweep_has_profile = true;
                             }
                         }

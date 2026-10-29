@@ -2278,6 +2278,28 @@ static void arc_sweep_tests() {
     }
     check(geometry.unknown.empty() && !geometry.faces.empty() && finite && closed,
           "closed polygon sweep has a finite manifold mesh with welded profile seam");
+
+    Bytes large_path;
+    for (double v : {1., 0., 0., 0., 1., 0., 0., 0., 0., 1., 1., 0., 0., 500.,
+                     1.0471975511965976})
+        put<double>(large_path, v);
+    put<std::uint8_t>(large_path, 1);
+    Bytes ellipse;
+    for (double v : {20., 0., 0., 1., 0., 0., 0., 2., 1.})
+        put<double>(ellipse, v);
+    put<std::uint8_t>(ellipse, 0);
+    const auto large_sweep = reconstruct(
+        Json::array({command(18, large_path), command(7, ellipse), command(19, {})}),
+        Tessellation{});
+    double max_x = -std::numeric_limits<double>::infinity();
+    double max_y = -std::numeric_limits<double>::infinity();
+    for (const auto point : large_sweep.vertices) {
+        max_x = std::max(max_x, point[0]);
+        max_y = std::max(max_y, point[1]);
+    }
+    check(large_sweep.unknown.empty() && !large_sweep.faces.empty() && max_x > 500 &&
+              max_y > 400,
+          "arc sweep uses the auxiliary trajectory radius while preserving the offset profile");
 }
 static void quadratic_bspline_tests() {
     Bytes body = {0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0, 0, 3,
