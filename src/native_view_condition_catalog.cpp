@@ -103,6 +103,89 @@ Json string_field(const Json &attributes, const char *name) {
     return out;
 }
 
+Json hyphen_string_list_field(const Json &attributes, const char *name) {
+    if (!attributes.is_object() || !attributes.contains(name))
+        return {{"status", "missing"}, {"items", Json::array()}};
+    const auto &source = attributes[name];
+    Json out = {{"source_value", source}, {"separator", "-"},
+                {"status", "unrecognized"}, {"items", Json::array()}};
+    if (!source.is_string())
+        return out;
+    const auto text = source.get<std::string>();
+    if (text.empty()) {
+        out["status"] = "decoded";
+        return out;
+    }
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const auto end = text.find('-', start);
+        const auto length = (end == std::string::npos ? text.size() : end) - start;
+        out["items"].push_back(text.substr(start, length));
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    out["status"] = "decoded";
+    return out;
+}
+
+Json signed_integer_list_field(const Json &attributes, const char *name,
+                               std::int64_t min_value, std::int64_t max_value) {
+    const auto split = hyphen_string_list_field(attributes, name);
+    Json out = split;
+    if (split.value("status", std::string{}) != "decoded")
+        return out;
+    Json values = Json::array();
+    bool all_decoded = true;
+    for (const auto &item : split["items"]) {
+        const auto text = item.get<std::string>();
+        std::int64_t parsed = 0;
+        const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+        Json value = {{"source_token", item}, {"status", "unrecognized"}};
+        if (!text.empty() && result.ec == std::errc{} &&
+            result.ptr == text.data() + text.size() && parsed >= min_value &&
+            parsed <= max_value) {
+            value["status"] = "decoded";
+            value["value"] = parsed;
+        } else {
+            all_decoded = false;
+        }
+        values.push_back(std::move(value));
+    }
+    out["items"] = std::move(values);
+    out["status"] = all_decoded ? "decoded" : "partially_decoded";
+    return out;
+}
+
+Json packed_entity_id_list_field(const Json &attributes) {
+    auto out = signed_integer_list_field(attributes, "EntityIds",
+                                         std::numeric_limits<std::int64_t>::min(),
+                                         std::numeric_limits<std::int64_t>::max());
+    if (out.value("status", std::string{}) == "missing" ||
+        out.value("status", std::string{}) == "unrecognized")
+        return out;
+    for (auto &item : out["items"]) {
+        if (item.value("status", std::string{}) != "decoded")
+            continue;
+        const auto packed = item["value"].get<std::int64_t>();
+        const auto bits = static_cast<std::uint64_t>(packed);
+        const auto model_bits = static_cast<std::uint32_t>(bits >> 32);
+        const auto entity_bits = static_cast<std::uint32_t>(bits);
+        const auto model_id = model_bits <= static_cast<std::uint32_t>(
+                                          std::numeric_limits<std::int32_t>::max())
+                                  ? static_cast<std::int64_t>(model_bits)
+                                  : static_cast<std::int64_t>(model_bits) -
+                                        (std::int64_t{1} << 32);
+        item["packed_value"] = packed;
+        item["model_id"] = model_id;
+        item["model_id_bits"] = model_bits;
+        item["entity_id"] = entity_bits;
+        item["entity_id_bits"] = entity_bits;
+        item["valid"] = packed != -1 && model_id > -2;
+    }
+    return out;
+}
+
 Json enum_field(const Json &attributes, const char *name,
                 std::initializer_list<std::pair<std::int64_t, const char *>> values) {
     Json out = {{"source_value", attributes.is_object() && attributes.contains(name)
@@ -321,10 +404,16 @@ Json condition_record(const Json &node) {
                 {"enabled", boolean_field(attributes, "Enabled")},
                 {"stop_if_true", boolean_field(attributes, "StopIfTrue")},
                 {"entity_ids", attributes.value("EntityIds", Json())},
+                {"entity_id_values", packed_entity_id_list_field(attributes)},
                 {"entity_ids_exclude", boolean_field(attributes, "EntityIdsExclude")},
                 {"model_link_ids", attributes.value("ModelLinkIds", Json())},
+                {"model_link_id_values",
+                 signed_integer_list_field(attributes, "ModelLinkIds",
+                                           std::numeric_limits<std::int32_t>::min(),
+                                           std::numeric_limits<std::int32_t>::max())},
                 {"model_link_ids_exclude", boolean_field(attributes, "ModelLinkIdsExclude")},
                 {"full_name_list", attributes.value("fullNameList", Json())},
+                {"full_name_values", hyphen_string_list_field(attributes, "fullNameList")},
                 {"full_name_list_exclude", boolean_field(attributes, "fullNameListExclude")},
                 {"entries", std::move(entries)},
                 {"source_tree", node}};
