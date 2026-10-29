@@ -260,6 +260,14 @@ Json bp_value_text(const Json &attributes) {
                                   {"value", false}};
     } else if (*type == 0x801) {
         out["typed_value"] = {{"status", "decoded"}, {"type", "string"}, {"value", text}};
+    } else if (*type == 0xb01) {
+        const auto parsed = Json::parse(text, nullptr, false);
+        if (parsed.is_discarded()) {
+            out["typed_value"] = {{"status", "invalid_json"}, {"type", "json"}};
+        } else {
+            out["typed_value"] = {{"status", "decoded"}, {"type", "json"},
+                                  {"value", parsed}};
+        }
     }
     return out;
 }
