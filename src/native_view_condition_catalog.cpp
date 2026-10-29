@@ -55,6 +55,28 @@ Json double_field(const Json &attributes, const char *name) {
     return out;
 }
 
+Json integer_width_field(const Json &attributes, const char *name, bool is_signed) {
+    if (!attributes.is_object() || !attributes.contains(name))
+        return {{"status", "missing"}};
+    Json out = {{"source_value", attributes[name]}, {"status", "unrecognized"}};
+    const auto parsed = integer_field(attributes, name);
+    if (!parsed)
+        return out;
+    const std::int64_t min_value = is_signed
+                                       ? std::numeric_limits<std::int32_t>::min()
+                                       : 0;
+    const std::int64_t max_value = is_signed
+                                       ? std::numeric_limits<std::int32_t>::max()
+                                       : std::numeric_limits<std::uint32_t>::max();
+    if (*parsed < min_value || *parsed > max_value)
+        return out;
+    out["status"] = "decoded";
+    out["value"] = *parsed;
+    out["width_bits"] = 32;
+    out["signed"] = is_signed;
+    return out;
+}
+
 Json enum_field(const Json &attributes, const char *name,
                 std::initializer_list<std::pair<std::int64_t, const char *>> values) {
     Json out = {{"source_value", attributes.is_object() && attributes.contains(name)
@@ -191,7 +213,29 @@ Json action_details(const std::string &tag, const Json &attributes) {
         out["action_id"] = 5;
     if (tag == "EntityDisplayAction")
         out["entity_hidden"] = boolean_field(attributes, "ElementDisplayOff");
+    else if (tag == "ColorOverrideAction") {
+        out["entity_color"] = integer_width_field(attributes, "ElementColor", false);
+        out["edge_color"] = integer_width_field(attributes, "ElementEdgeColor", false);
+    } else if (tag == "FillColorOverrideAction") {
+        out["fill_color"] = integer_width_field(attributes, "ElementFillColor", false);
+    } else if (tag == "StyleOverrideAction" || tag == "ShowStyleOverrideAction") {
+        out["line_style"] = integer_width_field(attributes, "LineStyle", true);
+    } else if (tag == "WeightOverrideAction") {
+        out["line_weight"] = integer_width_field(attributes, "LineWeight", false);
+    } else if (tag == "TransparencyOverrideAction") {
+        out["transparency"] = double_field(attributes, "Transparency");
+    }
     return out;
+}
+
+bool is_known_action_tag(const std::string &tag) {
+    return tag == "EntityDisplayAction" || tag == "ColorOverrideAction" ||
+           tag == "FillColorOverrideAction" || tag == "StyleOverrideAction" ||
+           tag == "ShowStyleOverrideAction" || tag == "WeightOverrideAction" ||
+           tag == "TransparencyOverrideAction" || tag == "PDEntityPriorityAction" ||
+           tag == "PresentationFormAction" || tag == "AreaHatchAction" ||
+           tag == "AreaPatternAction" || tag == "MaterialOverrideAction" ||
+           tag == "LayerOfDetailAction";
 }
 
 Json condition_entry(const Json &node) {
@@ -201,10 +245,7 @@ Json condition_entry(const Json &node) {
     if (condition_kind(tag)) {
         out["entry_kind"] = "condition";
         out["condition"] = condition_details(tag, attributes);
-    } else if (tag == "EntityDisplayAction" || tag == "ColorOverrideAction" ||
-               tag == "FillColorOverrideAction" || tag == "StyleOverrideAction" ||
-               tag == "ShowStyleOverrideAction" || tag == "WeightOverrideAction" ||
-               tag == "TransparencyOverrideAction") {
+    } else if (is_known_action_tag(tag)) {
         out["entry_kind"] = "action";
         out["action"] = action_details(tag, attributes);
     } else {
