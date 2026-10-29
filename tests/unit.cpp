@@ -2251,6 +2251,24 @@ static void arc_sweep_tests() {
     check(geometry.unknown.empty() && !geometry.faces.empty() && finite,
           "closed polygon region reconstructs as a finite arc sweep mesh");
 }
+static void quadratic_bspline_tests() {
+    Bytes body = {0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0, 0, 3,
+                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    for (double value : {0., 0., 0., 1., 2., 0., 2., 0., 0., 0., 0., 0., 1., 1., 1.})
+        put(body, value);
+    auto decoded = command(26, body);
+    check(decoded["decoded"]["degree"] == 2 &&
+              decoded["decoded"]["control_points"].size() == 3 &&
+              decoded["decoded"]["knots"] == Json({0., 0., 0., 1., 1., 1.}),
+          "quadratic spline segment decodes control points and clamped knots");
+    const auto geometry = reconstruct(Json::array({decoded}), Tessellation{});
+    check(geometry.unknown.empty() && geometry.lines.size() == 1 &&
+              geometry.lines[0].size() > 2 &&
+              std::abs(geometry.lines[0][16][0] - 1.) < 1e-12 &&
+              std::abs(geometry.lines[0][16][1] - 1.) < 1e-12 &&
+              std::abs(geometry.lines[0][16][2]) < 1e-12,
+          "quadratic spline segment evaluates its Bezier midpoint");
+}
 static void guided_surface_tests() {
     const std::vector<Point3> corners = {{0, 0, 0}, {2, 0, 0}, {2, 2, 0}, {0, 2, 0}};
     auto fixture = [&](bool capped, bool twisted, bool damaged, double bend_height = 1.) {
@@ -3473,6 +3491,7 @@ int main() {
         embedded_texture_tests();
         box_center_tests();
         arc_sweep_tests();
+        quadratic_bspline_tests();
         guided_surface_tests();
         bgfb_native_tests();
         bspline_tests();

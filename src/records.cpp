@@ -666,6 +666,7 @@ Json command_fields(unsigned op, const Bytes &b) {
                                                     {22, "path_end"},
                                                     {23, "inner_ring_separator"},
                                                     {25, "polyface"},
+                                                    {26, "quadratic_bspline_segment"},
                                                     {28, "symbology"},
                                                     {29, "identifier"},
                                                     {30, "box_frustum"},
@@ -728,6 +729,20 @@ Json command_fields(unsigned op, const Bytes &b) {
             v["auxiliary_values"] = r.doubles(5);
             v["sweep_angle"] = r.f64();
             v["capped"] = bool(r.u8());
+            r.finish();
+        } else if (op == 26) {
+            require(b.size() == 146, "quadratic spline segment length");
+            auto header = r.take(26);
+            require(hex(header) == "0000000000000001000300000000030000000000000000000000",
+                    "quadratic spline segment header");
+            v["header_hex"] = hex(header);
+            v["control_points"] = Json::array();
+            for (unsigned i = 0; i < 3; ++i)
+                v["control_points"].push_back(r.doubles(3));
+            v["knots"] = r.doubles(6);
+            require(v["knots"] == Json({0., 0., 0., 1., 1., 1.}),
+                    "quadratic spline segment knot vector");
+            v["degree"] = 2;
             r.finish();
         } else if (op == 31) {
             v["axis_x"] = r.doubles(3);

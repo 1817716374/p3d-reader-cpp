@@ -455,6 +455,22 @@ static std::vector<Point3> curve(unsigned op, const Json &decoded, const Tessell
                                  double bound = 1) {
     if (op == 1 || op == 9)
         return decoded.at("points").get<std::vector<Point3>>();
+    if (op == 26) {
+        const auto control = decoded.at("control_points").get<std::vector<Point3>>();
+        require(control.size() == 3, "quadratic spline control point count");
+        const auto extent = std::max(norm(sub(control[1], control[0])),
+                                     norm(sub(control[2], control[0]))) * bound;
+        const auto segments = policy.segments(extent, pi);
+        std::vector<Point3> points;
+        points.reserve(segments + 1);
+        for (unsigned i = 0; i <= segments; ++i) {
+            const auto t = double(i) / segments, u = 1 - t;
+            points.push_back(add(add(scale(control[0], u * u),
+                                      scale(control[1], 2 * u * t)),
+                                 scale(control[2], t * t)));
+        }
+        return points;
+    }
     require(op == 5 || op == 7, "curve opcode");
     auto origin = decoded.at("origin").get<Point3>();
     auto q = quaternion(decoded.at("quaternion"));
@@ -567,7 +583,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                        {"extra_style_hex", d["extra_style_hex"]}});
                     return;
                 }
-                if (op == 1 || op == 3 || op == 5 || op == 7 || op == 9) {
+                if (op == 1 || op == 3 || op == 5 || op == 7 || op == 9 || op == 26) {
                     if (op == 3) {
                         g.lines.push_back(world(d["points"].get<std::vector<Point3>>()));
                         return;
