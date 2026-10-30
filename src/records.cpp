@@ -2163,6 +2163,17 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
     try {
         decoded = decompress_attribute(b, result);
     } catch (const std::exception &) {
+        if (group == 13 && key == 10001) {
+            try {
+                const std::string text(b.begin(), b.end());
+                auto value = Json::parse(text);
+                if (value.is_object() || value.is_array())
+                    return {{"encoding", "raw_json_text"},
+                            {"text", text},
+                            {"value", std::move(value)}};
+            } catch (const std::exception &) {
+            }
+        }
         return {{"encoding", "opaque"}, {"bytes", b.size()}};
     }
     const bool stored = result["codec"] == "stored";
