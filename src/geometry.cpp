@@ -590,22 +590,37 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         return;
                     }
                     const bool mirror = determinant(matrix) < 0;
+                    struct PreparedCsgMesh {
+                        std::vector<Point3> points;
+                        std::vector<Triangle> faces;
+                        Json source_faces = Json::array();
+                    };
+                    std::vector<PreparedCsgMesh> prepared;
+                    prepared.reserve(evaluated.result.meshes.size());
+                    std::size_t total_points = 0;
                     for (std::size_t mesh_index = 0;
                          mesh_index < evaluated.result.meshes.size(); ++mesh_index) {
                         const auto &mesh = evaluated.result.meshes[mesh_index];
                         require(mesh.faces.size() == mesh.face_sources.size(),
                                 "CSG output face/source count mismatch");
-                        auto points = mesh.vertices;
-                        for (auto &point : points)
+                        PreparedCsgMesh output;
+                        output.points = mesh.vertices;
+                        for (auto &point : output.points)
                             point = transform(matrix, point);
-                        auto faces = mesh.faces;
+                        output.faces = mesh.faces;
                         if (mirror)
-                            for (auto &face : faces)
+                            for (auto &face : output.faces)
                                 std::swap(face[1], face[2]);
-                        const auto first_face = g.faces.size();
-                        append(g, points, faces);
+                        for (const auto &face : output.faces)
+                            for (const auto index : face)
+                                require(index < output.points.size(),
+                                        "CSG output face vertex index");
+                        require(total_points <= UINT32_MAX - g.vertices.size() &&
+                                    output.points.size() <=
+                                        UINT32_MAX - g.vertices.size() - total_points,
+                                "CSG output vertex index capacity");
+                        total_points += output.points.size();
 
-                        Json source_faces = Json::array();
                         for (const auto &source : mesh.face_sources) {
                             const bool solid = source.source_kind == CsgSourceKind::solid;
                             Json item = {{"geometry_index", source.geometry_index},
@@ -636,16 +651,22 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                 item["source_path"] =
                                     evaluated.source_paths.at(source.geometry_index);
                             }
-                            source_faces.push_back(std::move(item));
+                            output.source_faces.push_back(std::move(item));
                         }
+                        prepared.push_back(std::move(output));
+                    }
+                    for (std::size_t mesh_index = 0; mesh_index < prepared.size(); ++mesh_index) {
+                        const auto &output = prepared[mesh_index];
+                        const auto first_face = g.faces.size();
+                        append(g, output.points, output.faces);
                         g.primitive_ranges.push_back(
                             {{"channel", "faces"},
                              {"start", first_face},
-                             {"count", faces.size()},
+                             {"count", output.faces.size()},
                              {"style", style},
                              {"source", "derived_csg_archive_mesh"},
                              {"source_command_offset", cmd["offset"]},
-                             {"source_face_mappings", std::move(source_faces)},
+                             {"source_face_mappings", output.source_faces},
                              {"evaluation_diagnostics", evaluated.result.diagnostics},
                              {"native_kernel_equivalence", "not_established"}});
                     }
