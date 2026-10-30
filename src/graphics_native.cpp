@@ -652,7 +652,15 @@ struct GeometryConstruction {
         if (!table)
             return out;
         const auto type = b.field(*table, 0, 4);
-        out["boundary_type"] = type ? b.at<std::int32_t>(*type) : 0;
+        const auto boundary_type = type ? b.at<std::int32_t>(*type) : 0;
+        out["boundary_type"] = boundary_type;
+        static const std::map<std::int32_t, std::string> boundary_names = {
+            {0, "none"},          {1, "open"},          {2, "outer"},
+            {3, "inner"},         {4, "parity_region"}, {5, "union_region"}};
+        if (const auto it = boundary_names.find(boundary_type); it != boundary_names.end())
+            out["boundary_type_name"] = it->second;
+        else
+            out["boundary_type_name"] = "unknown";
         const auto vector = child(*table, 1);
         require(vector.has_value(), "native_curve_vector_requires_member_vector");
         const auto count = b.at<std::uint32_t>(*vector);
