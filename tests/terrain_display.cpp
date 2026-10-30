@@ -93,6 +93,45 @@ p3d::Json decode_flow_arrows(std::uint16_t version, std::int32_t arrow_type,
     }
     return p3d::decode_attribute(307, 23223, bytes, 0);
 }
+
+p3d::Json decode_low_points() {
+    p3d::Bytes bytes;
+    append_u16(bytes, 409); // DTMEntityLowPointsDisplayProcessor
+    append_u16(bytes, 30);
+    append_u16(bytes, 2);
+    append_u32(bytes, 64);
+    append_u32(bytes, 0xfffffffe);
+    append_u32(bytes, 0x7ffffffe);
+    append_u32(bytes, 0xfffffffe);
+    append_f64(bytes, 0.0);
+    append_u8(bytes, 0);
+    append_u8(bytes, 0);
+    append_u8(bytes, 0);
+    append_u8(bytes, 0);
+
+    append_u16(bytes, 2);
+    append_u8(bytes, 1); // visible
+    append_u16(bytes, 0); // +0x40 string
+    append_f64(bytes, 1.0);
+    append_f64(bytes, 1.0);
+    append_f64(bytes, 1.0);
+    append_u32(bytes, 0x00112233); // color
+    append_f64(bytes, 0.0); // +0x110
+    append_u32(bytes, 17); // layer id
+    append_u16(bytes, 0); // +0x80 string
+    append_u16(bytes, 0); // +0xa0 string
+    append_f64(bytes, 0.0);
+    append_f64(bytes, 0.0);
+    append_f64(bytes, 0.0);
+    append_u16(bytes, 0); // +0xd8
+    append_u32(bytes, 1); // circular point type
+    append_f64(bytes, 25.0); // size in millimeters
+    append_u32(bytes, 3); // decimal places
+    for (const auto c : std::u16string(u"Arial"))
+        append_u16(bytes, c);
+    append_u16(bytes, 0);
+    return p3d::decode_attribute(307, 23223, bytes, 0);
+}
 } // namespace
 
 unsigned terrain_display_tests() {
@@ -132,5 +171,22 @@ unsigned terrain_display_tests() {
               flow_v2_state.at("flow_arrows_scale") == 250.0 &&
               flow_v2_state.at("unmapped_suffix").at("bytes") == 0,
           "version 2 exposes the SDK arrow type and scale semantics");
+
+    const auto low_points = decode_low_points();
+    const auto &low_style =
+        low_points.at("decoded_state").at("low_points").at("display_style");
+    check(low_style.at("visible") == true && low_style.at("layer_id") == 17 &&
+              low_style.at("color") == 0x00112233,
+          "low-point visibility, layer and color map to SDK properties");
+    check(low_style.at("point_type_name") == "circle" &&
+              low_style.at("size_mm") == 25.0 &&
+              low_style.at("decimal_places") == 3 &&
+              low_style.at("font_name") == "Arial",
+          "low-point type, millimeter size, precision and font are named");
+    check(low_points.at("status") == "processor_state_decoded" &&
+              low_points.at("decoded_state").at("status") == "known_fields_decoded" &&
+              low_points.at("decoded_state").at("low_points")
+                      .at("unmapped_suffix").at("bytes") == 0,
+          "low-point semantic aliases preserve complete source consumption");
     return checks;
 }

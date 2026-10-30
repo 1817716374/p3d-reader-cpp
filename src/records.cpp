@@ -1864,10 +1864,35 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                         low["member_0xf0_utf16z"] = "";
                         low["member_0xf0_utf16z_source"] = "native_default_for_version_1";
                     }
+                    Json style = {{"mapping_status", "candidate_sdk_member_mapping"}};
+                    if (low.contains("member_0x38_u8")) {
+                        const auto visible = low.at("member_0x38_u8").get<std::uint8_t>();
+                        style["visible"] = visible != 0;
+                        style["visible_raw"] = visible;
+                    }
+                    if (low.contains("member_0x30_u32"))
+                        style["layer_id"] = low.at("member_0x30_u32");
+                    if (low.contains("member_0x78_u32"))
+                        style["color"] = low.at("member_0x78_u32");
+                    if (low.contains("member_0xdc_u32")) {
+                        const auto type = low.at("member_0xdc_u32").get<std::uint32_t>();
+                        style["point_type"] = type;
+                        static const char *type_names[] = {"square", "circle"};
+                        if (type < 2)
+                            style["point_type_name"] = type_names[type];
+                    }
+                    if (low.contains("member_0xe0_f64"))
+                        style["size_mm"] = low.at("member_0xe0_f64");
+                    if (low.contains("member_0xe8_u32"))
+                        style["decimal_places"] = low.at("member_0xe8_u32");
+                    if (low.contains("member_0xf0_utf16z"))
+                        style["font_name"] = low.at("member_0xf0_utf16z");
+                    low["display_style"] = std::move(style);
                     low["unmapped_suffix"] = rawbytes(low_reader.take(low_reader.left()));
                     decoded["status"] = !complete
                                              ? "truncated_known_fields"
-                                             : version == 1 && low["unmapped_suffix"]["bytes"] == 0
+                                             : version <= 2 &&
+                                                       low["unmapped_suffix"]["bytes"] == 0
                                                    ? "known_fields_decoded"
                                                    : "known_fields_decoded_with_unknown_suffix";
                 } else {
@@ -2040,6 +2065,11 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                  type_id == 407 || type_id == 413) &&
                 out["decoded_state"].value("status", "") == "known_fields_decoded" &&
                 out["decoded_state"].value("base_frame", Json::object()).value("status", "") == "decoded")
+                out["status"] = "processor_state_decoded";
+            if (type_id == 409 &&
+                out["decoded_state"].value("status", "") == "known_fields_decoded" &&
+                out["decoded_state"].value("base_frame", Json::object()).value("status", "") ==
+                    "decoded")
                 out["status"] = "processor_state_decoded";
         }
         return out;
