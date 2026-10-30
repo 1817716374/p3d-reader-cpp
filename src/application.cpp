@@ -130,8 +130,10 @@ static Json secondary(Reader &r) {
         case 5: {
             auto strings = collect(r, [&]() { return Json(packed_string(r)); }, 'I', 4);
             auto cells = collect(r, [&]() { return cell(depth + 1); }, 'I', 4);
-            value = {{"string_table", std::move(strings)}, {"cells", std::move(cells)}};
-            kind = "composite";
+            value = {{"native_type", "PBUserPropertyTable"},
+                     {"string_table", std::move(strings)},
+                     {"cells", std::move(cells)}};
+            kind = "property_table";
             break;
         }
         default:
