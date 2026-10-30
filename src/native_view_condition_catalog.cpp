@@ -449,15 +449,15 @@ Json action_details(const std::string &tag, const Json &attributes) {
         out["action_id"] = 8;
     else if (tag == "AreaPatternAction")
         out["action_id"] = 9;
+    else if (tag == "MaterialOverrideAction")
+        out["action_id"] = 10;
     else if (tag == "LayerOfDetailAction")
         out["action_id"] = 11;
     else if (tag == "ShowStyleOverrideAction")
         out["action_id"] = 12;
     out["action_id_status"] = out["action_id"].is_number_integer()
                                    ? "resolved_native_action_id"
-                                   : (tag == "MaterialOverrideAction"
-                                          ? "native_material_action_alias_unresolved"
-                                          : "unmapped_native_action_id");
+                                   : "unmapped_native_action_id";
     if (tag == "EntityDisplayAction")
         out["entity_hidden"] = boolean_field(attributes, "ElementDisplayOff");
     else if (tag == "ColorOverrideAction") {
