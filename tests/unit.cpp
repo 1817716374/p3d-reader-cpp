@@ -2283,6 +2283,56 @@ static void arc_sweep_tests() {
     check(geometry.unknown.empty() && !geometry.faces.empty() && finite && closed,
           "closed polygon sweep has a finite manifold mesh with welded profile seam");
 
+    Bytes multi_ring_outer, multi_ring_inner;
+    const std::vector<Point3> outer_points = {{2., 0., -0.5}, {3., 0., -0.5},
+                                              {3., 0., 0.5}, {2., 0., 0.5},
+                                              {2., 0., -0.5}};
+    const std::vector<Point3> inner_points = {{2.3, 0., -0.2}, {2.7, 0., -0.2},
+                                              {2.7, 0., 0.2}, {2.3, 0., 0.2},
+                                              {2.3, 0., -0.2}};
+    auto put_profile = [](Bytes &bytes, const std::vector<Point3> &points) {
+        put<std::uint32_t>(bytes, points.size());
+        for (const auto &point : points)
+            for (auto value : point)
+                put(bytes, value);
+    };
+    put_profile(multi_ring_outer, outer_points);
+    put_profile(multi_ring_inner, inner_points);
+    Bytes multi_ring_sweep;
+    for (double v : {1., 0., 0., 0., 1., 0., 0., 0., 0., 1., 1., 0., 0., 2.5,
+                     1.5707963267948966})
+        put<double>(multi_ring_sweep, v);
+    put<std::uint8_t>(multi_ring_sweep, 1);
+    const auto multi_ring = reconstruct(
+        Json::array({command(18, multi_ring_sweep), command(21, Bytes{0}),
+                     command(1, multi_ring_outer), command(23, {}),
+                     command(1, multi_ring_inner), command(22, {}), command(19, {})}),
+        Tessellation{});
+    bool multi_ring_finite = true;
+    for (const auto point : multi_ring.vertices)
+        for (auto value : point)
+            multi_ring_finite &= std::isfinite(value);
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> multi_ring_edges;
+    for (const auto face : multi_ring.faces)
+        for (unsigned i = 0; i < 3; ++i) {
+            auto a = face[i], b = face[(i + 1) % 3];
+            if (a > b)
+                std::swap(a, b);
+            multi_ring_edges.emplace_back(a, b);
+        }
+    std::sort(multi_ring_edges.begin(), multi_ring_edges.end());
+    bool multi_ring_closed = !multi_ring_edges.empty();
+    for (std::size_t i = 0; multi_ring_closed && i < multi_ring_edges.size();) {
+        auto j = i + 1;
+        while (j < multi_ring_edges.size() && multi_ring_edges[j] == multi_ring_edges[i])
+            ++j;
+        multi_ring_closed = j - i == 2;
+        i = j;
+    }
+    check(multi_ring.unknown.empty() && !multi_ring.faces.empty() && multi_ring_finite &&
+              multi_ring_closed && multi_ring.notes.back()["source_ring_count"] == 2,
+          "arc sweep reconstructs a capped outer-and-inner region as a closed manifold");
+
     Bytes large_path;
     for (double v : {1., 0., 0., 0., 1., 0., 0., 0., 0., 1., 1., 0., 0., 500.,
                      1.0471975511965976})

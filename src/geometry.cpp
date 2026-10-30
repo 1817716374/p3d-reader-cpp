@@ -1,4 +1,5 @@
 #include "geometry.hpp"
+#include <p3d/solid.hpp>
 #include "guided.hpp"
 #include "text_bytes.hpp"
 #include <p3d/csg_mesh_tree.hpp>
@@ -462,6 +463,92 @@ static void arc_sweep_ellipse(Geometry &g, const Json &parameters,
     for (auto &point : points)
         point = transform(placement, point);
     append(g, points, faces);
+}
+static void arc_sweep_region(Geometry &g, const Json &parameters,
+                             const std::vector<Point3> &profile, Point3 profile_center,
+                             const std::vector<std::size_t> &ring_lengths,
+                             const Matrix4 &placement, const Tessellation &policy) {
+    require(ring_lengths.size() > 1, "arc sweep region requires multiple rings");
+    std::size_t total = 0;
+    for (auto count : ring_lengths) {
+        require(count >= 4 && count <= profile.size() - total,
+                "arc sweep region ring point count");
+        total += count;
+    }
+    require(total == profile.size(), "arc sweep region ring coverage");
+    const auto path_axis_x = parameters.at("path_axis_x").get<Point3>();
+    const auto path_axis_y = parameters.at("path_axis_y").get<Point3>();
+    const auto center = parameters.at("path_center").get<Point3>();
+    const auto sweep = parameters.at("sweep_angle").get<double>();
+    const bool capped = parameters.at("capped").get<bool>();
+    auto normal = cross(path_axis_x, path_axis_y);
+    const auto normal_length = norm(normal);
+    require(std::isfinite(normal_length) && normal_length > 0,
+            "degenerate arc sweep frame");
+    normal = scale(normal, 1 / normal_length);
+    const auto &tail_relation = parameters.at("auxiliary_tail_relation");
+    require(tail_relation.value("status", std::string{}) ==
+                    "positive_path_plane_normal_multiple" &&
+                tail_relation.contains("scale_factor"),
+            "arc sweep trajectory radius is unresolved");
+    const auto trajectory_scale = tail_relation.at("scale_factor").get<double>();
+    require(std::isfinite(trajectory_scale) && trajectory_scale > 0,
+            "arc sweep trajectory radius is invalid");
+    auto radial = scale(path_axis_x, trajectory_scale);
+    radial = sub(radial, scale(normal, dot(radial, normal)));
+    const auto radius = norm(radial);
+    require(std::isfinite(radius) && radius > 0 && std::isfinite(sweep) && sweep != 0 &&
+                std::abs(sweep) <= 2 * pi,
+            "unsupported arc sweep extent");
+
+    Json loops = Json::array();
+    std::size_t offset = 0;
+    double profile_extent = 0;
+    for (std::size_t ring = 0; ring < ring_lengths.size(); ++ring) {
+        const auto count = ring_lengths[ring];
+        const auto first = profile[offset], last = profile[offset + count - 1];
+        require(norm(sub(first, last)) <= 1e-8 * std::max(1., radius),
+                "arc sweep profile ring is not closed");
+        Json points = Json::array();
+        for (std::size_t i = 0; i < count; ++i) {
+            auto p = add(radial, sub(profile[offset + i], profile_center));
+            for (auto coordinate : p)
+                points.push_back(coordinate);
+            profile_extent = std::max(profile_extent,
+                                      norm(sub(profile[offset + i], profile_center)));
+        }
+        Json primitive = {{"_type", "LineString"}, {"points", std::move(points)}};
+        Json boundary = {{"_type", "CurveVector"},
+                         {"type", ring == 0 ? 2 : 3},
+                         {"curves", Json::array({{{"geometry", std::move(primitive)}}})}};
+        loops.push_back({{"geometry", std::move(boundary)}});
+        offset += count;
+    }
+    Json base = {{"_type", "CurveVector"}, {"type", 4}, {"curves", std::move(loops)}};
+    Json sweep_table = {{"_type", "DgnRotationalSweep"},
+                        {"axis", {{"x", center[0]}, {"y", center[1]}, {"z", center[2]},
+                                   {"ux", normal[0]}, {"uy", normal[1]}, {"uz", normal[2]}}},
+                        {"sweepRadians", sweep},
+                        {"capped", capped},
+                        {"baseCurve", std::move(base)}};
+    PolyfaceMeshOptions options;
+    options.max_points = policy.max_segments;
+    options.max_triangles = policy.max_segments;
+    options.max_corners = policy.max_segments <= std::numeric_limits<std::size_t>::max() / 3
+                              ? policy.max_segments * 3
+                              : std::numeric_limits<std::size_t>::max();
+    const auto circle_segments = policy.segments(radius + profile_extent, 2 * pi);
+    auto mesh = mesh_bgfb_solid(sweep_table, options, circle_segments);
+    require(mesh.derived.status == "meshed",
+            mesh.derived.report.value("reason", std::string("arc sweep region meshing failed")));
+    auto points = mesh.derived.geometry.vertices;
+    for (auto &point : points)
+        point = transform(placement, point);
+    append(g, points, mesh.derived.geometry.faces);
+    g.notes.push_back({{"kind", "derived_arc_sweep_multi_ring_region"},
+                       {"source_ring_count", ring_lengths.size()},
+                       {"sweep_mesh_report", mesh.derived.report},
+                       {"native_tessellation_equivalence", "not_established"}});
 }
 static std::vector<Point3> curve(unsigned op, const Json &decoded, const Tessellation &policy,
                                  double bound = 1) {
@@ -1238,12 +1325,23 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     }
                     lengths.push_back(path.size() - prev);
                     if (solid) {
-                        if (solid == 18 && path_kind == 21 && lengths.size() == 1 &&
+                        if (solid == 18 && path_kind == 21 && !lengths.empty() &&
                             !arc_sweep_profile.empty() && !arc_sweep_has_profile) {
-                            const auto first = arc_sweep_profile.front();
-                            const auto last = arc_sweep_profile.back();
-                            if (norm(sub(first, last)) <=
-                                1e-10 * std::max({1., norm(first), norm(last)})) {
+                            bool all_rings_closed = true;
+                            std::size_t ring_start = 0;
+                            for (const auto count : lengths) {
+                                if (!count || count > path.size() - ring_start) {
+                                    all_rings_closed = false;
+                                    break;
+                                }
+                                const auto first = path[ring_start];
+                                const auto last = path[ring_start + count - 1];
+                                all_rings_closed &=
+                                    norm(sub(first, last)) <=
+                                    1e-10 * std::max({1., norm(first), norm(last)});
+                                ring_start += count;
+                            }
+                            if (all_rings_closed && ring_start == path.size()) {
                                 arc_sweep_profile_center =
                                     solid_parameters.at("path_center").get<Point3>();
                                 arc_sweep_has_profile = true;
@@ -1286,10 +1384,19 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 if (op == 19) {
                     require(solid, "solid block underflow");
                     if (solid == 18) {
-                        if (arc_sweep_has_profile && sections.size() == 1)
-                            arc_sweep_ellipse(g, solid_parameters, arc_sweep_profile,
-                                              arc_sweep_profile_center, solid_placement, policy);
-                        else
+                        if (arc_sweep_has_profile && sections.size() == 1) {
+                            const auto rings = section_rings.size() == 1
+                                                   ? section_rings.front()
+                                                   : std::vector<std::size_t>{};
+                            if (rings.size() > 1)
+                                arc_sweep_region(g, solid_parameters, arc_sweep_profile,
+                                                 arc_sweep_profile_center, rings,
+                                                 solid_placement, policy);
+                            else
+                                arc_sweep_ellipse(g, solid_parameters, arc_sweep_profile,
+                                                  arc_sweep_profile_center, solid_placement,
+                                                  policy);
+                        } else
                             g.unknown.push_back({{"opcode", 18},
                                                  {"offset", cmd["offset"]},
                                                  {"reason", "arc sweep profile form is not yet supported"},
