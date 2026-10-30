@@ -233,8 +233,51 @@ Curve open_periodic_impl(const BsplineCurve &source, unsigned limit, Json *repor
     require(b - a >= 1e-10, "native periodic opening knot domain is too short to normalize");
     for (auto &k : c.knots)
         k = (k - a) / (b - a);
+    // Native open curves carry an unused leading knot slot. Saturate the
+    // actual left knot sequence beginning at index 1; then mirror Bentley's
+    // endpoint fix by copying that first actual knot into the sentinel slot.
+    const double left = c.knots[c.degree];
+    for (std::size_t local = 0; c.knots[local + 1] < left; ++local) {
+        const auto knot = local + 1, pole = local;
+        const auto next = knot + 1, far = knot + c.degree;
+        require(next < c.knots.size() && pole + 1 < c.poles.size() && far < c.knots.size(),
+                "periodic opening left saturation bounds");
+        const double lo = c.knots[knot], hi = c.knots[far];
+        if (hi != lo) {
+            const double alpha = (left - lo) / (hi - lo);
+            for (unsigned axis = 0; axis < 4; ++axis)
+                c.poles[pole][axis] = (1 - alpha) * c.poles[pole][axis] +
+                                      alpha * c.poles[pole + 1][axis];
+        }
+        c.knots[knot] = c.knots[next];
+    }
+    c.knots[0] = c.knots[1];
+    // Saturate the right endpoint controls before replacing the exterior
+    // knots with the native open-curve value one.
+    const auto num_knots = c.knots.size(), num_poles = c.poles.size();
+    const auto right_start = num_knots - 1 - 2 * c.degree;
+    const double right = c.knots[num_poles];
+    if (c.knots[num_poles] < c.knots[num_knots - 2]) {
+        for (std::size_t local = 2 * c.degree - 1, pole = c.degree;
+             right < c.knots[right_start + local] && local > 0; --local, --pole) {
+            const auto knot = right_start + local, prev = knot - 1;
+            const auto far = knot - c.degree;
+            const auto p = num_poles - c.degree - 1 + pole;
+            require(p < c.poles.size() && p > 0 && far < c.knots.size(),
+                    "periodic opening right saturation bounds");
+            const double lo = c.knots[knot], hi = c.knots[far];
+            if (hi != lo) {
+                const double alpha = (right - lo) / (hi - lo);
+                for (unsigned axis = 0; axis < 4; ++axis)
+                    c.poles[p][axis] = (1 - alpha) * c.poles[p][axis] +
+                                       alpha * c.poles[p - 1][axis];
+            }
+            c.knots[knot] = c.knots[prev];
+        }
+    }
+    c.knots.back() = c.knots[c.knots.size() - 2];
     // Native open-curve normalization explicitly fills the trailing K knots
-    // with one. It does not similarly replace the leading exterior knots.
+    // with one after applying the right endpoint pole transformation.
     std::fill(c.knots.begin() + count, c.knots.end(), 1.);
     check_result();
     if (report)
