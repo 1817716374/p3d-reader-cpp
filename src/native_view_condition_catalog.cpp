@@ -408,12 +408,21 @@ Json condition_details(const std::string &tag, const Json &attributes) {
                                      {{0, "unknown"}, {1, "inner"}, {2, "outer"},
                                       {4, "intersect"}});
         out["exclude"] = boolean_field(attributes, "RangeConditionExclude");
+        out["operator_meanings"] = {{"inner", "entity_range_fully_inside_condition_range"},
+                                    {"outer", "entity_range_fully_outside_condition_range"},
+                                    {"intersect", "entity_range_on_condition_range_boundary"}};
+        out["exclude_effect"] = "true_inverts_predicate_result";
     } else if (tag == "P3DEntityVolumeShowCondition") {
         out["volume"] = double_field(attributes, "VolumeCondition");
         out["operator"] = enum_field(attributes, "VolumeCompareOperatorType",
                                      {{1, "equal"}, {2, "not_equal"}, {3, "less"},
                                       {4, "greater"}});
         out["exclude"] = boolean_field(attributes, "VolumeCompareExclude");
+        out["operator_meanings"] = {{"equal", "entity_volume_equals_stored_volume"},
+                                    {"not_equal", "entity_volume_differs_from_stored_volume"},
+                                    {"less", "entity_volume_less_than_stored_volume"},
+                                    {"greater", "entity_volume_greater_than_stored_volume"}};
+        out["exclude_effect"] = "true_inverts_predicate_result";
     } else if (tag == "P3DEntityDexDataShowCondition") {
         out["property_name"] = string_field(attributes, "DexDataPropertyName");
         out["value_type"] = bp_value_type_field(attributes);
@@ -423,6 +432,9 @@ Json condition_details(const std::string &tag, const Json &attributes) {
                                       {3, "greater_or_equal"}, {4, "less"},
                                       {5, "less_or_equal"}, {6, "in"}, {7, "not_in"}});
         out["exclude"] = boolean_field(attributes, "dexDataValueExclude");
+        out["exclude_effect"] = "true_inverts_predicate_result";
+        out["comparison_contract"] =
+            "SDK supports basic and date values; ordering comparisons on non-basic values return false; arrays and structs are unsupported";
     }
     return out;
 }
