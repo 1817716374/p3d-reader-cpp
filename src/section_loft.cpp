@@ -63,6 +63,9 @@ struct Builder {
                    type == "TransitionSpiral")
             throw std::runtime_error("native loft conversion returns no curve for " + type +
                                      " at " + path);
+        else if (type == "CurveVector")
+            throw std::runtime_error("native loft curve converter rejects nested CurveArray at " +
+                                     path);
         else if (type == "LineSegment" || type == "LineString") {
             std::vector<Point3> points;
             if (type == "LineSegment") {
