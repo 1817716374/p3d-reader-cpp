@@ -93,7 +93,18 @@ Json native_dependency_link(const Bytes &payload) {
                     {"dependency_index_input", (flags & 1)  ? "skipped_flag_1"
                                                : format > 8 ? "skipped_reference_format"
                                                             : "eligible"},
-                    {"unassigned_flag_bits", flags & ~0x3c01u}});
+                    {"unassigned_flag_bits", flags & ~0xff07u}});
+        const auto copy_options = (flags >> 8) & 3;
+        static constexpr const char *copy_option_names[] = {
+            "no_copy", "copy", "copy_ex", "reserved"};
+        out["flag_fields"] = {
+            {"delete_roots", (flags & 0x0002u) != 0},
+            {"dont_need_application_for_delete", (flags & 0x0004u) != 0},
+            {"copy_options", {{"value", copy_options},
+                               {"name", copy_option_names[copy_options]}}},
+            {"require_application", (flags & 0x4000u) != 0},
+            {"disabled", (flags & 0x8000u) != 0},
+            {"bit_0_dependency_index_input", (flags & 0x0001u) != 0}};
         out["write_flag_projection"] = {{"scope", "flags_if_link_writer_accepts_payload"},
                                         {"cleared_mask", 0x78},
                                         {"cleared_bits", flags & 0x78u},
