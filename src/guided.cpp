@@ -153,7 +153,16 @@ Curve source_curve(const GuidedBoundary &input, unsigned budget, bool length_wei
         }
         return out;
     }
-    if (input.ellipse) {
+    if (!input.quadratic_control_points.empty()) {
+        require(input.quadratic_control_points.size() == 3,
+                "guided quadratic B-spline control point count");
+        out.degree = 2;
+        Piece piece;
+        for (const auto &point : input.quadratic_control_points)
+            piece.push_back(homogeneous(point));
+        out.pieces.push_back(std::move(piece));
+        out.breaks = {0, 1};
+    } else if (input.ellipse) {
         require(std::isfinite(input.start) && std::isfinite(input.sweep) &&
                     std::abs(input.sweep) > 0 && std::abs(input.sweep) <= 2 * pi,
                 "invalid or multi-turn guided ellipse");

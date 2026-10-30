@@ -639,6 +639,9 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                         matrix, {q[1][0] * ry, q[1][1] * ry, q[1][2] * ry});
                                     boundary.start = d.value("start_angle", 0.);
                                     boundary.sweep = d.value("sweep_angle", 2 * pi);
+                                } else if (op == 26) {
+                                    boundary.quadratic_control_points = world(
+                                        d.at("control_points").get<std::vector<Point3>>());
                                 } else
                                     boundary.points = points;
                                 path_native.push_back(std::move(boundary));

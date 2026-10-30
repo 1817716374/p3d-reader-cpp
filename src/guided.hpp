@@ -5,6 +5,7 @@ namespace p3d {
 struct GuidedBoundary {
     bool ellipse = false;
     std::vector<Point3> points;
+    std::vector<Point3> quadratic_control_points;
     std::vector<GuidedBoundary> parts;
     Point3 center{}, axis_x{}, axis_y{};
     double start = 0, sweep = 0;
