@@ -560,6 +560,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
         auto &d = cmd["decoded"];
         Json mesh_metadata;
         auto first_face = g.faces.size(), first_line = g.lines.size(), first_text = g.texts.size();
+        const auto first_range = g.primitive_ranges.size();
         try {
             auto execute = [&]() {
                 if (op == 28) {
@@ -612,9 +613,6 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         for (auto &point : output.points)
                             point = transform(matrix, point);
                         output.faces = mesh.faces;
-                        if (mirror)
-                            for (auto &face : output.faces)
-                                std::swap(face[1], face[2]);
                         output.face_uvs.reserve(mesh.face_sources.size());
                         output.face_normal_indices.reserve(mesh.face_sources.size());
                         for (const auto &face : output.faces)
@@ -648,10 +646,6 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             const auto &source_face =
                                 source_geometry->faces.at(source.face_index);
                             const auto &barycentric = source.corner_barycentric;
-                            auto ordered_barycentric = barycentric;
-                            if (mirror) {
-                                std::swap(ordered_barycentric[1], ordered_barycentric[2]);
-                            }
                             std::array<double, 3> ordered_projection_distance{};
                             const auto source_to_geometry =
                                 multiply(matrix, source.source_to_result);
@@ -661,7 +655,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                 for (unsigned j = 0; j < 3; ++j)
                                     for (unsigned axis = 0; axis < 3; ++axis)
                                         source_point[axis] +=
-                                            ordered_barycentric[corner][j] *
+                                            barycentric[corner][j] *
                                             source_geometry->vertices.at(source_face[j])[axis];
                                 source_point = transform(source_to_geometry, source_point);
                                 const auto &result_point = output.points.at(output_face[corner]);
@@ -683,7 +677,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                     for (unsigned j = 0; j < 3; ++j)
                                         for (unsigned axis = 0; axis < 2; ++axis)
                                             values[corner][axis] +=
-                                                ordered_barycentric[corner][j] * source_uv[j][axis];
+                                                barycentric[corner][j] * source_uv[j][axis];
                                 bool finite_uv = true;
                                 for (const auto &uv : values)
                                     for (double value : uv)
@@ -722,7 +716,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                         for (unsigned j = 0; j < 3; ++j)
                                             for (unsigned axis = 0; axis < 3; ++axis)
                                                 values[corner][axis] +=
-                                                    ordered_barycentric[corner][j] *
+                                                    barycentric[corner][j] *
                                                     source_values[j][axis];
                                     for (const auto &value : values)
                                         transformed.normals.push_back(value);
@@ -763,7 +757,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                          {"boolean_backside", source.backside},
                                          {"placement_reverses_winding", mirror},
                                          {"source_triangle_vertex_indices", source_face},
-                                         {"corner_barycentric", ordered_barycentric},
+                                         {"corner_barycentric", barycentric},
                                          {"corner_projection_distance",
                                           ordered_projection_distance},
                                          {"derived_corner_uvs", derived_uv ? Json(*derived_uv)
@@ -1507,6 +1501,22 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 for (auto *indices : {&g.face_normal_indices, &g.face_uv_indices})
                     if ((*indices)[i])
                         std::swap((*(*indices)[i])[1], (*(*indices)[i])[2]);
+            }
+        if (mirrored)
+            for (auto range_index = first_range; range_index < g.primitive_ranges.size();
+                 ++range_index) {
+                auto &range = g.primitive_ranges[range_index];
+                if (range.value("source", std::string{}) == "derived_csg_archive_mesh" &&
+                    range.value("source_command_offset", Json()) == cmd["offset"] &&
+                    range.contains("source_face_mappings") &&
+                    range["source_face_mappings"].is_array())
+                    for (auto &mapping : range["source_face_mappings"]) {
+                        for (const char *key : {"corner_barycentric", "corner_projection_distance",
+                                                "derived_corner_uvs", "derived_corner_normals"})
+                            if (mapping.contains(key) && mapping[key].is_array() &&
+                                mapping[key].size() == 3)
+                                std::swap(mapping[key][1], mapping[key][2]);
+                    }
             }
         for (auto item : std::vector<std::tuple<std::string, std::size_t, std::size_t>>{
                  {"faces", first_face, g.faces.size()},

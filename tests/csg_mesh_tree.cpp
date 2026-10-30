@@ -4,6 +4,10 @@
 
 namespace {
 using namespace p3d;
+template <class T> void put(Bytes &bytes, T value) {
+    const auto *data = reinterpret_cast<const std::uint8_t *>(&value);
+    bytes.insert(bytes.end(), data, data + sizeof(value));
+}
 Geometry cube(double x) {
     Geometry g;
     g.vertices = {{x, 0, 0}, {x + 2, 0, 0}, {x + 2, 2, 0}, {x, 2, 0},
@@ -362,21 +366,53 @@ unsigned csg_mesh_tree_tests() {
                           {"offset", 11},
                           {"body", rawbytes(Bytes{})},
                           {"decoded", attributed_archive}};
-    const auto scene_geometry = reconstruct(Json::array({command}), Tessellation{});
+    auto placement_matrix = identity();
+    placement_matrix[0][0] = -2;
+    placement_matrix[1][1] = 3;
+    placement_matrix[2][2] = 4;
+    placement_matrix[0][3] = 7;
+    Bytes placement_body;
+    for (unsigned i = 0; i < 3; ++i)
+        for (unsigned j = 0; j < 4; ++j)
+            put(placement_body, placement_matrix[i][j]);
+    const Json placement = {{"op", 13},
+                            {"offset", 10},
+                            {"body", rawbytes(placement_body)},
+                            {"decoded", Json::object()}};
+    const Json pop = {{"op", 14},
+                      {"offset", 12},
+                      {"body", rawbytes(Bytes{})},
+                      {"decoded", Json::object()}};
+    const auto scene_geometry =
+        reconstruct(Json::array({placement, command, pop}), Tessellation{});
     check(scene_geometry.unknown.empty() && scene_geometry.faces.size() == 1 &&
-              scene_geometry.face_uvs.size() == 1 && scene_geometry.face_uvs[0] &&
-              scene_geometry.face_uvs[0]->at(0) == Point2{0, 0} &&
-              scene_geometry.face_uvs[0]->at(1) == Point2{1, 0} &&
-              scene_geometry.face_uvs[0]->at(2) == Point2{0, 1},
-          "scene CSG reconstruction transfers source UVs to output face corners");
-    check(scene_geometry.normals.size() == 3 && scene_geometry.face_normal_indices.size() == 1 &&
-              scene_geometry.face_normal_indices[0] == std::optional<Triangle>(Triangle{0, 1, 2}) &&
-              scene_geometry.normals[0] == std::optional<Point3>(Point3{0, 0, 2}) &&
-              scene_geometry.normals[1] == std::optional<Point3>(Point3{0, 0, 2}) &&
-              scene_geometry.normals[2] == std::optional<Point3>(Point3{0, 0, 2}),
-          "scene CSG reconstruction transfers and indexes source corner normals");
+              scene_geometry.normals.size() == 3 && scene_geometry.face_normal_indices.size() == 1 &&
+              scene_geometry.face_normal_indices[0] == std::optional<Triangle>(Triangle{0, 2, 1}) &&
+              scene_geometry.normals[0] == std::optional<Point3>(Point3{0, 0, .5}) &&
+              scene_geometry.normals[1] == std::optional<Point3>(Point3{0, 0, .5}) &&
+              scene_geometry.normals[2] == std::optional<Point3>(Point3{0, 0, .5}),
+          "scene CSG reconstruction transforms and indexes source corner normals");
     const auto &source_mapping =
         scene_geometry.primitive_ranges.at(0).at("source_face_mappings").at(0);
+    const auto weights =
+        source_mapping.at("corner_barycentric")
+            .get<std::array<std::array<double, 3>, 3>>();
+    const std::array<Point2, 3> source_uv = {Point2{0, 0}, Point2{1, 0}, Point2{0, 1}};
+    bool uv_and_distance_match = scene_geometry.face_uvs.size() == 1 &&
+                                 scene_geometry.face_uvs[0].has_value();
+    for (unsigned corner = 0; corner < 3 && uv_and_distance_match; ++corner) {
+        Point2 expected{};
+        for (unsigned j = 0; j < 3; ++j)
+            for (unsigned axis = 0; axis < 2; ++axis)
+                expected[axis] += weights[corner][j] * source_uv[j][axis];
+        for (unsigned axis = 0; axis < 2; ++axis)
+            uv_and_distance_match &=
+                std::abs((*scene_geometry.face_uvs[0])[corner][axis] - expected[axis]) < 1e-8;
+        uv_and_distance_match &=
+            std::abs(source_mapping["corner_projection_distance"][corner].get<double>()) < 1e-8;
+    }
+    check(uv_and_distance_match,
+          "scene CSG reconstruction aligns transformed UV corners and projection distances");
     check(source_mapping.at("source_polygon_index") == 0 &&
               source_mapping.at("source_face_corner_positions") == Json({0, 1, 2}) &&
               source_mapping.at("source_color_bindings").at("integer_color_indices") ==
