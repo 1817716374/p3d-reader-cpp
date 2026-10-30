@@ -844,6 +844,10 @@ class Document {
     // Native advanced/legacy name and part assignments, with source identity.
     Json material_assignments() const;
     Json object_graph() const;
+    // Native group/key 22909 entries with document-wide object_id equality
+    // candidates. This does not assign meaning to group tags or entry types,
+    // and does not infer geometry reuse or a runtime reference scope.
+    Json native_tagged_object_groups() const;
     // Typed projections of persisted display/view records. Original property
     // trees remain attached to every record; path components are only lexical
     // numeric tokens and are not interpreted as class/model identifiers.

@@ -673,6 +673,9 @@ ACCESSOR(binding_blocks, binding_blocks) ACCESSOR(relationships, relations)
 Json Document::native_display_catalog() const {
     return build_native_display_catalog(object_graph(), layer_tables(), native_records(), models());
 }
+Json Document::native_tagged_object_groups() const {
+    return build_native_tagged_object_groups(graphics_records(), objects());
+}
 Json Document::native_view_condition_catalog() const {
     return build_native_view_condition_catalog(graphics_records(), models());
 }

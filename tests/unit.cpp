@@ -201,6 +201,7 @@ unsigned material_catalog_registration_tests();
 unsigned material_catalog_read_tests();
 unsigned view_sequence_tests();
 unsigned native_view_condition_catalog_tests();
+unsigned native_tagged_object_group_tests();
 unsigned component_material_tests();
 unsigned material_auxiliary_tests();
 unsigned material_xml_integer_tests();
@@ -3701,6 +3702,7 @@ int main() {
         checks += material_catalog_read_tests();
         checks += view_sequence_tests();
         checks += native_view_condition_catalog_tests();
+        checks += native_tagged_object_group_tests();
         checks += component_material_tests();
         checks += material_auxiliary_tests();
         checks += material_xml_integer_tests();

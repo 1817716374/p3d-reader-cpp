@@ -79,6 +79,7 @@ int main() {
 ```sh
 p3d-inspect example.p3d --threads 4 --native-summary
 p3d-inspect example.p3d --dump document.json --graph graph.json --scene scene.json
+p3d-inspect example.p3d --tagged-object-groups groups.json
 ```
 
 请使用构建目录中的可执行文件；多配置生成器通常将其放在对应配置子目录下。
