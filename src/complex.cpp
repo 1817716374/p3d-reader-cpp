@@ -1277,26 +1277,34 @@ Json boolean_record(const Bytes &b) {
         Reader t(b);
         auto header = t.take(be32(t));
         Reader h(header);
-        auto op = be32(h), leaf = be32(h);
-        require(leaf <= 1 && header.size() == 8 + 4 * leaf, "boolean node header");
-        Json node = {{"operation_code", op}, {"is_leaf", bool(leaf)}, {"children", Json::array()}};
-        if (leaf) {
-            auto ix = be32(h);
-            require(ix < operands.size(), "boolean operand index");
-            node["operand_index"] = ix;
+        const auto op = be32(h);
+        const auto index_count = be32(h);
+        require(std::uint64_t(index_count) * 4 + 8 == header.size(), "boolean node header");
+        Json indices = Json::array();
+        for (std::uint32_t i = 0; i < index_count; ++i) {
+            const auto raw = be32(h);
+            indices.push_back(raw < 0x80000000u ? std::int64_t(raw)
+                                                : std::int64_t(raw) - 0x100000000LL);
         }
+        Json node = {{"operation_code", op}, {"operand_indices", std::move(indices)},
+                     {"children", Json::array()}};
+        static const std::map<std::uint32_t, std::string> operation_names = {
+            {0, "unite"}, {1, "intersection"}, {2, "subtract"}};
+        if (const auto it = operation_names.find(op); it != operation_names.end())
+            node["operation"] = it->second;
         while (t.left())
             node["children"].push_back(tree(t.take(be32(t)), depth + 1));
-        require(leaf ? node["children"].empty() : node["children"].size() == 2,
-                "boolean child arity");
+        node["is_leaf"] = node["children"].empty();
+        if (node["operand_indices"].size() == 1)
+            node["operand_index"] = node["operand_indices"][0];
         return node;
     };
     auto expression = tree(r.take(be32(r)), 0);
     r.finish();
     return {{"operands", operands},
             {"expression", expression},
-            {"note", "Operand geometry and expression topology retained. Operation codes and "
-                     "inactive-transform/display flags need renderer confirmation; no boolean "
+            {"note", "Operand geometry, signed operand-index arrays, and expression topology are "
+                     "retained. Boolean operations are labeled from the SDK enum; no boolean "
                      "re-evaluation is substituted for stored scene geometry."}};
 }
 static Json feature_setting(Reader &r) {
