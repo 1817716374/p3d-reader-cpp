@@ -2166,6 +2166,12 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
         } catch (const std::exception &) {
         }
     }
+    if (group == 1 && key == 22745 && b.size() == 1)
+        return {{"encoding", "raw_u8"}, {"value", b[0]}};
+    if (group == 13 && key == 10001 && index == 10 && b.size() == 4) {
+        Reader r(b);
+        return {{"encoding", "raw_i32"}, {"value", r.i32()}};
+    }
     Json result;
     Bytes decoded;
     try {
