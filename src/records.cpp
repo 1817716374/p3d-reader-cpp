@@ -2158,6 +2158,14 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             s.pop_back();
         return {{"encoding", "utf8_class_name"}, {"text", s}};
     }
+    if (group == 0 && key == 1 && !b.empty() && b.size() % 2 == 0) {
+        try {
+            auto text = utf16(b);
+            if (text.find('\0') == std::string::npos)
+                return {{"encoding", "raw_utf16_text"}, {"text", std::move(text)}};
+        } catch (const std::exception &) {
+        }
+    }
     Json result;
     Bytes decoded;
     try {
