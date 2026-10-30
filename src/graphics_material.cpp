@@ -36,6 +36,26 @@ std::u16string utf8_name(std::string text) {
     require(codec.converted() == text.size(), "material_name_utf8_conversion_incomplete");
     return out;
 }
+std::uint32_t candidate_part_index(const Json &entry, std::size_t ordinal,
+                                   bool &explicit_mapping) {
+    explicit_mapping = entry.is_object() && entry.contains("native_part_index");
+    if (!explicit_mapping) {
+        require(ordinal <= std::size_t(INT32_MAX), "rebuilt_part_index_exceeds_signed_int");
+        return static_cast<std::uint32_t>(ordinal);
+    }
+    const auto &value = entry.at("native_part_index");
+    std::uint64_t index = 0;
+    if (value.is_number_unsigned())
+        index = value.get<std::uint64_t>();
+    else {
+        require(value.is_number_integer(), "native_part_index_must_be_integer");
+        const auto signed_index = value.get<std::int64_t>();
+        require(signed_index >= 0, "native_part_index_must_be_nonnegative");
+        index = static_cast<std::uint64_t>(signed_index);
+    }
+    require(index <= std::uint64_t(INT32_MAX), "native_part_index_exceeds_signed_int");
+    return static_cast<std::uint32_t>(index);
+}
 } // namespace
 namespace detail {
 std::string material_json_name(const Json &value) {
@@ -73,7 +93,7 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                 {"scope", "rebuilt_graphics_material_selection"},
                 {"selection_phase", "before_symbology_resolution"},
                 {"draw_material_status", "not_evaluated"},
-                {"part_index_basis", "caller_supplied_rebuilt_graphics_sequence_ordinal"},
+                {"part_index_basis", "caller_supplied_per_entry_index_or_sequence_ordinal"},
                 {"native_part_index_mapping", "not_established"},
                 {"geometry_mapping_status", "caller_supplied_rebuilt_entry_sequence"},
                 {"entries", Json::array()}};
@@ -81,6 +101,18 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
         require(entries.is_array() && attributes.is_array(), "material_inputs_must_be_arrays");
         require(entries.size() <= std::size_t(INT32_MAX) + 1,
                 "rebuilt_part_index_exceeds_signed_int");
+        std::vector<std::uint32_t> part_indices;
+        std::size_t explicit_mappings = 0;
+        part_indices.reserve(entries.size());
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            bool explicit_mapping = false;
+            part_indices.push_back(candidate_part_index(entries[i], i, explicit_mapping));
+            explicit_mappings += explicit_mapping ? 1 : 0;
+        }
+        out["native_part_index_mapping"] =
+            !entries.empty() && explicit_mappings == entries.size()
+                ? "caller_supplied_for_all_entries"
+            : explicit_mappings ? "caller_supplied_for_some_entries" : "not_established";
         const auto lookup = native_attribute_lookup(attributes);
         out["attribute_lookup"] = lookup;
         require(lookup.at("status") == "resolved", "material_attribute_lookup_unresolved");
@@ -161,7 +193,14 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
         out["part_name_table"] = part_table;
         bool complete = true;
         for (std::size_t i = 0; i < entries.size(); ++i) {
-            Json item = {{"entry_index", i}, {"part_index", i}, {"lookups", Json::array()}};
+            const auto part_index = part_indices[i];
+            const bool explicit_mapping = entries[i].is_object() &&
+                                          entries[i].contains("native_part_index");
+            Json item = {{"entry_index", i},
+                         {"part_index", part_index},
+                         {"part_index_source", explicit_mapping ? "caller_native_part_index"
+                                                                 : "input_sequence_ordinal_candidate"},
+                         {"lookups", Json::array()}};
             auto apply = [&](Json step, const char *source) {
                 step["source"] = source;
                 const auto state = step.at("status");
@@ -180,7 +219,7 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
             Json advanced = {{"status", "not_found"}};
             try {
                 require(part_table.at("status") != "unresolved", "part_name_table_unresolved");
-                auto name = part_names.find(std::to_string(i));
+                auto name = part_names.find(std::to_string(part_index));
                 if (part_names.is_object() && name != part_names.end()) {
                     advanced = name_lookup(utf8_name(detail::material_json_name(*name)),
                                            GraphicsMaterialNameQuery::advanced_part);
@@ -189,7 +228,7 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                 advanced = {{"status", "unresolved"}, {"reason", e.what()}};
             }
             if (!apply(advanced, "advanced_part_name") &&
-                !apply(wide_lookup(2, static_cast<std::uint32_t>(i),
+                !apply(wide_lookup(2, part_index,
                                    GraphicsMaterialNameQuery::legacy_part),
                        "legacy_part_name") &&
                 !apply(element, "entity_material")) {
