@@ -870,6 +870,88 @@ static Bytes decompress_attribute(const Bytes &b, Json &metadata) {
     metadata = {{"version", ver}, {"codec", codec}, {"decoded_bytes", n}};
     return out;
 }
+static Json decode_key_22909(const Bytes &b) {
+    try {
+        if (b.size() == 28) {
+            Reader r(b);
+            Json words = Json::array();
+            while (r.left())
+                words.push_back(r.u32());
+            if (words[0] == 6)
+                return {{"encoding", "key_22909_fixed_u32_words"},
+                        {"words", std::move(words)},
+                        {"business_meaning", "unresolved"}};
+            return nullptr;
+        }
+        if (b.size() < 84)
+            return nullptr;
+
+        Reader r(b);
+        const auto format_word = r.u32();
+        const auto variant_word = r.u32();
+        const auto flag_word = r.u32();
+        const auto reserved_word = r.u32();
+        if (format_word != 6 || flag_word != 1 || reserved_word != 0)
+            return nullptr;
+        auto label_bytes = r.take(10);
+        auto label = utf16(label_bytes);
+        if (label.empty() || label.back() != '\0')
+            return nullptr;
+        label.pop_back();
+        auto guid_bytes = r.take(36);
+        std::string guid(guid_bytes.begin(), guid_bytes.end());
+        if (r.u16() != 0)
+            return nullptr;
+        const auto header_word_64 = r.u32();
+        const auto header_word_68 = r.u32();
+
+        Json groups = Json::array();
+        std::size_t total_entries = 0;
+        while (r.left() > 12) {
+            require(r.left() >= 24, "key 22909 group header");
+            const auto marker = r.u32();
+            require(marker == 0x80000001u, "key 22909 group marker");
+            const auto group_tag = r.u32();
+            const auto reserved_u64 = r.u64();
+            const auto count = r.u32();
+            const auto reserved_u32 = r.u32();
+            require(reserved_u64 == 0 && reserved_u32 == 0,
+                    "key 22909 group reserved fields");
+            require(count <= r.left() / 12, "key 22909 group entry count");
+            Json entries = Json::array();
+            for (std::uint32_t i = 0; i < count; ++i) {
+                const auto object_id = r.u64();
+                const auto entry_type = r.u32();
+                entries.push_back({{"object_id", object_id}, {"entry_type", entry_type}});
+            }
+            total_entries += count;
+            groups.push_back({{"group_tag_word", group_tag},
+                              {"entry_count", count},
+                              {"entries", std::move(entries)}});
+        }
+        require(r.left() == 12, "key 22909 footer size");
+        const auto footer_u64 = r.u64();
+        const auto footer_u32 = r.u32();
+        require(footer_u64 == 0 && footer_u32 == 1, "key 22909 footer");
+        const auto group_count = groups.size();
+        return {{"encoding", "key_22909_tagged_object_groups"},
+                {"format_word", format_word},
+                {"variant_word", variant_word},
+                {"flag_word", flag_word},
+                {"label", label},
+                {"guid", guid},
+                {"header_word_64", header_word_64},
+                {"header_word_68", header_word_68},
+                {"groups", std::move(groups)},
+                {"group_count", group_count},
+                {"entry_count", total_entries},
+                {"footer", {{"u64", footer_u64}, {"u32", footer_u32}}},
+                {"tag_semantics", "unresolved"},
+                {"entry_type_semantics", "unresolved"}};
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+}
 static Json decode_dgn_display_style_type_filter(const Bytes &b) {
     Json compression;
     const auto data = decompress_attribute(b, compression);
@@ -1218,6 +1300,11 @@ Json decode_sesm_gams_stream(const Bytes &b) {
 
 Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned index,
                       int measurement_type) {
+    if (group == 0 && key == 22909) {
+        auto decoded = decode_key_22909(b);
+        if (!decoded.is_null())
+            return decoded;
+    }
     auto reference_extension = decode_reference_extension(group, key, b, index);
     if (!reference_extension.is_null())
         return reference_extension;
