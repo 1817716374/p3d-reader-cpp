@@ -19,23 +19,28 @@ unsigned native_view_condition_catalog_tests() {
     };
     const Json graphics = Json::array({{{"id", 42}, {"attributes", Json::array({attribute(
                                                                     "bimbase_conditionset_000000009_view0"),
+                                                                attribute("bimbase_conditionset_000000016_view2"),
                                                                 attribute("bimbase_conditionset_16_view2"),
                                                                 attribute("user_defined_set")})}}});
     const Json models = {{"9", {{"name", "主模型"}, {"physical_storage", "P3D-S18"}}}};
     const auto catalog = build_native_view_condition_catalog(graphics, models);
-    check(catalog.at("records").size() == 3, "all stored view condition records are retained");
+    check(catalog.at("records").size() == 4, "all stored view condition records are retained");
     const auto &resolved = catalog["records"][0]["view_binding"];
-    check(resolved.at("status") == "candidate_model_view" && resolved.at("model_id") == 9 &&
+    check(resolved.at("status") == "resolved_model_view_identity" && resolved.at("model_id") == 9 &&
               resolved.at("view_index") == 0 &&
+              resolved.at("active_view_selection") == "not_evaluated" &&
               resolved.at("model_reference").at("status") == "resolved" &&
               resolved.at("model_reference").at("name") == "主模型",
-          "condition set model and view components resolve by the observed name convention");
+          "native condition-set identity resolves by its exact model/view key");
     const auto &missing = catalog["records"][1]["view_binding"];
-    check(missing.at("status") == "candidate_model_view" && missing.at("model_id") == 16 &&
+    check(missing.at("status") == "resolved_model_view_identity" && missing.at("model_id") == 16 &&
               missing.at("view_index") == 2 &&
               missing.at("model_reference").at("status") == "missing",
-          "condition set references to unloaded models remain explicit unresolved candidates");
+          "native model/view identity remains decoded when its model is not loaded");
     check(catalog["records"][2]["view_binding"].at("status") ==
+              "unrecognized_condition_set_name",
+          "noncanonical model IDs are not treated as native condition-set keys");
+    check(catalog["records"][3]["view_binding"].at("status") ==
               "unrecognized_condition_set_name",
           "unrecognized condition-set names are not assigned guessed model or view semantics");
     return checks;

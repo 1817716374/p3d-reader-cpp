@@ -576,6 +576,12 @@ Json condition_view_binding(const Json &name, const Json &models) {
         view_parse.ec != std::errc{} || view_parse.ptr != view_text.data() + view_text.size())
         return {{"status", "unrecognized_condition_set_name"}, {"source_name", name}};
 
+    auto expected_model_text = std::to_string(model_id);
+    if (expected_model_text.size() < 9)
+        expected_model_text.insert(0, 9 - expected_model_text.size(), '0');
+    if (model_text != expected_model_text || view_text != std::to_string(view_index))
+        return {{"status", "unrecognized_condition_set_name"}, {"source_name", name}};
+
     const auto key = std::to_string(model_id);
     const Json *model = models.is_object() && models.contains(key) ? &models[key] : nullptr;
     Json reference = {{"status", model ? "resolved" : "missing"},
@@ -584,11 +590,12 @@ Json condition_view_binding(const Json &name, const Json &models) {
         reference["name"] = model->value("name", Json());
         reference["physical_storage"] = model->value("physical_storage", Json());
     }
-    // SDK BPShowConditionSet is created for a modelId and nViewNum. The
-    // persisted name exposes matching numeric components, but does not prove
-    // that the referenced model/view is active in the current file context.
-    return {{"status", "candidate_model_view"},
-            {"match", "condition_set_name_model_id_and_view_number"},
+    // Native exports create/find condition sets by (modelId, nViewNum), and
+    // the DLL formats their persisted key with this exact zero-padded model ID.
+    // This resolves the set identity, not whether that view is currently active.
+    return {{"status", "resolved_model_view_identity"},
+            {"match", "native_model_id_and_view_number_key"},
+            {"active_view_selection", "not_evaluated"},
             {"source_name", name},
             {"model_id", model_id},
             {"view_index", view_index},
