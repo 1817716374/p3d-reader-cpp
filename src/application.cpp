@@ -101,18 +101,58 @@ static Json group_info(Reader &r) {
     return {{"version", version}, {"nodes", collect(r, [&]() { return node(0); }, 'I', 16)}};
 }
 static Json secondary(Reader &r) {
-    auto ver = r.expect("I", 1);
+    auto ver = r.u32();
+    require(ver <= 1, "secondary property version");
     auto cats = collect(r, [&]() { return Json(packed_string(r)); }, 'I', 4);
+    std::function<Json(unsigned)> cell = [&](unsigned depth) -> Json {
+        require(depth <= 32, "secondary property nesting");
+        auto type = r.u32();
+        Json value = nullptr;
+        std::string kind = "unrecognized_no_payload";
+        switch (type) {
+        case 1:
+            value = r.i32();
+            kind = "int32";
+            break;
+        case 2:
+            value = r.f64();
+            kind = "float64";
+            break;
+        case 3: {
+            value = bool(r.u8());
+            kind = "bool";
+            break;
+        }
+        case 4:
+            value = packed_string(r);
+            kind = "string";
+            break;
+        case 5: {
+            auto strings = collect(r, [&]() { return Json(packed_string(r)); }, 'I', 4);
+            auto cells = collect(r, [&]() { return cell(depth + 1); }, 'I', 4);
+            value = {{"string_table", std::move(strings)}, {"cells", std::move(cells)}};
+            kind = "composite";
+            break;
+        }
+        default:
+            break;
+        }
+        return {{"variant_type", type}, {"value_kind", kind}, {"value", std::move(value)}};
+    };
     auto props = collect(
         r,
         [&]() {
             auto name = packed_string(r);
-            auto type = r.expect("I", 4);
-            auto val = packed_string(r);
+            auto decoded = cell(0);
             auto cat = r.u32(), ordinal = r.u32();
             require(cat < cats.size(), "secondary category");
-            return Json{{"name", name},          {"value", val},          {"variant_type", type},
-                        {"category_index", cat}, {"category", cats[cat]}, {"ordinal", ordinal}};
+            return Json{{"name", name},
+                        {"value", decoded["value"]},
+                        {"variant_type", decoded["variant_type"]},
+                        {"value_kind", decoded["value_kind"]},
+                        {"category_index", cat},
+                        {"category", cats[cat]},
+                        {"ordinal", ordinal}};
         },
         'I', 4);
     return {{"version", ver}, {"categories", cats}, {"properties", props}};
