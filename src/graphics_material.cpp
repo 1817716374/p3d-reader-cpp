@@ -73,7 +73,8 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                 {"scope", "rebuilt_graphics_material_selection"},
                 {"selection_phase", "before_symbology_resolution"},
                 {"draw_material_status", "not_evaluated"},
-                {"part_index_basis", "zero_based_rebuilt_graphics_entry_order"},
+                {"part_index_basis", "caller_supplied_rebuilt_graphics_sequence_ordinal"},
+                {"native_part_index_mapping", "not_established"},
                 {"geometry_mapping_status", "caller_supplied_rebuilt_entry_sequence"},
                 {"entries", Json::array()}};
     try {

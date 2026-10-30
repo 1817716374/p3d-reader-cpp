@@ -25,15 +25,20 @@ struct GraphicsMaterialContext {
     // Converts a rebuilt Entry's BPMaterial to a material in the owning project.
     std::function<GraphicsMaterialResult(const Json &)> load_inline_material;
 };
-// Native part indices are zero-based BPGraphics Entry positions. entries is the
-// ordered, already rebuilt BPGraphics Entry array, each containing
-// inline_material (null means absent). attributes is the complete selected native
-// attribute collection, in source order, with group/key/index/payload fields.
+// entries is a caller-supplied ordered sequence, each item containing
+// inline_material (null means absent). The resolver uses each item's ordinal as
+// the candidate part index for the saved name tables. This does not establish
+// that the supplied sequence corresponds to native BPGraphicPart order or to
+// BPGraphics Entry order; the caller must establish that mapping. In the SDK,
+// getMaterialByPart indexes the entity's BPGraphicPart sequence. attributes is
+// the complete selected native attribute collection, in source order, with
+// group/key/index/payload fields.
 // Models material selection before the ordinary draw context resolves symbology.
 // Its symbology state is embedded in the context; it is not an optional per-entry
 // builder. This neither reconstructs Entry order nor maps triangles to parts.
 // Serialized geometry_packets are suitable ONLY when they are independently known
-// to be exactly this builder's input sequence. Empty/non-emitting entries still count.
+// to correspond one-to-one and in order with the intended part-index domain.
+// Empty/non-emitting entries still count when they occur in that domain.
 // Unknown higher-priority choices stop that entry's fallback. Inputs are not changed.
 // unassigned means that this selection writes a null material, not that the final
 // draw has no material. Later symbology resolution may perform another lookup;
