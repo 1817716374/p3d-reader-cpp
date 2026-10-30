@@ -160,6 +160,7 @@
 !/tests/reference_extension.cpp
 !/tests/native_application.cpp
 !/tests/schema_annotations.cpp
+!/tests/terrain_display.cpp
 !/tests/mesh_normals.cpp
 !/tests/mesh_tessellation.cpp
 !/tests/mesh_buffers.cpp

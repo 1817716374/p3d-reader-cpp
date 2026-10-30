@@ -1569,8 +1569,10 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             if (type_id == 402 && derived_offset && derived_offset <= state.size()) {
                 // ContoursProcessor::Read (TerrainEntityProcessor.dll RVA
                 // 0x38f50) reads these scalar members in order. The native
-                // offsets are stable evidence; SDK accessor names have not
-                // yet been mapped to individual members.
+                // offsets are stable evidence. SDK BPTerrainUtil contour
+                // accessors take isMajor and expose contour distance in mm;
+                // the matched bound BPTerrain object's main/secondary
+                // distances confirm members +0x38 and +0x40 respectively.
                 Reader contour_reader(state, derived_offset);
                 Json contour = Json::object();
                 if (contour_reader.left() >= 2) {
@@ -1630,6 +1632,13 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     take_u32("0x94_u32");
                     if (version > 3)
                         take_u32("0x4c_u32");
+
+                    if (complete && version >= 1 && version <= 4) {
+                        const auto major =
+                            contour.at("member_0x38_u8").get<std::uint8_t>() != 0;
+                        contour["is_major_contour"] = major;
+                        contour["contour_distance_mm"] = contour.at("member_0x40_f64");
+                    }
 
                     contour["unmapped_suffix"] =
                         rawbytes(contour_reader.take(contour_reader.left()));

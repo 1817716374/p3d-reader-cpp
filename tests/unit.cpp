@@ -11,6 +11,7 @@ unsigned bspline_surface_tests();
 unsigned tree_entity_reference_tests();
 unsigned tree_resource_tests();
 unsigned schema_annotation_tests();
+unsigned terrain_display_tests();
 unsigned graphics_bytes_tests();
 unsigned csg_tests();
 unsigned csg_mesh_tests();
@@ -3550,6 +3551,7 @@ int main() {
         checks += bspline_surface_tests();
         checks += tree_entity_reference_tests();
         checks += schema_annotation_tests();
+        checks += terrain_display_tests();
         checks += tree_resource_tests();
         checks += graphics_bytes_tests();
         checks += csg_tests();
