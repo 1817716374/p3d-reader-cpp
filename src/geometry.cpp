@@ -1,6 +1,7 @@
 #include "geometry.hpp"
 #include "guided.hpp"
 #include "text_bytes.hpp"
+#include <p3d/csg_mesh_tree.hpp>
 #include <mapbox/earcut.hpp>
 namespace p3d {
 static constexpr double pi = 3.1415926535897932384626433832795;
@@ -575,10 +576,84 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 if (op == 29)
                     return;
                 if (op == 58) {
-                    g.unknown.push_back({{"opcode", op}, {"offset", cmd["offset"]},
-                                         {"reason", "CSG Boolean result not evaluated"},
-                                         {"csg", d}, {"placement_matrix", matrix},
-                                         {"style", style}});
+                    const auto evaluated = evaluate_csg_polyface_archive(d);
+                    if (evaluated.result.status != "evaluated") {
+                        g.unknown.push_back(
+                            {{"opcode", op},
+                             {"offset", cmd["offset"]},
+                             {"reason", "CSG archive mesh evaluation incomplete"},
+                             {"csg", d},
+                             {"evaluation_status", evaluated.result.status},
+                             {"evaluation_diagnostics", evaluated.result.diagnostics},
+                             {"placement_matrix", matrix},
+                             {"style", style}});
+                        return;
+                    }
+                    const bool mirror = determinant(matrix) < 0;
+                    for (std::size_t mesh_index = 0;
+                         mesh_index < evaluated.result.meshes.size(); ++mesh_index) {
+                        const auto &mesh = evaluated.result.meshes[mesh_index];
+                        require(mesh.faces.size() == mesh.face_sources.size(),
+                                "CSG output face/source count mismatch");
+                        auto points = mesh.vertices;
+                        for (auto &point : points)
+                            point = transform(matrix, point);
+                        auto faces = mesh.faces;
+                        if (mirror)
+                            for (auto &face : faces)
+                                std::swap(face[1], face[2]);
+                        const auto first_face = g.faces.size();
+                        append(g, points, faces);
+
+                        Json source_faces = Json::array();
+                        for (const auto &source : mesh.face_sources) {
+                            const bool solid = source.source_kind == CsgSourceKind::solid;
+                            Json item = {{"geometry_index", source.geometry_index},
+                                         {"face_index", source.face_index},
+                                         {"source_kind", solid ? "solid" : "polyface"},
+                                         {"source_to_geometry", multiply(
+                                                                      matrix,
+                                                                      source.source_to_result)},
+                                         {"boolean_backside", source.backside},
+                                         {"placement_reverses_winding", mirror},
+                                         {"corner_barycentric", source.corner_barycentric},
+                                         {"corner_projection_distance",
+                                          source.corner_projection_distance}};
+                            if (source.solid_snapshot) {
+                                item["solid_snapshot"] = *source.solid_snapshot;
+                                require(*source.solid_snapshot <
+                                            evaluated.solid_snapshots.size(),
+                                        "CSG source solid snapshot index");
+                                const auto source_index = evaluated
+                                                             .solid_snapshots[*source.solid_snapshot]
+                                                             .source_index;
+                                item["source_path"] =
+                                    evaluated.solid_source_paths.at(source_index);
+                            } else if (solid) {
+                                item["source_path"] =
+                                    evaluated.solid_source_paths.at(source.geometry_index);
+                            } else {
+                                item["source_path"] =
+                                    evaluated.source_paths.at(source.geometry_index);
+                            }
+                            source_faces.push_back(std::move(item));
+                        }
+                        g.primitive_ranges.push_back(
+                            {{"channel", "faces"},
+                             {"start", first_face},
+                             {"count", faces.size()},
+                             {"style", style},
+                             {"source", "derived_csg_archive_mesh"},
+                             {"source_command_offset", cmd["offset"]},
+                             {"source_face_mappings", std::move(source_faces)},
+                             {"evaluation_diagnostics", evaluated.result.diagnostics},
+                             {"native_kernel_equivalence", "not_established"}});
+                    }
+                    g.notes.push_back({{"kind", "derived_csg_archive_mesh"},
+                                       {"source_command_offset", cmd["offset"]},
+                                       {"evaluation_status", evaluated.result.status},
+                                       {"mesh_count", evaluated.result.meshes.size()},
+                                       {"native_kernel_equivalence", "not_established"}});
                     return;
                 }
                 if (op == 37) {
