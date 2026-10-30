@@ -1382,6 +1382,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                                 if (arrow_type >= 0 && arrow_type < 4)
                                     fields["arrow_type_name"] = arrow_names[arrow_type];
                                 fields["scale"] = scale;
+                                fields["flow_arrows_scale"] = scale;
                             } else {
                                 complete = false;
                             }
@@ -1389,6 +1390,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                             fields["arrow_type"] = 1;
                             fields["arrow_type_name"] = "closed";
                             fields["scale"] = 10000.0;
+                            fields["flow_arrows_scale"] = 10000.0;
                             fields["arrow_type_and_scale_source"] = "native_default_for_version_1";
                         }
                         decoded["status"] = version > 2

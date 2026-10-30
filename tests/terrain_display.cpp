@@ -62,6 +62,37 @@ p3d::Json decode_contour(bool is_major, double distance_mm) {
     append_u32(bytes, 2);
     return p3d::decode_attribute(307, 23223, bytes, 0);
 }
+
+p3d::Json decode_flow_arrows(std::uint16_t version, std::int32_t arrow_type,
+                             double scale) {
+    p3d::Bytes bytes;
+    append_u16(bytes, 407); // DTMEntityFlowArrowsDisplayProcessor
+
+    // Base display frame.
+    append_u16(bytes, 30);
+    append_u16(bytes, 2);
+    append_u32(bytes, 64);
+    append_u32(bytes, 0xfffffffe);
+    append_u32(bytes, 0x7ffffffe);
+    append_u32(bytes, 0xfffffffe);
+    append_f64(bytes, 0.0);
+    append_u8(bytes, 0);
+    append_u8(bytes, 0);
+    append_u8(bytes, 0);
+    append_u8(bytes, 0);
+
+    append_u16(bytes, version);
+    append_u16(bytes, 64);
+    append_f64(bytes, 1.0);
+    append_f64(bytes, 1.0);
+    append_f64(bytes, 1.0);
+    append_u32(bytes, 1);
+    if (version > 1) {
+        append_u32(bytes, static_cast<std::uint32_t>(arrow_type));
+        append_f64(bytes, scale);
+    }
+    return p3d::decode_attribute(307, 23223, bytes, 0);
+}
 } // namespace
 
 unsigned terrain_display_tests() {
@@ -89,5 +120,17 @@ unsigned terrain_display_tests() {
           "secondary contour role and distance are projected");
     check(secondary.at("status") == "processor_state_decoded",
           "semantic projection preserves the complete processor status");
+
+    const auto flow_v1 = decode_flow_arrows(1, 0, 0.0);
+    const auto &flow_v1_state = flow_v1.at("decoded_state").at("flow_arrows");
+    check(flow_v1_state.at("flow_arrows_scale") == 10000.0 &&
+              flow_v1_state.at("scale") == flow_v1_state.at("flow_arrows_scale"),
+          "version 1 exposes the SDK flow-arrow scale native default");
+    const auto flow_v2 = decode_flow_arrows(2, 3, 250.0);
+    const auto &flow_v2_state = flow_v2.at("decoded_state").at("flow_arrows");
+    check(flow_v2_state.at("arrow_type_name") == "double" &&
+              flow_v2_state.at("flow_arrows_scale") == 250.0 &&
+              flow_v2_state.at("unmapped_suffix").at("bytes") == 0,
+          "version 2 exposes the SDK arrow type and scale semantics");
     return checks;
 }
