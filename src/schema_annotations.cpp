@@ -4,6 +4,26 @@ namespace p3d {
 namespace {
 using EntityKey = std::pair<std::string, std::string>;
 
+std::string schema_key(const std::string &name, const std::string &version) {
+    auto separator = version.find('.');
+    if (separator == std::string::npos || version.find('.', separator + 1) != std::string::npos)
+        return version.empty() ? name : name + "." + version;
+    auto major = version.substr(0, separator);
+    auto minor = version.substr(separator + 1);
+    auto digits = [](const std::string &part) {
+        return !part.empty() && std::all_of(part.begin(), part.end(), [](unsigned char c) {
+                   return c >= '0' && c <= '9';
+               });
+    };
+    if (!digits(major) || !digits(minor))
+        return version.empty() ? name : name + "." + version;
+    if (major.size() < 2)
+        major.insert(major.begin(), '0');
+    if (minor.size() < 2)
+        minor.insert(minor.begin(), '0');
+    return name + "." + major + "." + minor;
+}
+
 std::string local_name(const Json &node) {
     auto tag = node.value("tag", std::string());
     auto end = tag.find('}');
@@ -25,8 +45,11 @@ class SchemaIndex {
             if (name.empty() || !schema.contains("tree"))
                 continue;
             const auto version = attrs.value("version", std::string());
-            const auto key = version.empty() ? name : name + "." + version;
+            const auto key = schema_key(name, version);
             schema_attributes_[key] = attrs;
+            const auto source_namespace = version.empty() ? name : name + "." + version;
+            namespace_aliases_[source_namespace].insert(key);
+            namespace_aliases_[key].insert(key);
             const auto prefix = attrs.value("namespaceprefix", std::string());
             if (!prefix.empty())
                 prefixes_[prefix].insert(key);
@@ -45,14 +68,27 @@ class SchemaIndex {
                 root.value("attributes", Json::object()).value("xmlns", std::string());
             if (xml_namespace.empty())
                 continue;
-            annotate_instance(root, {xml_namespace, root.value("name", std::string())}, 0, {});
+            const auto schema = resolve_schema_namespace(xml_namespace);
+            if (!schema)
+                continue;
+            annotate_instance(root, {*schema, root.value("name", std::string())}, 0, {});
+            if (root.contains("schema_entity"))
+                root["schema_entity"]["instance_namespace"] = xml_namespace;
         }
     }
 
   private:
     std::map<std::string, Json> schema_attributes_;
+    std::map<std::string, std::set<std::string>> namespace_aliases_;
     std::map<std::string, std::set<std::string>> prefixes_;
     std::map<EntityKey, std::vector<EntityDefinition>> entities_;
+
+    std::optional<std::string> resolve_schema_namespace(const std::string &name) const {
+        const auto found = namespace_aliases_.find(name);
+        if (found == namespace_aliases_.end() || found->second.size() != 1)
+            return {};
+        return *found->second.begin();
+    }
 
     void collect(const Json &node, const std::string &schema_key) {
         if (!node.is_object())

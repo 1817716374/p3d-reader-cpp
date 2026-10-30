@@ -24,7 +24,7 @@ unsigned schema_annotation_tests() {
     };
     Json schema_tree = {
         {"tag", "{urn:test}PKPMSchema"},
-        {"attributes", {{"schemaname", "Demo"}, {"version", "01.00"}}},
+        {"attributes", {{"schemaname", "Demo"}, {"version", "1.0"}}},
         {"children",
          Json::array({entity("Base", Json::array({property("PKPMProperty", "inherited", "string")})),
                       entity("Root", Json::array({
@@ -36,7 +36,7 @@ unsigned schema_annotation_tests() {
                       entity("ItemType", Json::array({property("PKPMProperty", "name", "string")}))})}};
     Json schemas = Json::array({{{"schema_attributes", {{"schemaname", "Demo"},
                                                           {"namespaceprefix", "D"},
-                                                          {"version", "01.00"}}},
+                                                          {"version", "1.0"}}},
                                  {"tree", std::move(schema_tree)}}});
     Json objects = Json::array({{{"root",
                                  {{"attributes", {{"xmlns", "Demo.01.00"}}},
@@ -57,8 +57,9 @@ unsigned schema_annotation_tests() {
     annotate_objects_from_schemas(objects, schemas);
     const auto &root = objects[0]["root"];
     check(root["schema_entity"]["entity_name"] == "Root" &&
-              root["schema_entity"]["schema_name"] == "Demo.01.00",
-          "object class matches the exact embedded schema namespace and version");
+              root["schema_entity"]["schema_name"] == "Demo.01.00" &&
+              root["schema_entity"]["instance_namespace"] == "Demo.01.00",
+          "unpadded schema version resolves its padded instance namespace");
     check(root["children"][0]["schema_property"]["propertytype"] == "int" &&
               root["children"][0]["schema_property"]["description"] == "value field",
           "direct property declaration and its description attach without replacing the value");
