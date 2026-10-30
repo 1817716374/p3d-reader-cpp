@@ -221,6 +221,20 @@ Json native_dependency_link(const Bytes &payload) {
         // Never publish a truncated list as a complete dependency list.
         out["entries"] = Json::array();
     }
+    if (out["status"] == "decoded" && out.value("reference_format", 255u) == 0 &&
+        payload.size() >= 4 && (payload.size() + 4) % 8 == 0) {
+        std::size_t tail = payload.size();
+        while (tail && !assigned[tail - 1])
+            --tail;
+        if (payload.size() - tail == 4 &&
+            std::all_of(payload.begin() + tail, payload.end(), [](auto byte) { return byte == 0; })) {
+            std::fill(assigned.begin() + tail, assigned.end(), true);
+            out["linkage_alignment_padding"] = {
+                {"payload_offset", tail},
+                {"byte_count", 4},
+                {"data", rawbytes(slice(payload, tail, 4))}};
+        }
+    }
     Json unassigned = Json::array();
     for (std::size_t i = 0; i < payload.size();) {
         if (assigned[i]) {
