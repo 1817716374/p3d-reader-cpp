@@ -497,6 +497,12 @@ Json decode_terrain(const Json &attributes) {
         require(std::abs(v - hr.f64()) <= 1e-8, "terrain low bounds");
     for (auto v : high)
         require(std::abs(v - hr.f64()) <= 1e-8, "terrain high bounds");
+    std::array<double, 3> extent{};
+    for (unsigned i = 0; i < extent.size(); ++i) {
+        extent[i] = hr.at<double>(56 + i * sizeof(double));
+        require(std::isfinite(extent[i]) && std::abs(extent[i] - (high[i] - low[i])) <= 1e-8,
+                "terrain bounds extent");
+    }
     std::map<unsigned, unsigned> previous, next;
     for (unsigned i = 0; i < vertices.size(); ++i) {
         auto &v = vertices[i];
@@ -616,6 +622,7 @@ Json decode_terrain(const Json &attributes) {
             {"adjacency_entries", adj},
             {"boundary_loops", loops},
             {"bounds", {low, high}},
+            {"bounds_extent", extent},
             {"transform", transform},
             {"header_hex", hex(header)},
             {"header_edge_count", ne},
@@ -632,8 +639,7 @@ Json decode_terrain(const Json &attributes) {
               {"euler_characteristic", static_cast<std::int64_t>(points.size()) -
                                            static_cast<std::int64_t>(mesh_edges.size()) +
                                            static_cast<std::int64_t>(faces.size())}}},
-            {"unresolved_header_spans", Json::array({{{"offset", 56}, {"bytes", 24}},
-                                                     {{"offset", 88}, {"bytes", 16}},
+            {"unresolved_header_spans", Json::array({{{"offset", 88}, {"bytes", 16}},
                                                      {{"offset", 112}, {"bytes", 8}},
                                                      {{"offset", 140}, {"bytes", 176}}})},
             {"note", "Source ring winding retained. Header capacities/flags, vertex sentinels and "
