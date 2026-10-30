@@ -622,6 +622,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
     std::vector<Point3> arc_sweep_profile;
     Point3 arc_sweep_profile_center{};
     bool arc_sweep_has_profile = false;
+    std::vector<std::vector<Point3>> arc_sweep_region_profiles;
+    std::vector<std::vector<std::size_t>> arc_sweep_region_ring_lengths;
     bool in_path = false;
     std::vector<GuidedBoundary> path_native, guide_native;
     std::vector<std::vector<GuidedBoundary>> section_native;
@@ -1284,6 +1286,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     section_tangents.clear();
                     arc_sweep_profile.clear();
                     arc_sweep_has_profile = false;
+                    arc_sweep_region_profiles.clear();
+                    arc_sweep_region_ring_lengths.clear();
                     return;
                 }
                 if (op == 50 || op == 51 || op == 53 || op == 54 || op == 55) {
@@ -1345,6 +1349,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                 arc_sweep_profile_center =
                                     solid_parameters.at("path_center").get<Point3>();
                                 arc_sweep_has_profile = true;
+                                arc_sweep_region_profiles.push_back(arc_sweep_profile);
+                                arc_sweep_region_ring_lengths.push_back(lengths);
                             }
                         }
                         if (stage != 55) {
@@ -1384,18 +1390,26 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 if (op == 19) {
                     require(solid, "solid block underflow");
                     if (solid == 18) {
-                        if (arc_sweep_has_profile && sections.size() == 1) {
-                            const auto rings = section_rings.size() == 1
-                                                   ? section_rings.front()
-                                                   : std::vector<std::size_t>{};
-                            if (rings.size() > 1)
-                                arc_sweep_region(g, solid_parameters, arc_sweep_profile,
-                                                 arc_sweep_profile_center, rings,
-                                                 solid_placement, policy);
-                            else
-                                arc_sweep_ellipse(g, solid_parameters, arc_sweep_profile,
-                                                  arc_sweep_profile_center, solid_placement,
-                                                  policy);
+                        if (sections.size() == arc_sweep_region_profiles.size() &&
+                            !sections.empty() &&
+                            arc_sweep_region_ring_lengths.size() == sections.size()) {
+                            for (std::size_t i = 0; i < sections.size(); ++i) {
+                                const auto &rings = arc_sweep_region_ring_lengths[i];
+                                if (rings.size() > 1)
+                                    arc_sweep_region(g, solid_parameters,
+                                                     arc_sweep_region_profiles[i],
+                                                     solid_parameters.at("path_center").get<Point3>(),
+                                                     rings, solid_placement, policy);
+                                else
+                                    arc_sweep_ellipse(g, solid_parameters,
+                                                      arc_sweep_region_profiles[i],
+                                                      solid_parameters.at("path_center").get<Point3>(),
+                                                      solid_placement, policy);
+                            }
+                        } else if (arc_sweep_has_profile &&
+                                   arc_sweep_region_profiles.empty() && sections.size() == 1) {
+                            arc_sweep_ellipse(g, solid_parameters, arc_sweep_profile,
+                                              arc_sweep_profile_center, solid_placement, policy);
                         } else
                             g.unknown.push_back({{"opcode", 18},
                                                  {"offset", cmd["offset"]},

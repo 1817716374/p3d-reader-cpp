@@ -2333,6 +2333,22 @@ static void arc_sweep_tests() {
               multi_ring_closed && multi_ring.notes.back()["source_ring_count"] == 2,
           "arc sweep reconstructs a capped outer-and-inner region as a closed manifold");
 
+    Bytes second_profile;
+    put_profile(second_profile, {{4., 0., -0.5}, {5., 0., -0.5}, {5., 0., 0.5},
+                                 {4., 0., 0.5}, {4., 0., -0.5}});
+    const auto multiple_regions = reconstruct(
+        Json::array({command(18, multi_ring_sweep), command(21, Bytes{0}),
+                     command(1, multi_ring_outer), command(22, {}),
+                     command(21, Bytes{0}), command(1, second_profile), command(22, {}),
+                     command(19, {})}),
+        Tessellation{});
+    double multiple_regions_max_x = -std::numeric_limits<double>::infinity();
+    for (const auto point : multiple_regions.vertices)
+        multiple_regions_max_x = std::max(multiple_regions_max_x, point[0]);
+    check(multiple_regions.unknown.empty() && multiple_regions.faces.size() > geometry.faces.size() &&
+              multiple_regions_max_x > 7.4,
+          "arc sweep processes multiple independent op21 profiles separately");
+
     Bytes large_path;
     for (double v : {1., 0., 0., 0., 1., 0., 0., 0., 0., 1., 1., 0., 0., 500.,
                      1.0471975511965976})
