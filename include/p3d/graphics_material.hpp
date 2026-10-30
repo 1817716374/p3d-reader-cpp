@@ -27,9 +27,12 @@ struct GraphicsMaterialContext {
 };
 // entries is a caller-supplied sequence, each item containing inline_material
 // (null means absent). Per-part assignments are queried only when an item provides
-// native_part_index and the caller has established its BPGraphicPart ordinal. The
-// SDK's getMaterialByPart indexes the entity's BPGraphicPart sequence, not
-// BPGraphics::Entry order. Without an explicit index, any present per-part
+// native_part_index and the caller has established its mapping to the owning
+// entity's native graphics sequence. An installed SDK call path iterates
+// BPGraphics::getSize() and passes that zero-based Entry ordinal to
+// getMaterialByPart/setMaterialToPart. BPGraphicPart is a separate construction
+// abstraction and its vector ordinal is not interchangeable with a flattened
+// BPGraphics Entry ordinal. Without an explicit index, any present per-part
 // assignment makes that entry's selection unresolved; the array ordinal is never
 // substituted. attributes is the complete selected native attribute collection,
 // in source order, with group/key/index/payload fields.
