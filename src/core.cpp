@@ -637,6 +637,7 @@ Document::Document(const std::filesystem::path &path, Options opt)
         }
     }
     d.schemas = read_schemas(*this);
+    annotate_objects_from_schemas(d.objects, d.schemas);
     d.models = read_models(*this);
     d.materials = read_materials(*this);
     d.layers = build_layer_tables(d.index, d.native, d.graphics, d.models);

@@ -299,6 +299,7 @@ Json material_procedure_nodes(const Json &owner);
 Json material_map_bindings(const Json &maps);
 Json embedded_texture_records(const Json &graphics, const Json &materials);
 Json read_schemas(const Document &);
+void annotate_objects_from_schemas(Json &objects, const Json &schemas);
 Json read_models(const Document &);
 Json decode_model_units(const Bytes &);
 Json decode_model_coordinates(const Bytes &);

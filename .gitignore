@@ -159,6 +159,7 @@
 !/tests/native_model_directory.cpp
 !/tests/reference_extension.cpp
 !/tests/native_application.cpp
+!/tests/schema_annotations.cpp
 !/tests/mesh_normals.cpp
 !/tests/mesh_tessellation.cpp
 !/tests/mesh_buffers.cpp
