@@ -613,6 +613,12 @@ static std::vector<Point3> tangents(unsigned op, const Json &d, const std::vecto
 }
 Geometry reconstruct(const Json &commands, const Tessellation &policy) {
     Geometry g;
+    struct ArcSweepSection {
+        std::vector<Point3> profile;
+        Point3 center{};
+        std::vector<std::size_t> ring_lengths;
+        bool supported = false;
+    };
     Json style = Json::object();
     unsigned solid = 0, stage = 0, path_kind = 0;
     Json solid_offset = 0;
@@ -620,10 +626,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
     Json solid_parameters;
     Matrix4 solid_placement = identity();
     std::vector<Point3> arc_sweep_profile;
-    Point3 arc_sweep_profile_center{};
     bool arc_sweep_has_profile = false;
-    std::vector<std::vector<Point3>> arc_sweep_region_profiles;
-    std::vector<std::vector<std::size_t>> arc_sweep_region_ring_lengths;
+    std::vector<ArcSweepSection> arc_sweep_sections;
     bool in_path = false;
     std::vector<GuidedBoundary> path_native, guide_native;
     std::vector<std::vector<GuidedBoundary>> section_native;
@@ -966,10 +970,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                              curve(op, d, policy, policy.chord_tolerance ? scale_bound(matrix) : 1),
                          points = world(local);
                     if (solid == 18 && op == 7 && !in_path) {
-                        require(!arc_sweep_has_profile,
-                                "arc sweep contains multiple analytic ellipse profiles");
                         arc_sweep_profile = local;
-                        arc_sweep_profile_center = d.at("origin").get<Point3>();
                         arc_sweep_has_profile = true;
                     }
                     if (op == 9 && !solid)
@@ -1017,9 +1018,19 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                             path.insert(path.end(), points.begin() + start, points.end());
                             path_tangents.insert(path_tangents.end(), tan.begin() + start,
                                                  tan.end());
-                        } else if (solid)
+                        } else if (solid) {
                             sections.push_back(points);
-                        else
+                            if (solid == 18) {
+                                ArcSweepSection source;
+                                if (op == 7) {
+                                    source.profile = local;
+                                    source.center = d.at("origin").get<Point3>();
+                                    source.ring_lengths = {local.size()};
+                                    source.supported = true;
+                                }
+                                arc_sweep_sections.push_back(std::move(source));
+                            }
+                        } else
                             g.lines.push_back(points);
                     }
                     return;
@@ -1286,8 +1297,7 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     section_tangents.clear();
                     arc_sweep_profile.clear();
                     arc_sweep_has_profile = false;
-                    arc_sweep_region_profiles.clear();
-                    arc_sweep_region_ring_lengths.clear();
+                    arc_sweep_sections.clear();
                     return;
                 }
                 if (op == 50 || op == 51 || op == 53 || op == 54 || op == 55) {
@@ -1345,13 +1355,14 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                     1e-10 * std::max({1., norm(first), norm(last)});
                                 ring_start += count;
                             }
-                            if (all_rings_closed && ring_start == path.size()) {
-                                arc_sweep_profile_center =
-                                    solid_parameters.at("path_center").get<Point3>();
+                            ArcSweepSection source;
+                            source.profile = arc_sweep_profile;
+                            source.center = solid_parameters.at("path_center").get<Point3>();
+                            source.ring_lengths = lengths;
+                            source.supported = all_rings_closed && ring_start == path.size();
+                            arc_sweep_sections.push_back(std::move(source));
+                            if (all_rings_closed && ring_start == path.size())
                                 arc_sweep_has_profile = true;
-                                arc_sweep_region_profiles.push_back(arc_sweep_profile);
-                                arc_sweep_region_ring_lengths.push_back(lengths);
-                            }
                         }
                         if (stage != 55) {
                             sections.push_back(path);
@@ -1390,26 +1401,21 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                 if (op == 19) {
                     require(solid, "solid block underflow");
                     if (solid == 18) {
-                        if (sections.size() == arc_sweep_region_profiles.size() &&
-                            !sections.empty() &&
-                            arc_sweep_region_ring_lengths.size() == sections.size()) {
-                            for (std::size_t i = 0; i < sections.size(); ++i) {
-                                const auto &rings = arc_sweep_region_ring_lengths[i];
+                        if (!sections.empty() && arc_sweep_sections.size() == sections.size() &&
+                            std::all_of(arc_sweep_sections.begin(), arc_sweep_sections.end(),
+                                        [](const auto &section) { return section.supported; })) {
+                            for (std::size_t i = 0; i < arc_sweep_sections.size(); ++i) {
+                                const auto &source = arc_sweep_sections[i];
+                                const auto &rings = source.ring_lengths;
                                 if (rings.size() > 1)
                                     arc_sweep_region(g, solid_parameters,
-                                                     arc_sweep_region_profiles[i],
-                                                     solid_parameters.at("path_center").get<Point3>(),
+                                                     source.profile, source.center,
                                                      rings, solid_placement, policy);
                                 else
                                     arc_sweep_ellipse(g, solid_parameters,
-                                                      arc_sweep_region_profiles[i],
-                                                      solid_parameters.at("path_center").get<Point3>(),
+                                                      source.profile, source.center,
                                                       solid_placement, policy);
                             }
-                        } else if (arc_sweep_has_profile &&
-                                   arc_sweep_region_profiles.empty() && sections.size() == 1) {
-                            arc_sweep_ellipse(g, solid_parameters, arc_sweep_profile,
-                                              arc_sweep_profile_center, solid_placement, policy);
                         } else
                             g.unknown.push_back({{"opcode", 18},
                                                  {"offset", cmd["offset"]},

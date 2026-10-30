@@ -2370,6 +2370,26 @@ static void arc_sweep_tests() {
     check(large_sweep.unknown.empty() && !large_sweep.faces.empty() && max_x > 500 &&
               max_y > 400,
           "arc sweep uses the auxiliary trajectory radius while preserving the offset profile");
+
+    auto second_ellipse = ellipse;
+    const double second_ellipse_center = 30.;
+    std::memcpy(second_ellipse.data(), &second_ellipse_center, sizeof(second_ellipse_center));
+    const auto multiple_ellipses = reconstruct(
+        Json::array({command(18, large_path), command(7, ellipse), command(7, second_ellipse),
+                     command(19, {})}),
+        Tessellation{});
+    check(multiple_ellipses.unknown.empty() &&
+              multiple_ellipses.faces.size() == 2 * large_sweep.faces.size(),
+          "arc sweep reconstructs multiple analytic ellipse profiles independently");
+
+    const auto mixed_profiles = reconstruct(
+        Json::array({command(18, multi_ring_sweep), command(21, Bytes{0}),
+                     command(1, multi_ring_outer), command(22, {}), command(7, ellipse),
+                     command(19, {})}),
+        Tessellation{});
+    check(mixed_profiles.unknown.empty() &&
+              mixed_profiles.faces.size() > large_sweep.faces.size(),
+          "arc sweep reconstructs ellipse and closed-region profiles in source order");
 }
 static void quadratic_bspline_tests() {
     Bytes body = {0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0, 0, 3,
