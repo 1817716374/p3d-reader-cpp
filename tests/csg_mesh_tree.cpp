@@ -1,5 +1,6 @@
 #include <p3d/csg_mesh_tree.hpp>
 #include "geometry.hpp"
+#include "internal.hpp"
 
 namespace {
 using namespace p3d;
@@ -339,5 +340,49 @@ unsigned csg_mesh_tree_tests() {
     outer["geometries"][0] = nested_entry(empty_child);
     automatic = evaluate_csg_polyface_archive(outer);
     validate(automatic.result, {}, {});
+
+    auto attributed_archive = archive({node(4, {0})}, 1);
+    attributed_archive["geometries"][0] = {
+        {"status", "decoded"},
+        {"encoding", "bgfb"},
+        {"geometry",
+         {{"geometry",
+           {{"_type", "Polyface"},
+            {"meshStyle", 1},
+            {"numPerFace", 0},
+            {"point", {0., 0., 0., 2., 0., 0., 0., 2., 0.}},
+            {"pointIndex", {1, 2, 3, 0}},
+            {"normal", {0., 0., 2.}},
+            {"normalIndex", {1, 1, 1, 0}},
+            {"param", {0., 0., 1., 0., 0., 1.}},
+            {"paramIndex", {1, 2, 3, 0}},
+            {"intColor", {0x112233u}},
+            {"colorIndex", {1, 1, 1, 0}}}}}}};
+    const Json command = {{"op", 58},
+                          {"offset", 11},
+                          {"body", rawbytes(Bytes{})},
+                          {"decoded", attributed_archive}};
+    const auto scene_geometry = reconstruct(Json::array({command}), Tessellation{});
+    check(scene_geometry.unknown.empty() && scene_geometry.faces.size() == 1 &&
+              scene_geometry.face_uvs.size() == 1 && scene_geometry.face_uvs[0] &&
+              scene_geometry.face_uvs[0]->at(0) == Point2{0, 0} &&
+              scene_geometry.face_uvs[0]->at(1) == Point2{1, 0} &&
+              scene_geometry.face_uvs[0]->at(2) == Point2{0, 1},
+          "scene CSG reconstruction transfers source UVs to output face corners");
+    check(scene_geometry.normals.size() == 3 && scene_geometry.face_normal_indices.size() == 1 &&
+              scene_geometry.face_normal_indices[0] == std::optional<Triangle>(Triangle{0, 1, 2}) &&
+              scene_geometry.normals[0] == std::optional<Point3>(Point3{0, 0, 2}) &&
+              scene_geometry.normals[1] == std::optional<Point3>(Point3{0, 0, 2}) &&
+              scene_geometry.normals[2] == std::optional<Point3>(Point3{0, 0, 2}),
+          "scene CSG reconstruction transfers and indexes source corner normals");
+    const auto &source_mapping =
+        scene_geometry.primitive_ranges.at(0).at("source_face_mappings").at(0);
+    check(source_mapping.at("source_polygon_index") == 0 &&
+              source_mapping.at("source_face_corner_positions") == Json({0, 1, 2}) &&
+              source_mapping.at("source_color_bindings").at("integer_color_indices") ==
+                  Json({0, 0, 0}) &&
+              source_mapping.at("derived_uv_status") == "derived" &&
+              source_mapping.at("derived_normal_status") == "derived",
+          "scene CSG face mapping keeps source polygon, corners and color-pool links");
     return checks;
 }

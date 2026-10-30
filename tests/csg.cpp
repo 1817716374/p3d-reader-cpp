@@ -302,10 +302,10 @@ unsigned csg_tests() {
     const auto geometry = reconstruct(
         Json::array({{{"op", 58}, {"offset", 9}, {"body", rawbytes(b)}, {"decoded", j}}}),
         Tessellation{});
-    check(geometry.vertices.empty() && geometry.faces.empty() && geometry.unknown.size() == 1 &&
-              geometry.unknown[0]["csg"]["tree"]["nodes"].size() == 1 &&
-              geometry.unknown[0].contains("placement_matrix") &&
-              geometry.unknown[0].contains("style"),
-          "CSG reconstruction preserves source and placement without promoting operands to mesh");
+    check(geometry.vertices.empty() && geometry.faces.empty() && geometry.unknown.empty() &&
+              geometry.notes.size() == 1 &&
+              geometry.notes[0]["evaluation_status"] == "evaluated" &&
+              geometry.notes[0]["mesh_count"] == 0,
+          "empty CSG root evaluates to an empty scene without promoting unused operands");
     return checks;
 }
