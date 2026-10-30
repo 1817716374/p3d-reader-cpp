@@ -803,7 +803,7 @@ NativeScene build_native_scene(const Document &doc, const Tessellation &policy, 
                                    {"source", row["source"]},
                                    {"part_index", row["part_index"]},
                                    {"part_index_basis",
-                                    "zero_based_native_entity_graphics_entry_order"},
+                                    "native_entity_graphics_part_index"},
                                    {"face_mapping_status", "entry_level_only"},
                                    {"material_name_relation",
                                     exact_material_name_relation(row["material_name"])}};
