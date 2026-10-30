@@ -589,10 +589,14 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                              {"style", style}});
                         return;
                     }
-                    const bool mirror = determinant(matrix) < 0;
+                    const bool mirror = reverses_winding(matrix);
                     struct PreparedCsgMesh {
                         std::vector<Point3> points;
                         std::vector<Triangle> faces;
+                        std::vector<std::optional<std::array<Point2, 3>>> face_uvs;
+                        std::vector<std::optional<Triangle>> face_normal_indices;
+                        std::vector<Point3> source_normals;
+                        std::vector<std::optional<Point3>> normals;
                         Json source_faces = Json::array();
                     };
                     std::vector<PreparedCsgMesh> prepared;
@@ -611,6 +615,8 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                         if (mirror)
                             for (auto &face : output.faces)
                                 std::swap(face[1], face[2]);
+                        output.face_uvs.reserve(mesh.face_sources.size());
+                        output.face_normal_indices.reserve(mesh.face_sources.size());
                         for (const auto &face : output.faces)
                             for (const auto index : face)
                                 require(index < output.points.size(),
@@ -621,19 +627,175 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                                 "CSG output vertex index capacity");
                         total_points += output.points.size();
 
-                        for (const auto &source : mesh.face_sources) {
+                        for (std::size_t source_face_index = 0;
+                             source_face_index < mesh.face_sources.size(); ++source_face_index) {
+                            const auto &source = mesh.face_sources[source_face_index];
                             const bool solid = source.source_kind == CsgSourceKind::solid;
+                            const Geometry *source_geometry = nullptr;
+                            if (source.solid_snapshot) {
+                                require(*source.solid_snapshot < evaluated.solid_snapshots.size(),
+                                        "CSG source solid snapshot index");
+                                source_geometry = &evaluated.solid_snapshots
+                                                       .at(*source.solid_snapshot)
+                                                       .mesh.derived.geometry;
+                            } else if (solid) {
+                                source_geometry = &evaluated.solid_sources
+                                                       .at(source.geometry_index)
+                                                       .derived.geometry;
+                            } else {
+                                source_geometry = &evaluated.sources.at(source.geometry_index).geometry;
+                            }
+                            const auto &source_face =
+                                source_geometry->faces.at(source.face_index);
+                            const auto &barycentric = source.corner_barycentric;
+                            auto ordered_barycentric = barycentric;
+                            if (mirror) {
+                                std::swap(ordered_barycentric[1], ordered_barycentric[2]);
+                            }
+                            std::array<double, 3> ordered_projection_distance{};
+                            const auto source_to_geometry =
+                                multiply(matrix, source.source_to_result);
+                            const auto &output_face = output.faces.at(source_face_index);
+                            for (unsigned corner = 0; corner < 3; ++corner) {
+                                Point3 source_point{};
+                                for (unsigned j = 0; j < 3; ++j)
+                                    for (unsigned axis = 0; axis < 3; ++axis)
+                                        source_point[axis] +=
+                                            ordered_barycentric[corner][j] *
+                                            source_geometry->vertices.at(source_face[j])[axis];
+                                source_point = transform(source_to_geometry, source_point);
+                                const auto &result_point = output.points.at(output_face[corner]);
+                                ordered_projection_distance[corner] =
+                                    std::hypot(source_point[0] - result_point[0],
+                                               source_point[1] - result_point[1],
+                                               source_point[2] - result_point[2]);
+                                require(std::isfinite(ordered_projection_distance[corner]),
+                                        "CSG source projection transform overflow");
+                            }
+                            std::optional<std::array<Point2, 3>> derived_uv;
+                            const char *uv_status = "not_present";
+                            if (source.face_index < source_geometry->face_uvs.size() &&
+                                source_geometry->face_uvs[source.face_index]) {
+                                const auto &source_uv =
+                                    *source_geometry->face_uvs[source.face_index];
+                                std::array<Point2, 3> values{};
+                                for (unsigned corner = 0; corner < 3; ++corner)
+                                    for (unsigned j = 0; j < 3; ++j)
+                                        for (unsigned axis = 0; axis < 2; ++axis)
+                                            values[corner][axis] +=
+                                                ordered_barycentric[corner][j] * source_uv[j][axis];
+                                bool finite_uv = true;
+                                for (const auto &uv : values)
+                                    for (double value : uv)
+                                        finite_uv &= std::isfinite(value);
+                                if (finite_uv) {
+                                    derived_uv = values;
+                                    uv_status = "derived";
+                                } else
+                                    uv_status = "invalid_source_value_or_interpolation";
+                            }
+                            output.face_uvs.push_back(derived_uv);
+
+                            std::optional<Triangle> derived_normal_indices;
+                            std::array<std::optional<Point3>, 3> derived_normals{};
+                            const char *normal_status = "not_present";
+                            if (source.face_index < source_geometry->face_normal_indices.size() &&
+                                source_geometry->face_normal_indices[source.face_index]) {
+                                normal_status = "invalid_source_value_or_transform";
+                                const auto &normal_indices =
+                                    *source_geometry->face_normal_indices[source.face_index];
+                                std::array<Point3, 3> source_values{};
+                                bool have_all_normals = true;
+                                for (unsigned j = 0; j < 3; ++j) {
+                                    const auto index = normal_indices[j];
+                                    if (index >= source_geometry->normals.size() ||
+                                        !source_geometry->normals[index]) {
+                                        have_all_normals = false;
+                                        break;
+                                    }
+                                    source_values[j] = *source_geometry->normals[index];
+                                }
+                                if (have_all_normals) {
+                                    Geometry transformed;
+                                    std::array<Point3, 3> values{};
+                                    for (unsigned corner = 0; corner < 3; ++corner)
+                                        for (unsigned j = 0; j < 3; ++j)
+                                            for (unsigned axis = 0; axis < 3; ++axis)
+                                                values[corner][axis] +=
+                                                    ordered_barycentric[corner][j] *
+                                                    source_values[j][axis];
+                                    for (const auto &value : values)
+                                        transformed.normals.push_back(value);
+                                    transform_normals(
+                                        transformed, multiply(matrix, source.source_to_result));
+                                    bool valid_normals = true;
+                                    for (unsigned corner = 0; corner < 3; ++corner) {
+                                        if (!transformed.normals[corner]) {
+                                            valid_normals = false;
+                                            break;
+                                        }
+                                        auto value = *transformed.normals[corner];
+                                        if (source.backside)
+                                            value = scale(value, -1);
+                                        derived_normals[corner] = value;
+                                    }
+                                    if (valid_normals) {
+                                        const auto base = output.normals.size();
+                                        require(base <= UINT32_MAX - 3,
+                                                "CSG output normal index capacity");
+                                        Triangle indices{};
+                                        for (unsigned corner = 0; corner < 3; ++corner) {
+                                            indices[corner] = static_cast<std::uint32_t>(base + corner);
+                                            output.source_normals.push_back(values[corner]);
+                                            output.normals.push_back(derived_normals[corner]);
+                                        }
+                                        derived_normal_indices = indices;
+                                        normal_status = "derived";
+                                    }
+                                }
+                            }
+                            output.face_normal_indices.push_back(derived_normal_indices);
+
                             Json item = {{"geometry_index", source.geometry_index},
                                          {"face_index", source.face_index},
                                          {"source_kind", solid ? "solid" : "polyface"},
-                                         {"source_to_geometry", multiply(
-                                                                      matrix,
-                                                                      source.source_to_result)},
+                                         {"source_to_geometry", source_to_geometry},
                                          {"boolean_backside", source.backside},
                                          {"placement_reverses_winding", mirror},
-                                         {"corner_barycentric", source.corner_barycentric},
+                                         {"source_triangle_vertex_indices", source_face},
+                                         {"corner_barycentric", ordered_barycentric},
                                          {"corner_projection_distance",
-                                          source.corner_projection_distance}};
+                                          ordered_projection_distance},
+                                         {"derived_corner_uvs", derived_uv ? Json(*derived_uv)
+                                                                          : Json()},
+                                         {"derived_corner_normals", derived_normals},
+                                         {"derived_uv_status", uv_status},
+                                         {"derived_normal_status", normal_status}};
+                            if (source.face_index < source_geometry->face_source_polygons.size() &&
+                                source_geometry->face_source_polygons[source.face_index])
+                                item["source_polygon_index"] =
+                                    *source_geometry->face_source_polygons[source.face_index];
+                            if (!solid) {
+                                const auto &polyface =
+                                    evaluated.sources.at(source.geometry_index);
+                                if (source.face_index < polyface.face_source_corners.size())
+                                    item["source_face_corner_positions"] =
+                                        polyface.face_source_corners[source.face_index];
+                                Json color_bindings = Json::object();
+                                if (source.face_index <
+                                    polyface.face_double_color_indices.size())
+                                    color_bindings["double_color_indices"] =
+                                        polyface.face_double_color_indices[source.face_index];
+                                if (source.face_index < polyface.face_int_color_indices.size())
+                                    color_bindings["integer_color_indices"] =
+                                        polyface.face_int_color_indices[source.face_index];
+                                if (source.face_index <
+                                    polyface.face_color_table_indices.size())
+                                    color_bindings["color_table_indices"] =
+                                        polyface.face_color_table_indices[source.face_index];
+                                if (!color_bindings.empty())
+                                    item["source_color_bindings"] = std::move(color_bindings);
+                            }
                             if (source.solid_snapshot) {
                                 item["solid_snapshot"] = *source.solid_snapshot;
                                 require(*source.solid_snapshot <
@@ -658,7 +820,28 @@ Geometry reconstruct(const Json &commands, const Tessellation &policy) {
                     for (std::size_t mesh_index = 0; mesh_index < prepared.size(); ++mesh_index) {
                         const auto &output = prepared[mesh_index];
                         const auto first_face = g.faces.size();
-                        append(g, output.points, output.faces);
+                        require(g.normals.size() == g.source_normals.size(),
+                                "CSG target normal pool mismatch");
+                        const auto normal_base = g.normals.size();
+                        require(output.normals.size() <= UINT32_MAX - normal_base,
+                                "CSG target normal index capacity");
+                        g.source_normals.insert(g.source_normals.end(),
+                                                output.source_normals.begin(),
+                                                output.source_normals.end());
+                        g.normals.insert(g.normals.end(), output.normals.begin(),
+                                         output.normals.end());
+                        append(g, output.points, output.faces, &output.face_uvs);
+                        require(output.face_normal_indices.size() == output.faces.size() &&
+                                    g.face_normal_indices.size() == first_face + output.faces.size(),
+                                "CSG target face normal index count");
+                        for (std::size_t face_index = 0;
+                             face_index < output.face_normal_indices.size(); ++face_index) {
+                            auto indices = output.face_normal_indices[face_index];
+                            if (indices)
+                                for (auto &index : *indices)
+                                    index += static_cast<std::uint32_t>(normal_base);
+                            g.face_normal_indices[first_face + face_index] = indices;
+                        }
                         g.primitive_ranges.push_back(
                             {{"channel", "faces"},
                              {"start", first_face},
