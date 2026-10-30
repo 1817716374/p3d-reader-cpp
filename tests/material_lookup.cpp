@@ -143,7 +143,7 @@ unsigned material_lookup_tests() {
         payload.push_back(std::uint8_t(unit >> 8));
     }
     auto resolved = resolve_rebuilt_graphics_materials(
-        Json::array({{{"inline_material", nullptr}}}),
+        Json::array({{{"native_part_index", 0}, {"inline_material", nullptr}}}),
         Json::array({{{"group", 2}, {"key", 10001}, {"index", 0}, {"payload", rawbytes(payload)}}}),
         graphics);
     check(resolved.at("status") == "resolved" &&

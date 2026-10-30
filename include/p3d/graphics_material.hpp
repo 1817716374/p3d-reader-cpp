@@ -26,12 +26,13 @@ struct GraphicsMaterialContext {
     std::function<GraphicsMaterialResult(const Json &)> load_inline_material;
 };
 // entries is a caller-supplied sequence, each item containing inline_material
-// (null means absent). An item may provide native_part_index when the caller has
-// established its BPGraphicPart ordinal; otherwise the array ordinal is used as
-// an unverified candidate index. The SDK's getMaterialByPart indexes the entity's
-// BPGraphicPart sequence, not BPGraphics::Entry order. attributes is the complete
-// selected native attribute collection, in source order, with
-// group/key/index/payload fields.
+// (null means absent). Per-part assignments are queried only when an item provides
+// native_part_index and the caller has established its BPGraphicPart ordinal. The
+// SDK's getMaterialByPart indexes the entity's BPGraphicPart sequence, not
+// BPGraphics::Entry order. Without an explicit index, any present per-part
+// assignment makes that entry's selection unresolved; the array ordinal is never
+// substituted. attributes is the complete selected native attribute collection,
+// in source order, with group/key/index/payload fields.
 // Models material selection before the ordinary draw context resolves symbology.
 // Its symbology state is embedded in the context; it is not an optional per-entry
 // builder. This neither reconstructs Entry order nor maps triangles to parts.

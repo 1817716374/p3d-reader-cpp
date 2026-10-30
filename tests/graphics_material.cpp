@@ -22,9 +22,12 @@ unsigned graphics_material_tests() {
         }
         return b;
     };
-    const Json entries = {{{"geometry_type", 0}, {"inline_material", {{"id", 7}}}},
-                          {{"geometry_type", 6}, {"inline_material", {{"id", 8}}}},
-                          {{"geometry_type", 3}, {"inline_material", nullptr}}};
+    const Json entries = {{{"geometry_type", 0}, {"native_part_index", 0},
+                           {"inline_material", {{"id", 7}}}},
+                          {{"geometry_type", 6}, {"native_part_index", 1},
+                           {"inline_material", {{"id", 8}}}},
+                          {{"geometry_type", 3}, {"native_part_index", 2},
+                           {"inline_material", nullptr}}};
     Json attributes = Json::array(
         {attribute(4, 1, narrow(R"({"0":"A","1":"Missing"})")), attribute(2, 1, wide(u"Legacy"))});
     GraphicsMaterialContext c;
@@ -61,6 +64,30 @@ unsigned graphics_material_tests() {
               calls[2].second == GraphicsMaterialNameQuery::legacy_part,
           "advanced and legacy searches retain distinct native scope and update mode");
     check(inline_calls == 0, "higher priority hit does not convert inline materials");
+
+    auto unmapped_entries = entries;
+    for (auto &entry : unmapped_entries)
+        entry.erase("native_part_index");
+    calls.clear();
+    result = resolve_rebuilt_graphics_materials(unmapped_entries, attributes, c);
+    check(result.at("status") == "unresolved" && calls.empty() &&
+              result.at("native_part_index_mapping") == "not_established",
+          "BPGraphics entry order is not substituted for the BPGraphicPart index domain");
+    for (const auto &entry : result.at("entries"))
+        check(entry.at("status") == "unresolved" && entry.at("part_index").is_null() &&
+                  entry.at("lookups").back().at("reason") ==
+                      "native_part_index_mapping_unavailable",
+              "part assignment stays unresolved until the caller supplies its native part index");
+    result = resolve_rebuilt_graphics_materials(unmapped_entries, Json::array(), c);
+    check(result.at("status") == "resolved" && result.at("entries")[0].at("material_index") == 2,
+          "entity material remains usable when no per-part assignment exists");
+    c.native_entity_material = {true, {}};
+    result = resolve_rebuilt_graphics_materials(unmapped_entries, Json::array(), c);
+    check(result.at("entries")[0].at("material_index") == 7 &&
+              result.at("entries")[1].at("material_index") == 8 &&
+              result.at("entries")[2].at("status") == "unassigned",
+          "entry-local inline material remains usable without inventing a part index");
+    c.native_entity_material = {true, 2};
 
     c.native_entity_material = {true, {}};
     result = resolve_rebuilt_graphics_materials(entries, Json::array(), c);

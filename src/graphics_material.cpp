@@ -36,13 +36,9 @@ std::u16string utf8_name(std::string text) {
     require(codec.converted() == text.size(), "material_name_utf8_conversion_incomplete");
     return out;
 }
-std::uint32_t candidate_part_index(const Json &entry, std::size_t ordinal,
-                                   bool &explicit_mapping) {
-    explicit_mapping = entry.is_object() && entry.contains("native_part_index");
-    if (!explicit_mapping) {
-        require(ordinal <= std::size_t(INT32_MAX), "rebuilt_part_index_exceeds_signed_int");
-        return static_cast<std::uint32_t>(ordinal);
-    }
+std::optional<std::uint32_t> explicit_part_index(const Json &entry) {
+    if (!entry.is_object() || !entry.contains("native_part_index"))
+        return std::nullopt;
     const auto &value = entry.at("native_part_index");
     std::uint64_t index = 0;
     if (value.is_number_unsigned())
@@ -93,21 +89,18 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                 {"scope", "rebuilt_graphics_material_selection"},
                 {"selection_phase", "before_symbology_resolution"},
                 {"draw_material_status", "not_evaluated"},
-                {"part_index_basis", "caller_supplied_per_entry_index_or_sequence_ordinal"},
+                {"part_index_basis", "caller_supplied_native_part_index_only"},
                 {"native_part_index_mapping", "not_established"},
                 {"geometry_mapping_status", "caller_supplied_rebuilt_entry_sequence"},
                 {"entries", Json::array()}};
     try {
         require(entries.is_array() && attributes.is_array(), "material_inputs_must_be_arrays");
-        require(entries.size() <= std::size_t(INT32_MAX) + 1,
-                "rebuilt_part_index_exceeds_signed_int");
-        std::vector<std::uint32_t> part_indices;
+        std::vector<std::optional<std::uint32_t>> part_indices;
         std::size_t explicit_mappings = 0;
         part_indices.reserve(entries.size());
         for (std::size_t i = 0; i < entries.size(); ++i) {
-            bool explicit_mapping = false;
-            part_indices.push_back(candidate_part_index(entries[i], i, explicit_mapping));
-            explicit_mappings += explicit_mapping ? 1 : 0;
+            part_indices.push_back(explicit_part_index(entries[i]));
+            explicit_mappings += part_indices.back().has_value() ? 1 : 0;
         }
         out["native_part_index_mapping"] =
             !entries.empty() && explicit_mappings == entries.size()
@@ -191,15 +184,21 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
             }
         }
         out["part_name_table"] = part_table;
+        const bool has_legacy_part_assignments = std::any_of(
+            selected.begin(), selected.end(),
+            [](const auto &entry) { return entry.first.first == 2; });
+        const bool has_advanced_part_assignments = part_names.is_object() && !part_names.empty();
+        const bool has_part_assignments = has_legacy_part_assignments ||
+                                          has_advanced_part_assignments ||
+                                          part_table.value("status", std::string{}) == "unresolved";
         bool complete = true;
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const auto part_index = part_indices[i];
-            const bool explicit_mapping = entries[i].is_object() &&
-                                          entries[i].contains("native_part_index");
+            const bool explicit_mapping = part_index.has_value();
             Json item = {{"entry_index", i},
-                         {"part_index", part_index},
+                         {"part_index", part_index ? Json(*part_index) : Json()},
                          {"part_index_source", explicit_mapping ? "caller_native_part_index"
-                                                                 : "input_sequence_ordinal_candidate"},
+                                                                 : "unavailable"},
                          {"lookups", Json::array()}};
             auto apply = [&](Json step, const char *source) {
                 step["source"] = source;
@@ -216,21 +215,38 @@ Json resolve_rebuilt_graphics_materials(const Json &entries, const Json &attribu
                     complete = false;
                 return true;
             };
+            if (!part_index && has_part_assignments) {
+                item["lookups"].push_back(
+                    {{"status", "unresolved"},
+                     {"reason", "native_part_index_mapping_unavailable"},
+                     {"source", "part_assignment"}});
+                item.update({{"status", "unresolved"},
+                             {"selected_material_pointer", "unknown"},
+                             {"source", "part_assignment"}});
+                complete = false;
+                out["entries"].push_back(std::move(item));
+                continue;
+            }
             Json advanced = {{"status", "not_found"}};
             try {
-                require(part_table.at("status") != "unresolved", "part_name_table_unresolved");
-                auto name = part_names.find(std::to_string(part_index));
-                if (part_names.is_object() && name != part_names.end()) {
-                    advanced = name_lookup(utf8_name(detail::material_json_name(*name)),
-                                           GraphicsMaterialNameQuery::advanced_part);
+                if (part_index) {
+                    require(part_table.at("status") != "unresolved", "part_name_table_unresolved");
+                    if (part_names.is_object()) {
+                        auto name = part_names.find(std::to_string(*part_index));
+                        if (name != part_names.end())
+                            advanced = name_lookup(utf8_name(detail::material_json_name(*name)),
+                                                   GraphicsMaterialNameQuery::advanced_part);
+                    }
                 }
             } catch (const std::exception &e) {
                 advanced = {{"status", "unresolved"}, {"reason", e.what()}};
             }
+            const auto legacy = part_index
+                                    ? wide_lookup(2, *part_index,
+                                                  GraphicsMaterialNameQuery::legacy_part)
+                                    : Json{{"status", "not_found"}};
             if (!apply(advanced, "advanced_part_name") &&
-                !apply(wide_lookup(2, part_index,
-                                   GraphicsMaterialNameQuery::legacy_part),
-                       "legacy_part_name") &&
+                !apply(legacy, "legacy_part_name") &&
                 !apply(element, "entity_material")) {
                 Json inline_result;
                 try {
