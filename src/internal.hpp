@@ -226,7 +226,7 @@ Json parse_relationships(const Bytes &);
 Json build_object_graph(const Document &);
 Json build_native_display_catalog(const Json &object_graph, const Json &layer_tables,
                                  const Json &native_records, const Json &models);
-Json build_native_view_condition_catalog(const Json &graphics_records);
+Json build_native_view_condition_catalog(const Json &graphics_records, const Json &models);
 Json build_graph_records(const Json &, const Json &, const Json &, const std::set<std::uint64_t> &,
                          const std::set<std::string> &);
 Json build_scene(const Document &, unsigned);

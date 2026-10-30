@@ -553,9 +553,51 @@ Json parse_condition_set(const Json &tree) {
             {"source_tree", tree}};
 }
 
+Json condition_view_binding(const Json &name, const Json &models) {
+    if (!name.is_string())
+        return {{"status", "condition_set_name_unavailable"}};
+    const auto text = name.get<std::string>();
+    constexpr std::string_view prefix = "bimbase_conditionset_";
+    if (text.rfind(prefix, 0) != 0)
+        return {{"status", "unrecognized_condition_set_name"}, {"source_name", name}};
+    const auto separator = text.find("_view", prefix.size());
+    if (separator == std::string::npos || separator == prefix.size() ||
+        separator + 5 == text.size())
+        return {{"status", "unrecognized_condition_set_name"}, {"source_name", name}};
+    std::uint64_t model_id = 0;
+    unsigned view_index = 0;
+    const auto model_text = std::string_view(text).substr(prefix.size(), separator - prefix.size());
+    const auto view_text = std::string_view(text).substr(separator + 5);
+    const auto model_parse = std::from_chars(model_text.data(), model_text.data() + model_text.size(),
+                                             model_id);
+    const auto view_parse = std::from_chars(view_text.data(), view_text.data() + view_text.size(),
+                                            view_index);
+    if (model_parse.ec != std::errc{} || model_parse.ptr != model_text.data() + model_text.size() ||
+        view_parse.ec != std::errc{} || view_parse.ptr != view_text.data() + view_text.size())
+        return {{"status", "unrecognized_condition_set_name"}, {"source_name", name}};
+
+    const auto key = std::to_string(model_id);
+    const Json *model = models.is_object() && models.contains(key) ? &models[key] : nullptr;
+    Json reference = {{"status", model ? "resolved" : "missing"},
+                      {"match", "exact_decimal_model_id"}, {"model_id", model_id}};
+    if (model) {
+        reference["name"] = model->value("name", Json());
+        reference["physical_storage"] = model->value("physical_storage", Json());
+    }
+    // SDK BPShowConditionSet is created for a modelId and nViewNum. The
+    // persisted name exposes matching numeric components, but does not prove
+    // that the referenced model/view is active in the current file context.
+    return {{"status", "candidate_model_view"},
+            {"match", "condition_set_name_model_id_and_view_number"},
+            {"source_name", name},
+            {"model_id", model_id},
+            {"view_index", view_index},
+            {"model_reference", std::move(reference)}};
+}
+
 } // namespace
 
-Json build_native_view_condition_catalog(const Json &graphics_records) {
+Json build_native_view_condition_catalog(const Json &graphics_records, const Json &models) {
     Json records = Json::array();
     if (!graphics_records.is_array())
         return {{"status", "graphics_records_unavailable"}, {"records", std::move(records)}};
@@ -584,6 +626,7 @@ Json build_native_view_condition_catalog(const Json &graphics_records) {
             } else {
                 record["status"] = "decoded";
                 record.update(parse_condition_set(tree));
+                record["view_binding"] = condition_view_binding(record["condition_set_name"], models);
             }
             records.push_back(std::move(record));
         }

@@ -673,7 +673,7 @@ Json Document::native_display_catalog() const {
     return build_native_display_catalog(object_graph(), layer_tables(), native_records(), models());
 }
 Json Document::native_view_condition_catalog() const {
-    return build_native_view_condition_catalog(graphics_records());
+    return build_native_view_condition_catalog(graphics_records(), models());
 }
 Json Document::scene(unsigned n) const {
     return build_scene(*this, n);
