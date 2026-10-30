@@ -1046,6 +1046,12 @@ Json decode_sesm_gams_member_data(std::uint32_t type_code, const Bytes &b) {
             prefix.push_back(r.u32());
         Json out = {{"prefix_u32_values", std::move(prefix)},
                     {"semantic_status", "unresolved"}};
+        if (type_code == 1006 && out["prefix_u32_values"][0].get<std::uint32_t>() < 1) {
+            out["native_layout_enabled"] = false;
+            out["unparsed_suffix"] = rawbytes(r.take(r.left()));
+            out["status"] = "native_layout_not_applied";
+            return out;
+        }
         if (type_code == 1001) {
             require(r.left() >= 4, "SESM type 1001 value");
             const auto source = r.u32();
@@ -1057,46 +1063,58 @@ Json decode_sesm_gams_member_data(std::uint32_t type_code, const Bytes &b) {
             // a virtual callback. The callback reads the exact sequence below;
             // domain meanings of its scalar/array fields remain unknown.
             out["native_reader_prefix"] = {
-                {"first_u32", prefix[0]},
-                {"second_u32", prefix[1]},
+                {"first_u32", out["prefix_u32_values"][0]},
+                {"second_u32", out["prefix_u32_values"][1]},
                 {"skipped_bytes_8_to_15", rawbytes(slice(b, 8, 8))}};
             out["callback_input_offset"] = 16;
             out["callback_input"] = rawbytes(slice(b, 16, b.size() - 16));
-            Reader callback(b, 16);
-            require(callback.left() >= 31, "SESM type 1002 callback header");
-            out["callback_flag"] = callback.u8() != 0;
-            Json values = Json::array();
-            for (int i = 0; i < 3; ++i)
-                values.push_back(callback.f64());
-            out["callback_f64_values"] = std::move(values);
-            Json words = Json::array();
-            for (int i = 0; i < 3; ++i)
-                words.push_back(callback.u16());
-            const auto source_count = words[2].get<std::uint16_t>();
-            const auto native_count = std::min<std::uint16_t>(source_count, 8);
-            out["callback_u16_values"] = std::move(words);
-            out["callback_source_array_count"] = source_count;
-            out["callback_native_array_count"] = native_count;
-            require(native_count <= callback.left() / 11,
-                    "SESM type 1002 callback arrays");
-            Json triplets = Json::array();
-            for (std::uint16_t i = 0; i < native_count; ++i) {
-                Json entry = Json::array();
-                for (int k = 0; k < 3; ++k)
-                    entry.push_back(callback.u8());
-                triplets.push_back(std::move(entry));
+            if (out["prefix_u32_values"][0].get<std::uint32_t>() < 4) {
+                // The native callback returns without consuming its body for
+                // these prefix values. Preserve the body without applying the
+                // version-4 field layout.
+                out["callback_layout_enabled"] = false;
+                out["callback_consumed_bytes"] = 0;
+                out["callback_unparsed_suffix"] = out["callback_input"];
+            } else {
+                out["callback_layout_enabled"] = true;
+                Reader callback(b, 16);
+                require(callback.left() >= 31, "SESM type 1002 callback header");
+                out["callback_flag"] = callback.u8() != 0;
+                Json values = Json::array();
+                for (int i = 0; i < 3; ++i)
+                    values.push_back(callback.f64());
+                out["callback_f64_values"] = std::move(values);
+                Json words = Json::array();
+                for (int i = 0; i < 3; ++i)
+                    words.push_back(callback.u16());
+                const auto source_count = words[2].get<std::uint16_t>();
+                const auto native_count = std::min<std::uint16_t>(source_count, 8);
+                out["callback_u16_values"] = std::move(words);
+                out["callback_source_array_count"] = source_count;
+                out["callback_native_array_count"] = native_count;
+                require(native_count <= callback.left() / 11,
+                        "SESM type 1002 callback arrays");
+                Json triplets = Json::array();
+                for (std::uint16_t i = 0; i < native_count; ++i) {
+                    Json entry = Json::array();
+                    for (int k = 0; k < 3; ++k)
+                        entry.push_back(callback.u8());
+                    triplets.push_back(std::move(entry));
+                }
+                out["callback_triplet_byte_arrays"] = std::move(triplets);
+                Json values64 = Json::array();
+                for (std::uint16_t i = 0; i < native_count; ++i)
+                    values64.push_back(callback.u64());
+                out["callback_u64_array"] = std::move(values64);
+                out["callback_consumed_bytes"] = callback.p - 16;
+                out["callback_unparsed_suffix"] = rawbytes(callback.take(callback.left()));
+                r.p = callback.p;
             }
-            out["callback_triplet_byte_arrays"] = std::move(triplets);
-            Json values64 = Json::array();
-            for (std::uint16_t i = 0; i < native_count; ++i)
-                values64.push_back(callback.u64());
-            out["callback_u64_array"] = std::move(values64);
-            out["callback_consumed_bytes"] = callback.p - 16;
-            out["callback_unparsed_suffix"] = rawbytes(callback.take(callback.left()));
         } else if (type_code == 1005) {
             require(r.left() >= 8, "SESM type 1005 value");
             out["native_u64_value"] = r.u64();
         } else {
+            out["native_layout_enabled"] = true;
             require(r.left() >= 4, "SESM type 1006 flag");
             const auto flag = r.u32();
             out["source_flag_u32"] = flag;
