@@ -453,23 +453,11 @@ unsigned section_loft_tests() {
               "special fallback controls reach both rational side boundaries without substitution");
     }
     auto periodic_input = source();
-    auto clustered = curve(3, {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0},
-                           {-.5, -.25, 0, 1e-12, .5, .75, 1, 1 + 1e-12, 1.5});
+    auto clustered = curve(3, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                           {-.5, -.25, 0, 1e-12, .5, .75, 1, 1.25, 1.5});
     clustered["closed"] = true;
-    Json cluster_report;
-    const auto cluster_open =
-        loft_detail::open_periodic(BsplineCurve::from_bgfb(clustered), 100, &cluster_report);
-    const auto cluster_src_eval = BsplineCurve::from_bgfb(clustered);
-    const auto cluster_dst_eval = BsplineCurve::from_bgfb(cluster_open.table());
-    check(cluster_open.knots[0] == 0 && cluster_open.knots[1] == 0 &&
-              cluster_open.knots[2] == 0,
-          "near-seam valid periodic knot clusters open to native clamped storage");
-    for (unsigned i = 0; i <= 40; ++i) {
-        const double f = i / 40.;
-        const double source_fraction = std::fmod(f + 1e-12, 1.);
-        check(near(cluster_dst_eval.point_at(f), cluster_src_eval.point_at(source_fraction), 5e-10),
-              "native endpoint saturation preserves a valid periodic near-seam knot cluster");
-    }
+    rejects([&] { loft_detail::open_periodic(BsplineCurve::from_bgfb(clustered), 100); },
+            "distinct near seam knots are not silently collapsed to create a clamped loft curve");
     auto tiny_domain = exterior;
     for (auto &k : tiny_domain["knots"])
         k = k.get<double>() * 1e-11;
