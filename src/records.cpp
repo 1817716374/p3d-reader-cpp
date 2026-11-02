@@ -323,11 +323,33 @@ Json parse_native(const Bytes &b) {
         modification["source_offset"] = 28;
         modification["source_offsets_include_stream_prefix"] = true;
         out.back()["modification_time"] = std::move(modification);
-        if (type == 10)
-            out.back()["record_subtype"] = {
-                {"source_offset", 16},
-                {"value_u32", r.at<std::uint32_t>(pos + 16)},
-                {"semantic_status", "unresolved"}};
+        if (type == 10) {
+            const auto subtype = r.at<std::uint32_t>(pos + 16);
+            Json decoded_subtype = {{"semantic_status", "unresolved"}};
+            switch (subtype) {
+            case 1:
+                decoded_subtype["name"] = "layer_table";
+                break;
+            case 2:
+                decoded_subtype["name"] = "font_table";
+                break;
+            case 7:
+                decoded_subtype["name"] = "line_style_name_table";
+                break;
+            case 8:
+                decoded_subtype["name"] = "line_style_component_table";
+                break;
+            case 18:
+                decoded_subtype["name"] = "material_table";
+                break;
+            default:
+                break;
+            }
+            if (decoded_subtype.contains("name"))
+                decoded_subtype["semantic_status"] = "identified";
+            decoded_subtype.update({{"source_offset", 16}, {"value_u32", subtype}});
+            out.back()["record_subtype"] = std::move(decoded_subtype);
+        }
         if (type == 47 && attr - pos >= 38 && r.at<std::uint32_t>(pos + 16) == 20 &&
             r.at<std::uint16_t>(pos + 36) == 0x56e6)
             out.back()["owner_reference_path"] =
