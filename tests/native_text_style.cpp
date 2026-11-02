@@ -139,7 +139,8 @@ unsigned native_text_style_tests() {
               result.at("text_attribute_flags").at("reserved16") == 0xfdff &&
               result.at("text_attribute_flags").at("extended_flags32") == 0xffeffffe &&
               result.at("initial_values").at("annotation_scale") == 1.75 &&
-              result.at("unassigned_state").at("auxiliary_flags") == 0x87654321 &&
+              result.at("initial_values").at("background_weight") == 0x87654321 &&
+              result.at("unassigned_state").empty() &&
               (result.at("effective_flags32").get<unsigned>() & 0x10000000),
           "native getter order overrides control bits independently of physical linkage order");
     for (unsigned bit = 0; bit < 16; ++bit) {

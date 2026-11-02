@@ -185,8 +185,14 @@ void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json 
             state.set<std::uint16_t>(0xb6, (state.at<std::uint16_t>(0xb6) & 0xffef) |
                                                ((packed >> 4) & 0x10));
             info["status"] = "decoded";
+        } else if (app == 0x5817) {
+            // Native BPTextStyle maps property key 0x90 to member +0xc8;
+            // SDK enum values 14..16 map keys 0x8e..0x90 to background
+            // style flag, style and weight respectively.
+            read(0xc8, 4, "uint32", "background_weight");
+            info["status"] = "decoded";
         } else {
-            read(0xc8, 4, "uint32", "auxiliary_flags");
+            read(0xc8, 4, "uint32", "unknown_native_style_value");
             info["status"] = "decoded";
         }
     } catch (const std::exception &e) {
@@ -277,7 +283,7 @@ Json decode_native_text_style(const Bytes &base, const Json &links) {
         values["underline_offset"] = state.at<double>(0x40);
         values["overline_offset"] = state.at<double>(0xa8);
         for (const auto &link : out["links"]) {
-            if (link.value("app", 0u) != 0x80d4 ||
+            if ((link.value("app", 0u) != 0x80d4 && link.value("app", 0u) != 0x5817) ||
                 link.value("reader_selection", std::string()) != "first_match" ||
                 !link.contains("fields"))
                 continue;
@@ -286,6 +292,8 @@ Json decode_native_text_style(const Bytes &base, const Json &links) {
                 if (!name.is_string())
                     continue;
                 const auto key = name.get<std::string>();
+                if (key == "background_weight")
+                    values[key] = field.at("value");
                 if (key == "codepage" || key == "text_style_entry_id" ||
                     key == "style_overrides_high" || key == "style_overrides_low" ||
                     key == "shx_big_font_entry_id" || key == "text_offset" ||
@@ -318,7 +326,7 @@ Json decode_native_text_style(const Bytes &base, const Json &links) {
                 {"extended_flags32", extended_control_flags},
                 {"flags_decoded", decode_text_flags(control_words[0], extended_control_flags)}};
         }
-        out["unassigned_state"] = {{"auxiliary_flags", state.at<std::uint32_t>(0xc8)}};
+        out["unassigned_state"] = Json::object();
         out["status"] = complete ? "decoded" : "partial";
         out["font_reference_status"] = font_complete ? "resolved" : "unresolved";
     } catch (const std::exception &e) {
