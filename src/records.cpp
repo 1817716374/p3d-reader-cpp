@@ -1961,13 +1961,13 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                         take_utf16z("0xf0_utf16z");
                     } else {
                         low["member_0xdc_u32"] = 1;
-                        low["member_0xdc_u32_source"] = "native_default_for_version_1";
+                        low["member_0xdc_u32_source"] = "native_default_when_signed_version_le_1";
                         low["member_0xe0_f64"] = 10000.0;
-                        low["member_0xe0_f64_source"] = "native_default_for_version_1";
+                        low["member_0xe0_f64_source"] = "native_default_when_signed_version_le_1";
                         low["member_0xe8_u32"] = 2;
-                        low["member_0xe8_u32_source"] = "native_default_for_version_1";
+                        low["member_0xe8_u32_source"] = "native_default_when_signed_version_le_1";
                         low["member_0xf0_utf16z"] = "";
-                        low["member_0xf0_utf16z_source"] = "native_default_for_version_1";
+                        low["member_0xf0_utf16z_source"] = "native_default_when_signed_version_le_1";
                     }
                     Json style = {{"mapping_status", "candidate_sdk_member_mapping"}};
                     if (low.contains("member_0x38_u8")) {
@@ -2117,13 +2117,13 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                         take_utf16z("0xf0_utf16z");
                     } else {
                         point["member_0xdc_u32"] = 1;
-                        point["member_0xdc_u32_source"] = "native_default_for_version_1";
+                        point["member_0xdc_u32_source"] = "native_default_when_signed_version_le_1";
                         point["member_0xe0_f64"] = 10000.0;
-                        point["member_0xe0_f64_source"] = "native_default_for_version_1";
+                        point["member_0xe0_f64_source"] = "native_default_when_signed_version_le_1";
                         point["member_0xe8_u32"] = 2;
-                        point["member_0xe8_u32_source"] = "native_default_for_version_1";
+                        point["member_0xe8_u32_source"] = "native_default_when_signed_version_le_1";
                         point["member_0xf0_utf16z"] = "";
-                        point["member_0xf0_utf16z_source"] = "native_default_for_version_1";
+                        point["member_0xf0_utf16z_source"] = "native_default_when_signed_version_le_1";
                     }
                 }
                 Json style = {{"mapping_status", "candidate_sdk_member_mapping"}};
