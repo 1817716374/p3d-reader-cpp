@@ -340,6 +340,10 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
                     {"buckets", std::move(buckets)},
                     {"unread_suffix_source_offset", consumed_bytes},
                     {"unread_suffix_byte_count", b.size() - consumed_bytes},
+                    {"unread_suffix", {{"source_offset", consumed_bytes},
+                                        {"byte_count", b.size() - consumed_bytes},
+                                        {"data", rawbytes(slice(b, consumed_bytes,
+                                                                b.size() - consumed_bytes))}}},
                     {"unread_suffix_status", b.size() > consumed_bytes ? "opaque" : "absent"}};
         Reader header(b);
         out["native_header_fields"] = {
@@ -382,6 +386,8 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
             out["suffix_source_offset"] = native_copy_bytes;
             out["suffix_byte_count"] = b.size() - native_copy_bytes;
             out["suffix_status"] = "opaque";
+            out["suffix_data"] = rawbytes(slice(b, native_copy_bytes,
+                                                 b.size() - native_copy_bytes));
         }
         return out;
     }
