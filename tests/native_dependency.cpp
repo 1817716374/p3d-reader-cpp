@@ -38,9 +38,11 @@ unsigned native_dependency_tests() {
           "special dependency path must not become three independent local references");
     put(b, 4, 513, 2);
     d = native_dependency_link(b);
-    check(d["dependency_index_input"] == "skipped_flag_1" && d["unassigned_flag_bits"] == 512 &&
-              d["status"] == "partial" && d["entries"].size() == 3,
-          "disabled dependency still exposes source data and unidentified flags");
+    check(d["dependency_index_input"] == "skipped_flag_1" &&
+              d["flag_fields"]["copy_options"]["value"] == 2 &&
+              d["unassigned_flag_bits"] == 0 && d["status"] == "partial" &&
+              d["entries"].size() == 3,
+          "skipped dependency index preserves assigned copy-option flags and source entries");
     for (unsigned format : {1u, 4u, 5u, 8u}) {
         const unsigned stride = format == 5 ? 24 : 16;
         auto p = make(format, 2, 8 + 2 * stride);
