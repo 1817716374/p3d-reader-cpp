@@ -252,10 +252,19 @@ Json decode_binary_field(
                         {"enum_label", nullptr},
                         {"semantic_status", "numeric_value_only"}};
         });
-    if (name == "NodeReservedData" && b == Bytes(26))
-        apply("observed_zero_reserved_block", [&]() {
-            return Json{
-                {"bytes", 26}, {"all_zero", true}, {"semantic_status", "reserved_layout_unknown"}};
+    if (name == "NodeReservedData")
+        apply("reserved_storage_buffer", [&]() {
+            const bool all_zero = std::all_of(b.begin(), b.end(), [](auto value) {
+                return value == 0;
+            });
+            return Json{{"storage_capacity_bytes", 26},
+                        {"observed_bytes", b.size()},
+                        {"matches_sdk_capacity", b.size() == 26},
+                        {"storage_hex", hex(b)},
+                        {"all_zero", all_zero},
+                        {"logical_payload_length", nullptr},
+                        {"logical_length_status", "not_stored_zero_padding_is_ambiguous"},
+                        {"semantic_status", "opaque_reserved_storage"}};
         });
     if (name == "TemplatedProperty" && hex(b) == "010000000000000000000000")
         apply("empty_templated_property_v1",
