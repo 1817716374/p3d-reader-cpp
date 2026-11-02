@@ -35,7 +35,7 @@ unsigned native_text_style_tests() {
               empty.at("initial_values").at("color") == 123 &&
               empty.at("initial_values").at("font_id") == 0x12340400 &&
               empty.at("initial_values").at("font_lookup_id") == 1024 &&
-              empty.at("unassigned_state").at("auxiliary_scalar") == 1.,
+              empty.at("initial_values").at("annotation_scale") == 1.,
           "native style starts with source header values and confirmed initial defaults");
     const std::uint16_t flags = 0xff0f;
     const std::uint32_t extended =
@@ -125,7 +125,7 @@ unsigned native_text_style_tests() {
               result.at("links")[2].at("app") == 0x56f3 &&
               result.at("unassigned_state").at("control_words") ==
                   Json::array({0xfe13, 0xfdff, 0xfffe, 0xffef}) &&
-              result.at("unassigned_state").at("auxiliary_scalar") == 1.75 &&
+              result.at("initial_values").at("annotation_scale") == 1.75 &&
               result.at("unassigned_state").at("auxiliary_flags") == 0x87654321 &&
               (result.at("effective_flags32").get<unsigned>() & 0x10000000),
           "native getter order overrides control bits independently of physical linkage order");
@@ -178,7 +178,7 @@ unsigned native_text_style_tests() {
           "unconsumed linkage tail is retained rather than parsed as another optional field");
     result = decode(Json::array({link(0x80d4, full), link(0x56f3, slice(override_flags, 0, 12))}));
     check(result.at("status") == "partial" && result.at("font_reference_status") == "resolved" &&
-              result.at("unassigned_state").at("auxiliary_scalar") == 1.75 &&
+              result.at("initial_values").at("annotation_scale") == 1.75 &&
               result.at("unassigned_state").at("control_words") ==
                   Json::array({0xffff, 0xffff, 0xffff, 0xffff}),
           "later extension truncation preserves earlier scalar update and known font references");

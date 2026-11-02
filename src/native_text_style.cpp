@@ -133,7 +133,7 @@ void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json 
         } else if (app == 0x56f3) {
             read(0xe8, 2, "uint16", "reserved_word_0");
             read(0xe8, 2, "uint16", "reserved_word_1");
-            read(0xc0, 8, "float64", "auxiliary_scalar");
+            read(0xc0, 8, "float64", "annotation_scale");
             state.set(0x54, state.at<std::uint32_t>(0x54) | 0x10000000u);
             const auto packed = read(0xe8, 2, "uint16", "packed_control_flags").get<unsigned>();
             const auto low = ((packed & 0x3c) * 2 | (packed & 3)) << 2;
@@ -217,6 +217,7 @@ Json decode_native_text_style(const Bytes &base, const Json &links) {
             {"justification_value", state.at<std::uint32_t>(4)},
             {"color", state.at<std::uint32_t>(0x24)},
             {"custom_slant_angle", state.at<double>(0x28)},
+            {"annotation_scale", state.at<double>(0xc0)},
             {"inter_character_spacing_mode", mode},
             {"inter_character_spacing", mode || (flags & 1) ? state.at<double>(0x38) : 0.},
             {"line_offset", Reader(state.data, 0x58).doubles(2)},
@@ -249,7 +250,6 @@ Json decode_native_text_style(const Bytes &base, const Json &links) {
                                 {"overline_style", bool(extended & 0x20000)},
                                 {"color_override", bool(extended & 0x200000)}};
         out["unassigned_state"] = {{"control_words", Reader(state.data, 0xb0).uints(4, 2)},
-                                   {"auxiliary_scalar", state.at<double>(0xc0)},
                                    {"auxiliary_flags", state.at<std::uint32_t>(0xc8)}};
         out["status"] = complete ? "decoded" : "partial";
         out["font_reference_status"] = font_complete ? "resolved" : "unresolved";
