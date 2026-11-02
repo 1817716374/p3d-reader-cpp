@@ -150,6 +150,50 @@ Json pbbim_domain_fields(const std::string &class_name, const Json &fields) {
     return out;
 }
 
+Json style_slot_classification(const Json &fields) {
+    Json out = {{"status", "source_key_unavailable"},
+                {"match", "exact_Domain_CategoryId_GraphicTypeId"}};
+    const auto domain = unsigned_integer(fields.is_object() && fields.contains("Domain")
+                                             ? &fields["Domain"]
+                                             : nullptr);
+    const auto category = unsigned_integer(fields.is_object() && fields.contains("CategoryId")
+                                                ? &fields["CategoryId"]
+                                                : nullptr);
+    const auto graphic_type = unsigned_integer(fields.is_object() && fields.contains("GraphicTypeId")
+                                                    ? &fields["GraphicTypeId"]
+                                                    : nullptr);
+    if (!domain || !category || !graphic_type)
+        return out;
+
+    out["source_key"] = Json::array({*domain, *category, *graphic_type});
+    static constexpr const char *model_graphic_names[][4] = {
+        {nullptr, nullptr, nullptr, nullptr},
+        {"投影线", "截面线", "隐藏线", "上投影线"},
+        {"截面线", "投影线", "上投影线", "隐藏线"},
+        {"投影线", "截面线", "隐藏线", "上投影线"},
+        {"投影线", "截面线", "隐藏线", "上投影线"},
+        {"投影线", "截面线", "隐藏线", "上投影线"},
+        {"截面线", "投影线", "上投影线", "隐藏线"}};
+
+    const char *category_name = nullptr;
+    const char *graphic_name = nullptr;
+    if (*domain >= 1 && *domain <= 6 && *category == 0 && *graphic_type <= 3) {
+        category_name = "模型构件";
+        graphic_name = model_graphic_names[*domain][*graphic_type];
+    } else if (*domain >= 1 && *domain <= 6 && *category == 1 && *graphic_type == 0) {
+        category_name = "注释";
+        graphic_name = "线样式";
+    }
+    if (!graphic_name) {
+        out["status"] = "no_matching_default_resource_entry";
+        return out;
+    }
+    out["status"] = "matched_default_resource_entry";
+    out["category_name"] = category_name;
+    out["graphic_type_name"] = graphic_name;
+    return out;
+}
+
 Json schema_boolean_property(const Json &fields, const char *name) {
     Json out = {{"encoding", "embedded_schema_boolean"}, {"status", "source_value_unavailable"}};
     if (!fields.is_object() || !fields.contains(name))
@@ -395,6 +439,7 @@ Json build_native_display_catalog(const Json &graph, const Json &layer_tables,
             record["display_statuses"] = display_statuses(tree);
         } else if (style_definition) {
             record["record_kind"] = "style_definition";
+            record["style_slot_classification"] = style_slot_classification(record["fields"]);
             record["line_components"] = nested_records(tree, "Line", "PBBimLineStyle", true);
             record["hatch_components"] = nested_records(tree, "Hatch", "PBBimHatchStyle", true);
             record["visibility_statuses"] = nested_records(tree, "Visble", "PBBimDisplayStatus", false);
