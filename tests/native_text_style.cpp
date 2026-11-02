@@ -49,7 +49,7 @@ unsigned native_text_style_tests() {
     put<double>(full, 3.5);                   // underline offset
     put<double>(full, 4.5);
     put<double>(full, 5.5);               // line offset
-    put<std::uint32_t>(full, 6);          // unnamed bit9
+    put<std::uint32_t>(full, 6);          // codepage
     put<std::uint32_t>(full, 0xabc00201); // full big key
     put<std::uint32_t>(full, 7);
     put<std::uint32_t>(full, 0xfffffffd); // background color/style
@@ -58,10 +58,10 @@ unsigned native_text_style_tests() {
     put<double>(full, 11.5);      // border
     put<std::uint32_t>(full, 12); // fill color
     put<double>(full, 13.5);      // overline offset
-    put<std::uint32_t>(full, 14); // unnamed bit15
+    put<std::uint32_t>(full, 14); // text style entry ID
     for (unsigned value : {15, 16, 17, 18, 19, 20})
         put(full, value);
-    put<double>(full, 21.5); // unnamed extended bit19
+    put<double>(full, 21.5); // text-node word-wrap length
     for (std::uint16_t value : {0xffff, 0xffff, 0xffff, 0xffff})
         put(full, value);
     put<std::uint32_t>(full, 22); // color override
@@ -74,8 +74,18 @@ unsigned native_text_style_tests() {
     const auto &v = result.at("initial_values");
     check(result.at("status") == "decoded" && result.at("semantic_status") == "partial" &&
               v.at("big_font_id") == 0xabc00201 && v.at("big_font_lookup_id") == 513 &&
-              v.at("color") == 22 && v.at("justification_value") == 14,
+              v.at("color") == 22 && v.at("justification_value") == 14 &&
+              v.at("codepage") == 6 && v.at("text_style_entry_id") == 14 &&
+              v.at("style_overrides_high") == 15 && v.at("style_overrides_low") == 16 &&
+              v.at("shx_big_font_entry_id") == 17 &&
+              v.at("text_offset") == Json::array({26.5, 27.5}) &&
+              v.at("text_node_word_wrap_length") == 21.5,
           "source font ID stays full width while character mapping uses low-word query");
+    check(result.at("flags_decoded").at("slant_angle") == true &&
+              !result.at("flags_decoded").contains("italic") &&
+              result.at("flags_decoded").at("codepage") == true &&
+              result.at("flags_decoded").at("text_style_entry") == true,
+          "text linkage flags use SDK slant, codepage, and text-style meanings");
     check(v.at("line_offset") == Json::array({4.5, 5.5}) &&
               v.at("background_border") == Json::array({10.5, 11.5}) &&
               v.at("background_color") == 7 && v.at("background_fill_color") == 12 &&
@@ -123,8 +133,11 @@ unsigned native_text_style_tests() {
     check(result.at("links")[0].at("link_index") == 3 &&
               result.at("links")[1].at("reader_selection") == "shadowed" &&
               result.at("links")[2].at("app") == 0x56f3 &&
-              result.at("unassigned_state").at("control_words") ==
+              result.at("text_attribute_flags").at("source_words") ==
                   Json::array({0xfe13, 0xfdff, 0xfffe, 0xffef}) &&
+              result.at("text_attribute_flags").at("flags16") == 0xfe13 &&
+              result.at("text_attribute_flags").at("reserved16") == 0xfdff &&
+              result.at("text_attribute_flags").at("extended_flags32") == 0xffeffffe &&
               result.at("initial_values").at("annotation_scale") == 1.75 &&
               result.at("unassigned_state").at("auxiliary_flags") == 0x87654321 &&
               (result.at("effective_flags32").get<unsigned>() & 0x10000000),
@@ -143,7 +156,7 @@ unsigned native_text_style_tests() {
             expected[1] = 0x200;
         else if (bit == 8)
             expected[3] = 0x10;
-        check(result.at("unassigned_state").at("control_words") == expected,
+        check(result.at("text_attribute_flags").at("source_words") == expected,
               "packed extension flags have the native sparse destination bit mapping");
     }
     for (std::size_t size = 1; size < full.size(); ++size) {
@@ -179,7 +192,7 @@ unsigned native_text_style_tests() {
     result = decode(Json::array({link(0x80d4, full), link(0x56f3, slice(override_flags, 0, 12))}));
     check(result.at("status") == "partial" && result.at("font_reference_status") == "resolved" &&
               result.at("initial_values").at("annotation_scale") == 1.75 &&
-              result.at("unassigned_state").at("control_words") ==
+              result.at("text_attribute_flags").at("source_words") ==
                   Json::array({0xffff, 0xffff, 0xffff, 0xffff}),
           "later extension truncation preserves earlier scalar update and known font references");
     check(decode_native_text_style(Bytes(8), Json::array()).at("status") == "invalid",

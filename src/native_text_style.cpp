@@ -13,6 +13,45 @@ struct TextState {
         std::memcpy(data.data() + offset, &value, sizeof(value));
     }
 };
+Json decode_text_flags(std::uint16_t flags, std::uint32_t extended) {
+    static const char *line_spacing_type_names[] = {
+        "exact", "automatic", "from_line_top", "at_least"};
+    const auto line_spacing_type = (extended >> 23) & 3;
+    return {{"inter_character_spacing", bool(flags & 1)},
+            {"fixed_width_spacing", bool(flags & 2)},
+            {"underline", bool(flags & 4)},
+            {"slant_angle", bool(flags & 8)},
+            {"vertical_text", bool(flags & 0x10)},
+            {"right_to_left", bool(flags & 0x20)},
+            {"reverse_multiline", bool(flags & 0x40)},
+            {"kerning", bool(flags & 0x80)},
+            {"line_offset", bool(flags & 0x100)},
+            {"codepage", bool(flags & 0x200)},
+            {"shx_big_font", bool(flags & 0x400)},
+            {"background_color", bool(flags & 0x800)},
+            {"subscript", bool(flags & 0x1000)},
+            {"superscript", bool(flags & 0x2000)},
+            {"extended_text", bool(flags & 0x4000)},
+            {"text_style_entry", bool(flags & 0x8000)},
+            {"overline", bool(extended & 1)},
+            {"stacked_fraction_section", (extended >> 1) & 3},
+            {"stacked_fraction_alignment", (extended >> 3) & 3},
+            {"stacked_fraction_type", (extended >> 5) & 3},
+            {"carriage_return_count", (extended >> 7) & 0xff},
+            {"bold", bool(extended & 0x8000)},
+            {"underline_style", bool(extended & 0x10000)},
+            {"overline_style", bool(extended & 0x20000)},
+            {"style_overrides", bool(extended & 0x40000)},
+            {"word_wrap_text_node", bool(extended & 0x80000)},
+            {"full_justification", bool(extended & 0x100000)},
+            {"text_color", bool(extended & 0x200000)},
+            {"acad_inter_character_spacing", bool(extended & 0x400000)},
+            {"line_spacing_type", line_spacing_type},
+            {"line_spacing_type_name", line_spacing_type_names[line_spacing_type]},
+            {"backwards", bool(extended & 0x2000000)},
+            {"upside_down", bool(extended & 0x4000000)},
+            {"acad_fitted_text", bool(extended & 0x8000000)}};
+}
 void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json &info) {
     Reader input(payload);
     std::uint32_t keep_flags = 0xff90fffeu;
@@ -71,7 +110,7 @@ void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json 
                 read(0x60, 8, "float64", "line_offset_y");
             }
             if (flags & 0x200)
-                read(0x10, 4, "uint32", nullptr);
+                read(0x10, 4, "uint32", "codepage");
             if (flags & 0x400) {
                 read(0x18, 4, "uint32", "big_font_id");
                 big_reference_known = true;
@@ -89,7 +128,7 @@ void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json 
                 keep_flags |= 1;
             }
             if (flags & 0x8000)
-                read(0x20, 4, "uint32", nullptr);
+                read(0x20, 4, "uint32", "text_style_entry_id");
             if (extended & 0x10000) {
                 read(0x8c, 4, "uint32", "underline_color");
                 read(0x90, 4, "uint32", "underline_line_style");
@@ -103,7 +142,7 @@ void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json 
                 keep_flags |= 0x20000;
             }
             if (extended & 0x80000) {
-                read(0x48, 8, "float64", nullptr);
+                read(0x48, 8, "float64", "text_node_word_wrap_length");
                 keep_flags |= 0x80000;
             }
             if (extended & 0x40000) {
@@ -115,18 +154,19 @@ void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json 
                 keep_flags |= 0x200000;
             }
             if (flags & 0x4000) {
-                read(0xcc, 4, "uint32", nullptr);
-                read(0xd0, 4, "uint32", nullptr);
-                read(0xd4, 4, "uint32", nullptr);
+                read(0xcc, 4, "uint32", "style_overrides_high");
+                read(0xd0, 4, "uint32", "style_overrides_low");
+                read(0xd4, 4, "uint32", "shx_big_font_entry_id");
                 // This final vector is copied atomically by the native reader.
                 const auto start = input.p;
                 const auto bytes = input.take(16);
                 std::copy(bytes.begin(), bytes.end(), state.data.begin() + 0xd8);
+                Reader offset(bytes);
                 info["fields"].push_back({{"source_offset", start},
                                           {"source_bytes", 16},
-                                           {"encoding", "bytes"},
-                                          {"name", nullptr},
-                                           {"value", rawbytes(bytes)},
+                                           {"encoding", "float64_pair"},
+                                          {"name", "text_offset"},
+                                          {"value", offset.doubles(2)},
                                           {"raw_hex", hex(bytes)}});
             }
             info["status"] = "decoded";
@@ -236,21 +276,49 @@ Json decode_native_text_style(const Bytes &base, const Json &links) {
             values[name] = state.at<std::uint32_t>(offset);
         values["underline_offset"] = state.at<double>(0x40);
         values["overline_offset"] = state.at<double>(0xa8);
+        for (const auto &link : out["links"]) {
+            if (link.value("app", 0u) != 0x80d4 ||
+                link.value("reader_selection", std::string()) != "first_match" ||
+                !link.contains("fields"))
+                continue;
+            for (const auto &field : link["fields"]) {
+                const auto name = field.value("name", Json());
+                if (!name.is_string())
+                    continue;
+                const auto key = name.get<std::string>();
+                if (key == "codepage" || key == "text_style_entry_id" ||
+                    key == "style_overrides_high" || key == "style_overrides_low" ||
+                    key == "shx_big_font_entry_id" || key == "text_offset" ||
+                    key == "text_node_word_wrap_length")
+                    values[key] = field.at("value");
+            }
+        }
         out["initial_values"] = std::move(values);
         out["effective_flags16"] = flags;
         out["effective_flags32"] = extended;
-        out["flags_decoded"] = {{"underline", bool(flags & 4)},
-                                {"italic", bool(flags & 8)},
-                                {"background_style", bool(flags & 0x800)},
-                                {"subscript", bool(flags & 0x1000)},
-                                {"superscript", bool(flags & 0x2000)},
-                                {"overline", bool(extended & 1)},
-                                {"bold", bool(extended & 0x8000)},
-                                {"underline_style", bool(extended & 0x10000)},
-                                {"overline_style", bool(extended & 0x20000)},
-                                {"color_override", bool(extended & 0x200000)}};
-        out["unassigned_state"] = {{"control_words", Reader(state.data, 0xb0).uints(4, 2)},
-                                   {"auxiliary_flags", state.at<std::uint32_t>(0xc8)}};
+        out["flags_decoded"] = decode_text_flags(flags, extended);
+        const auto control_words = Reader(state.data, 0xb0).uints(4, 2);
+        bool control_state_present = false;
+        for (const auto &link : out["links"]) {
+            if (link.value("reader_selection", std::string()) != "first_match" ||
+                !link.contains("fields"))
+                continue;
+            for (const auto &field : link["fields"])
+                if (field.value("name", Json()) == "control_words" ||
+                    field.value("name", Json()) == "packed_control_flags")
+                    control_state_present = true;
+        }
+        if (control_state_present) {
+            const auto extended_control_flags = control_words[2].get<std::uint32_t>() |
+                                                (control_words[3].get<std::uint32_t>() << 16);
+            out["text_attribute_flags"] = {
+                {"source_words", control_words},
+                {"flags16", control_words[0]},
+                {"reserved16", control_words[1]},
+                {"extended_flags32", extended_control_flags},
+                {"flags_decoded", decode_text_flags(control_words[0], extended_control_flags)}};
+        }
+        out["unassigned_state"] = {{"auxiliary_flags", state.at<std::uint32_t>(0xc8)}};
         out["status"] = complete ? "decoded" : "partial";
         out["font_reference_status"] = font_complete ? "resolved" : "unresolved";
     } catch (const std::exception &e) {
