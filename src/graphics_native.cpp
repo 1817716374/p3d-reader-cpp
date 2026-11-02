@@ -1374,6 +1374,7 @@ Json graphics_entry_native_input(const Bytes &entry) {
     Json out = {{"scope", "entry_geometry_reader_before_material_footer"},
                 {"project_context", "not_provided"},
                 {"status", "not_evaluated"},
+                {"input_layout_selection", {"status", "not_evaluated"}},
                 {"with_project", native_input(entry, true)},
                 {"without_project", native_input(entry, false)}};
     for (const auto *context : {"with_project", "without_project"}) {
@@ -1383,6 +1384,24 @@ Json graphics_entry_native_input(const Bytes &entry) {
     }
     const auto &with = out.at("with_project").at("status");
     const auto &without = out.at("without_project").at("status");
+    const auto &with_input = out.at("with_project");
+    const auto &without_input = out.at("without_project");
+    auto is_range_rejected_alternative = [](const Json &candidate) {
+        return candidate.at("status") == "geometry_not_read" &&
+               candidate.value("reason", std::string()) == "geometry_byte_range_unavailable";
+    };
+    if (with == "geometry_constructed" && is_range_rejected_alternative(without_input)) {
+        out["input_layout_selection"] = {
+            {"status", "unique_candidate"},
+            {"selected_branch", "with_project"},
+            {"evidence", "only_branch_constructed_bounded_geometry"}};
+    } else if (without == "geometry_constructed" &&
+               is_range_rejected_alternative(with_input)) {
+        out["input_layout_selection"] = {
+            {"status", "unique_candidate"},
+            {"selected_branch", "without_project"},
+            {"evidence", "only_branch_constructed_bounded_geometry"}};
+    }
     if (with == without && (with == "rejected" || with == "geometry_not_read"))
         out["status"] = with;
     return out;
