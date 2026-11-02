@@ -2176,6 +2176,12 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                 out["decoded_state"].value("base_frame", Json::object()).value("status", "") ==
                     "decoded")
                 out["status"] = "processor_state_decoded";
+            if ((type_id == 401 || type_id == 414) &&
+                out["decoded_state"].value("status", "") ==
+                    "known_structure_with_unresolved_field_semantics" &&
+                out["decoded_state"].value("base_frame", Json::object()).value("status", "") ==
+                    "decoded")
+                out["status"] = "processor_state_decoded";
         }
         return out;
     }
