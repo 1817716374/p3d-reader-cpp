@@ -646,6 +646,30 @@ Json decode_terrain(const Json &attributes) {
                     {"bit_1_set", (mode_flags & 2u) != 0},
                     {"native_reader_tests_bits_independently", true},
                     {"business_meaning_status", "unresolved"}}}};
+    // Native TerrainAlgorithm consumers use these doubles as algorithm
+    // parameters. Offset 216 is compared with planar point-to-vertex distance;
+    // offsets 232 and 240 participate in tolerance/scale normalization. Their
+    // business labels and physical units are not established by the file data.
+    Json algorithm_parameters = {
+        {"member_216_f64",
+         {{"source_offset", 216},
+          {"value", hr.at<double>(216)},
+          {"native_behavior",
+           "point lookup accepts a mesh vertex when the planar distance is within this value"},
+          {"unit_status", "unresolved"},
+          {"semantic_status", "planar_point_match_tolerance_behavior_identified"}}},
+        {"member_232_f64",
+         {{"source_offset", 232},
+          {"value", hr.at<double>(232)},
+          {"native_behavior",
+           "used to derive paired thresholds at factors 1000 and 10000"},
+          {"semantic_status", "threshold_scale_behavior_identified_business_name_unresolved"}}},
+        {"member_240_f64",
+         {{"source_offset", 240},
+          {"value", hr.at<double>(240)},
+          {"native_behavior",
+           "multiplies geometric distance normalization and is updated with the same ratio"},
+          {"semantic_status", "distance_scale_behavior_identified_business_name_unresolved"}}}};
     Json source = Json::array();
     for (auto &a : attributes)
         if (a["key"] == 23223 && a["group"] != 303 && a["group"] != 304 && a["group"] != 305)
@@ -664,6 +688,7 @@ Json decode_terrain(const Json &attributes) {
             {"transform", transform},
             {"timestamps", timestamps},
             {"format", format},
+            {"algorithm_parameters", algorithm_parameters},
             {"header_hex", hex(header)},
             {"header_edge_count", ne},
             {"header_face_count", nf},
@@ -683,7 +708,10 @@ Json decode_terrain(const Json &attributes) {
                                                      {{"offset", 112}, {"bytes", 8}},
                                                      {{"offset", 140}, {"bytes", 60}},
                                                      {{"offset", 204}, {"bytes", 4}},
-                                                     {{"offset", 216}, {"bytes", 32}},
+                                                     {{"offset", 216}, {"bytes", 8}},
+                                                     {{"offset", 224}, {"bytes", 8}},
+                                                     {{"offset", 232}, {"bytes", 8}},
+                                                     {{"offset", 240}, {"bytes", 8}},
                                                      {{"offset", 254}, {"bytes", 62}}})},
             {"note", "Source ring winding retained. Header fields outside the decoded counts, "
                      "bounds, extents and timestamp encodings remain unresolved."}};
