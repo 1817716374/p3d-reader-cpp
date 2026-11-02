@@ -2118,6 +2118,30 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                         take_utf16z("0xf0_utf16z");
                     }
                 }
+                Json style = {{"mapping_status", "candidate_sdk_member_mapping"}};
+                if (point.contains("member_0x38_u8")) {
+                    const auto visible = point.at("member_0x38_u8").get<std::uint8_t>();
+                    style["visible"] = visible != 0;
+                    style["visible_raw"] = visible;
+                }
+                if (point.contains("member_0x30_u32"))
+                    style["layer_id"] = point.at("member_0x30_u32");
+                if (point.contains("member_0x78_u32"))
+                    style["color"] = point.at("member_0x78_u32");
+                if (point.contains("member_0xdc_u32")) {
+                    const auto type = point.at("member_0xdc_u32").get<std::uint32_t>();
+                    style["point_type"] = type;
+                    static const char *type_names[] = {"square", "circle"};
+                    if (type < 2)
+                        style["point_type_name"] = type_names[type];
+                }
+                if (point.contains("member_0xe0_f64"))
+                    style["size_mm"] = point.at("member_0xe0_f64");
+                if (point.contains("member_0xe8_u32"))
+                    style["decimal_places"] = point.at("member_0xe8_u32");
+                if (point.contains("member_0xf0_utf16z"))
+                    style["font_name"] = point.at("member_0xf0_utf16z");
+                point["display_style"] = std::move(style);
                 point["layout_evidence"] =
                     "matches_low_points_native_prefix_unconfirmed_for_high_points";
                 point["unmapped_suffix"] =
