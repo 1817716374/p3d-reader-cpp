@@ -217,8 +217,9 @@ static Json standard_floor(const Bytes &b) {
     addr << ptr;
     abi[0]["address_hex"] = addr.str();
     // Offsets are relative to TagStdFlrDesignPara, including its serialized vptr.
-    // The standard-floor dialog and grid bind these members to named controls.
-    // These are library field names, not recovered C++ member identifiers.
+    // The native standard-floor dialog exposes the members in serialized order.
+    // Existing bindings at offsets 8..56 corroborate the order. These are
+    // library field names, not recovered C++ member identifiers.
     struct Field {
         int offset;
         const char *name;
@@ -231,14 +232,27 @@ static Json standard_floor(const Bytes &b) {
         {16, "beam_concrete_grade", "梁混凝土强度等级", "concrete_grade"},
         {20, "shear_wall_concrete_grade", "剪力墙混凝土强度等级", "concrete_grade"},
         {24, "slab_concrete_grade", "板混凝土强度等级", "concrete_grade"},
-        {28, "brace_concrete_grade", "斜杆混凝土强度等级", "concrete_grade"},
+        {28, "support_concrete_grade", "支撑混凝土强度等级", "concrete_grade"},
+        {32, "column_rebar_cover", "柱钢筋保护层厚度", "length"},
+        {36, "beam_rebar_cover", "梁钢筋保护层厚度", "length"},
         {40, "slab_rebar_cover", "板钢筋保护层厚度", "length"},
-        {48, "column_main_rebar_type", "柱主筋类别", "rebar_type"},
-        {52, "beam_main_rebar_type", "梁主筋类别", "rebar_type"},
-        {56, "wall_main_rebar_type", "墙主筋类别", "rebar_type"}};
+        {44, "wall_rebar_cover", "墙钢筋保护层厚度", "length"},
+        {48, "column_main_rebar_type", "柱主筋级别", "rebar_type"},
+        {52, "beam_main_rebar_type", "梁主筋级别", "rebar_type"},
+        {56, "wall_main_rebar_type", "墙主筋级别", "rebar_type"},
+        {60, "slab_main_rebar_type", "板主筋级别", "rebar_type"},
+        {64, "column_stirrup_rebar_type", "柱箍筋级别", "rebar_type"},
+        {68, "beam_stirrup_rebar_type", "梁箍筋级别", "rebar_type"},
+        {72, "edge_member_stirrup_rebar_type", "边缘构件箍筋级别", "rebar_type"},
+        {76, "wall_horizontal_distribution_rebar_type", "墙水平分布筋级别", "rebar_type"},
+        {80, "wall_vertical_distribution_rebar_type", "墙竖向分布筋级别", "rebar_type"},
+        {84, "column_steel_grade", "柱构件钢号", "steel_grade"},
+        {88, "beam_steel_grade", "梁构件钢号", "steel_grade"}};
     // Native combo indices, also used directly by the standard-floor grid.
     static constexpr const char *rebar[] = {"HPB300",      "HRB335",      "HRB400",  "HRB500",
                                             "冷轧带肋550", "冷轧带肋600", "HTRB600", "HPB235"};
+    static constexpr const char *steel[] = {"Q235", "Q345", "Q390", "Q420", "Q460",
+                                            "Q500", "Q550", "Q620", "Q690"};
     Json fields = Json::array(), values = Json::object();
     for (int i = 0; i < 21; ++i) {
         auto u = r.u32();
@@ -271,6 +285,14 @@ static Json standard_floor(const Bytes &b) {
                     field["enum_status"] = "identified";
                 }
             }
+            if (std::string(k.kind) == "steel_grade") {
+                field["enum_label"] = nullptr;
+                field["enum_status"] = "unknown_value";
+                if (u < sizeof(steel) / sizeof(*steel)) {
+                    field["enum_label"] = steel[u];
+                    field["enum_status"] = "identified";
+                }
+            }
         }
         fields.push_back(std::move(field));
     }
@@ -282,12 +304,13 @@ static Json standard_floor(const Bytes &b) {
             {"identified_field_count", values.size()},
             {"unassigned_field_count", fields.size() - values.size()},
             {"layout_status", "complete_for_observed_abi"},
-            {"semantic_status", "partially_identified"},
+            {"semantic_status",
+             values.size() == fields.size() ? "identified" : "partially_identified"},
             {"unresolved_spans", Json::array()},
             {"note",
              "The pointer is source-process residue and is never dereferenced or treated as an "
              "object ID. All member storage and nonzero padding are retained. Named values use "
-             "the standard-floor UI bindings; other members remain unassigned. Field units do "
+             "the native standard-floor UI bindings. Field units do "
              "not establish the document's geometry units."}};
 }
 static Json pilecap(Reader &r) {
