@@ -17,8 +17,13 @@ unsigned native_view_condition_catalog_tests() {
                                  {"attributes", {{"ConditionSetName", std::move(name)}}},
                                  {"children", Json::array()}}}}}};
     };
-    const Json graphics = Json::array({{{"id", 42}, {"attributes", Json::array({attribute(
-                                                                    "bimbase_conditionset_000000009_view0"),
+    auto with_condition = attribute("bimbase_conditionset_000000009_view0");
+    with_condition["decoded"]["tree"]["children"].push_back(
+        {{"tag", "P3DShowCondition"},
+         {"attributes", {{"fullNameList", "IfcWall-IfcDoor"},
+                         {"fullNameListExclude", "true"}}},
+         {"children", Json::array()}});
+    const Json graphics = Json::array({{{"id", 42}, {"attributes", Json::array({with_condition,
                                                                 attribute("bimbase_conditionset_000000016_view2"),
                                                                 attribute("bimbase_conditionset_16_view2"),
                                                                 attribute("user_defined_set")})}}});
@@ -32,6 +37,13 @@ unsigned native_view_condition_catalog_tests() {
               resolved.at("model_reference").at("status") == "resolved" &&
               resolved.at("model_reference").at("name") == "主模型",
           "native condition-set identity resolves by its exact model/view key");
+    const auto &condition = catalog["records"][0]["conditions"][0];
+    check(condition.at("full_name_list_exclude").at("value") == true &&
+              condition.at("filter_semantics").at("full_name_list").at("exclude_false") ==
+                  "listed_full_names_match" &&
+              condition.at("filter_semantics").at("full_name_list").at("exclude_true") ==
+                  "unlisted_full_names_match",
+          "full-name exclusion follows the native listed/unlisted match rule");
     const auto &missing = catalog["records"][1]["view_binding"];
     check(missing.at("status") == "resolved_model_view_identity" && missing.at("model_id") == 16 &&
               missing.at("view_index") == 2 &&
