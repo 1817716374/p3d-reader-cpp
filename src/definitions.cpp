@@ -632,6 +632,20 @@ Json decode_terrain(const Json &attributes) {
         {"native_reader_replaces_filetime_when_delta_exceeds_tolerance",
          std::fabs(filetime_delta_100ns) > filetime_ticks_per_day},
         {"semantic_status", "time_encodings_identified_timezone_or_clock_origin_unresolved"}};
+    // The native reader tests version 3 at offset 248 before consuming the
+    // optional record groups, and independently tests bits 0 and 1 at 252.
+    const auto format_version = hr.at<std::uint32_t>(248);
+    const auto mode_flags = hr.at<std::uint16_t>(252);
+    Json format = {
+        {"version", format_version},
+        {"version_source_offset", 248},
+        {"version_3_enables_optional_record_groups", format_version == 3},
+        {"flags", {{"value_u16", mode_flags},
+                    {"source_offset", 252},
+                    {"bit_0_set", (mode_flags & 1u) != 0},
+                    {"bit_1_set", (mode_flags & 2u) != 0},
+                    {"native_reader_tests_bits_independently", true},
+                    {"business_meaning_status", "unresolved"}}}};
     Json source = Json::array();
     for (auto &a : attributes)
         if (a["key"] == 23223 && a["group"] != 303 && a["group"] != 304 && a["group"] != 305)
@@ -649,6 +663,7 @@ Json decode_terrain(const Json &attributes) {
             {"bounds_extent", extent},
             {"transform", transform},
             {"timestamps", timestamps},
+            {"format", format},
             {"header_hex", hex(header)},
             {"header_edge_count", ne},
             {"header_face_count", nf},
@@ -668,7 +683,8 @@ Json decode_terrain(const Json &attributes) {
                                                      {{"offset", 112}, {"bytes", 8}},
                                                      {{"offset", 140}, {"bytes", 60}},
                                                      {{"offset", 204}, {"bytes", 4}},
-                                                     {{"offset", 216}, {"bytes", 100}}})},
+                                                     {{"offset", 216}, {"bytes", 32}},
+                                                     {{"offset", 254}, {"bytes", 62}}})},
             {"note", "Source ring winding retained. Header fields outside the decoded counts, "
                      "bounds, extents and timestamp encodings remain unresolved."}};
 }
