@@ -608,6 +608,30 @@ Json decode_terrain(const Json &attributes) {
     }
     auto transform = decode_attribute(313, 23223, single(313));
     transform.erase("encoding");
+    // TerrainAlgorithm's MDTE reader converts offset 200 from Unix seconds to
+    // FILETIME and compares it with the 100 ns value at offset 208.
+    const auto terrain_unix_seconds = hr.at<std::int32_t>(200);
+    const auto terrain_filetime_100ns = hr.at<std::uint64_t>(208);
+    constexpr std::int64_t unix_to_filetime_seconds = 11644473600LL;
+    constexpr std::uint64_t filetime_ticks_per_second = 10000000ULL;
+    constexpr std::uint64_t filetime_ticks_per_day = 864000000000ULL;
+    const auto unix_filetime_100ns =
+        static_cast<std::int64_t>(terrain_unix_seconds + unix_to_filetime_seconds) *
+        static_cast<std::int64_t>(filetime_ticks_per_second);
+    const auto filetime_delta_100ns = static_cast<long double>(terrain_filetime_100ns) -
+                                      static_cast<long double>(unix_filetime_100ns);
+    Json timestamps = {
+        {"unix_seconds", terrain_unix_seconds},
+        {"unix_seconds_source_offset", 200},
+        {"windows_filetime_100ns", terrain_filetime_100ns},
+        {"windows_filetime_source_offset", 208},
+        {"difference_seconds", static_cast<double>(
+                                   filetime_delta_100ns / filetime_ticks_per_second)},
+        {"native_reader_comparison", "convert_unix_seconds_to_filetime; compare absolute delta"},
+        {"native_reader_day_tolerance", 1},
+        {"native_reader_replaces_filetime_when_delta_exceeds_tolerance",
+         std::fabs(filetime_delta_100ns) > filetime_ticks_per_day},
+        {"semantic_status", "time_encodings_identified_timezone_or_clock_origin_unresolved"}};
     Json source = Json::array();
     for (auto &a : attributes)
         if (a["key"] == 23223 && a["group"] != 303 && a["group"] != 304 && a["group"] != 305)
@@ -624,6 +648,7 @@ Json decode_terrain(const Json &attributes) {
             {"bounds", {low, high}},
             {"bounds_extent", extent},
             {"transform", transform},
+            {"timestamps", timestamps},
             {"header_hex", hex(header)},
             {"header_edge_count", ne},
             {"header_face_count", nf},
@@ -641,8 +666,10 @@ Json decode_terrain(const Json &attributes) {
                                            static_cast<std::int64_t>(faces.size())}}},
             {"unresolved_header_spans", Json::array({{{"offset", 88}, {"bytes", 16}},
                                                      {{"offset", 112}, {"bytes", 8}},
-                                                     {{"offset", 140}, {"bytes", 176}}})},
-            {"note", "Source ring winding retained. Header capacities/flags, vertex sentinels and "
-                     "rendering settings are not fully interpreted."}};
+                                                     {{"offset", 140}, {"bytes", 60}},
+                                                     {{"offset", 204}, {"bytes", 4}},
+                                                     {{"offset", 216}, {"bytes", 100}}})},
+            {"note", "Source ring winding retained. Header fields outside the decoded counts, "
+                     "bounds, extents and timestamp encodings remain unresolved."}};
 }
 } // namespace p3d
