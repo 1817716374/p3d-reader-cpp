@@ -1954,7 +1954,7 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                                            vector3_available % 8))}};
                     }
                     take_u16("0xd8_u16");
-                    if (version > 1) {
+                    if (std::int16_t(version) > 1) {
                         take_u32("0xdc_u32");
                         take_f64("0xe0_f64");
                         take_u32("0xe8_u32");
@@ -2008,10 +2008,9 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
             }
             if (type_id == 408 && derived_offset &&
                 derived_offset <= state.size()) {
-                // The high-points processor has no dedicated Read/Write
-                // virtual pair. Its sample begins with the same 29-byte
-                // prefix as LowPointsProcessor::Read; decode only that
-                // cross-type-compatible prefix and leave the rest opaque.
+                // DTMEntityHighPointsProcessor::Read/Write uses the same
+                // versioned member order as LowPointsProcessor. Decode the
+                // confirmed high-points layout and keep any future suffix.
                 Reader point_reader(state, derived_offset);
                 Json point = Json::object();
                 bool prefix_decoded = false;
@@ -2111,11 +2110,20 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                         point["member_0xd8_u16"] = point_reader.u16();
                     else
                         compatible_layout_complete = false;
-                    if (point_version > 1) {
+                    if (std::int16_t(point_version) > 1) {
                         take_u32("0xdc_u32");
                         take_f64("0xe0_f64");
                         take_u32("0xe8_u32");
                         take_utf16z("0xf0_utf16z");
+                    } else {
+                        point["member_0xdc_u32"] = 1;
+                        point["member_0xdc_u32_source"] = "native_default_for_version_1";
+                        point["member_0xe0_f64"] = 10000.0;
+                        point["member_0xe0_f64_source"] = "native_default_for_version_1";
+                        point["member_0xe8_u32"] = 2;
+                        point["member_0xe8_u32_source"] = "native_default_for_version_1";
+                        point["member_0xf0_utf16z"] = "";
+                        point["member_0xf0_utf16z_source"] = "native_default_for_version_1";
                     }
                 }
                 Json style = {{"mapping_status", "candidate_sdk_member_mapping"}};
@@ -2143,15 +2151,17 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                     style["font_name"] = point.at("member_0xf0_utf16z");
                 point["display_style"] = std::move(style);
                 point["layout_evidence"] =
-                    "matches_low_points_native_prefix_unconfirmed_for_high_points";
+                    "high_points_processor_read_write_layout_confirmed";
                 point["unmapped_suffix"] =
                     rawbytes(point_reader.take(point_reader.left()));
                 decoded["status"] = !prefix_decoded
-                                         ? "truncated_known_prefix"
+                                         ? "truncated_known_fields"
                                          : compatible_layout_complete &&
                                                    point["unmapped_suffix"]["bytes"] == 0
-                                               ? "high_points_layout_compatible_fully_consumed_unconfirmed"
-                                               : "high_points_prefix_layout_compatible_unconfirmed";
+                                               ? "known_fields_decoded"
+                                               : compatible_layout_complete
+                                                     ? "known_fields_decoded_with_unknown_suffix"
+                                                     : "truncated_known_fields";
                 decoded["high_low_points"] = std::move(point);
             }
             if (type_id == 405 && derived_offset && derived_offset <= state.size()) {
@@ -2196,6 +2206,11 @@ Json decode_attribute(unsigned group, unsigned key, const Bytes &b, unsigned ind
                 out["decoded_state"].value("base_frame", Json::object()).value("status", "") == "decoded")
                 out["status"] = "processor_state_decoded";
             if (type_id == 409 &&
+                out["decoded_state"].value("status", "") == "known_fields_decoded" &&
+                out["decoded_state"].value("base_frame", Json::object()).value("status", "") ==
+                    "decoded")
+                out["status"] = "processor_state_decoded";
+            if (type_id == 408 &&
                 out["decoded_state"].value("status", "") == "known_fields_decoded" &&
                 out["decoded_state"].value("base_frame", Json::object()).value("status", "") ==
                     "decoded")
