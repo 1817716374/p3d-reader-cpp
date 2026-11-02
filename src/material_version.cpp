@@ -297,6 +297,28 @@ Json converted_maps(const Json &input, const Json &maps, const Json &bindings, c
         out["active_object_ids"].push_back(entry.second);
     return out;
 }
+Json source_resource_reference(const Json &resources) {
+    Json out = {{"status", "not_evaluated"},
+                {"resource_lookup_status", "not_evaluated"}};
+    if (resources.value("status", std::string()) != "resolved")
+        return out;
+    const auto &entries = resources.at("entries");
+    if (entries.empty())
+        return {{"status", "empty"},
+                {"resource_lookup_status", "not_evaluated"},
+                {"source_value", ""}};
+    const auto &entry = entries[0];
+    out["slot_index"] = entry.value("slot_index", Json());
+    out["service_entry"] = entry.value("service_entry", Json());
+    out["source_append_index"] = entry.value("source_append_index", Json());
+    out["source_attribute"] = entry.value("source_attribute", Json());
+    if (entry.contains("source_value")) {
+        out["source_value"] = entry.at("source_value");
+        if (entry.at("source_value").is_string())
+            out["status"] = "resolved";
+    }
+    return out;
+}
 Json pbr_readback(const Json &topology, const Json &containers, const Json &mapping_getters) {
     Json out = {{"scope", "bpmaterial_pbr_map_enumeration_before_resource_results"},
                 {"status", "not_evaluated"},
@@ -335,6 +357,7 @@ Json pbr_readback(const Json &topology, const Json &containers, const Json &mapp
                           {"layer_index", 0},
                           {"filename_status", "not_evaluated"}};
             const auto &resources = layer.at("resource_inputs");
+            entry["source_reference"] = source_resource_reference(resources);
             if (resources.at("status") == "resolved" && resources.at("entries").empty()) {
                 entry["filename_status"] = "empty";
                 entry["filename"] = "";
@@ -426,6 +449,7 @@ Json texture_readback(const Json &topology, const Json &containers, const Json &
                                {"map_enabled", object.at("enabled")},
                                {"use_image_alpha_channel", layer.at("option_bit_1").at("value")}});
                 const auto &resources = layer.at("resource_inputs");
+                result["source_reference"] = source_resource_reference(resources);
                 if (resources.at("status") != "resolved" || !resources.at("entries").empty()) {
                     result["status"] = "partial";
                     result["filename_status"] = "not_evaluated";
