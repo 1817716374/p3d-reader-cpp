@@ -647,7 +647,7 @@ Json decode_terrain(const Json &attributes) {
                     {"native_reader_tests_bits_independently", true},
                     {"business_meaning_status", "unresolved"}}}};
     // Native TerrainAlgorithm consumers use these doubles as algorithm
-    // parameters. Offset 216 is compared with planar point-to-vertex distance;
+    // parameters. Offsets 216 and 224 gate planar point/vertex matching;
     // offsets 232 and 240 participate in tolerance/scale normalization. Their
     // business labels and physical units are not established by the file data.
     Json algorithm_parameters = {
@@ -658,6 +658,13 @@ Json decode_terrain(const Json &attributes) {
            "point lookup accepts a mesh vertex when the planar distance is within this value"},
           {"unit_status", "unresolved"},
           {"semantic_status", "planar_point_match_tolerance_behavior_identified"}}},
+        {"member_224_f64",
+         {{"source_offset", 224},
+          {"value", hr.at<double>(224)},
+          {"native_behavior",
+           "gates whether a candidate mesh vertex within the computed planar distance is returned"},
+          {"unit_status", "unresolved"},
+          {"semantic_status", "planar_candidate_distance_gate_behavior_identified"}}},
         {"member_232_f64",
          {{"source_offset", 232},
           {"value", hr.at<double>(232)},
@@ -708,12 +715,9 @@ Json decode_terrain(const Json &attributes) {
                                                      {{"offset", 112}, {"bytes", 8}},
                                                      {{"offset", 140}, {"bytes", 60}},
                                                      {{"offset", 204}, {"bytes", 4}},
-                                                     {{"offset", 216}, {"bytes", 8}},
-                                                     {{"offset", 224}, {"bytes", 8}},
-                                                     {{"offset", 232}, {"bytes", 8}},
-                                                     {{"offset", 240}, {"bytes", 8}},
                                                      {{"offset", 254}, {"bytes", 62}}})},
             {"note", "Source ring winding retained. Header fields outside the decoded counts, "
-                     "bounds, extents and timestamp encodings remain unresolved."}};
+                     "bounds, extents, algorithm parameters, timestamps and format markers "
+                     "remain unresolved."}};
 }
 } // namespace p3d
