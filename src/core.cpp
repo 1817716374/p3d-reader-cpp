@@ -676,6 +676,9 @@ Json Document::native_display_catalog() const {
 Json Document::native_tagged_object_groups() const {
     return build_native_tagged_object_groups(graphics_records(), objects());
 }
+Json Document::native_graphic_record_candidates() const {
+    return build_native_graphic_record_candidates(graphics_records(), native_records());
+}
 Json Document::native_view_condition_catalog() const {
     return build_native_view_condition_catalog(graphics_records(), models());
 }

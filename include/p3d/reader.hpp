@@ -848,6 +848,10 @@ class Document {
     // candidates. This does not assign meaning to group tags or entry types,
     // and does not infer geometry reuse or a runtime reference scope.
     Json native_tagged_object_groups() const;
+    // Cross-stream candidates where graphics-record IDs equal native-record IDs.
+    // IDs are document-wide in observed files; candidates are reported without
+    // merging records or asserting that the records have the same payload role.
+    Json native_graphic_record_candidates() const;
     // Typed projections of persisted display/view records. Original property
     // trees remain attached to every record; path components are only lexical
     // numeric tokens and are not interpreted as class/model identifiers.

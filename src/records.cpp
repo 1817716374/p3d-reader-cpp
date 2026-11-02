@@ -323,6 +323,11 @@ Json parse_native(const Bytes &b) {
         modification["source_offset"] = 28;
         modification["source_offsets_include_stream_prefix"] = true;
         out.back()["modification_time"] = std::move(modification);
+        if (type == 10)
+            out.back()["record_subtype"] = {
+                {"source_offset", 16},
+                {"value_u32", r.at<std::uint32_t>(pos + 16)},
+                {"semantic_status", "unresolved"}};
         if (type == 47 && attr - pos >= 38 && r.at<std::uint32_t>(pos + 16) == 20 &&
             r.at<std::uint16_t>(pos + 36) == 0x56e6)
             out.back()["owner_reference_path"] =

@@ -22,12 +22,12 @@ int main(int argc, char **argv) {
 #endif
         if (args.empty()) {
             std::cout
-                << "p3d-inspect FILE [--threads N] [--dump FILE] [--scene FILE] [--graph FILE] [--display-catalog FILE] [--view-condition-catalog FILE] [--tagged-object-groups FILE]\n";
+                << "p3d-inspect FILE [--threads N] [--dump FILE] [--scene FILE] [--graph FILE] [--display-catalog FILE] [--view-condition-catalog FILE] [--tagged-object-groups FILE] [--native-graphic-records FILE]\n";
             return 0;
         }
         p3d::Options opt;
         std::filesystem::path dump, scene, graph, display_catalog, view_condition_catalog,
-            tagged_object_groups, streams_dir;
+            tagged_object_groups, native_graphic_records, streams_dir;
         bool native = false, expanded = false;
         for (std::size_t i = 1; i < args.size(); ++i) {
             auto k = args[i].string();
@@ -45,6 +45,8 @@ int main(int argc, char **argv) {
                 view_condition_catalog = args[++i];
             else if (k == "--tagged-object-groups" && i + 1 < args.size())
                 tagged_object_groups = args[++i];
+            else if (k == "--native-graphic-records" && i + 1 < args.size())
+                native_graphic_records = args[++i];
             else if (k == "--streams-dir" && i + 1 < args.size())
                 streams_dir = args[++i];
             else if (k == "--native-summary")
@@ -90,6 +92,8 @@ int main(int argc, char **argv) {
             write(view_condition_catalog, d.native_view_condition_catalog());
         if (!tagged_object_groups.empty())
             write(tagged_object_groups, d.native_tagged_object_groups());
+        if (!native_graphic_records.empty())
+            write(native_graphic_records, d.native_graphic_record_candidates());
         if (!streams_dir.empty()) {
             std::filesystem::create_directories(streams_dir);
             p3d::Json manifest = p3d::Json::array();
