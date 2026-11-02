@@ -133,7 +133,7 @@ void read_style_link(unsigned app, const Bytes &payload, TextState &state, Json 
         } else if (app == 0x56f3) {
             read(0xe8, 2, "uint16", "reserved_word_0");
             read(0xe8, 2, "uint16", "reserved_word_1");
-            read(0xc0, 8, "float64", nullptr);
+            read(0xc0, 8, "float64", "auxiliary_scalar");
             state.set(0x54, state.at<std::uint32_t>(0x54) | 0x10000000u);
             const auto packed = read(0xe8, 2, "uint16", "packed_control_flags").get<unsigned>();
             const auto low = ((packed & 0x3c) * 2 | (packed & 3)) << 2;
