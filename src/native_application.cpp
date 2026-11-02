@@ -30,8 +30,28 @@ Json native_application_record(const Bytes &base) {
         out["declared_storage_length"] = Reader(base).at<std::int16_t>(40);
         const std::uint64_t end = std::uint64_t(Reader(base, 12).u32()) * 2 + 4;
         require(end >= 42 && end <= base.size(), "application native base extent is invalid");
-        out["decoder_input"] = {{"source_offset", 42},
-                                {"data", rawbytes(slice(base, 42, std::size_t(end - 42)))}};
+        const auto decoder_data = slice(base, 42, std::size_t(end - 42));
+        out["decoder_input"] = {{"source_offset", 42}, {"data", rawbytes(decoder_data)}};
+        // All observed version-7 files use a 4-byte lead-in, a body whose
+        // length matches declared_storage_length, and a 2-byte trailer. Keep
+        // this as framing evidence only: the lead-in, body fields, and trailer
+        // have no confirmed semantic names yet.
+        if (version == 7 && out["declared_storage_length"].get<std::int16_t>() >= 0 &&
+            decoder_data.size() == std::size_t(out["declared_storage_length"].get<std::int16_t>()) + 6 &&
+            decoder_data.size() >= 6 && decoder_data[0] == 0x07 && decoder_data[1] == 0x89 &&
+            decoder_data[2] == 0x00 && decoder_data[3] == 0x01 &&
+            decoder_data[decoder_data.size() - 2] == 0x20 &&
+            decoder_data[decoder_data.size() - 1] == 0x00) {
+            out["payload_framing"] = {
+                {"status", "observed_v7_framing_match"},
+                {"semantic_interpretation", "unassigned"},
+                {"segments", Json::array({
+                    {{"role", "leading_bytes"}, {"offset", 0}, {"length", 4}},
+                    {{"role", "declared_length_region"}, {"offset", 4},
+                     {"length", decoder_data.size() - 6}},
+                    {{"role", "trailing_bytes"}, {"offset", decoder_data.size() - 2},
+                     {"length", 2}}})}};
+        }
         if (end < base.size())
             out["outside_native_base"] = {
                 {"source_offset", end},

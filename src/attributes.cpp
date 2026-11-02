@@ -293,6 +293,13 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
             words.push_back({{"source_offset", i * 4}, {"value_u32", r.u32()}});
         r.finish();
         return {{"encoding", "native_fixed_word_record"},
+                {"layout_status", "writer_verified_fixed_36_byte_copy"},
+                {"native_writer_copy_byte_count", 36},
+                {"native_writer_processing",
+                 {{"lookup_transformed_word_indices", {2, 4, 6, 8}},
+                  {"lookup_result_overwrites_word", true},
+                  {"lookup_table_semantics", "unresolved"}}},
+                {"word_count", 9},
                 {"semantic_role", "unresolved"},
                 {"word_width_bytes", 4},
                 {"words", std::move(words)}};
@@ -307,6 +314,7 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
         constexpr std::size_t counts_offset = buckets_offset + bucket_count * bucket_stride;
         constexpr std::size_t consumed_bytes = counts_offset + bucket_count;
         constexpr std::size_t native_copy_bytes = 4568;
+        constexpr std::size_t legacy_copy_bytes = 4424;
 
         require(b.size() >= consumed_bytes,
                 "native fixed group table count array is truncated");
@@ -326,7 +334,8 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
         }
 
         Json out = {{"encoding", "native_fixed_group_table"},
-                    {"layout_status", "structural_only"},
+                    {"layout_status", b.size() >= legacy_copy_bytes ? "partially_decoded"
+                                                                      : "structural_only"},
                     {"entry_semantics", "unresolved"},
                     {"source_size", b.size()},
                     {"native_copy_limit", native_copy_bytes},
@@ -353,34 +362,110 @@ Json decode_display_attribute(unsigned group, unsigned key, const Bytes &b) {
             {"unread_bytes_at_12", {{"source_offset", 12},
                                      {"byte_count", 4},
                                      {"bytes", rawbytes(slice(b, 12, 4))}}}};
-        // The current native writer appends two GeRotMatrix values after the
-        // fixed table. Older 4,424-byte variants do not share this proven
-        // suffix layout, so decode the matrices only when the full native
-        // 4,568-byte copy is present. The native reader currently ignores this
-        // suffix; exposing the writer fields does not claim that it restores
-        // them into the runtime object.
-        if (b.size() >= native_copy_bytes) {
-            constexpr std::size_t matrix_bytes = 9 * sizeof(double);
-            constexpr std::size_t matrix_offsets[] = {0x1048, 0x1090};
-            constexpr std::size_t native_matrix_offsets[] = {0x60, 0xa8};
-            Json matrices = Json::array();
-            for (std::size_t i = 0; i < 2; ++i) {
-                Reader matrix_reader(b, matrix_offsets[i]);
-                Json rows = Json::array();
-                for (unsigned row = 0; row < 3; ++row)
-                    rows.push_back(matrix_reader.doubles(3));
-                matrices.push_back({{"slot_index", i},
-                                    {"source_offset", matrix_offsets[i]},
-                                    {"native_object_offset", native_matrix_offsets[i]},
-                                    {"byte_count", matrix_bytes},
-                                    {"row_major_f64", std::move(rows)}});
+        // The 4,424-byte variant shares the 40-byte object-field prefix with
+        // the 4,568-byte writer layout in the corpus. Only the latter has the
+        // writer-proven GeRotMatrix suffix; keep the legacy tail opaque.
+        constexpr std::size_t point_offset = 0x1020;
+        constexpr std::size_t reference_value_offset = 0x1038;
+        constexpr std::size_t reference_member_offset = 0x1040;
+        constexpr std::size_t point_present_offset = 0x1044;
+        if (b.size() >= 0x1048) {
+            Reader point_reader(b, point_offset);
+            out["native_writer_object_fields"] = {
+                {"status", b.size() >= native_copy_bytes ? "decoded_from_writer_layout"
+                                                          : "decoded_from_cross_version_prefix"},
+                {"prefix_layout_evidence", b.size() >= native_copy_bytes
+                                               ? "current_P3DKJ_writer"
+                                               : "matched_to_4,568_byte_writer_offsets_and_sentinels_in_corpus"},
+                {"optional_3d_value",
+                 {{"source_offset", point_offset},
+                  {"native_object_offset", 0x40},
+                  {"components_f64", point_reader.doubles(3)},
+                  {"presence_flag_source_offset", point_present_offset},
+                  {"presence_flag_native_object_offset", 0x58},
+                  {"is_present", bool(b[point_present_offset])}}},
+                {"associated_value_u64",
+                 {{"source_offset", reference_value_offset},
+                  {"native_object_source_offset", 0x38},
+                  {"extraction", "associated_object_value_at_offset_0x10"},
+                  {"value", Reader(b, reference_value_offset).u64()}}},
+                {"associated_member_u32",
+                 {{"source_offset", reference_member_offset},
+                  {"native_object_source_offset", 0x38},
+                  {"extraction", "associated_object_value_at_offset_0x1b8"},
+                  {"value", Reader(b, reference_member_offset).u32()}}},
+                {"interstitial_bytes",
+                 {{"source_offset", point_present_offset + 1},
+                  {"byte_count", 3},
+                  {"status", b.size() >= native_copy_bytes
+                                 ? "not_written_by_observed_P3DKJ_writer_path"
+                                 : "unclassified_legacy_bytes"},
+                  {"data", rawbytes(slice(b, point_present_offset + 1, 3))}}}};
+            out["unread_suffix_status"] = "partially_decoded";
+            if (b.size() >= native_copy_bytes) {
+                constexpr std::size_t matrix_bytes = 9 * sizeof(double);
+                constexpr std::size_t matrix_offsets[] = {0x1048, 0x1090};
+                constexpr std::size_t native_matrix_offsets[] = {0x60, 0xa8};
+                Json matrices = Json::array();
+                for (std::size_t i = 0; i < 2; ++i) {
+                    Reader matrix_reader(b, matrix_offsets[i]);
+                    Json rows = Json::array();
+                    for (unsigned row = 0; row < 3; ++row)
+                        rows.push_back(matrix_reader.doubles(3));
+                    const auto matrix_data = slice(b, matrix_offsets[i], matrix_bytes);
+                    const bool repeated_cc =
+                        std::all_of(matrix_data.begin(), matrix_data.end(),
+                                    [](std::uint8_t value) { return value == 0xcc; });
+                    matrices.push_back({{"slot_index", i},
+                                        {"source_offset", matrix_offsets[i]},
+                                        {"native_object_offset", native_matrix_offsets[i]},
+                                        {"byte_count", matrix_bytes},
+                                        {"raw_value_status", repeated_cc
+                                                                  ? "repeated_0xcc_fill_pattern"
+                                                                  : "decoded_f64_values"},
+                                        {"row_major_f64", std::move(rows)}});
+                }
+                out["native_writer_matrix_fields"] = {
+                    {"status", "decoded"},
+                    {"field_type", "GeRotMatrix"},
+                    {"field_count", 2},
+                    {"runtime_reader_consumes_fields", false},
+                    {"fields", std::move(matrices)}};
+                // Static analysis shows the matching 4,568-byte writer only
+                // populates this buffer through byte 4,311. Preserve the rest.
+                out["writer_unwritten_tail"] = {
+                    {"source_offset", 4312},
+                    {"byte_count", native_copy_bytes - 4312},
+                    {"status", "not_written_by_observed_P3DKJ_writer_path"},
+                    {"data", rawbytes(slice(b, 4312, native_copy_bytes - 4312))}};
+                out["unread_suffix_unexplained_intervals"] = {
+                    {{"source_offset", point_present_offset + 1},
+                     {"byte_count", 3},
+                     {"status", "not_written_by_observed_P3DKJ_writer_path"},
+                     {"data", rawbytes(slice(b, point_present_offset + 1, 3))}},
+                    {{"source_offset", 4312},
+                     {"byte_count", native_copy_bytes - 4312},
+                     {"status", "not_written_by_observed_P3DKJ_writer_path"},
+                     {"data", rawbytes(slice(b, 4312, native_copy_bytes - 4312))}}};
+            } else {
+                constexpr std::size_t legacy_tail_offset = 0x1048;
+                const auto legacy_tail = slice(b, legacy_tail_offset,
+                                               b.size() - legacy_tail_offset);
+                const bool uniform_cc = !legacy_tail.empty() &&
+                    std::all_of(legacy_tail.begin(), legacy_tail.end(),
+                                [](std::uint8_t value) { return value == 0xcc; });
+                out["unread_suffix_unexplained_intervals"] = {
+                    {{"source_offset", point_present_offset + 1},
+                     {"byte_count", legacy_tail_offset - (point_present_offset + 1)},
+                     {"status", "unclassified_legacy_bytes"},
+                     {"data", rawbytes(slice(b, point_present_offset + 1,
+                                             legacy_tail_offset - (point_present_offset + 1))) }},
+                    {{"source_offset", legacy_tail_offset},
+                     {"byte_count", legacy_tail.size()},
+                     {"status", uniform_cc ? "uniform_byte_pattern_0xcc"
+                                            : "unclassified_legacy_suffix"},
+                     {"data", rawbytes(legacy_tail)}}};
             }
-            out["native_writer_matrix_fields"] = {
-                {"status", "decoded"},
-                {"field_type", "GeRotMatrix"},
-                {"field_count", 2},
-                {"runtime_reader_consumes_fields", false},
-                {"fields", std::move(matrices)}};
         }
         if (b.size() > native_copy_bytes) {
             out["suffix_source_offset"] = native_copy_bytes;
