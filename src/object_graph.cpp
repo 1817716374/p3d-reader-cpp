@@ -73,6 +73,49 @@ static Json cycles(const Json &nodes, const Json &edges) {
             out.push_back(k);
     return out;
 }
+static std::vector<std::uint16_t> tree_sort_key_utf16(const std::string &text) {
+    std::vector<std::uint16_t> units;
+    for (std::size_t i = 0; i < text.size();) {
+        const auto first = static_cast<std::uint8_t>(text[i]);
+        std::uint32_t codepoint = 0;
+        std::size_t count = 0;
+        if (first < 0x80) {
+            codepoint = first;
+            count = 1;
+        } else if ((first & 0xe0) == 0xc0) {
+            codepoint = first & 0x1f;
+            count = 2;
+        } else if ((first & 0xf0) == 0xe0) {
+            codepoint = first & 0x0f;
+            count = 3;
+        } else if ((first & 0xf8) == 0xf0) {
+            codepoint = first & 0x07;
+            count = 4;
+        } else {
+            throw std::runtime_error("invalid_utf8_leading_byte");
+        }
+        require(i + count <= text.size(), "truncated_utf8_sort_key");
+        for (std::size_t j = 1; j < count; ++j) {
+            const auto next = static_cast<std::uint8_t>(text[i + j]);
+            require((next & 0xc0) == 0x80, "invalid_utf8_continuation_byte");
+            codepoint = (codepoint << 6) | (next & 0x3f);
+        }
+        require((count == 1 || codepoint >= (count == 2 ? 0x80u :
+                                             count == 3 ? 0x800u : 0x10000u)) &&
+                    codepoint <= 0x10ffff &&
+                    !(codepoint >= 0xd800 && codepoint <= 0xdfff),
+                "invalid_utf8_codepoint");
+        if (codepoint <= 0xffff) {
+            units.push_back(static_cast<std::uint16_t>(codepoint));
+        } else {
+            codepoint -= 0x10000;
+            units.push_back(static_cast<std::uint16_t>(0xd800 + (codepoint >> 10)));
+            units.push_back(static_cast<std::uint16_t>(0xdc00 + (codepoint & 0x3ff)));
+        }
+        i += count;
+    }
+    return units;
+}
 Json build_graph_records(const Json &objects, const Json &bindings, const Json &relationships,
                          const std::set<std::uint64_t> &models, const std::set<std::string> &live) {
     Json catalog = Json::array(), index = Json::object(), record_index = Json::object();
@@ -319,8 +362,86 @@ Json build_graph_records(const Json &objects, const Json &bindings, const Json &
     for (auto &k : order)
         if (index[k]["status"] == "ambiguous")
             ambiguous.push_back(k);
+    std::map<std::string, Json> tree_node_by_key;
+    for (const auto &node : tree_nodes)
+        tree_node_by_key[node.at("key").get<std::string>()] = node;
+    std::map<std::string, std::vector<std::string>> children_by_parent;
+    for (const auto &edge : edges)
+        if (edge.at("status") == "resolved")
+            children_by_parent[edge.at("candidates")[0].get<std::string>()].push_back(
+                edge.at("child").get<std::string>());
+    Json native_child_sort_orders = Json::array();
+    for (const auto &parent : children_by_parent) {
+        struct SortEntry {
+            std::string key;
+            std::string name;
+            std::vector<std::uint16_t> sort_key;
+            std::int64_t timestamp;
+        };
+        std::vector<SortEntry> entries;
+        bool complete = true;
+        std::string reason;
+        for (const auto &child_key : parent.second) {
+            const auto &node = tree_node_by_key.at(child_key);
+            const auto &fields = node.at("fields");
+            if (!fields.contains("SortKey") || !fields.at("SortKey").is_string() ||
+                !fields.contains("SortKeyTimeStamp") ||
+                !fields.at("SortKeyTimeStamp").is_number_integer()) {
+                complete = false;
+                reason = "native_sort_key_field_missing_or_invalid";
+                break;
+            }
+            try {
+                const auto name = node.value("name", Json());
+                entries.push_back({child_key, name.is_string() ? name.get<std::string>() : "",
+                                   tree_sort_key_utf16(fields.at("SortKey").get<std::string>()),
+                                   fields.at("SortKeyTimeStamp").get<std::int64_t>()});
+            } catch (const std::exception &) {
+                complete = false;
+                reason = "native_sort_key_utf8_conversion_failed";
+                break;
+            }
+        }
+        Json result = {{"parent", parent.first},
+                       {"kind", "native_BPTreeNode_sortChildNodes_default"},
+                       {"status", complete ? "resolved" : "incomplete"},
+                       {"comparator", "descending_utf16_sort_key_then_descending_timestamp"},
+                       {"groups", Json::array()},
+                       {"source_parent_edge_children", parent.second}};
+        if (!complete) {
+            result["reason"] = reason;
+            native_child_sort_orders.push_back(std::move(result));
+            continue;
+        }
+        std::sort(entries.begin(), entries.end(), [](const SortEntry &a, const SortEntry &b) {
+            if (a.sort_key != b.sort_key)
+                return a.sort_key > b.sort_key;
+            return a.timestamp > b.timestamp;
+        });
+        for (const auto &entry : entries) {
+            const bool tied = !result["groups"].empty() &&
+                              result["groups"].back()["sort_key_utf16"] == entry.sort_key &&
+                              result["groups"].back()["sort_key_timestamp"] == entry.timestamp;
+            if (tied) {
+                result["groups"].back()["nodes"].push_back(
+                    {{"key", entry.key}, {"name", entry.name}});
+            } else {
+                result["groups"].push_back(
+                    {{"group_ordinal", result["groups"].size()},
+                     {"sort_key_utf16", entry.sort_key},
+                     {"sort_key_timestamp", entry.timestamp},
+                     {"within_group_order", "native_comparator_equivalent"},
+                     {"nodes", Json::array({{{"key", entry.key}, {"name", entry.name}}})}});
+            }
+        }
+        for (const auto &group : result["groups"])
+            if (group["nodes"].size() > 1)
+                result["status"] = "resolved_with_equivalent_key_groups";
+        native_child_sort_orders.push_back(std::move(result));
+    }
     Json hierarchy = {{"nodes", tree_nodes},
                       {"parent_edges", edges},
+                      {"native_child_sort_orders", native_child_sort_orders},
                       {"roots", roots},
                       {"element_references", element_refs},
                       {"model_nodes", model_nodes},
