@@ -1272,7 +1272,9 @@ Json decode_sesm_gams_stream(const Bytes &b) {
                            {"type_code", type_code},
                            {"data_offset", data_offset},
                            {"data", rawbytes(data)},
-                           {"semantic_status", "unresolved"}};
+                           {"semantic_status", type_code == 1007
+                                                    ? "not_interpreted_by_native_reader"
+                                                    : "unresolved"}};
             if (type_code == 1001 || type_code == 1002 || type_code == 1005 || type_code == 1006)
                 record["native_reader_dispatch"] = "typed_member";
             else if (type_code == 1007)
