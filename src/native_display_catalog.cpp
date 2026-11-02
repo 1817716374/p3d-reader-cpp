@@ -150,6 +150,29 @@ Json pbbim_domain_fields(const std::string &class_name, const Json &fields) {
     return out;
 }
 
+Json schema_boolean_property(const Json &fields, const char *name) {
+    Json out = {{"encoding", "embedded_schema_boolean"}, {"status", "source_value_unavailable"}};
+    if (!fields.is_object() || !fields.contains(name))
+        return out;
+    const auto &source = fields[name];
+    out["source_value"] = source;
+    if (source.is_boolean()) {
+        out["status"] = "decoded";
+        out["value"] = source;
+    } else if (source.is_number_integer()) {
+        const auto value = unsigned_integer(&source);
+        if (value && *value <= 1) {
+            out["status"] = "decoded";
+            out["value"] = (*value != 0);
+        } else {
+            out["status"] = "unknown_boolean_value";
+        }
+    } else {
+        out["status"] = "source_type_mismatch";
+    }
+    return out;
+}
+
 Json display_statuses(const Json &tree) {
     Json out = Json::array();
     const auto *info = unique_field(tree, "DisplayInfo");
@@ -159,6 +182,7 @@ Json display_statuses(const Json &tree) {
         if (item.value("name", std::string{}) != "PBBimDisplayStatus")
             continue;
         Json status = {{"property_tree", item}, {"fields", direct_fields(item)}};
+        status["visibility"] = schema_boolean_property(status["fields"], "DisplayStatus");
         if (const auto *path = unique_field(item, "SubCategory"); path && path->contains("value"))
             status["subcategory_location_index"] = parse_location_index((*path)["value"]);
         out.push_back(std::move(status));
@@ -176,6 +200,8 @@ Json nested_records(const Json &tree, const char *field_name, const char *record
         if (item.value("name", std::string{}) != record_name)
             continue;
         Json row = {{"property_tree", item}, {"fields", direct_fields(item)}};
+        if (record_name == std::string("PBBimDisplayStatus"))
+            row["visibility"] = schema_boolean_property(row["fields"], "DisplayStatus");
         if (with_location_index) {
             if (const auto *path = unique_field(item, "PixType"); path && path->contains("value"))
                 row["pix_type_location_index"] = parse_location_index((*path)["value"]);
